@@ -260,6 +260,35 @@ def _walk(node, depth: int = 0):
             yield from _walk(value, depth + 1)
 
 
+#: A level is a label, not a sentence: "WTA 1000", "Grand Slam", "Premier
+#: Mandatory" -- the longest real value is under 20 characters and three words.
+#: Anything past these bounds is prose, and a blurb reading "the 1000-point
+#: event returns this year" would otherwise classify every record it sits on.
+MAX_CATEGORY_VALUE = 24
+MAX_CATEGORY_WORDS = 3
+
+
+def _category_from_any_field(record: dict) -> str | None:
+    """Last resort: any short string on the record that reads as a level.
+
+    Feeds name this field differently every time -- ``level``, ``category``,
+    ``tournamentGroup``, ``eventType`` -- and a list of keys will always be one
+    behind. Scanning the record's own short values catches the case where the
+    key is new but the value is still "WTA 1000". Bounded to short values so a
+    description mentioning "the 1000-point event" cannot classify anything.
+    """
+    for value in record.values():
+        if not isinstance(value, (str, int)):
+            continue
+        text = str(value)
+        if len(text) > MAX_CATEGORY_VALUE or len(text.split()) > MAX_CATEGORY_WORDS:
+            continue
+        category = classify_category(text)
+        if category:
+            return category
+    return None
+
+
 NAME_KEYS = ("name", "title", "tournamentName", "eventName", "displayName")
 CATEGORY_KEYS = ("category", "level", "tournamentGroup", "eventType", "type",
                  "tourLevel", "classification", "badge")
@@ -293,7 +322,11 @@ def records_from_object(obj, tour: str, season: int, strategy: str = "json") -> 
         name = _first(record, NAME_KEYS)
         if not name or len(name) > 80:
             continue
-        category = classify_category(_first(record, CATEGORY_KEYS)) or classify_category(name)
+        category = (
+            classify_category(_first(record, CATEGORY_KEYS))
+            or classify_category(name)
+            or _category_from_any_field(record)
+        )
         if not category:
             continue
         draw = _first(record, DRAW_KEYS)
@@ -445,6 +478,7 @@ def fetch_wta_api(season: int, url: str = WTA_API) -> list:
     for params in wta_api_variants(season):
         payloads: list = []
         page = 0
+        first_size = None
         while page < API_MAX_PAGES:
             attempt = dict(params)
             if "page" in params:
@@ -457,13 +491,22 @@ def fetch_wta_api(season: int, url: str = WTA_API) -> list:
                 body = response.json()
             except (requests.RequestException, ValueError):
                 break
+            size = _page_size(body)
+            if size == 0:
+                break
             payloads.append(body)
-            # Stop when a page comes back smaller than asked for, or when the
-            # shape has no page parameter to advance.
-            if "page" not in params or _page_size(body) < API_PAGE_SIZE:
+            if "page" not in params:
+                break
+            # The server caps the page size at its own maximum, which is not
+            # the one we asked for: requesting 200 and being handed 100 is a
+            # full page, not the last one. So the first response defines what
+            # full means, and only a page shorter than *that* ends the walk.
+            if first_size is None:
+                first_size = size
+            if size < first_size:
                 break
             page += 1
-        if payloads and any(_page_size(b) for b in payloads):
+        if payloads:
             return payloads
     return []
 
@@ -719,12 +762,27 @@ def probe(source: str = "atp", season: int | None = None) -> dict:
         if tour == "WTA":
             try:
                 payloads = fetch_wta_api(season)
+                recognised = {
+                    r["tournament"].lower()
+                    for r in records_from_object(payloads, tour, season, "wta-api")
+                } if payloads else set()
+                missed = [
+                    {k: v for k, v in rec.items()
+                     if isinstance(v, (str, int, float)) and len(str(v)) <= 60}
+                    for rec in _walk(payloads)
+                    if _first(rec, NAME_KEYS)
+                    and str(_first(rec, NAME_KEYS)).lower() not in recognised
+                ][:3]
                 report["stages"]["extract"]["api"] = {
                     "url": WTA_API,
                     "pages": len(payloads),
                     "records": sum(_page_size(b) for b in payloads),
+                    "recognised": len(recognised),
                     "top_keys": sorted(payloads[0].keys())[:12]
                     if payloads and isinstance(payloads[0], dict) else [],
+                    # The records that carry a name but no category are the
+                    # whole question: their fields say which key holds the level.
+                    "unclassified_samples": missed,
                     "note": "" if payloads else
                             "the API returned nothing for any parameter shape -- "
                             "the path may differ from /tennis/tournaments/",

@@ -469,7 +469,7 @@ Each increment ships end-to-end:
 | F1 | Jolpica (Ergast successor) | ~5 requests / season | 1 request | **verified** on 2025: 479 results, 5 sprints |
 | Tennis (live) | Flashscore feed + tournament pages | n/a | ~1 request pair / tournament | **verified**: 56 matches, rounds and scoring correct |
 | Tennis (history) | Phase7B snapshot, local file | one read | n/a | **verified**: 172,400 matches 2014-2026, all 3,116 players named |
-| Tennis calendar | api.wtatennis.com (WTA); ATP and tennistonic 403 | one API call | once a season | WTA API path **untested**; 2026 seeded, needed for 2027 |
+| Tennis calendar | api.wtatennis.com (WTA); ATP and tennistonic 403 | a few API calls | once a season | WTA API **confirmed**, recognition incomplete; 2026 seeded, parked until 2027 |
 
 The individual sports are fetched per event rather than per date: a golf tournament runs Thursday to
 Sunday and a race meeting spans a weekend, so walking the calendar would re-read the same event four

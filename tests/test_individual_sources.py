@@ -881,3 +881,72 @@ def test_the_api_strategy_only_runs_for_the_wta():
     """The ATP site answers 403 to a plain request, so its page cannot even be
     read to discover an endpoint."""
     assert schedule.extract_from_api("<html></html>", "ATP", 2026) == []
+
+
+def test_paging_continues_when_the_server_caps_the_page_size(monkeypatch):
+    """We ask for 200 and the WTA hands back 100. That is a full page, not the
+    last one -- treating a short page as the end stopped the walk after a
+    single request and lost most of the season."""
+    pages = [
+        {"content": [{"name": f"E{i}", "level": "WTA 250"} for i in range(100)]},
+        {"content": [{"name": f"F{i}", "level": "WTA 250"} for i in range(100)]},
+        {"content": [{"name": "Last", "level": "WTA 250"}]},
+    ]
+    served = []
+
+    class Response:
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._body
+
+    def fake_get(url, params=None, **kwargs):
+        page = (params or {}).get("page", 0)
+        served.append(page)
+        return Response(pages[page] if page < len(pages) else {"content": []})
+
+    monkeypatch.setattr(schedule.requests, "get", fake_get)
+    payloads = schedule.fetch_wta_api(2026)
+    assert served[:3] == [0, 1, 2]
+    assert sum(schedule._page_size(p) for p in payloads) == 201
+
+
+def test_paging_stops_on_an_empty_page(monkeypatch):
+    class Response:
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._body
+
+    calls = []
+
+    def fake_get(url, params=None, **kwargs):
+        calls.append(params)
+        return Response({"content": []})
+
+    monkeypatch.setattr(schedule.requests, "get", fake_get)
+    assert schedule.fetch_wta_api(2026) == []
+
+
+def test_a_level_under_an_unknown_key_is_still_found():
+    """A key list is always one rename behind. Scanning the record's own short
+    values catches 'WTA 500' wherever the feed decided to put it."""
+    record = {"title": "Sydney", "tournamentLevelName": "WTA 500", "drawSize": 32}
+    assert schedule._category_from_any_field(record) == "500"
+    rows = schedule.records_from_object({"content": [record]}, "WTA", 2026, "wta-api")
+    assert rows[0]["category"] == "500"
+
+
+def test_prose_cannot_classify_a_tournament():
+    """Bounded to short values, so a description mentioning the 1000-point
+    event does not make every record a Masters."""
+    record = {"title": "X", "blurb": "the 1000-point event returns this year"}
+    assert schedule._category_from_any_field(record) is None
