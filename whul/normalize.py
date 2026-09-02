@@ -125,8 +125,20 @@ def apply_benchmarks(
     df: pd.DataFrame,
     benchmarks: pd.DataFrame,
     asset_type: str,
+    strict: bool = True,
 ) -> pd.DataFrame:
-    """Attach ``norm_key``, ``benchmark`` and ``scaled_score`` to scored assets."""
+    """Attach ``norm_key``, ``benchmark`` and ``scaled_score`` to scored assets.
+
+    Raises if any normalization group has no benchmark. That happens when a thin
+    position is squeezed entirely out of the buffer pool: pool truncation is
+    applied per *draft pool* but benchmarks are computed per *normalization
+    group*, so a low-scoring position can vanish from the pool while its players
+    still need scoring. At 5 benchmark managers the top-22 NFL pool contains no
+    tight end, leaving every TE unscoreable -- which is one reason the benchmark
+    manager count is held at 15 regardless of actual league size.
+
+    Pass ``strict=False`` to allow NaN scores instead, for exploratory use only.
+    """
     out = df.copy()
     out["norm_key"] = assign_norm_key(out, asset_type)
     out = out.merge(
@@ -134,5 +146,13 @@ def apply_benchmarks(
         on="norm_key",
         how="left",
     )
+    missing = out.loc[out["benchmark"].isna(), "norm_key"]
+    if strict and not missing.empty:
+        groups = sorted(set(missing.astype(str)))
+        raise ValueError(
+            f"No benchmark for {len(missing)} {asset_type.lower()}s in groups {groups}. "
+            "The buffer pool excluded these groups entirely -- raise the benchmark "
+            "manager count or widen the pool."
+        )
     out["scaled_score"] = scale(out["total_points"], out["benchmark"])
     return out

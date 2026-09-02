@@ -1,14 +1,24 @@
 """Postseason bonus tests.
 
-A player who appears in the postseason is credited as though they played
-``scalar`` extra games at their own per-game rate, computed across every game
-they actually played.
+The bonus is a flat share of a regular season -- identical across leagues -- paid
+at the player's postseason rate::
+
+    bonus = (postseason_points / postseason_games) * (share * regular_games)
 """
 
 import pandas as pd
 import pytest
 
-from whul.scoring.postseason import RULES, PostseasonRule, apply_bonus, split_phases
+from whul.scoring.postseason import (
+    DEFAULT_BONUS_SHARE,
+    EXCLUDED,
+    POSTSEASON,
+    REGULAR,
+    RULES,
+    PostseasonRule,
+    apply_bonus,
+    split_phases,
+)
 
 
 def phase_frame(reg_pts, reg_games, post_pts, post_games):
@@ -18,32 +28,57 @@ def phase_frame(reg_pts, reg_games, post_pts, post_games):
     }])
 
 
-def test_scalars_match_the_agreed_values():
-    expected = {"NFL": 4.25, "MLB": 162 / 22, "NBA": 82 / 28, "NHL": 3.0,
-                "UCL": 38 / 17, "Europa Conference League": 38 / 21}
+def test_share_is_ten_percent_everywhere():
+    assert DEFAULT_BONUS_SHARE == 0.10
+    for name, rule in RULES.items():
+        assert rule.bonus_share == pytest.approx(0.10), name
+
+
+def test_scalars_are_ten_percent_of_each_regular_season():
+    expected = {"NFL": 1.7, "MLB": 16.2, "NBA": 8.2, "NHL": 8.4,
+                "UCL": 3.8, "Europa League": 3.8, "Europa Conference League": 3.8}
     for name, want in expected.items():
-        assert RULES[name].scalar == pytest.approx(want, abs=0.01), name
+        assert RULES[name].scalar == pytest.approx(want), name
 
 
 def test_nhl_uses_the_expanded_84_game_season():
     assert RULES["NHL"].regular_games == 84
-    assert RULES["NHL"].scalar == pytest.approx(3.0)
 
 
-def test_bonus_is_rate_times_scalar():
-    """160 pts over 16 reg + 40 over 4 playoff = 200/20 = 10/game.
-    NFL scalar 4.25 -> bonus 42.5, total 160 + 42.5."""
-    out = apply_bonus(phase_frame(160.0, 16, 40.0, 4), RULES["NFL"]).iloc[0]
-    assert out["per_game_rate"] == pytest.approx(10.0)
-    assert out["postseason_bonus"] == pytest.approx(42.5)
-    assert out["total_points"] == pytest.approx(202.5)
+def test_one_playoff_game_multiplies_those_points_by_the_scalar():
+    """NFL: one playoff game worth 20 -> 20 * 1.7 = 34."""
+    out = apply_bonus(phase_frame(300.0, 17, 20.0, 1), RULES["NFL"]).iloc[0]
+    assert out["postseason_bonus"] == pytest.approx(34.0)
+    assert out["total_points"] == pytest.approx(334.0)
+
+
+def test_two_playoff_games_use_the_combined_points_over_two():
+    """40 points across two games -> 40 * 1.7/2 = 34, same as 20 in one game."""
+    out = apply_bonus(phase_frame(300.0, 17, 40.0, 2), RULES["NFL"]).iloc[0]
+    assert out["postseason_bonus"] == pytest.approx(34.0)
+
+
+def test_a_full_run_at_your_regular_rate_is_worth_ten_percent_of_the_season():
+    """The defining property: same proportional reward in every league."""
+    for name in ("NFL", "MLB", "NBA", "NHL"):
+        rule = RULES[name]
+        reg_games = rule.regular_games
+        rate = 10.0
+        out = apply_bonus(
+            phase_frame(rate * reg_games, reg_games, rate * 4, 4), rule
+        ).iloc[0]
+        assert out["postseason_bonus"] / out["regular_points"] == pytest.approx(0.10), name
+
+
+def test_outperforming_your_regular_rate_earns_more_than_the_share():
+    rule = RULES["NFL"]
+    out = apply_bonus(phase_frame(170.0, 17, 40.0, 1), rule).iloc[0]  # 40/game vs 10
+    assert out["postseason_bonus"] / out["regular_points"] > 0.10
 
 
 def test_raw_postseason_points_never_enter_the_total_directly():
-    """Only the bonus carries postseason value; the raw stats are not summed in."""
     out = apply_bonus(phase_frame(100.0, 10, 900.0, 1), RULES["NFL"]).iloc[0]
-    assert out["total_points"] != pytest.approx(1000.0)
-    assert out["total_points"] == pytest.approx(100.0 + (1000.0 / 11) * 4.25)
+    assert out["total_points"] == pytest.approx(100.0 + 900.0 * 1.7)
 
 
 def test_no_appearance_earns_no_bonus():
@@ -52,62 +87,47 @@ def test_no_appearance_earns_no_bonus():
     assert out["total_points"] == pytest.approx(300.0)
 
 
-def test_one_appearance_earns_the_full_bonus():
-    """The bonus is for appearing; a longer run does not enlarge it directly.
-
-    Two players at the same rate get the same bonus regardless of how many
-    postseason games they played -- only their rate scales it.
-    """
-    short = apply_bonus(phase_frame(170.0, 17, 10.0, 1), RULES["NFL"]).iloc[0]
-    long = apply_bonus(phase_frame(170.0, 17, 40.0, 4), RULES["NFL"]).iloc[0]
-    assert short["per_game_rate"] == pytest.approx(10.0)
-    assert long["per_game_rate"] == pytest.approx(10.0)
-    assert short["postseason_bonus"] == pytest.approx(long["postseason_bonus"])
-
-
-def test_a_better_run_earns_a_bigger_bonus():
-    weak = apply_bonus(phase_frame(170.0, 17, 10.0, 2), RULES["NFL"]).iloc[0]
-    strong = apply_bonus(phase_frame(170.0, 17, 90.0, 2), RULES["NFL"]).iloc[0]
-    assert strong["postseason_bonus"] > weak["postseason_bonus"]
-
-
 def test_no_rule_means_no_bonus():
     out = apply_bonus(phase_frame(170.0, 17, 40.0, 4), None).iloc[0]
-    assert out["postseason_bonus"] == 0.0
     assert out["total_points"] == pytest.approx(170.0)
 
 
-def test_scalar_override_lets_the_admin_tune_without_touching_the_formula():
-    rule = PostseasonRule("NFL", 17, 4, scalar_override=2.0)
-    assert rule.scalar == 2.0
-    out = apply_bonus(phase_frame(170.0, 17, 30.0, 3), rule).iloc[0]
-    assert out["postseason_bonus"] == pytest.approx(10.0 * 2.0)
+def test_scalar_override_lets_the_admin_tune_a_single_league():
+    rule = PostseasonRule("NFL", 17, scalar_override=5.0)
+    out = apply_bonus(phase_frame(170.0, 17, 20.0, 2), rule).iloc[0]
+    assert out["postseason_bonus"] == pytest.approx(10.0 * 5.0)
 
 
-def test_bonus_share_reports_the_cross_league_spread():
-    assert RULES["NFL"].bonus_share == pytest.approx(0.25, abs=0.005)
-    assert RULES["NBA"].bonus_share == pytest.approx(0.036, abs=0.005)
+def test_share_can_be_retuned_globally():
+    rule = PostseasonRule("NFL", 17, bonus_share=0.20)
+    assert rule.scalar == pytest.approx(3.4)
 
 
 def test_zero_games_does_not_divide_by_zero():
     out = apply_bonus(phase_frame(0.0, 0, 0.0, 0), RULES["NFL"]).iloc[0]
-    assert out["per_game_rate"] == 0.0
     assert out["total_points"] == 0.0
 
 
+# --- phase splitting -------------------------------------------------------
+
 def test_split_phases_separates_regular_and_postseason():
-    rows = pd.DataFrame({
-        "player": ["a", "a", "a"],
-        "pts": [10.0, 20.0, 50.0],
-        "g": [1, 1, 1],
-    })
-    is_post = pd.Series([False, False, True])
-    out = split_phases(rows, ["player"], "pts", "g", is_post).iloc[0]
+    rows = pd.DataFrame({"player": ["a"] * 3, "pts": [10.0, 20.0, 50.0], "g": [1, 1, 1]})
+    phase = pd.Series([REGULAR, REGULAR, POSTSEASON])
+    out = split_phases(rows, ["player"], "pts", "g", phase).iloc[0]
     assert out["regular_points"] == 30.0 and out["regular_games"] == 2
+    assert out["postseason_points"] == 50.0 and out["postseason_games"] == 1
+
+
+def test_excluded_rows_count_for_neither_phase():
+    """Play-In and European qualifying must not pad the regular season either."""
+    rows = pd.DataFrame({"player": ["a"] * 3, "pts": [10.0, 999.0, 50.0], "g": [1, 1, 1]})
+    phase = pd.Series([REGULAR, EXCLUDED, POSTSEASON])
+    out = split_phases(rows, ["player"], "pts", "g", phase).iloc[0]
+    assert out["regular_points"] == 10.0 and out["regular_games"] == 1
     assert out["postseason_points"] == 50.0 and out["postseason_games"] == 1
 
 
 def test_split_phases_fills_missing_phase_with_zero():
     rows = pd.DataFrame({"player": ["a"], "pts": [10.0], "g": [1]})
-    out = split_phases(rows, ["player"], "pts", "g", pd.Series([False])).iloc[0]
+    out = split_phases(rows, ["player"], "pts", "g", pd.Series([REGULAR])).iloc[0]
     assert out["postseason_points"] == 0.0 and out["postseason_games"] == 0.0

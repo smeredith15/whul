@@ -13,7 +13,14 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
-from whul.scoring.postseason import RULES, apply_bonus, split_phases
+from whul.scoring.postseason import (
+    EXCLUDED,
+    POSTSEASON,
+    REGULAR,
+    RULES,
+    apply_bonus,
+    split_phases,
+)
 
 # Per-game box score weights, per NBA_Players_Teams.R
 BOX_WEIGHTS = {
@@ -74,10 +81,10 @@ def _plus_minus(df: pd.DataFrame) -> pd.Series:
 def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     """Season totals per player from per-game box scores.
 
-    Playoff rows (``season_type`` 3) are credited as a bonus worth a fixed number
-    of extra games at the player's own rate rather than as raw counting stats;
-    Play-In games (5) count as regular season, being an extension of it. Pass
-    ``postseason=False`` for benchmark computation.
+    Playoff rows (``season_type`` 3) are credited as a bonus rather than as raw
+    counting stats. Play-In games (5) are dropped entirely -- they are neither
+    regular season nor playoffs. Pass ``postseason=False`` for benchmark
+    computation.
     """
     work = pd.DataFrame(
         {
@@ -112,14 +119,15 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     # Net plus-minus is folded in per game so it rides along with the phase split.
     work["game_points"] = work["game_points"] + work["plus_minus"] * PLUS_MINUS_WEIGHT
     work["game_count"] = 1
-    work["is_post"] = (
-        resolve_num(box, ["season_type"], default=SEASON_TYPE_REGULAR)
-        .reindex(work.index)
-        .eq(SEASON_TYPE_POST)
+    season_type = resolve_num(box, ["season_type"], default=SEASON_TYPE_REGULAR).reindex(
+        work.index
     )
+    work["phase"] = pd.Series(REGULAR, index=work.index).mask(
+        season_type == SEASON_TYPE_POST, POSTSEASON
+    ).mask(season_type == SEASON_TYPE_PLAYIN, EXCLUDED)
 
     keys = ["season", "athlete_id", "player", "position"]
-    phases = split_phases(work, keys, "game_points", "game_count", work["is_post"])
+    phases = split_phases(work, keys, "game_points", "game_count", work["phase"])
     agg = apply_bonus(phases, RULES["NBA"] if postseason else None)
     agg["league"] = "NBA"
     agg["role"] = agg["position"]

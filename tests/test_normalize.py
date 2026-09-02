@@ -108,3 +108,33 @@ def test_apply_benchmarks_roundtrip():
     assert top["scaled_score"] == pytest.approx(
         top["total_points"] / bench.iloc[0]["benchmark"] * 100, abs=0.01
     )
+
+
+def test_missing_benchmark_raises_rather_than_scoring_nan():
+    """A thin position can be squeezed out of the buffer pool entirely.
+
+    Truncation happens per draft pool but benchmarks are per normalization group,
+    so a low-scoring position may vanish from the pool while its players still
+    need scoring. Those players must not pass through with a silent NaN.
+    """
+    df = pd.DataFrame({
+        "league": ["NFL"] * 30,
+        "role": ["QB"] * 25 + ["TE"] * 5,
+        # every TE scores below every QB, so a small pool keeps only QBs
+        "total_points": list(range(100, 75, -1)) + [5, 4, 3, 2, 1],
+    })
+    bench = compute_benchmarks(df, "Player", managers=1)
+    assert "NFL_TE" not in set(bench["norm_key"])
+    with pytest.raises(ValueError, match="NFL_TE"):
+        apply_benchmarks(df, bench, "Player")
+
+
+def test_non_strict_mode_allows_nan_for_exploration():
+    df = pd.DataFrame({
+        "league": ["NFL"] * 30,
+        "role": ["QB"] * 25 + ["TE"] * 5,
+        "total_points": list(range(100, 75, -1)) + [5, 4, 3, 2, 1],
+    })
+    bench = compute_benchmarks(df, "Player", managers=1)
+    out = apply_benchmarks(df, bench, "Player", strict=False)
+    assert out["scaled_score"].isna().sum() == 5

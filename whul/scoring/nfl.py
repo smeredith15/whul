@@ -12,7 +12,7 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
-from whul.scoring.postseason import RULES, apply_bonus, split_phases
+from whul.scoring.postseason import POSTSEASON, REGULAR, RULES, apply_bonus, split_phases
 
 SCORING_POSITIONS = ("QB", "RB", "WR", "TE")
 
@@ -83,10 +83,11 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     work = work[work["position"].isin(SCORING_POSITIONS)].copy()
     work["game_points"] = sum(work[c] * w for c, w in PLAYER_WEIGHTS.items())
     work["game_count"] = 1
-    work["is_post"] = resolve_str(stats, ["season_type"], default="REG").reindex(work.index) == "POST"
+    phase = resolve_str(stats, ["season_type"], default="REG").reindex(work.index)
+    work["phase"] = phase.map({"REG": REGULAR, "POST": POSTSEASON}).fillna(REGULAR)
 
     keys = ["season", "player_id", "player", "position"]
-    phases = split_phases(work, keys, "game_points", "game_count", work["is_post"])
+    phases = split_phases(work, keys, "game_points", "game_count", work["phase"])
     teams = (
         work.groupby(keys, as_index=False)["team"]
         .agg(lambda s: "/".join(sorted(set(x for x in s if x))))

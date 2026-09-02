@@ -72,8 +72,8 @@ def test_non_positive_scorers_are_dropped():
 def test_postseason_counts_as_a_bonus_not_raw_stats():
     """One 40-point regular game and one 200-point playoff game.
 
-    rate = (40 + 200) / 2 games = 120/game; bonus = 120 * 4.25 = 510.
-    total = regular 40 + 510. Raw playoff stats never enter the total directly.
+    Postseason rate 200/game * NFL scalar 1.7 = 340 bonus, on top of the 40
+    regular-season points. Raw playoff stats never enter the total directly.
     """
     stats = pd.DataFrame([
         weekly(week=1, passing_yards=1000),
@@ -82,9 +82,9 @@ def test_postseason_counts_as_a_bonus_not_raw_stats():
     out = score_players(stats).iloc[0]
     assert out["regular_points"] == pytest.approx(40.0)
     assert out["postseason_games"] == 1
-    assert out["per_game_rate"] == pytest.approx(120.0)
-    assert out["postseason_bonus"] == pytest.approx(510.0)
-    assert out["total_points"] == pytest.approx(550.0)
+    assert out["postseason_rate"] == pytest.approx(200.0)
+    assert out["postseason_bonus"] == pytest.approx(340.0)
+    assert out["total_points"] == pytest.approx(380.0)
 
 
 def test_regular_season_only_mode_ignores_the_postseason():

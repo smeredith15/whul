@@ -8,6 +8,8 @@ results -- the quickest way to sanity-check a league's data source and formula::
     python -m whul.cli score nba --season 2023 --assets teams
     python -m whul.cli score nfl --season 2024 --normalize --top 25
     python -m whul.cli score nfl --season 2024 --csv out.csv
+    python -m whul.cli weekly nfl --season 2024
+    python -m whul.cli weekly nfl --season 2024 --week 5 --player "Josh Allen"
 """
 
 from __future__ import annotations
@@ -59,6 +61,82 @@ DISPLAY = {
 }
 
 
+def _nfl_weekly(season: int) -> pd.DataFrame:
+    """Per-player, per-week half-PPR points -- the granularity daily scoring needs."""
+    from whul.scoring.nfl import PLAYER_WEIGHTS, SCORING_POSITIONS
+    from whul.sources import nflverse
+
+    raw = nflverse.load_player_stats([season])
+    cols = {
+        "passing_yards": "passing_yards", "passing_tds": "passing_tds",
+        "interceptions": "passing_interceptions", "rushing_yards": "rushing_yards",
+        "rushing_tds": "rushing_tds", "receptions": "receptions",
+        "receiving_yards": "receiving_yards", "receiving_tds": "receiving_tds",
+    }
+    out = pd.DataFrame({
+        "season": raw["season"], "week": raw["week"],
+        "season_type": raw.get("season_type", "REG"),
+        "player": raw["player_display_name"], "position": raw["position"],
+        "team": raw.get("recent_team", raw.get("team")),
+    })
+    pts = 0.0
+    for stat, weight in PLAYER_WEIGHTS.items():
+        if stat == "fumbles_lost":
+            col = sum(
+                pd.to_numeric(raw[c], errors="coerce").fillna(0)
+                for c in ("sack_fumbles_lost", "rushing_fumbles_lost", "receiving_fumbles_lost")
+                if c in raw.columns
+            )
+        else:
+            src = cols.get(stat, stat)
+            src = src if src in raw.columns else stat
+            col = pd.to_numeric(raw.get(src, 0), errors="coerce").fillna(0)
+        pts = pts + col * weight
+    out["points"] = pts.round(2)
+    return out[out["position"].isin(SCORING_POSITIONS)].reset_index(drop=True)
+
+
+WEEKLY = {"nfl": _nfl_weekly}
+
+
+def cmd_weekly(args: argparse.Namespace) -> int:
+    """Show week-by-week scoring, proving the feed supports incremental updates."""
+    if args.league not in WEEKLY:
+        print(f"no weekly view for {args.league} yet", file=sys.stderr)
+        return 2
+
+    print(f"Fetching {args.league} weekly data for {args.season} ...", file=sys.stderr)
+    df = WEEKLY[args.league](args.season)
+    if df.empty:
+        print("No rows returned.", file=sys.stderr)
+        return 1
+
+    if args.player:
+        sel = df[df["player"].str.contains(args.player, case=False, na=False)]
+        if sel.empty:
+            print(f"No player matching {args.player!r}", file=sys.stderr)
+            return 1
+        sel = sel.sort_values(["season_type", "week"], ascending=[False, True])
+        print(f"\nWeek-by-week for {sel.iloc[0]['player']} ({args.season}):\n")
+        print(sel[["week", "season_type", "team", "points"]].to_string(index=False))
+        print(f"\nregular-season total: {sel.loc[sel.season_type == 'REG', 'points'].sum():.2f}")
+        return 0
+
+    if args.week:
+        sel = df[df["week"] == args.week].nlargest(args.top, "points")
+        print(f"\nTop {len(sel)} scorers, {args.season} week {args.week}:\n")
+        print(sel[["player", "position", "team", "points"]].to_string(index=False))
+        return 0
+
+    per_week = df.groupby(["season_type", "week"], as_index=False).agg(
+        players=("player", "nunique"), total_points=("points", "sum")
+    )
+    print(f"\nCoverage by week for {args.season}:\n")
+    print(per_week.to_string(index=False))
+    print(f"\n{len(per_week)} distinct weeks, {df['player'].nunique()} players.")
+    return 0
+
+
 def cmd_list(_: argparse.Namespace) -> int:
     print(f"{'league':<8}{'assets':<18}{'seasons':<16}source")
     print("-" * 70)
@@ -82,7 +160,11 @@ def cmd_score(args: argparse.Namespace) -> int:
     asset_type = "Player" if args.assets == "players" else "Team"
     if args.normalize:
         benchmarks = compute_benchmarks(scored, asset_type, managers=args.managers)
-        scored = apply_benchmarks(scored, benchmarks, asset_type)
+        try:
+            scored = apply_benchmarks(scored, benchmarks, asset_type)
+        except ValueError as exc:
+            print(f"\nCannot normalize: {exc}", file=sys.stderr)
+            return 1
         print(f"\nBenchmarks (99th percentile, {args.managers} benchmark managers):", file=sys.stderr)
         print(benchmarks[["norm_key", "benchmark", "n_in_pool"]].to_string(index=False), file=sys.stderr)
 
@@ -112,6 +194,14 @@ def main(argv: list[str] | None = None) -> int:
     score.add_argument("--managers", type=int, default=15, help="benchmark manager count")
     score.add_argument("--csv", help="write all scored rows here")
     score.set_defaults(func=cmd_score)
+
+    weekly = sub.add_parser("weekly", help="week-by-week view (incremental-update check)")
+    weekly.add_argument("league", choices=sorted(LEAGUES))
+    weekly.add_argument("--season", type=int, required=True)
+    weekly.add_argument("--week", type=int, help="show top scorers for one week")
+    weekly.add_argument("--player", help="show one player's week-by-week line")
+    weekly.add_argument("--top", type=int, default=15)
+    weekly.set_defaults(func=cmd_weekly)
 
     args = parser.parse_args(argv)
     return args.func(args)

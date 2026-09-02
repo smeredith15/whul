@@ -4,23 +4,24 @@ Benchmarks (the 99th-percentile scale) are built from **regular-season data only
 postseason samples are small and reach only a minority of players, so including
 them would distort the distribution the scale is drawn from.
 
-Postseason production still counts, but not as raw counting stats -- a player who
-appears in the postseason is credited as though they played a fixed number of
-*extra games at their own rate*::
+Postseason production still counts, but as a bonus rather than as raw counting
+stats. A player's postseason *rate* is credited as though they played a number of
+extra games equal to a fixed share of the regular season -- the same share in
+every competition, so a title run is worth proportionally the same everywhere::
 
-    per_game_rate = (regular_points + postseason_points) / games actually played
-    bonus         = per_game_rate * scalar
-    total         = regular_points + bonus
+    scalar   = bonus_share * regular_games          # 10% of a season by default
+    po_rate  = postseason_points / postseason_games
+    bonus    = po_rate * scalar
+    total    = regular_points + bonus
 
-The scalar is ``regular_games / max_postseason_games`` for the competition. Note
-that the bonus is earned by *appearing* -- a player who plays one postseason game
-earns the same bonus as one who plays a full run -- but its size scales with how
-well they played across the whole season.
+So an NFL player who plays one playoff game has those points multiplied by 1.7;
+two playoff games, their combined points by 1.7/2; and so on. A player who
+performs in the postseason exactly at their regular-season rate earns a bonus
+worth 10% of their regular season, in every league.
 
-The resulting bonus, expressed as a share of a full regular season, varies by
-competition (NFL 25.0%, MLB 4.5%, NBA 3.6%, NHL 3.6%, UCL 5.9%). ``scalar`` is
-overridable per league so this can be tuned from the admin dashboard without
-touching the formula.
+Some games count as neither phase and are dropped entirely: the NBA Play-In, and
+European qualifying rounds. Only the playoffs and European competition proper
+carry the bonus.
 
 This applies to **players only**. Team scoring already prices the postseason
 explicitly and boundedly (playoff appearance, wins and series bonuses), and those
@@ -33,6 +34,13 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+#: Share of a regular season a postseason run is worth, identical across leagues.
+DEFAULT_BONUS_SHARE = 0.10
+
+REGULAR = "regular"
+POSTSEASON = "postseason"
+EXCLUDED = "excluded"
+
 
 @dataclass(frozen=True)
 class PostseasonRule:
@@ -40,33 +48,28 @@ class PostseasonRule:
 
     competition: str
     regular_games: int
-    max_postseason_games: int
+    bonus_share: float = DEFAULT_BONUS_SHARE
     scalar_override: float | None = None
 
     @property
     def scalar(self) -> float:
-        """Extra games' worth of production credited for an appearance."""
+        """Extra games' worth of postseason-rate production credited."""
         if self.scalar_override is not None:
             return self.scalar_override
-        return self.regular_games / self.max_postseason_games
-
-    @property
-    def bonus_share(self) -> float:
-        """The bonus as a fraction of a full regular season."""
-        return self.scalar / self.regular_games
+        return self.bonus_share * self.regular_games
 
 
 RULES: dict[str, PostseasonRule] = {
-    "NFL": PostseasonRule("NFL", 17, 4),
-    "MLB": PostseasonRule("MLB", 162, 22),
-    "NBA": PostseasonRule("NBA", 82, 28),
+    "NFL": PostseasonRule("NFL", 17),
+    "MLB": PostseasonRule("MLB", 162),
+    "NBA": PostseasonRule("NBA", 82),
     # The NHL regular season expands to 84 games in 2026-27.
-    "NHL": PostseasonRule("NHL", 84, 28),
-    # Club soccer has no playoffs; European competition plays the same role.
-    # Referenced to a 38-game domestic league.
-    "UCL": PostseasonRule("UCL", 38, 17),
-    "Europa League": PostseasonRule("Europa League", 38, 17),
-    "Europa Conference League": PostseasonRule("Europa Conference League", 38, 21),
+    "NHL": PostseasonRule("NHL", 84),
+    # Club soccer has no playoffs; European competition proper plays the role.
+    # Referenced to a 38-game domestic league. Qualifying rounds do not count.
+    "UCL": PostseasonRule("UCL", 38),
+    "Europa League": PostseasonRule("Europa League", 38),
+    "Europa Conference League": PostseasonRule("Europa Conference League", 38),
 }
 
 PHASE_COLUMNS = (
@@ -82,19 +85,27 @@ def split_phases(
     keys: list[str],
     points_col: str,
     games_col: str,
-    is_postseason: pd.Series,
+    phase: pd.Series,
 ) -> pd.DataFrame:
-    """Aggregate per-game rows into regular and postseason totals per asset."""
+    """Aggregate per-game rows into regular and postseason totals per asset.
+
+    ``phase`` labels each row ``REGULAR``, ``POSTSEASON`` or ``EXCLUDED``.
+    Excluded rows (NBA Play-In, European qualifying) are dropped outright -- they
+    contribute to neither phase, so they neither pad the regular season nor earn
+    a bonus.
+    """
     work = rows.copy()
-    work["_phase"] = is_postseason.to_numpy()
+    work["_phase"] = phase.to_numpy()
+    work = work[work["_phase"] != EXCLUDED]
+
     grouped = (
         work.groupby(keys + ["_phase"], as_index=False)
         .agg(points=(points_col, "sum"), games=(games_col, "sum"))
     )
-    reg = grouped[~grouped["_phase"]].drop(columns="_phase").rename(
+    reg = grouped[grouped["_phase"] == REGULAR].drop(columns="_phase").rename(
         columns={"points": "regular_points", "games": "regular_games"}
     )
-    post = grouped[grouped["_phase"]].drop(columns="_phase").rename(
+    post = grouped[grouped["_phase"] == POSTSEASON].drop(columns="_phase").rename(
         columns={"points": "postseason_points", "games": "postseason_games"}
     )
     out = reg.merge(post, on=keys, how="outer")
@@ -116,14 +127,12 @@ def apply_bonus(agg: pd.DataFrame, rule: PostseasonRule | None) -> pd.DataFrame:
         if col not in out.columns:
             raise KeyError(f"expected phase column {col!r}; have {sorted(out.columns)}")
 
-    games = out["regular_games"] + out["postseason_games"]
-    all_points = out["regular_points"] + out["postseason_points"]
-    rate = all_points.divide(games).where(games > 0, 0.0)
+    appeared = out["postseason_games"] > 0
+    po_rate = out["postseason_points"].divide(out["postseason_games"]).where(appeared, 0.0)
 
     scalar = rule.scalar if rule else 0.0
-    appeared = out["postseason_games"] > 0
-    out["per_game_rate"] = rate.round(4)
-    out["postseason_bonus"] = (rate * scalar).where(appeared, 0.0)
-    out["games_played"] = games.astype(int)
+    out["postseason_rate"] = po_rate.round(4)
+    out["postseason_bonus"] = po_rate * scalar
+    out["games_played"] = (out["regular_games"] + out["postseason_games"]).astype(int)
     out["total_points"] = out["regular_points"] + out["postseason_bonus"]
     return out

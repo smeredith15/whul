@@ -12,7 +12,7 @@ from whul.scoring.nba import score_players, score_teams
 def box(**over):
     row = {
         "season": 2026, "athlete_id": "1", "athlete_display_name": "Test Player",
-        "athlete_position_abbreviation": "PG", "points": 0.0, "rebounds": 0.0,
+        "athlete_position_abbreviation": "PG", "season_type": 2, "points": 0.0, "rebounds": 0.0,
         "assists": 0.0, "steals": 0.0, "blocks": 0.0, "turnovers": 0.0,
         "three_point_field_goals_made": 0.0, "plus_minus": "+0",
     }
@@ -74,6 +74,28 @@ def test_minimum_games_filter():
 def test_minimum_score_filter():
     """R filters final_player_score > 100."""
     assert score_players(season_of([box(points=1)], n=20)).empty
+
+
+def test_playin_games_are_dropped_from_player_scoring():
+    """Play-In is neither regular season nor playoffs, so it counts for neither."""
+    games = pd.DataFrame(
+        [box(points=30, season_type=2)] * 20 + [box(points=999, season_type=5)]
+    )
+    out = score_players(games).iloc[0]
+    assert out["regular_games"] == 20, "Play-In must not pad the regular season"
+    assert out["postseason_games"] == 0, "Play-In must not earn the bonus"
+    assert out["postseason_bonus"] == 0.0
+
+
+def test_playoff_games_earn_the_bonus_at_the_nba_scalar():
+    """Playoff rate 50/game * NBA scalar 8.2 = 410 bonus."""
+    games = pd.DataFrame(
+        [box(points=30, season_type=2)] * 20 + [box(points=50, season_type=3)] * 2
+    )
+    out = score_players(games).iloc[0]
+    assert out["postseason_games"] == 2
+    assert out["postseason_rate"] == pytest.approx(50.0)
+    assert out["postseason_bonus"] == pytest.approx(410.0)
 
 
 # --- team scoring ----------------------------------------------------------
