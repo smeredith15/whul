@@ -469,6 +469,15 @@ def discover(league: str, day: date | None = None) -> dict:
     return out
 
 
+def scoreboard_league_name(board: dict) -> str:
+    """The competition's display name, which sits at the top of the response."""
+    for entry in board.get("leagues", []) or []:
+        for key in ("name", "abbreviation", "slug"):
+            if entry.get(key):
+                return str(entry[key])
+    return ""
+
+
 def load_soccer_matches(
     league: str, seasons: list[int], include_cups: bool = True, verbose: bool = True
 ) -> pd.DataFrame:
@@ -499,15 +508,23 @@ def load_soccer_matches(
                     board = scoreboard(competition, day)
                 except Exception:
                     continue
+                name = scoreboard_league_name(board)
                 for event in board.get("events", []):
-                    rows.extend(_soccer_rows(event, competition, day))
+                    rows.extend(_soccer_rows(event, competition, day, name))
                 if verbose and index and index % 60 == 0:
                     print(f"    {index}/{len(days)} dates, {len(rows):,} rows", flush=True)
     return pd.DataFrame(rows)
 
 
-def _soccer_rows(event: dict, competition: str, day: date) -> list[dict]:
-    """One match as two team rows, carrying the competition name for tiering."""
+def _soccer_rows(
+    event: dict, competition: str, day: date, league_name: str = ""
+) -> list[dict]:
+    """One match as two team rows, carrying the competition key and round.
+
+    ``league_name`` comes from the top of the scoreboard response, not from the
+    event -- reading it per-event yields nothing, which is how the label first
+    came back as the bare key.
+    """
     inner = (event.get("competitions") or [{}])[0]
     status = (inner.get("status") or {}).get("type", {}) or {}
     if not status.get("completed"):
@@ -529,11 +546,12 @@ def _soccer_rows(event: dict, competition: str, day: date) -> list[dict]:
 
     # The round name matters: it distinguishes a qualifying tie from the
     # competition proper, and the knockout play-off from either.
-    league_name = (event.get("league") or {}).get("name", "") or competition
+    name = league_name or (event.get("league") or {}).get("name", "") or competition
     notes = " ".join(
         str(n.get("headline", "")) for n in (inner.get("notes") or []) if isinstance(n, dict)
     )
-    competition_label = f"{league_name} {notes}".strip()
+    season_type = ((event.get("season") or {}).get("slug") or "").replace("-", " ")
+    competition_label = " ".join(p for p in (name, notes, season_type) if p).strip()
 
     rows = []
     for side, other in ((home, away), (away, home)):
@@ -568,15 +586,20 @@ def probe_soccer(league: str, day: date | None = None) -> dict:
     events = board.get("events", [])
     result["scoreboard"] = "ok"
     result["events"] = len(events)
-    rows = [r for e in events for r in _soccer_rows(e, league, day)]
+    name = scoreboard_league_name(board)
+    result["league_name"] = name or "(absent -- falling back to the key)"
+    rows = [r for e in events for r in _soccer_rows(e, league, day, name)]
     result["team_rows"] = len(rows)
     if rows:
-        from whul.scoring.competition import classify
+        from whul.scoring.competition import classify_key
 
         labels = sorted({r["competition"] for r in rows})
         result["competition_labels"] = labels[:4]
         result["classified_as"] = {
-            label: classify(label).tier.value for label in labels[:4]
+            label: (lambda c: f"{c.tier.value} ({c.win_points} per win)")(
+                classify_key(league, label)
+            )
+            for label in labels[:4]
         }
         result["sample"] = rows[0]
     return result

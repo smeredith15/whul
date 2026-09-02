@@ -21,7 +21,7 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
-from whul.scoring.competition import Tier, bye_credit, classify
+from whul.scoring.competition import Tier, bye_credit, classify, classify_key
 
 # --- teams ----------------------------------------------------------------
 BIG_MARGIN = 2
@@ -114,11 +114,17 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
             "league": resolve_str(matches, ["league", "primary_league"], required=True),
             "date": resolve_str(matches, ["date", "game_date"], required=True),
             "competition": resolve_str(matches, ["competition", "comp"]).fillna(""),
+            "competition_key": resolve_str(matches, ["competition_key"]).fillna(""),
             "goals_for": resolve_num(matches, ["goals_for", "gf"]),
             "goals_against": resolve_num(matches, ["goals_against", "ga"]),
         }
     )
-    classified = work["competition"].map(classify)
+    # Prefer the feed's own key: we chose it when making the request, so unlike a
+    # display name it cannot arrive missing or worded unexpectedly.
+    classified = [
+        classify_key(key, label) if key else classify(label)
+        for key, label in zip(work["competition_key"], work["competition"])
+    ]
     work["tier"] = [c.tier.value for c in classified]
     work["counts"] = [c.counts for c in classified]
     # Qualifying rounds are dropped outright: they are neither scored nor
@@ -130,7 +136,10 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
     work["season"] = season_for(work["date"], work["league"])
     work["margin"] = work["goals_for"] - work["goals_against"]
     work["is_win"] = work["margin"] > 0
-    work["base_points"] = [c.win_points for c in work["competition"].map(classify)]
+    work["base_points"] = [
+        (classify_key(key, label) if key else classify(label)).win_points
+        for key, label in zip(work["competition_key"], work["competition"])
+    ]
 
     work["match_points"] = (
         work["is_win"] * work["base_points"]

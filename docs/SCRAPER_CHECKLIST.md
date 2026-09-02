@@ -235,11 +235,25 @@ carry only totals, so starts and substitute outings approximate the rule there �
 a starter withdrawn at 50 minutes scores 2 rather than 1. The imprecision is
 documented rather than hidden, and disappears once per-match data is in use.
 
-**Source built.** ESPN keys each competition separately, so the loader gathers a
-league's own fixtures *plus* its domestic cups and the three European
+**Source built and probed.** ESPN keys each competition separately, so the loader
+gathers a league's own fixtures *plus* its domestic cups and the three European
 competitions. That is what makes the tiers mean anything: restricted to league
 matches every win is worth three points and the Champions League premium never
 appears.
+
+**The probe caught a real scoring bug.** `competition_labels` came back as
+`['epl']` — the bare key — because ESPN returns the competition's display name at
+the top of the scoreboard response, not on each event, and the code read it
+per-event. Harmless for the Premier League, which falls through to the league
+tier correctly, but **five of the six domestic cup keys match no name pattern and
+would have scored 4-point cup wins as 3**: `facup`, `efl_cup`, `copadelrey`,
+`coppaitalia`, `coupedefrance`. The European keys survived only because their
+abbreviations happen to appear in the patterns — luck, not design.
+
+Classification now works from the **competition key**, which the app chooses when
+making the request and so cannot arrive absent or worded unexpectedly; the round
+name is used only to spot qualifying ties. The display name is also extracted
+from the right place now, so labels are informative again.
 
 - **[C-9] answered:** league phase counts as competition proper; qualifying does
   not. **Byes score as though the team won the skipped round in a sweep** — this

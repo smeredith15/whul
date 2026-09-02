@@ -34,6 +34,13 @@ def _nfl(season: int, assets: str) -> pd.DataFrame:
 
 
 #: Fantasy category -> ESPN league key, for the results-only NCAA leagues.
+#: Probeable but not scored in their own right: a club's cup and European
+#: matches are gathered into its league total rather than standing alone.
+PROBE_ONLY_COMPETITIONS = (
+    "ucl", "uel", "uecl", "facup", "efl_cup",
+    "copadelrey", "dfbpokal", "coppaitalia", "coupedefrance",
+)
+
 #: Club soccer competitions the app scores directly.
 SOCCER_LEAGUES = {
     "epl": "Premier League", "laliga": "La Liga", "seriea": "Serie A",
@@ -428,7 +435,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
         print(f"season types: {df['season_type'].value_counts().to_dict()}")
         return 0
 
-    if args.league in SOCCER_LEAGUES:
+    if args.league in SOCCER_LEAGUES or args.league in PROBE_ONLY_COMPETITIONS:
         from datetime import date as _d
 
         from whul.sources import espn
@@ -674,7 +681,13 @@ def main(argv: list[str] | None = None) -> int:
     ncaa_api.set_defaults(func=cmd_probe_ncaa_api)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
-    probe.add_argument("league", choices=sorted(LEAGUES))
+    # Cups and European competitions are probeable even though they are not
+    # scored as leagues in their own right.
+    probe.add_argument(
+        "league",
+        choices=sorted(set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS)),
+        metavar="league",
+    )
     probe.add_argument("--date", help="YYYY-MM-DD to probe (default: yesterday)")
     probe.set_defaults(func=cmd_probe)
 

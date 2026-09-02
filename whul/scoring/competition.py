@@ -82,6 +82,51 @@ class Classification:
     is_knockout_playoff: bool = False
 
 
+#: Tier by the feed's own competition key. Far more reliable than reading a
+#: display name: we choose the key when making the request, so it cannot be
+#: absent or worded unexpectedly. Names are only needed to spot qualifying
+#: rounds within a competition, and for sources that supply nothing else.
+KEY_TIERS: dict[str, Tier] = {
+    "ucl": Tier.CHAMPIONS_LEAGUE,
+    "uel": Tier.EUROPA,
+    "uecl": Tier.CONFERENCE,
+    "facup": Tier.DOMESTIC_CUP,
+    "efl_cup": Tier.DOMESTIC_CUP,
+    "copadelrey": Tier.DOMESTIC_CUP,
+    "dfbpokal": Tier.DOMESTIC_CUP,
+    "coppaitalia": Tier.DOMESTIC_CUP,
+    "coupedefrance": Tier.DOMESTIC_CUP,
+    "epl": Tier.LEAGUE,
+    "laliga": Tier.LEAGUE,
+    "seriea": Tier.LEAGUE,
+    "bundesliga": Tier.LEAGUE,
+    "ligue1": Tier.LEAGUE,
+    "mls": Tier.LEAGUE,
+    "nwsl": Tier.LEAGUE,
+}
+
+
+def classify_key(key: str | None, label: str | None = None) -> Classification:
+    """Classify by the feed's competition key, refining with the round name.
+
+    Preferred over ``classify`` wherever the key is known. A display name can be
+    missing or worded unexpectedly -- ESPN returns the league name at the top of
+    the response rather than on each event, so reading it per-event yields the
+    bare key -- and a Champions League tie mis-read as a league fixture would
+    silently score 3 points instead of 5.
+    """
+    tier = KEY_TIERS.get((key or "").strip().lower())
+    if tier is None:
+        return classify(label or key)
+
+    # The round name still decides whether this is the competition proper.
+    text = label or ""
+    knockout_playoff = bool(KNOCKOUT_PLAYOFF_PATTERN.search(text))
+    if QUALIFYING_PATTERN.search(text) and not knockout_playoff:
+        return Classification(Tier.QUALIFYING, 0, False)
+    return Classification(tier, WIN_POINTS[tier], True, knockout_playoff)
+
+
 def classify(competition: str | None) -> Classification:
     """Place a competition name into a scoring tier.
 

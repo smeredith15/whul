@@ -221,3 +221,61 @@ def test_empty_inputs_return_empty():
     assert score_players(pd.DataFrame()).empty
     assert score_teams(pd.DataFrame()).empty
     assert score_team_matches(pd.DataFrame()).empty
+
+
+# --- classifying by the feed's key ------------------------------------------
+
+def test_the_competition_key_decides_the_tier():
+    """ESPN returns the league name at the top of the response, not on each
+    event, so reading it per-event yields the bare key. Classifying by the key
+    we requested avoids depending on a name arriving at all."""
+    from whul.scoring.competition import classify_key
+
+    assert classify_key("ucl", "ucl").win_points == 5
+    assert classify_key("uel", "uel").win_points == 4
+    assert classify_key("facup", "facup").win_points == 4
+    assert classify_key("epl", "epl").win_points == 3
+
+
+def test_bare_cup_keys_would_otherwise_score_as_league_fixtures():
+    """The failure this prevents, measured.
+
+    When the display name is absent the label is the bare key. Five of the six
+    domestic cup keys then match no name pattern and fall through to the league
+    tier, scoring 4-point cup wins as 3. The European keys survive only because
+    their abbreviations happen to appear in the patterns -- luck, not design.
+    """
+    from whul.scoring.competition import classify
+
+    mis_scored = [
+        key for key in ("facup", "efl_cup", "copadelrey", "coppaitalia", "coupedefrance")
+        if classify(key).win_points != classify_key_points(key)
+    ]
+    assert mis_scored == ["facup", "efl_cup", "copadelrey", "coppaitalia", "coupedefrance"]
+    assert all(classify_key_points(k) == 4 for k in mis_scored)
+    assert all(classify(k).win_points == 3 for k in mis_scored)
+
+
+def classify_key_points(key, label=None):
+    from whul.scoring.competition import classify_key
+
+    return classify_key(key, label).win_points
+
+
+def test_the_round_still_decides_qualifying():
+    assert classify_key_points("ucl", "Champions League Qualifying") == 0
+    assert classify_key_points("ucl", "Knockout Phase Play-off") == 5
+
+
+def test_an_unknown_key_falls_back_to_the_name():
+    assert classify_key_points("mystery_cup", "UEFA Champions League") == 5
+
+
+def test_scoring_prefers_the_key_over_the_label():
+    rows = pd.DataFrame([{
+        "team": "Arsenal", "league": "Premier League", "date": "2026-10-22",
+        "competition": "ucl", "competition_key": "ucl",
+        "goals_for": 3, "goals_against": 1,
+    }])
+    # Champions League win with a two-goal margin: 5 + 1
+    assert score_team_matches(rows).iloc[0]["match_points"] == 6
