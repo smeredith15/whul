@@ -292,6 +292,20 @@ CodeOSS instance; later a dedicated permanent server with a free domain. All dat
 └──────────────────────┘
 ```
 
+### 3.1 Storage — SQLite now, Postgres later
+
+The schema in `whul/store/schema.sql` is portable SQL: no `SERIAL`, no `AUTOINCREMENT`, no JSON
+operators, dates as ISO-8601 `TEXT`, payloads as JSON in `TEXT`. SQLite runs it today — stdlib, no
+server, works in the test suite and on the dev box — and a five-manager season is on the order of
+660,000 score rows, which it handles without effort. Postgres stays the deployment target; the
+dialect-specific parts (connection, parameter style, upsert) are confined to `whul/store/db.py`.
+
+`raw_stats` holds one row per asset per day per source, with the feed's figures as a JSON payload,
+so a feed adding a stat needs no migration. It stores **cumulative** season-to-date values rather
+than daily deltas: that is what most feeds serve, differencing consecutive snapshots recovers the
+deltas exactly, and rebuilding a cumulative total from deltas would compound any day the scraper
+missed.
+
 Design commitments:
 
 - **`raw_stats` is append-only and dated.** Everything downstream is derived, so a formula fix is a
@@ -363,8 +377,8 @@ before sending the offer sheet — replacing the R script's interactive console 
 - [x] League/pool/roster config seeded from the R scripts
 - [x] Normalization engine (buffer pool → frozen benchmark → 0-100)
 - [x] Best-ball rollup with slot occupancy and trade accrual
-- [ ] Postgres schema + migrations (assets, leagues, pools, benchmarks, raw_stats, daily_scores,
-      slot_occupancy, standings_snapshots, admin_overrides)
+- [x] Schema + migrations (assets, aliases, benchmarks, raw_stats, daily_scores, slot_occupancy,
+      slot_scores, standings_snapshots, source_status, admin_overrides) — see §3.1
 - [ ] Import drafted rosters from `Master_Drafted_Assets.xlsx`
 - [ ] Asset identity layer (canonical IDs + alias table) — name matching across feeds will be a
       recurring chore and needs to be designed in, not bolted on
@@ -382,7 +396,8 @@ Each increment ships end-to-end:
 - [ ] Wired into nightly ingest
 
 ### Phase 3 — Scoring pipeline
-- [ ] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
+- [x] Store: schema, ingest, staleness detection (SQLite now, portable SQL for Postgres later)
+- [x] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
 - [ ] Window-based benchmarking for individual sports (§2.3)
 - [ ] Bisection weighting: MLB (`mult_N = 0.75`, known), then NWSL, MLS, and WNBA — each needs its
       own schedule shares, so `mult_N1` differs per league

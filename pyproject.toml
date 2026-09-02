@@ -21,7 +21,7 @@ include = ["whul*"]
 # The tournament calendar ships with the package. It is versioned data the
 # scoring depends on, not a file the user is expected to supply.
 [tool.setuptools.package-data]
-whul = ["data/*.csv"]
+whul = ["data/*.csv", "store/*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
