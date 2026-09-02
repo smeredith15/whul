@@ -448,6 +448,32 @@ Each increment ships end-to-end:
 - **Postseason weighting** — regular-season-only benchmarks plus a bonus worth a flat 10% of a
   regular season, equalized across leagues. See §2.5.
 
+### Data acquisition, as measured
+
+| League | Source | Backfill | Nightly | Status |
+|---|---|---:|---:|---|
+| NFL | nflverse `stats_player` (GitHub) | ~1s / season | ~0.6s | verified through 2025 |
+| NBA | ESPN site API (per date) | ~690s / season | ~5s | verified on 2026 |
+
+NBA 2026: 273 dates, 30,853 rows, 705 players, benchmarks 3800.7 Backcourt /
+4086.5 Frontcourt. Warm re-run 7.4s. Responses cache under `data/cache/espn`.
+
+**NCAA needs game results only, not box scores.** All five NCAA categories are
+team slots — there are no NCAA player slots at all — so those leagues need the
+scoreboard endpoint alone, one request per date, with no per-game boxscore call.
+That is roughly one request per date instead of one-plus-N-games, which removes
+the scaling problem their game volume would otherwise create. The same is true of
+Intl Soccer and Olympics.
+
+**Source reachability from the development sandbox.** Only GitHub-hosted data is
+reachable; every live sports API is blocked by egress policy — ESPN,
+`statsapi.mlb.com`, FanGraphs, and Jolpica among them. So NFL could be verified
+in place, while NBA had to be written blind and proved on the target machine.
+MLB, NHL, F1 and the soccer leagues are in the same position: build with a
+`probe` command first, confirm the payload shape from the target terminal, then
+write scoring against a known-good shape. That sequence caught a real bug in the
+NBA adapter (position read from the wrong key) before any scoring depended on it.
+
 ### Verification
 
 `docs/TESTING_NFL.md` is a step-by-step guide for verifying a league's data
