@@ -1,0 +1,13 @@
+[project]
+name = "whul"
+version = "0.1.0"
+description = "Cross-sport fantasy league scoring engine and web app"
+requires-python = ">=3.11"
+dependencies = ["pandas>=2.2", "pyarrow>=15", "requests>=2.31"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["network: test requires outbound network access"]
