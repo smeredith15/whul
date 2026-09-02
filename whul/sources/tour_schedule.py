@@ -120,6 +120,59 @@ _JS_STATE = re.compile(
 _TOURNAMENT_HREF = re.compile(r"/tournaments?/", re.I)
 
 
+#: Any quoted URL or absolute path. Matching broadly and filtering afterwards
+#: is more reliable than a pattern that tries to recognise an endpoint in one
+#: pass -- "api" can be in the host, the path, or neither.
+_URL_PATTERN = re.compile(r"""["'`(]\s*(https?://[^"'`\s)]{6,200}|/[^"'`\s)]{2,200})""")
+#: What makes a URL worth reporting.
+_ENDPOINT_HINTS = ("tourn", "api", "graphql", "calendar", "schedule", "/v1/", "/v2/")
+#: Static assets, which are never the data source.
+_ASSET_SUFFIXES = (".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".webp",
+                   ".woff", ".woff2", ".ico", ".gif", ".mp4")
+#: Attributes a JS-rendered list uses to say where its data comes from.
+_DATA_ATTRS = ("data-url", "data-endpoint", "data-src", "data-api", "data-feed",
+               "data-config", "data-tournaments", "data-year", "data-season")
+
+
+def discover_endpoints(html: str) -> dict:
+    """Where a JS-rendered page gets its data.
+
+    When the tournament rows are not in the markup at all -- the WTA page ships
+    an empty ``js-tournaments-list`` and fills it client-side -- no selector
+    will ever find them. The endpoint is the only way in, and it is usually
+    named in a script or in a data attribute on the container.
+    """
+    found: dict = {"urls": [], "data_attributes": [], "preloads": []}
+
+    urls = {m.group(1) for m in _URL_PATTERN.finditer(html)}
+    interesting = {
+        u for u in urls
+        if any(hint in u.lower() for hint in _ENDPOINT_HINTS)
+        and not u.lower().split("?")[0].endswith(_ASSET_SUFFIXES)
+    }
+    found["urls"] = sorted(interesting)[:15]
+
+    try:
+        soup = _soup(html)
+    except ImportError:
+        return found
+
+    for element in soup.find_all(attrs={"class": True}):
+        classes = " ".join(element.get("class", []))
+        if "tournament" not in classes.lower():
+            continue
+        attrs = {k: v for k, v in element.attrs.items() if k in _DATA_ATTRS}
+        if attrs:
+            found["data_attributes"].append({"class": classes[:60], **attrs})
+    found["data_attributes"] = found["data_attributes"][:10]
+
+    found["preloads"] = [
+        link.get("href") for link in soup.find_all("link", href=True)
+        if link.get("rel") and any(r in ("preload", "prefetch") for r in link.get("rel"))
+    ][:10]
+    return found
+
+
 def _soup(html: str):
     """Parse HTML, failing loudly when the parser is not installed.
 
@@ -546,10 +599,13 @@ def probe(source: str = "atp", season: int | None = None) -> dict:
                 f"{exc} -- run `pip install -e .` to pick up beautifulsoup4 "
                 f"and lxml; without them only the JSON strategy runs"
             )
+        report["stages"]["extract"]["endpoints"] = discover_endpoints(html)
         report["stages"]["extract"]["note"] = (
             f"best strategy found {best} events, fewer than the "
-            f"{MIN_PLAUSIBLE_EVENTS} a real season has -- the class names and "
-            f"script ids above say what this page actually uses"
+            f"{MIN_PLAUSIBLE_EVENTS} a real season has. If the candidate "
+            f"classes are containers with no per-row classes under them, the "
+            f"rows are not in the markup at all and the page fetches them -- "
+            f"the endpoints block says from where."
         )
         report["stages"]["extract"]["ok"] = False
         if best == 0:

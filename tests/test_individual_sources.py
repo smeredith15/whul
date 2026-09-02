@@ -772,3 +772,44 @@ def test_a_missing_snapshot_says_it_cannot_be_re_downloaded():
     error that reads like a transient fetch failure would be misleading."""
     with pytest.raises(FileNotFoundError, match="only copy"):
         snapshot.load_matches([2025], root=pathlib.Path("/nonexistent"))
+
+
+# --- endpoint discovery ----------------------------------------------------
+
+JS_RENDERED_PAGE = """
+  <div class="tournament-list js-tournaments-list"
+       data-url="/api/tournaments/calendar" data-year="2026"></div>
+  <link rel="preload" href="/dist/tournaments.js">
+  <script>
+    const FEED = "https://api.wtatennis.com/tennis/tournaments/?page=0";
+    const LOGO = "/img/tournament-logo.png";
+  </script>
+"""
+
+
+def test_the_data_endpoint_is_found_when_the_rows_are_not_in_the_markup():
+    """The WTA page ships an empty js-tournaments-list and fills it
+    client-side, so no selector will ever find the rows. The endpoint is the
+    only way in."""
+    found = schedule.discover_endpoints(JS_RENDERED_PAGE)
+    assert "/api/tournaments/calendar" in found["urls"]
+    assert "https://api.wtatennis.com/tennis/tournaments/?page=0" in found["urls"]
+
+
+def test_static_assets_are_not_reported_as_endpoints():
+    """A page is full of URLs. An image with 'tournament' in its name matches
+    every keyword an endpoint would."""
+    found = schedule.discover_endpoints(JS_RENDERED_PAGE)
+    assert not any(u.endswith((".js", ".png")) for u in found["urls"])
+
+
+def test_data_attributes_on_the_container_are_reported():
+    found = schedule.discover_endpoints(JS_RENDERED_PAGE)
+    attrs = found["data_attributes"][0]
+    assert attrs["data-url"] == "/api/tournaments/calendar"
+    assert attrs["data-year"] == "2026"
+
+
+def test_a_page_with_nothing_to_find_reports_empty_rather_than_raising():
+    found = schedule.discover_endpoints("<html><body>nothing here</body></html>")
+    assert found == {"urls": [], "data_attributes": [], "preloads": []}

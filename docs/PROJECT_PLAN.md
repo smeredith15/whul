@@ -468,8 +468,8 @@ Each increment ships end-to-end:
 | NASCAR | ESPN racing scoreboard (season list) | 1 request / season | 1 request | **verified** on 2025: 41/41 events, 23-car field, all placed |
 | F1 | Jolpica (Ergast successor) | ~5 requests / season | 1 request | **verified** on 2025: 479 results, 5 sprints |
 | Tennis (live) | Flashscore feed + tournament pages | n/a | ~1 request pair / tournament | **verified**: 56 matches, rounds and scoring correct |
-| Tennis (history) | Phase7B snapshot, local file | one read | n/a | **verified**: 2025 top 5 correct, 4,559 matches scoreable |
-| Tennis calendar | atptour.com / wtatennis.com / tennistonic.com | one page per tour | once a season | **unverified**; 2026 seeded |
+| Tennis (history) | Phase7B snapshot, local file | one read | n/a | **verified**: 172,400 matches 2014-2026, all 3,116 players named |
+| Tennis calendar | atptour.com / wtatennis.com / tennistonic.com | one page per tour | once a season | **blocked**: ATP and tennistonic 403; WTA renders client-side. 2026 seeded, needed for 2027 |
 
 The individual sports are fetched per event rather than per date: a golf tournament runs Thursday to
 Sunday and a race meeting spans a weekend, so walking the calendar would re-read the same event four
