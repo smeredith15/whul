@@ -399,11 +399,12 @@ Each increment ships end-to-end:
 - [x] Store: schema, ingest, staleness detection (SQLite now, portable SQL for Postgres later)
 - [x] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
 - [x] Window-based benchmarking for individual sports (§2.3)
-- [ ] Bisection weighting: MLB (`mult_N = 0.75`, known), then NWSL, MLS, and WNBA — each needs its
-      own schedule shares, so `mult_N1` differs per league
+- [ ] Bisection weighting: MLB (`mult_N = 0.75`, known) is in `scoring/mlb.py`; NWSL, MLS and WNBA
+      still need their own schedule shares, so `mult_N1` differs per league — **blocked on your
+      numbers**, and WNBA/NWSL are deferred to 2027 anyway
 - [x] Proration engine (§2.4) — admin-entered expected games, counting stats only
-- [ ] Owner-stint accrual + best-ball rollup
-- [ ] Nightly standings snapshot + retroactive backfill to season start
+- [x] Owner-stint accrual + best-ball rollup — wired to the store, trades reciprocal
+- [x] Nightly standings snapshot + retroactive backfill to season start
 
 ### Phase 4 — Web app
 - [ ] Standings table
