@@ -183,14 +183,63 @@ Do **not** prorate playoff milestones, division titles, championships, or any on
 
 The app computes the multiplier from an admin-entered expected-games count; the admin verifies it.
 
-### 2.5 Assets whose events cross a season boundary
+### 2.5 Postseason handling — proposed, pending a decision
+
+**Settled:** benchmarks (p99) are computed from **regular-season data only**. Postseason samples are
+small and reach only a minority of players, so including them distorts the distribution the scale is
+drawn from.
+
+**Proposed:** postseason production still counts, but each playoff game is weighted more heavily than
+a regular-season game, by a per-league multiplier.
+
+The originally proposed multiplier, `(max_playoff_games / regular_season_games) × 10`, produces very
+uneven results — the maximum bonus a player can earn, expressed as a share of a full regular season:
+
+| League | Reg games | Max playoff | Multiplier | Max bonus |
+|---|---:|---:|---:|---:|
+| NFL | 17 | 4 | 2.35× | **55%** |
+| NBA | 82 | 28 | 3.41× | **117%** |
+| NHL | 82 | 28 | 3.41× | **117%** |
+| MLB | 162 | 22 | 1.36× | **18%** |
+
+A deep NBA or NHL run more than doubles a player's season, while an MLB run adds under a fifth — a
+6.5× spread between leagues, which reintroduces exactly the cross-league skew the regular-season-only
+benchmark was meant to remove. (Note the NHL regular season is 82 games, not 84.)
+
+**Alternative: fix the maximum bonus as a share of a season, identical for every league**, and derive
+each multiplier from it:
+
+```
+multiplier = (max_bonus_share × regular_season_games) / max_playoff_games
+```
+
+At a 25% share: NFL 1.06×, NBA/NHL 0.73×, MLB 1.84× — every league capped at a quarter-season bonus
+for a title run. One knob (`max_bonus_share`), tunable from the admin dashboard.
+
+**Two open sub-questions:**
+
+- **[OPEN-D]** Which multiplier scheme — the ratio-based one, or the equalized one above?
+- **[OPEN-E]** Does the multiplier scale *total* playoff points (so a longer run earns more, which is
+  what the table above assumes), or a *per-game rate* (so the bonus is fixed in size regardless of
+  how far a team goes)?
+
+**Two places this does not apply:**
+
+- **Teams.** Team scoring already handles the postseason explicitly and boundedly — NFL awards
+  playoff appearance 10 and playoff wins 15; NBA awards appearance 10, wins 3, series 5. Those terms
+  sit in both the benchmark and live scoring consistently, and there are only ~30 teams per league,
+  so there is no small-sample distortion to correct. Recommend leaving team benchmarks as they are.
+- **Club soccer.** There are no playoffs, and `Club_Soccer.R` already prices European competition
+  directly in its win values (Champions League 5, Europa/Cup 4, league 3). No multiplier needed.
+
+### 2.6 Assets whose events cross a season boundary
 
 Events ending shortly after a draft — Women's World Cup, a Summer Olympics — count **entirely for the
 previous league year**. Women's international soccer teams drafted in 2026 accrue all their World Cup
 points to 2026–27 even if the tournament runs past the 2027 draft. Scoring windows therefore attach
 to the *asset's event*, not strictly to the season end date.
 
-### 2.6 Soccer transfers across pool boundaries
+### 2.7 Soccer transfers across pool boundaries
 
 When a drafted player transfers between a Top-3 league (EPL / Serie A / La Liga) and an Other league
 (Bundesliga / Ligue 1 / MLS):
@@ -322,7 +371,7 @@ before sending the offer sheet — replacing the R script's interactive console 
       recurring chore and needs to be designed in, not bolted on
 
 ### Phase 2 — Per-league increments *(one league at a time, per your preference)*
-For each league, in order: **NFL ✅ → NBA → MLB → NHL → Club Soccer → NCAA (F/M/W/Baseball/Softball) →
+For each league, in order: **NFL ✅ → NBA ✅ → MLB → NHL → Club Soccer → NCAA (F/M/W/Baseball/Softball) →
 Intl Soccer → PGA → Tennis → Motorsports → (Olympics, WNBA deferred)**
 
 Each increment ships end-to-end:
@@ -375,9 +424,15 @@ Each increment ships end-to-end:
 | `whul/normalize.py` | Buffer pool → frozen p99 benchmark → 0-100 scale |
 | `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
 | `whul/scoring/nfl.py` | Half-PPR players + team scoring |
+| `whul/scoring/nba.py` | Box-score players + team scoring |
 | `whul/sources/nflverse.py` | nflverse release assets (free, no R dependency) |
+| `whul/sources/hoopr.py` | hoopR-data (historical only — see below) |
+| `whul/cli.py` | Per-league terminal harness |
 
 ### Resolved
+
+- **NWSL** — a placeholder only; managers may not draft NWSL assets, so no bisection weighting is
+  needed for it.
 
 - **Benchmark pool rates** — my earlier question was about `Target_N`, the size of the *historical
   pool* the 99th percentile is drawn from, which is a separate knob from roster caps and starter
@@ -387,25 +442,25 @@ Each increment ships end-to-end:
   6/manager against a cap of 5. Preserved as-is; revisit only if the scale looks off in practice.
 - **MLB post-draft weight** — `mult_N = 0.75`, per the R script.
 - **Window benchmarking** for individual sports — approved, subject to data availability per league.
-- **Cross-pool soccer transfers** — see §2.6.
+- **Cross-pool soccer transfers** — see §2.7.
 - **Trades** — slot-based, reciprocal, explicit pairing. See §1.5.
 - **Data sources** — each verified independently as its league is built.
 
 ### Open
 
-- **[OPEN-A] NWSL this season.** NWSL was grouped with WNBA as "not relevant for this league year,"
-  but NWSL sits in the **Club Soccer Other** pool, so its players and teams are rosterable in
-  2026-27 and its season is bisected by the 8/21 start. It needs a defined treatment now, unlike
-  WNBA which is genuinely sitting out. Should NWSL use bisection weights this year?
 - **[OPEN-B] Validating the ports against R.** R is not installed in this environment, so I cannot
   diff Python output against R output directly. Current tests assert against values computed by hand
   from the R formulas plus real-season sanity checks, which catches formula errors but not subtle
   data-frame semantics. The stronger check is for you to run each R script once and commit its
   `Master_Data` CSV as a golden file. Worth doing for at least MLB and Club Soccer, where the R
   logic is most intricate.
-- **[OPEN-C] NFL postseason.** `nflreadr::load_player_stats` returned regular season only, but the
-  nflverse release carries both REG and POST rows. The port defaults to REG. Should playoff
-  production count toward a player's live score?
+- **[OPEN-C] Postseason weighting** — resolved in principle (regular-season-only benchmarks), with
+  the multiplier scheme still to pick. See §2.5, **[OPEN-D]** and **[OPEN-E]**.
+- **[OPEN-F] Live sources for the sportsdataverse leagues.** `hoopR-data` was archived on
+  2026-08-07 and its NBA files stop at season 2023, so it can seed benchmarks but cannot drive daily
+  scoring. The same very likely applies to `wehoop` (WNBA, NCAAW) and the other sibling feeds. The
+  natural replacement is the ESPN API, which is what these packages wrap — but it is blocked by this
+  environment's egress policy, so the adapter has to be verified from your machine.
 
 ## 8. Reference: the existing R scripts
 
