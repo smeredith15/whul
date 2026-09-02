@@ -398,10 +398,10 @@ Each increment ships end-to-end:
 ### Phase 3 — Scoring pipeline
 - [x] Store: schema, ingest, staleness detection (SQLite now, portable SQL for Postgres later)
 - [x] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
-- [ ] Window-based benchmarking for individual sports (§2.3)
+- [x] Window-based benchmarking for individual sports (§2.3)
 - [ ] Bisection weighting: MLB (`mult_N = 0.75`, known), then NWSL, MLS, and WNBA — each needs its
       own schedule shares, so `mult_N1` differs per league
-- [ ] Proration engine (§2.4)
+- [x] Proration engine (§2.4) — admin-entered expected games, counting stats only
 - [ ] Owner-stint accrual + best-ball rollup
 - [ ] Nightly standings snapshot + retroactive backfill to season start
 
