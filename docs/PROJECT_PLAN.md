@@ -447,7 +447,7 @@ Each increment ships end-to-end:
 - **Data sources** — each verified independently as its league is built.
 - **Postseason weighting** — regular-season-only benchmarks plus a bonus worth a flat 10% of a
   regular season, equalized across leagues. See §2.5.
-- **Tennis 500 vs 250 — resolved.** `data/tennis/calendar.csv` carries all 121 ATP and WTA 2026
+- **Tennis 500 vs 250 — resolved.** `whul/data/tennis_calendar.csv` carries all 121 ATP and WTA 2026
   events with their category and draw size, taken from the season schedule in
   `smeredith15/tennis2026`: 33 correctly designated 500s. For seasons after 2026,
   `whul/sources/tour_schedule.py` scrapes the designation from the tours themselves.
@@ -496,7 +496,7 @@ tournament's name:
 - **Draw size** — a 96-draw Masters and a 56-draw Masters pay differently in the early rounds,
   because the same round is one win deeper into the larger field.
 
-Both live in `data/tennis/calendar.csv`, versioned in the repo, and
+Both live in `whul/data/tennis_calendar.csv`, versioned in the repo, and
 `tennis_calendar.unresolved` names any tournament a feed references that the calendar does not
 know — so a renamed or new event surfaces as a gap rather than as quietly wrong points.
 

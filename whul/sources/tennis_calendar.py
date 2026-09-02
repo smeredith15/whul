@@ -33,7 +33,10 @@ from whul.scoring.tennis import (
 #: rate per win -- so a missing draw size costs nothing for these.
 DRAW_SIZE_OPTIONAL = (GRAND_SLAM, TOUR_FINALS, INTERNATIONAL)
 
-CALENDAR_PATH = Path("data/tennis/calendar.csv")
+#: Resolved against this file, not the working directory. A relative path only
+#: worked when the process happened to start in the repository root, which the
+#: nightly job and an installed copy do not.
+CALENDAR_PATH = Path(__file__).resolve().parent.parent / "data" / "tennis_calendar.csv"
 COLUMNS = ("season", "tour", "tournament", "category", "draw_size")
 
 #: Feeds spell the same event differently -- "Roland Garros" and "French Open",

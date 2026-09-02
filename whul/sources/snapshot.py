@@ -31,6 +31,10 @@ from whul.scoring.tennis import F, QF, R16, R32, R64, R128, RR, SF
 DEFAULT_ROOT = Path("../tennis2026/backend/data/betting")
 SNAPSHOT_NAME = "model_data_snapshot.rds"
 MAPPING_NAME = "player_mapping_table.csv"
+#: A small supplement in the same schema, one directory up. It adds spelling
+#: variants for ids the main table already carries, so it is read second and
+#: never displaces a name the main table gave.
+EXTRA_MAPPING = Path("../../aliases.csv")
 
 #: Main-draw rounds. Qualifying (Q1-Q3) is excluded here rather than later, so
 #: a missing qualifying result can never read as a main-draw bye.
@@ -40,6 +44,12 @@ MAIN_DRAW_ROUNDS = (R128, R64, R32, R16, QF, SF, F, RR)
 def default_paths(root: Path | None = None) -> tuple[Path, Path]:
     base = root or DEFAULT_ROOT
     return base / SNAPSHOT_NAME, base / MAPPING_NAME
+
+
+def mapping_paths(root: Path | None = None) -> list[Path]:
+    """Every player key file, main table first."""
+    base = root or DEFAULT_ROOT
+    return [base / MAPPING_NAME, (base / EXTRA_MAPPING).resolve()]
 
 
 def read_snapshot(path: Path) -> pd.DataFrame:
@@ -61,7 +71,7 @@ def read_snapshot(path: Path) -> pd.DataFrame:
     return next(iter(result.values()))
 
 
-def player_names(path: Path) -> dict[str, str]:
+def player_names(path: Path | list[Path]) -> dict[str, str]:
     """``{lowercased canonical_player_id: display name}``.
 
     The mapping keys are cased (``atp-J-Sinner``) and the snapshot's own ids
@@ -71,10 +81,15 @@ def player_names(path: Path) -> dict[str, str]:
     Several aliases map to one id, so the first is kept: they differ in
     spelling, not in person.
     """
-    mapping = pd.read_csv(path)
     names: dict[str, str] = {}
-    for player_id, alias in zip(mapping["canonical_player_id"], mapping["player_name_alias"]):
-        names.setdefault(str(player_id).lower(), str(alias))
+    for source in ([path] if isinstance(path, Path) else list(path)):
+        if not source.exists():
+            continue
+        mapping = pd.read_csv(source)
+        for player_id, alias in zip(
+            mapping["canonical_player_id"], mapping["player_name_alias"]
+        ):
+            names.setdefault(str(player_id).lower(), str(alias))
     return names
 
 
@@ -153,7 +168,7 @@ def load_matches(
             f"alongside this one, or pass root= to point at it."
         )
 
-    names = player_names(mapping_path) if mapping_path.exists() else {}
+    names = player_names(mapping_paths(root))
     matches = to_matches(read_snapshot(snapshot_path), names)
     if seasons:
         matches = matches[matches["season"].isin(seasons)]
@@ -216,7 +231,7 @@ def probe(season: int | None = None, root: Path | None = None) -> dict:
         "columns": sorted(raw.columns)[:15],
     }
 
-    names = player_names(mapping_path) if mapping_path.exists() else {}
+    names = player_names(mapping_paths(root))
     matches = to_matches(raw, names)
     for_season = matches[matches["season"] == season]
     report["stages"]["parse"] = {

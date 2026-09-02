@@ -83,3 +83,40 @@ def test_season_window():
     assert SEASON.end.isoformat() == "2027-07-13"
     assert SEASON.benchmark_cutoff < SEASON.start, "benchmarks must not see live results"
     assert BENCHMARK_MANAGER_COUNT == 15
+
+
+# --- packaging -------------------------------------------------------------
+
+def test_the_calendar_is_found_regardless_of_working_directory():
+    """It used to be a path relative to the repository root, which only
+    resolved when the process happened to start there -- not from an installed
+    copy, and not from the nightly job."""
+    from whul.sources.tennis_calendar import CALENDAR_PATH, load
+
+    assert CALENDAR_PATH.is_absolute()
+    assert CALENDAR_PATH.exists(), f"{CALENDAR_PATH} is missing from the package"
+    assert len(load()) > 100
+
+
+def test_package_discovery_is_pinned():
+    """A stray top-level directory made setuptools refuse to build at all --
+    'Multiple top-level packages discovered in a flat-layout'. Discovery is
+    pinned to whul* so adding one cannot break the install again."""
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    config = tomllib.loads((root / "pyproject.toml").read_text())
+    assert config["tool"]["setuptools"]["packages"]["find"]["include"] == ["whul*"]
+    assert "data/*.csv" in config["tool"]["setuptools"]["package-data"]["whul"]
+
+
+def test_no_data_directory_sits_beside_the_package():
+    """The thing that broke the build. Package data belongs under whul/."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    assert not (root / "data").is_dir(), (
+        "a top-level data/ directory breaks `pip install -e .`; "
+        "put package data under whul/data/ instead"
+    )
