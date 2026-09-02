@@ -177,3 +177,61 @@ def test_default_probe_date_lands_in_season():
     assert espn.default_probe_date(date(2026, 9, 2)) == date(2026, 1, 15)
     assert espn.default_probe_date(date(2026, 1, 3)) == date(2025, 1, 15)
     assert espn.default_probe_date(date(2026, 1, 15)) == date(2026, 1, 15)
+
+
+# --- caching and rate limiting ---------------------------------------------
+
+def test_cache_hit_skips_both_the_request_and_the_pause(monkeypatch, tmp_path):
+    """A warm replay must be near-free.
+
+    Pausing on cache hits made re-running a backfill cost almost as much as the
+    original fetch: a warm NBA season still took 689s of pure sleeping.
+    """
+    calls = {"requests": 0, "sleeps": 0}
+
+    class FakeResponse:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"ok": True}
+
+    def fake_get(*args, **kwargs):
+        calls["requests"] += 1
+        return FakeResponse()
+
+    monkeypatch.setattr(espn.requests, "get", fake_get)
+    monkeypatch.setattr(espn.time, "sleep", lambda _: calls.__setitem__("sleeps", calls["sleeps"] + 1))
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+
+    first = espn._get("http://x", {}, cache_key="nba/thing")
+    assert first == {"ok": True}
+    assert calls == {"requests": 1, "sleeps": 1}, "a real fetch pauses"
+
+    second = espn._get("http://x", {}, cache_key="nba/thing")
+    assert second == {"ok": True}
+    assert calls == {"requests": 1, "sleeps": 1}, "a cache hit does neither"
+
+
+def test_uncached_requests_still_pause(monkeypatch, tmp_path):
+    """The daily-cost probe deliberately bypasses the cache; it must still be polite."""
+    sleeps = []
+
+    class FakeResponse:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {}
+
+    monkeypatch.setattr(espn.requests, "get", lambda *a, **k: FakeResponse())
+    monkeypatch.setattr(espn.time, "sleep", sleeps.append)
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+
+    espn._get("http://x", {})
+    espn._get("http://x", {})
+    assert len(sleeps) == 2

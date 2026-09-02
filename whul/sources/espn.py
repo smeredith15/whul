@@ -50,6 +50,12 @@ NBA_SEASON_END = (6, 30)
 
 
 def _get(url: str, params: dict, cache_key: str | None = None) -> dict:
+    """Fetch, caching by key. Rate limiting applies only to real requests.
+
+    The pause lives here rather than in the callers so a cached replay costs
+    nothing: paying it on cache hits made re-running a backfill take almost as
+    long as the original fetch, which defeats the point of caching.
+    """
     if cache_key:
         cached = CACHE / f"{cache_key}.json"
         if cached.exists():
@@ -63,6 +69,8 @@ def _get(url: str, params: dict, cache_key: str | None = None) -> dict:
         cached = CACHE / f"{cache_key}.json"
         cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_text(json.dumps(payload))
+
+    time.sleep(REQUEST_PAUSE)
     return payload
 
 
@@ -225,7 +233,6 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
                         positions,
                     )
                 rows.extend(parsed)
-                time.sleep(REQUEST_PAUSE)
             if verbose and index % 50 == 0 and index:
                 # flush: stdout is block-buffered when redirected to a file, so
                 # without this a long backfill shows no progress until it ends.
@@ -233,7 +240,6 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
                     f"    {index}/{len(days)} dates, {len(rows):,} rows",
                     flush=True,
                 )
-            time.sleep(REQUEST_PAUSE)
     return pd.DataFrame(rows)
 
 
@@ -288,7 +294,6 @@ def load_positions(league: str = "nba") -> dict[str, str]:
                 pos = (person.get("position") or {}).get("abbreviation", "")
                 if pid and pos:
                     positions[pid] = pos
-        time.sleep(REQUEST_PAUSE)
     return positions
 
 
@@ -308,7 +313,6 @@ def daily_update_cost(league: str = "nba", day: date | None = None) -> float:
         if not competition.get("status", {}).get("type", {}).get("completed"):
             continue
         _get(f"{BASE}/{sport}/{path}/summary", {"event": event["id"]})
-        time.sleep(REQUEST_PAUSE)
     return time.monotonic() - started
 
 
