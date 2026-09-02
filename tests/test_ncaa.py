@@ -27,12 +27,12 @@ def pad(rows, n, **kw):
 # --- football --------------------------------------------------------------
 
 def test_football_scoring_matches_hand_calculation():
-    """2 wins, 1 big win (>=9), 2 conference wins, +34 diff, sole ACC champion.
+    """2 wins, 1 big win, 2 conference wins, +34 diff, sole ACC champion.
 
     2*10 + 1*2 + 2*2 + 6 (undivided title) + 34*0.05 = 33.7
     """
     sched = pd.DataFrame(pad([
-        game("A", "B", 30, 0),      # win by 30: big win, conference game
+        game("A", "B", 30, 0),      # win by 30 in conference: big
         game("B", "A", 10, 14),     # win by 4
     ], 6))
     out = score_football(sched).set_index("team")
@@ -44,8 +44,23 @@ def test_football_scoring_matches_hand_calculation():
     assert out.loc["A", "total_points"] == pytest.approx(33.7)
 
 
-def test_football_big_win_threshold_is_nine():
-    sched = pd.DataFrame(pad([game("A", "B", 9, 0), game("A", "B", 8, 0)], 6))
+def test_football_big_win_bar_is_lower_against_a_stronger_field():
+    """13 in conference, 20 out of conference: a blowout is harder to achieve
+    against a conference opponent, so it takes fewer points to count."""
+    sched = pd.DataFrame(pad([
+        game("A", "B", 13, 0),                 # conference, +13: big
+        game("A", "B", 12, 0),                 # conference, +12: not big
+        game("A", "X", 20, 0, ac="SEC"),       # non-conference, +20: big
+        game("A", "Y", 19, 0, ac="Big Ten"),   # non-conference, +19: not big
+    ], 6))
+    assert score_football(sched).set_index("team").loc["A", "big_wins"] == 2
+
+
+def test_football_playoff_games_use_the_conference_bar():
+    """The postseason field is strong, so the lower bar applies there too."""
+    sched = pd.DataFrame(pad([
+        game("A", "X", 13, 0, ac="SEC", season_type=3, notes="CFP Quarterfinal"),
+    ], 6))
     assert score_football(sched).set_index("team").loc["A", "big_wins"] == 1
 
 

@@ -113,25 +113,40 @@ def season_dates(season: int, league: str = "nba") -> list[date]:
     return [start + timedelta(days=n) for n in range((end - start).days + 1)]
 
 
-def scoreboard(league: str, day: date) -> dict:
-    """One date's games.
+def scoreboard_variants(league: str, day: date) -> list[dict]:
+    """Request shapes to try, most informative first.
 
-    Some leagues reject the ``groups`` filter outright (college softball answers
-    400), so a rejection falls back to an unfiltered request rather than losing
-    the whole league.
+    Leagues do not accept the same parameters: college softball answers 400 to
+    both ``groups`` and ``limit``, so a single fixed shape loses that league
+    entirely. Falling back progressively costs nothing when the first shape
+    works, since only the successful response is cached.
     """
+    dates = day.strftime("%Y%m%d")
+    variants: list[dict] = []
+    if league in DIVISION_I_GROUPS:
+        variants.append({"dates": dates, "limit": 900, "groups": DIVISION_I_GROUPS[league]})
+        variants.append({"dates": dates, "groups": DIVISION_I_GROUPS[league]})
+    variants.append({"dates": dates, "limit": 900})
+    variants.append({"dates": dates})
+    return variants
+
+
+def scoreboard(league: str, day: date) -> dict:
+    """One date's games, trying each request shape until one is accepted."""
     sport, path = LEAGUE_PATHS[league]
     url = f"{BASE}/{sport}/{path}/scoreboard"
-    base_params: dict = {"dates": day.strftime("%Y%m%d"), "limit": 900}
     cache_key = f"{league}/scoreboard/{day.isoformat()}"
 
-    if league in DIVISION_I_GROUPS:
+    last: Exception | None = None
+    for params in scoreboard_variants(league, day):
         try:
-            return _get(url, {**base_params, "groups": DIVISION_I_GROUPS[league]}, cache_key)
+            return _get(url, params, cache_key)
         except requests.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 400:
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in (400, 404):
                 raise
-    return _get(url, base_params, cache_key)
+            last = exc
+    raise last if last else RuntimeError(f"no scoreboard variant succeeded for {league}")
 
 
 def load_eligible_teams(league: str) -> set[str]:
@@ -269,14 +284,43 @@ def daily_results_cost(league: str, day: date | None = None) -> float:
 
 
 def probe_results(league: str, day: date | None = None) -> dict:
-    """Reachability and shape check for a results-only league."""
+    """Reachability and shape check for a results-only league.
+
+    Reports which request shape the endpoint accepted, so a league that rejects
+    the usual parameters is diagnosable rather than simply broken.
+    """
     day = day or default_probe_date()
+    sport, path = LEAGUE_PATHS[league]
     result: dict[str, object] = {"league": league, "date": day.isoformat()}
-    try:
-        board = scoreboard(league, day)
-    except Exception as exc:
-        result["scoreboard"] = f"FAILED: {type(exc).__name__}: {exc}"
+
+    # Probe the team list first: it establishes whether the sport/league path is
+    # valid at all, independently of whether that date had games.
+    eligible = load_eligible_teams(league)
+    result["eligible_teams"] = len(eligible)
+    if not eligible:
+        result["teams_endpoint"] = "EMPTY -- the sport/league path may be wrong"
+
+    attempts: list[str] = []
+    board = None
+    for params in scoreboard_variants(league, day):
+        shape = ",".join(k for k in params if k != "dates") or "dates only"
+        try:
+            board = _get(
+                f"{BASE}/{sport}/{path}/scoreboard",
+                params,
+                cache_key=f"{league}/scoreboard/{day.isoformat()}",
+            )
+            result["accepted_params"] = shape
+            break
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            attempts.append(f"{shape} -> {status}")
+
+    if board is None:
+        result["scoreboard"] = f"FAILED: every request shape rejected ({'; '.join(attempts)})"
         return result
+    if attempts:
+        result["rejected_params"] = "; ".join(attempts)
 
     events = board.get("events", [])
     result["scoreboard"] = "ok"
@@ -288,8 +332,6 @@ def probe_results(league: str, day: date | None = None) -> dict:
         result["conference_coverage"] = f"{with_conf}/{len(rows)}"
         result["sample"] = rows[0]
 
-    eligible = load_eligible_teams(league)
-    result["eligible_teams"] = len(eligible)
     if rows and eligible:
         seen = {r["home_team"] for r in rows} | {r["away_team"] for r in rows}
         outside = sorted(seen - eligible)

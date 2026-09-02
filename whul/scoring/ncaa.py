@@ -34,7 +34,10 @@ import pandas as pd
 from whul.scoring.base import resolve_num, resolve_str
 
 # --- football -------------------------------------------------------------
-FB_BIG_WIN_MARGIN = 9
+#: A blowout is harder to achieve against a conference opponent or in the
+#: postseason, where the field is stronger, so the bar is lower there.
+FB_BIG_WIN_CONF = 13
+FB_BIG_WIN_NONCONF = 20
 FB_WEIGHTS = {
     "wins": 10.0, "big_wins": 2.0, "conf_wins": 2.0,
     "conf_title_win": 6.0, "playoff_app": 10.0, "playoff_wins": 15.0,
@@ -174,8 +177,12 @@ def score_football(
         # No conference data means conference wins and the title split cannot be
         # scored at all, so there is nothing meaningful to return.
         return pd.DataFrame()
-    games["is_big_win"] = games["is_win"] & (games["margin"] >= FB_BIG_WIN_MARGIN)
     games["is_playoff"] = games["is_post"] & _matches(games["notes"], FB_PLAYOFF_PATTERN)
+    tougher_field = games["is_conf_game"] | games["is_post"]
+    games["is_big_win"] = games["is_win"] & (
+        (tougher_field & (games["margin"] >= FB_BIG_WIN_CONF))
+        | (~tougher_field & (games["margin"] >= FB_BIG_WIN_NONCONF))
+    )
     games["is_conf_title"] = games["is_post"] & _matches(games["notes"], FB_TITLE_PATTERN)
 
     summary = games.groupby(["season", "team", "conference"], as_index=False).apply(

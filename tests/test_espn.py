@@ -235,3 +235,72 @@ def test_uncached_requests_still_pause(monkeypatch, tmp_path):
     espn._get("http://x", {})
     espn._get("http://x", {})
     assert len(sleeps) == 2
+
+
+# --- request-shape fallback -------------------------------------------------
+
+def test_scoreboard_variants_try_the_filtered_shape_first():
+    """A league with a division filter should prefer it, then degrade."""
+    shapes = [
+        ",".join(k for k in p if k != "dates") or "dates only"
+        for p in espn.scoreboard_variants("ncaam", date(2026, 1, 15))
+    ]
+    assert shapes == ["limit,groups", "groups", "limit", "dates only"]
+
+
+def test_leagues_without_a_division_filter_have_fewer_variants():
+    shapes = espn.scoreboard_variants("nba", date(2026, 1, 15))
+    assert all("groups" not in p for p in shapes)
+
+
+def test_scoreboard_falls_back_when_a_shape_is_rejected(monkeypatch, tmp_path):
+    """College softball answers 400 to both groups and limit, which a single
+    fixed request shape would turn into a total loss of that league."""
+    import requests
+
+    seen = []
+
+    class Response:
+        def __init__(self, status):
+            self.status_code = status
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise requests.HTTPError(response=self)
+
+        @staticmethod
+        def json():
+            return {"events": [{"id": "1"}]}
+
+    def fake_get(url, params=None, **kwargs):
+        seen.append(sorted(k for k in (params or {}) if k != "dates"))
+        # Reject anything carrying groups or limit, as softball does.
+        bad = {"groups", "limit"} & set(params or {})
+        return Response(400 if bad else 200)
+
+    monkeypatch.setattr(espn.requests, "get", fake_get)
+    monkeypatch.setattr(espn.time, "sleep", lambda _: None)
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+
+    board = espn.scoreboard("ncaasoftball", date(2026, 5, 1))
+    assert board["events"][0]["id"] == "1"
+    assert seen[-1] == [], "the bare request is what finally succeeds"
+    assert len(seen) == 4
+
+
+def test_scoreboard_reraises_a_non_parameter_error(monkeypatch, tmp_path):
+    """A 500 is a real outage, not a bad request shape -- do not mask it."""
+    import requests
+
+    class Response:
+        status_code = 500
+
+        def raise_for_status(self):
+            raise requests.HTTPError(response=self)
+
+    monkeypatch.setattr(espn.requests, "get", lambda *a, **k: Response())
+    monkeypatch.setattr(espn.time, "sleep", lambda _: None)
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+
+    with pytest.raises(requests.HTTPError):
+        espn.scoreboard("ncaam", date(2026, 1, 15))

@@ -83,9 +83,18 @@ Not started. Skaters only — goalies are excluded from normalization, matching
   group, and a manager checking the arithmetic has one fewer normalization step
   to follow. Same mechanism will serve NFL when it expands.
 
-## 5. NCAA (all five) — BUILT, unverified
+## 5. NCAA (all five) — BUILT; four of five confirmed reachable
 
-Scoring ported for all five and covered by 20 tests. Results only — no player slots exist, so no box scores. That is one
+Scoring ported for all five and covered by 23 tests. Probes confirm NCAAM
+(49 games, 49/49 conference coverage) and NCAAW (82 games, 82/82); NCAAF and NCAA
+Baseball answer correctly but were out of season on the probe date. Division
+filtering works — the men's probe found 3 opponents outside the 362 listed teams
+(Lindenwood, Queens, Southern Indiana), exactly the reclassifying schools the old
+games floor was meant to exclude.
+
+**NCAA Softball rejects every parameter** (`groups` *and* `limit`), so the
+scoreboard now tries request shapes progressively and reports which one the
+endpoint accepted. Results only — no player slots exist, so no box scores. That is one
 scoreboard request per date, and the ESPN adapter already proven for NBA covers it.
 
 - **[C-6] answered: keep the R scoring as written**, including the shared-title
@@ -99,9 +108,9 @@ scoreboard request per date, and the ESPN adapter already proven for NBA covers 
   the non-conference schedule. Filtering by actual division membership (from
   ESPN's teams endpoint) is exact, and no longer discards a genuinely short
   season.
-- **Big-win threshold:** `NCAAF_Players_Teams.R` line 50 reads `is_big_win =
-  margin >= 9`, which is what the port uses. Flagging rather than changing it —
-  tell me the intended value if 9 is wrong.
+- **Big-win threshold corrected.** The R script's `margin >= 9` was recycled from
+  NFL. NCAAF now uses **13 against a conference opponent or in the postseason,
+  20 out of conference** — a lower bar where the field is stronger.
 
 ## 6. Motorsports, golf, tennis
 
