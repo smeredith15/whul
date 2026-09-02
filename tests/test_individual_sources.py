@@ -488,7 +488,7 @@ def test_merging_into_an_empty_calendar_takes_everything():
 def test_the_shipped_calendar_is_valid():
     """The file the live season is scored against, checked on every run."""
     shipped = calendar.load()
-    assert not shipped.empty, "data/tennis/calendar.csv is missing"
+    assert not shipped.empty, "whul/data/tennis_calendar.csv is missing"
     assert calendar.validate(shipped) == []
 
 

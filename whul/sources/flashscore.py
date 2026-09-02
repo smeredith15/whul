@@ -519,7 +519,7 @@ def probe(days: range | None = None) -> dict:
         "unresolved_tournaments": gaps["tournament"].tolist()[:10],
         "note": "" if gaps.empty else (
             "these events are scored on the feed's category guess -- add them "
-            "to data/tennis/calendar.csv"
+            "to whul/data/tennis_calendar.csv"
         ),
     }
     totals = score_players(resolved)
