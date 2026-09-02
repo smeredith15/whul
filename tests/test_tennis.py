@@ -22,13 +22,14 @@ from whul.scoring.tennis import (
     R128,
     RR,
     SF,
-    STRAIGHT_SETS_MULTIPLIER,
     TIER_ROUNDS,
     TOUR_250,
     TOUR_500,
     TOUR_FINALS,
+    best_of_for,
     bye_bonus,
     effective_bracket,
+    is_complete_set,
     is_straight_sets,
     is_walkover,
     normalize_round,
@@ -36,6 +37,7 @@ from whul.scoring.tennis import (
     previous_round,
     round_points,
     score_matches,
+    straight_sets_multiplier,
     score_players,
 )
 
@@ -238,9 +240,73 @@ def test_set_scores_parse_through_tiebreak_notation():
     assert parse_sets(None) == []
 
 
-def test_a_straight_sets_win_is_worth_half_again_as_much():
+def test_a_straight_sets_win_at_a_slam_is_worth_half_again_as_much():
+    """An ATP slam is best-of-five, so straight sets skipped two."""
     matches = pd.DataFrame([match(round_name=R128, score="6-3 7-6(4) 6-4")])
-    assert score_matches(matches).iloc[0]["match_points"] == 50 * STRAIGHT_SETS_MULTIPLIER
+    assert score_matches(matches).iloc[0]["match_points"] == 50 * 1.5
+
+
+def test_a_straight_sets_win_at_best_of_three_is_worth_a_quarter_more():
+    """One set skipped rather than two, so it pays less."""
+    matches = pd.DataFrame([match(
+        round_name=R32, tournament="Basel", category=TOUR_500, draw_size=32,
+        score="6-3 6-4",
+    )])
+    assert score_matches(matches).iloc[0]["match_points"] == 50 * 1.25
+
+
+def test_the_format_comes_from_the_tier_when_the_feed_omits_it():
+    """Only an ATP main-draw slam match plays five; the WTA plays three
+    everywhere, including at slams."""
+    assert best_of_for(GRAND_SLAM, "ATP") == 5
+    assert best_of_for(GRAND_SLAM, "WTA Tour") == 3
+    assert best_of_for(TOUR_500, "ATP") == 3
+    assert best_of_for(TOUR_FINALS, "ATP") == 3
+
+
+def test_a_feed_that_states_the_format_is_believed():
+    """The historical snapshot carries best_of per match."""
+    rows = pd.DataFrame([match(round_name=R128, score="6-3 6-4") | {"best_of": 3}])
+    assert score_matches(rows).iloc[0]["match_points"] == 50 * 1.25
+
+
+def test_an_unknown_format_falls_back_to_best_of_three():
+    """The commoner format, and the smaller bonus -- guessing high would pay
+    for sets that were never scheduled."""
+    assert straight_sets_multiplier(None) == 1.25
+    assert straight_sets_multiplier(float("nan")) == 1.25
+
+
+def test_a_retirement_during_the_first_set_earns_no_bonus():
+    """Nothing was really won: the loser stopped before a set was completed."""
+    assert is_straight_sets("3-1 RET") is False
+    assert is_straight_sets("2-0 RET") is False
+
+
+def test_a_retirement_after_a_completed_set_still_earns_it():
+    """'6-3 RET' finished a set before the loser stopped; '6-3 3-1 RET'
+    finished one and led the next."""
+    assert is_straight_sets("6-3 RET") is True
+    assert is_straight_sets("6-3 3-1 RET") is True
+
+
+def test_a_retirement_after_dropping_a_set_earns_nothing():
+    assert is_straight_sets("2-6 1-0 RET") is False
+
+
+def test_a_completed_set_is_told_from_one_in_progress():
+    """This is what separates a first-set retirement from a later one."""
+    assert is_complete_set((6, 3)) is True
+    assert is_complete_set((7, 5)) is True
+    assert is_complete_set((7, 6)) is True
+    assert is_complete_set((3, 1)) is False
+    assert is_complete_set((5, 4)) is False
+
+
+def test_the_bonus_is_recorded_on_the_match(): 
+    """So a score can be explained without recomputing it."""
+    matches = pd.DataFrame([match(round_name=R128, score="6-3 6-4 6-2")])
+    assert score_matches(matches).iloc[0]["straight_sets_bonus"] == 1.5
 
 
 def test_dropping_a_set_pays_the_base_rate():

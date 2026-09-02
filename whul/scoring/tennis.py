@@ -1,8 +1,9 @@
 """Tennis scoring.
 
 Only wins score. A win is worth the ATP ranking points for the round it was won
-in -- the same table for both tours -- and a win in straight sets is worth half
-again as much, which is the WHUL rule from ``Tennis_Players.R``.
+in -- the same table for both tours -- with a bonus for winning in straight sets
+that depends on the format: 1.5x at best-of-five, where straight sets skipped
+two, and 1.25x at best-of-three, where it skipped one.
 
 Everything else here follows the engine in ``smeredith15/tennis2026``, whose
 approach to the two hard parts is the correct one:
@@ -113,14 +114,25 @@ TIER_ROUNDS: dict[str, tuple[str, ...]] = {
     "FINALS": (RR, SF, F),
 }
 
-STRAIGHT_SETS_MULTIPLIER = 1.5
+#: A straight-sets win is worth more the more sets it skipped. Winning
+#: best-of-five in three avoids two sets; winning best-of-three in two avoids
+#: one, so it pays less.
+STRAIGHT_SETS_MULTIPLIER = {3: 1.25, 5: 1.5}
+DEFAULT_BEST_OF = 3
+
+#: Only ATP main-draw matches at a slam are best-of-five. The WTA plays
+#: best-of-three everywhere, and no other tier plays five on either tour.
+BEST_OF_FIVE_TOURS = ("ATP",)
+BEST_OF_FIVE_CATEGORIES = (GRAND_SLAM,)
 
 #: Bracket size when the draw size is unknown. 64 is the middle of the three and
 #: the most common tour draw, so it is the least wrong default.
 DEFAULT_BRACKET = 64
 
 _SET_PATTERN = re.compile(r"^(\d+)-(\d+)(?:\(\d+\))?$")
-_RETIREMENT_TOKENS = ("ret", "w/o", "wo", "def", "walkover")
+#: A retirement marker, matched on word boundaries so a player whose name
+#: contains the letters is not mistaken for one.
+_RETIREMENT_PATTERN = re.compile(r"\bret\b|\bretired\b", re.IGNORECASE)
 
 
 def effective_bracket(draw_size: float | None) -> int:
@@ -230,13 +242,41 @@ def is_walkover(score: str | None) -> bool:
     return "w/o" in text or "walkover" in text or text.strip() in ("wo", "def")
 
 
+def is_retirement(score: str | None) -> bool:
+    """Whether the loser stopped rather than lost."""
+    return bool(_RETIREMENT_PATTERN.search(str(score or "")))
+
+
+def is_complete_set(games: tuple[int, int]) -> bool:
+    """Whether a set was actually finished.
+
+    Six games with two clear, or seven in a tiebreak. '3-1' is a set in
+    progress, and telling the two apart is what decides whether a retirement
+    happened during the first set or after it.
+    """
+    high, low = max(games), min(games)
+    return high >= 6 and (high - low >= 2 or high == 7)
+
+
+def best_of_for(category: str | None, tour: str | None) -> int:
+    """How many sets the match was scheduled over.
+
+    Only ATP main-draw matches at a slam go to five; the WTA plays three
+    everywhere and no other tier plays five on either tour.
+    """
+    is_slam = str(category or "").strip() in BEST_OF_FIVE_CATEGORIES
+    is_mens = str(tour or "").upper().startswith(BEST_OF_FIVE_TOURS)
+    return 5 if (is_slam and is_mens) else DEFAULT_BEST_OF
+
+
 def is_straight_sets(score: str | None, winner_first: bool = True) -> bool:
-    """Whether the winner dropped no set.
+    """Whether the winner dropped no set, and played enough of a match to say.
 
     A walkover never counts -- there is nothing to be straight about. A
-    retirement counts only if no set had been dropped when it happened, which
-    is what the score string already records: '6-3 3-1 RET' qualifies, and
-    '6-3 4-6 1-0 RET' does not.
+    retirement counts only if no set had been dropped *and* at least one set
+    was completed: '6-3 3-1 RET' qualifies and '6-3 4-6 1-0 RET' does not, but
+    neither does '3-1 RET', where the loser stopped during the opening set and
+    nothing was really won.
     """
     if is_walkover(score):
         return False
@@ -245,7 +285,16 @@ def is_straight_sets(score: str | None, winner_first: bool = True) -> bool:
         return False
     if not winner_first:
         sets = [(b, a) for a, b in sets]
-    return not any(b > a for a, b in sets)
+    if any(b > a for a, b in sets):
+        return False
+    return not (is_retirement(score) and not any(is_complete_set(s) for s in sets))
+
+
+def straight_sets_multiplier(best_of: float | None) -> float:
+    """What a straight-sets win at this format is worth."""
+    if best_of is None or pd.isna(best_of):
+        best_of = DEFAULT_BEST_OF
+    return STRAIGHT_SETS_MULTIPLIER.get(int(best_of), STRAIGHT_SETS_MULTIPLIER[DEFAULT_BEST_OF])
 
 
 def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
@@ -270,8 +319,13 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
             "winner": resolve_str(matches, ["winner", "winner_name"], required=True),
             "loser": resolve_str(matches, ["loser", "loser_name"], default=""),
             "score": resolve_str(matches, ["score"], default=""),
+            "best_of": resolve_num(matches, ["best_of"], default=float("nan")),
         }
     )
+    # The feeds that state best_of are believed; the rest are derived from the
+    # tier, since only an ATP slam plays five.
+    derived = [best_of_for(c, t) for c, t in zip(work["category"], work["tour"])]
+    work["best_of"] = work["best_of"].fillna(pd.Series(derived, index=work.index))
 
     work["tier"] = [
         scoring_tier(c, d) for c, d in zip(work["category"], work["draw_size"])
@@ -305,9 +359,11 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     ]
     work["win_points"] = work["base_points"] + work["bye_points"]
     work["is_straight_sets"] = work["score"].map(is_straight_sets)
-    work["match_points"] = work["win_points"] * work["is_straight_sets"].map(
-        {True: STRAIGHT_SETS_MULTIPLIER, False: 1.0}
-    )
+    work["straight_sets_bonus"] = [
+        straight_sets_multiplier(b) if straight else 1.0
+        for straight, b in zip(work["is_straight_sets"], work["best_of"])
+    ]
+    work["match_points"] = work["win_points"] * work["straight_sets_bonus"]
     return work.reset_index(drop=True)
 
 

@@ -152,11 +152,28 @@ mult_N1      = (1 − share_post × mult_N) / share_pre
 
 MLB (computed, confirmed): `share_post = 0.42`, `share_pre = 0.58`, **`mult_N = 0.75`** → `mult_N1 ≈ 1.181`.
 
-**Still to compute: WNBA and NWSL.** The `mult_N1` inflation differs per league because each captures a
-different proportion of its season on either side of the draft, so each needs its own schedule shares.
+**All three computed.** The `mult_N1` inflation differs per league because each captures a different
+proportion of its season on either side of the draft:
+
+| League | Season split at the draft | `mult_N` | `mult_N1` | Basis |
+|---|---|---:|---:|---|
+| MLB | 58% pre / 42% post | 0.75 | 1.1810 | ~58% of 162 games before the All-Star break |
+| WNBA | 47% pre / 53% post | 0.80 | 1.2255 | 66 season days before Jul 13, 73 after |
+| NWSL | 13.2% pre / 86.8% post | 0.95 | 1.3294 | 17 season days before Jul 13, 112 after |
+
+`mult_N1 = (1 - share_post × mult_N) / share_pre`, which is what makes both weighted stretches
+reconcile to one full season — without it, discounting the known half would quietly shrink a
+bisected league's whole contribution against the leagues that are not bisected. The lighter the
+draft-time knowledge, the lighter the discount: MLB drafts with 42% of the season left and takes
+0.75, NWSL drafts with 87% left and takes 0.95.
+
+The WNBA day counts (66/73) are 47.5%/52.5%, which would give 1.2212; the stated 47/53 is used so
+the multiplier matches the figure the rule was set with. The 0.35% difference is well inside the
+uncertainty in `mult_N` itself.
 
 **MLS** is a special case: moving to a fall–spring calendar, with a shortened 2027 transition
-("sprint") season. It needs *both* bisection weighting for 2026 *and* short-season proration for 2027.
+("sprint") season. It needs **only** short-season proration — the league drafts for 2027, which is
+not bisected, so no `mult_N` applies.
 
 ### 2.3 The first-season window problem — proposed solution
 
@@ -399,9 +416,8 @@ Each increment ships end-to-end:
 - [x] Store: schema, ingest, staleness detection (SQLite now, portable SQL for Postgres later)
 - [x] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
 - [x] Window-based benchmarking for individual sports (§2.3)
-- [ ] Bisection weighting: MLB (`mult_N = 0.75`, known) is in `scoring/mlb.py`; NWSL, MLS and WNBA
-      still need their own schedule shares, so `mult_N1` differs per league — **blocked on your
-      numbers**, and WNBA/NWSL are deferred to 2027 anyway
+- [x] Bisection weighting — MLB 0.75/1.181, WNBA 0.80/1.2255, NWSL 0.95/1.3294; MLS deliberately
+      unbisected (drafting for 2027). See `whul/scoring/bisection.py`
 - [x] Proration engine (§2.4) — admin-entered expected games, counting stats only
 - [x] Owner-stint accrual + best-ball rollup — wired to the store, trades reciprocal
 - [x] Nightly standings snapshot + retroactive backfill to season start
@@ -516,6 +532,12 @@ Both live in `whul/data/tennis_calendar.csv`, versioned in the repo, and
 `tennis_calendar.unresolved` names any tournament a feed references that the calendar does not
 know — so a renamed or new event surfaces as a gap rather than as quietly wrong points.
 
+The **straight-sets bonus** depends on the format: 1.5× at best-of-five, where straight sets skipped
+two, and 1.25× at best-of-three, where it skipped one. Only ATP main-draw slam matches are
+best-of-five; the WTA plays best-of-three everywhere. A retirement earns the bonus only if a set was
+actually completed first — `6-3 RET` and `6-3 3-1 RET` qualify, `3-1 RET` does not, because the
+loser stopped during the opening set and nothing was really won.
+
 A **bye** is the absence of a result in the preceding round, per ATP rules: a player with no R128
 row in a 96-draw was not in that round, so its points come with their R64 win. This covers
 structural byes, where the seeds skip the opening round without a bye ever being recorded.
@@ -600,7 +622,7 @@ Each pulls ~2020–2025 data, applies a bespoke formula, and appends the latest 
 | `Intl_Soccer.R` | Teams | GitHub CSVs (`martj42`) | |
 | `Olympics.R` | Teams | **local CSVs** | Gold 5 / Silver 3 / Bronze 1 |
 | `PGA.R` | Players | `golfastr` | Top-30 finish table, 1.5× majors + Players |
-| `Tennis_Players.R` | Players | **local CSVs** | ATP round-points map, 1.5× straight sets, bye bonus |
+| `Tennis_Players.R` | Players | **local CSVs** | ATP round-points map, straight-sets bonus, bye bonus |
 | `F1.R` | Players | Jolpica/Ergast | Championship points |
 | `NASCAR.R` | Players | **local CSV** | Retro 2026 scale: 1st = 55, 2nd = 35 descending |
 

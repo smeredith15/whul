@@ -26,16 +26,16 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
+from whul.scoring.bisection import MLB as _MLB_RULE
 
 # --- contract engine ------------------------------------------------------
-#: Share of a ~162-game season falling after the All-Star break in year N.
-SHARE_POST_ASB = 0.42
-#: ...and before it in year N+1.
-SHARE_PRE_ASB = 0.58
-#: Year N is discounted 25% for being largely already known at draft time.
-MULT_YEAR_N = 0.75
-#: Year N+1 is inflated so the two weighted shares reconcile to a full season.
-MULT_YEAR_N1 = (1 - (SHARE_POST_ASB * MULT_YEAR_N)) / SHARE_PRE_ASB  # ~1.181
+# The weights live in whul.scoring.bisection with the other bisected leagues,
+# so the shares and the reconciling inflation are defined once rather than
+# per league. Re-exported here because the scoring below reads them by name.
+SHARE_POST_ASB = _MLB_RULE.share_post   #: after the All-Star break in year N
+SHARE_PRE_ASB = _MLB_RULE.share_pre     #: before it in year N+1
+MULT_YEAR_N = _MLB_RULE.mult_n          #: year N, discounted as partly known
+MULT_YEAR_N1 = _MLB_RULE.mult_n1        #: year N+1, inflated to reconcile (~1.181)
 
 SECONDARY_ROLE_WEIGHT = 0.5
 
