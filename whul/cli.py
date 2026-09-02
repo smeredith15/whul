@@ -145,24 +145,24 @@ def _motorsports(season: int, assets: str) -> pd.DataFrame:
 def _tennis(season: int, assets: str) -> pd.DataFrame:
     """Sackmann for a completed season, the live feed for the current one.
 
-    The archives are the record and carry the category and draw size a score
-    depends on; the Flashscore window only reaches back a fortnight, so it can
-    only answer for the season in progress.
+    The snapshot is the record -- and the only surviving copy of it, since the
+    Sackmann repository was removed. The Flashscore window only reaches back a
+    fortnight, so it can answer for the season in progress and nothing else.
     """
     from datetime import date
 
     from whul.scoring import tennis
-    from whul.sources import flashscore, sackmann, tennis_calendar
+    from whul.sources import flashscore, snapshot
 
     if season < date.today().year:
-        matches = sackmann.load_matches([season])
-        return tennis.score_players(tennis_calendar.resolve(matches))
+        # The snapshot resolves categories through the calendar itself.
+        return tennis.score_players(snapshot.load_matches([season]))
     return tennis.score_players(flashscore.load_matches())
 
 
 #: Sports read one event at a time rather than one date at a time. Their probes
 #: return a nested report keyed by stage, so they render differently.
-INDIVIDUAL_LEAGUES = ("pga", "nascar", "f1", "tennis", "sackmann", "schedule")
+INDIVIDUAL_LEAGUES = ("pga", "nascar", "f1", "tennis", "snapshot", "schedule")
 
 
 LEAGUES = {
@@ -218,7 +218,7 @@ LEAGUES = {
         "fn": _tennis,
         "assets": ("players",),
         "seasons": "1990-present",
-        "source": "Sackmann archives for history + Flashscore feed live (UNVERIFIED)",
+        "source": "Phase7B snapshot for history + Flashscore feed live",
     },
     "nba": {
         "fn": _nba,
@@ -522,12 +522,12 @@ def cmd_probe(args: argparse.Namespace) -> int:
             f"Flashscore probe -- days {report['days']}", report
         )
 
-    if args.league == "sackmann":
-        from whul.sources import sackmann
+    if args.league == "snapshot":
+        from whul.sources import snapshot
 
-        report = sackmann.probe(int(args.season) if args.season else None)
+        report = snapshot.probe(int(args.season) if args.season else None)
         return _print_stages(
-            f"Sackmann archive probe -- season {report['season']}", report
+            f"Historical snapshot probe -- season {report['season']}", report
         )
 
     if args.league == "schedule":

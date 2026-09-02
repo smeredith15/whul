@@ -6,12 +6,15 @@ host cities misreads renamed and relocated events; a count of matches played
 cannot tell a 96-draw from a 56-draw. So both facts live in an explicit table,
 checked in and versioned, and every other module reads them from here.
 
-The table is seeded from Sackmann's archives, which carry ``tourney_level`` and
-``draw_size`` per event. One thing they do not carry is the 500/250 split --
-both are ``tourney_level = A`` -- so those events are seeded as 250 and the
-ones that are 500s are corrected in the file. ``unresolved`` reports any
-tournament a match set references that the calendar does not know, so a new or
-renamed event surfaces as a named gap rather than as quietly wrong points.
+The 2026 table was taken from the season schedule in ``smeredith15/tennis2026``
+and is versioned here; ``whul.sources.tour_schedule`` refreshes it for later
+seasons. ``unresolved`` reports any tournament a match set references that the
+calendar does not know, so a new or renamed event surfaces as a named gap
+rather than as quietly wrong points.
+
+The calendar also decides what is a tour event at all. The historical snapshot
+labels ITF W15 draws as ``MainTour``, so nothing but this table can be trusted
+to keep a $15,000 field out of the benchmark pool.
 """
 
 from __future__ import annotations
@@ -100,18 +103,6 @@ def save(calendar: pd.DataFrame, path: Path | None = None) -> Path:
     out = calendar[list(COLUMNS)].sort_values(["season", "tour", "tournament"])
     out.to_csv(target, index=False)
     return target
-
-
-def from_sackmann(events: pd.DataFrame) -> pd.DataFrame:
-    """Seed a calendar from ``sackmann.tournaments`` output.
-
-    Everything Sackmann can state is carried through. The 500s arrive marked
-    250, because its ``A`` level covers both -- correct those rows by hand, or
-    from an ATP/WTA schedule scrape, before the calendar is authoritative.
-    """
-    if events is None or events.empty:
-        return pd.DataFrame(columns=list(COLUMNS))
-    return events[["season", "tour", "tournament", "category", "draw_size"]].copy()
 
 
 def resolve(

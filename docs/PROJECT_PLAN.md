@@ -447,13 +447,15 @@ Each increment ships end-to-end:
 - **Data sources** — each verified independently as its league is built.
 - **Postseason weighting** — regular-season-only benchmarks plus a bonus worth a flat 10% of a
   regular season, equalized across leagues. See §2.5.
-- **Tennis 500 vs 250 — needs your input.** Everything else about a tennis tier now comes from
-  data (see §2.9), but Sackmann's archives mark 500s and 250s alike as `tourney_level = A`, and
-  Flashscore's header does not distinguish them either. The calendar seeds every `A` event as a
-  250, so the ~15 events per tour that are really 500s are underpaid by half until their rows are
-  corrected. `tennis_calendar.validate` refuses to call a calendar finished while it contains no
-  500s. Either hand me the 500 list, or point me at the ATP/WTA schedule pages and I will scrape
-  the designation.
+- **Tennis 500 vs 250 — resolved.** `data/tennis/calendar.csv` carries all 121 ATP and WTA 2026
+  events with their category and draw size, taken from the season schedule in
+  `smeredith15/tennis2026`: 33 correctly designated 500s. For seasons after 2026,
+  `whul/sources/tour_schedule.py` scrapes the designation from the tours themselves.
+- **The tennis history is a single file with no upstream — back it up.** `JeffSackmann/tennis_atp`
+  has been removed from GitHub, so `model_data_snapshot.rds` in `smeredith15/tennis2026` is the
+  only surviving copy of 215,386 matches back to 2014. It cannot be re-downloaded. It is not
+  vendored into this repo (7.9 MB of someone else's dataset), so `whul/sources/snapshot.py` reads
+  it from a sibling checkout by default and `root=` points elsewhere.
 
 ### Data acquisition, as measured
 
@@ -465,18 +467,25 @@ Each increment ships end-to-end:
 | PGA | ESPN golf scoreboard (season list) | 1 request / season | 1 request | **verified** on 2025: 49/49 events, 59-player field, all placed |
 | NASCAR | ESPN racing scoreboard (season list) | 1 request / season | 1 request | **verified** on 2025: 41/41 events, 23-car field, all placed |
 | F1 | Jolpica (Ergast successor) | ~5 requests / season | 1 request | **verified** on 2025: 479 results, 5 sprints |
-| Tennis | Sackmann archives (history) + Flashscore feed (live) | not yet measured | not yet measured | **unverified** |
+| Tennis (live) | Flashscore feed + tournament pages | n/a | ~1 request pair / tournament | **verified**: 56 matches, rounds and scoring correct |
+| Tennis (history) | Phase7B snapshot, local file | one read | n/a | **verified**: 2025 top 5 correct, 4,559 matches scoreable |
 | Tennis calendar | atptour.com / wtatennis.com / tennistonic.com | one page per tour | once a season | **unverified**; 2026 seeded |
 
 The individual sports are fetched per event rather than per date: a golf tournament runs Thursday to
 Sunday and a race meeting spans a weekend, so walking the calendar would re-read the same event four
 times. That also makes the nightly job cheap — it re-reads only what is in progress or newly final.
 
-Tennis reads from two sources because no single one covers both jobs. Jeff Sackmann's
-`tennis_atp` / `tennis_wta` archives are the historical record and carry `tourney_level` and
-`draw_size` per event, which is what benchmarks need. The Flashscore feed
-(`global.flashscore.ninja`, ported from `smeredith15/tennis2026`) serves a rolling ±7-day window,
-so it can only answer for the season in progress — run it nightly and it accumulates.
+Tennis reads from two sources because no single one covers both jobs. History comes from
+`model_data_snapshot.rds` — 215,386 matches back to 2014, with round, score, surface and best-of.
+It began as a Sackmann export; the upstream repository has since been removed, so this file is the
+only copy and has no replacement. The Flashscore feed (`global.flashscore.ninja`, ported from
+`smeredith15/tennis2026`) serves a rolling ±7-day window, so it answers for the season in progress
+and nothing else — run it nightly and it accumulates.
+
+The daily feed carries no per-match round; a match inherits its tournament header, and a slam's
+header ends with the country. The round comes from the per-tournament page instead, as `ER÷` next
+to each match id — one request pair per tournament, only for tournaments that need it. A match
+still without a round is dropped rather than scored: there is no bracket position to pay for.
 
 ### §2.9 How a tennis win is priced
 
@@ -487,7 +496,7 @@ tournament's name:
 - **Draw size** — a 96-draw Masters and a 56-draw Masters pay differently in the early rounds,
   because the same round is one win deeper into the larger field.
 
-Both live in `data/tennis/calendar.csv`, seeded from Sackmann and versioned in the repo, and
+Both live in `data/tennis/calendar.csv`, versioned in the repo, and
 `tennis_calendar.unresolved` names any tournament a feed references that the calendar does not
 know — so a renamed or new event surfaces as a gap rather than as quietly wrong points.
 

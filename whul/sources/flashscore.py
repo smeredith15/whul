@@ -12,7 +12,7 @@ header. Position matters, so the parser tracks the current header as it walks.
 
 Because the window is only a fortnight wide, this is a source for the season in
 progress, not for history: run it nightly and it accumulates. Benchmarks come
-from ``whul.sources.sackmann`` instead.
+from ``whul.sources.snapshot`` instead.
 
 UNVERIFIED here: written where Flashscore is blocked by egress policy. Run
 ``python -m whul.cli probe tennis`` from a machine with access.

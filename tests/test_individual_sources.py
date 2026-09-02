@@ -6,13 +6,14 @@ broken before (a value nested one level deeper than the code looked).
 """
 
 import json
+import pathlib
 
 import pandas as pd
 import pytest
 import requests
 
 from whul.sources import espn_individual as espn_ind
-from whul.sources import flashscore, jolpica, sackmann
+from whul.sources import flashscore, jolpica, snapshot
 from whul.sources import tennis_calendar as calendar
 from whul.sources import tour_schedule as schedule
 
@@ -263,67 +264,6 @@ def test_draw_sizes_can_be_recovered_from_the_field():
     assert sizes.loc["Rome", "draw_size"] == 5
 
 
-# --- Sackmann archives -----------------------------------------------------
-
-def sackmann_rows():
-    return pd.DataFrame([
-        {"tourney_name": "Roland Garros", "tourney_id": "2025-520", "tourney_level": "G",
-         "draw_size": 128, "tourney_date": 20250525, "round": "F",
-         "winner_name": "Champion", "loser_name": "Finalist", "score": "6-3 6-4 6-4",
-         "best_of": 5},
-        {"tourney_name": "Rome", "tourney_id": "2025-416", "tourney_level": "M",
-         "draw_size": 96, "tourney_date": 20250507, "round": "R64",
-         "winner_name": "Seed", "loser_name": "Qualifier", "score": "6-4 6-4",
-         "best_of": 3},
-        {"tourney_name": "Phoenix", "tourney_id": "2025-C01", "tourney_level": "C",
-         "draw_size": 32, "tourney_date": 20250310, "round": "F",
-         "winner_name": "Journeyman", "loser_name": "Other", "score": "6-4 6-4",
-         "best_of": 3},
-    ])
-
-
-def test_the_level_column_gives_the_category():
-    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
-    by_event = parsed.set_index("tournament")["category"]
-    assert by_event["Roland Garros"] == "Grand Slam"
-    assert by_event["Rome"] == "Masters 1000"
-
-
-def test_challengers_are_excluded():
-    """Below-tour draws are not comparable and would let a player pad a season
-    on the second tier."""
-    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
-    assert "Phoenix" not in set(parsed["tournament"])
-
-
-def test_the_five_hundreds_arrive_marked_as_two_fifties():
-    """Sackmann's 'A' level covers both, so the calendar has to correct them --
-    this pins the behaviour so the gap is not mistaken for a bug."""
-    rows = sackmann_rows().assign(tourney_level="A", tourney_name="Basel")
-    parsed = sackmann._to_matches(rows, "ATP", 2025)
-    assert set(parsed["category"]) == {"250"}
-
-
-def test_rounds_and_scores_need_no_translation():
-    """Sackmann already uses the round labels and score format scoring wants."""
-    from whul.scoring.tennis import score_matches
-
-    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
-    scored = score_matches(parsed)
-    assert scored.set_index("tournament").loc["Roland Garros", "base_points"] == 700
-
-
-def test_tournaments_takes_the_largest_reported_draw():
-    """The column is per match and constant in practice; a stray row must not
-    shrink an event onto a smaller points table."""
-    rows = sackmann_rows().head(2)
-    rows.loc[1, "draw_size"] = 96
-    parsed = sackmann._to_matches(rows, "ATP", 2025)
-    parsed.loc[1, "draw_size"] = 56
-    parsed = pd.concat([parsed, parsed.iloc[[1]].assign(draw_size=96)], ignore_index=True)
-    events = sackmann.tournaments(parsed).set_index("tournament")
-    assert events.loc["Rome", "draw_size"] == 96
-
 
 # --- the tournament calendar -----------------------------------------------
 
@@ -404,12 +344,6 @@ def test_validation_flags_a_category_scoring_does_not_know():
                          "category": "ATP 500", "draw_size": 32}])
     assert any("unknown categories" in p for p in calendar.validate(bad))
 
-
-def test_a_seed_round_trips_from_sackmann_tournaments():
-    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
-    seeded = calendar.from_sackmann(sackmann.tournaments(parsed))
-    assert set(seeded.columns) == set(calendar.COLUMNS)
-    assert seeded.set_index("tournament").loc["Rome", "draw_size"] == 96
 
 
 # --- tour schedule scraping ------------------------------------------------
@@ -728,15 +662,6 @@ def test_a_page_that_answers_non_200_is_skipped():
     assert flashscore.fetch_round_map("/x/", Session()) == {}
 
 
-# --- Sackmann URL forms ----------------------------------------------------
-
-def test_both_branches_and_both_url_forms_are_tried():
-    """The bare form 404'd where GitHub's own links use refs/heads."""
-    urls = sackmann.urls_for("ATP", 2025)
-    assert any("/master/atp_matches_2025.csv" in u for u in urls)
-    assert any("/refs/heads/master/" in u for u in urls)
-    assert any("/main/" in u for u in urls)
-
 
 # --- failing loudly on a missing parser ------------------------------------
 
@@ -755,3 +680,95 @@ def test_a_missing_html_parser_is_an_error_not_an_empty_result(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_bs4)
     with pytest.raises(ImportError):
         schedule.extract_from_dom("<html></html>", "WTA", 2026)
+
+
+# --- the historical snapshot -----------------------------------------------
+
+def snapshot_rows():
+    return pd.DataFrame({
+        "date": pd.to_datetime(["2025-01-20", "2025-01-21", "2025-06-02", "2025-03-01"]),
+        "tour": ["ATP", "ATP", "WTA", "WTA"],
+        "tourney_name": ["Australian Open", "Australian Open", "Roland Garros", "W15 Monastir"],
+        "tourney_level": ["Grand Slam", "Grand Slam", "Grand Slam", "MainTour"],
+        "round": ["R128", "Q1", "F", "F"],
+        "score": ["6-3 6-4 6-4", "6-1 6-1", "6-2 6-3", "6-0 6-0"],
+        "surface": ["Hard", "Hard", "Clay", "Hard"],
+        "best_of": [5, 5, 3, 3],
+        "winner_id": ["atp-j-sinner", "atp-x-nobody", "wta-c-gauff", "wta-a-nobody"],
+        "loser_id": ["atp-a-zverev", "atp-y-nobody", "wta-a-sabalenka", "wta-b-nobody"],
+    })
+
+
+def test_player_ids_resolve_despite_the_case_mismatch():
+    """The mapping keys are cased (atp-J-Sinner) and the snapshot's ids are
+    not (atp-j-sinner). An exact match resolves nothing at all."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False) as fh:
+        fh.write("canonical_player_id,player_name_alias,has_stats\n"
+                 "atp-J-Sinner,Jannik Sinner,TRUE\n")
+        path = pathlib.Path(fh.name)
+    names = snapshot.player_names(path)
+    assert names["atp-j-sinner"] == "Jannik Sinner"
+
+    parsed = snapshot.to_matches(snapshot_rows(), names)
+    assert "Jannik Sinner" in set(parsed["winner"])
+
+
+def test_an_unmapped_id_keeps_its_id_rather_than_vanishing():
+    parsed = snapshot.to_matches(snapshot_rows(), {})
+    assert "atp-j-sinner" in set(parsed["winner"])
+
+
+def test_qualifying_rounds_are_excluded_before_anything_else():
+    """Dropping them later would let a missing qualifying result read as a
+    main-draw bye."""
+    parsed = snapshot.to_matches(snapshot_rows(), {})
+    assert "Q1" not in set(parsed["round"])
+    assert len(parsed) == 3
+
+
+def test_the_season_comes_from_the_match_date():
+    parsed = snapshot.to_matches(snapshot_rows(), {})
+    assert set(parsed["season"]) == {2025}
+
+
+def test_the_calendar_gates_what_counts_not_the_level_column():
+    """This file marks ITF W15 draws as 'MainTour', so trusting its own level
+    would score a $15,000 Monastir final as a tour 250."""
+    parsed = snapshot.to_matches(snapshot_rows(), {})
+    assert "W15 Monastir" in set(parsed["tournament"]), "it is present in the file"
+
+    table = pd.DataFrame([
+        {"season": 2025, "tour": "ATP", "tournament": "Australian Open",
+         "category": "Grand Slam", "draw_size": 128},
+        {"season": 2025, "tour": "WTA", "tournament": "Roland Garros",
+         "category": "Grand Slam", "draw_size": 128},
+    ])
+    resolved = calendar.resolve(parsed, table)
+    scoreable = resolved[resolved["category_source"] != "feed"]
+    assert "W15 Monastir" not in set(scoreable["tournament"])
+    assert calendar.unresolved(parsed, table).iloc[0]["tournament"] == "W15 Monastir"
+
+
+def test_an_inferred_draw_still_lands_on_the_right_bracket():
+    """Inference under-counts -- a walkover leaves a player with no match row,
+    so a 128-draw shows about 125 -- but the bracket is the next power of two
+    up, and 125 and 128 are both 128."""
+    from whul.scoring.tennis import effective_bracket
+
+    for counted, real in ((125, 128), (122, 128), (91, 128), (53, 64), (31, 32)):
+        assert effective_bracket(counted) == effective_bracket(real)
+
+
+def test_draw_sizes_are_counted_per_event():
+    parsed = snapshot.to_matches(snapshot_rows(), {})
+    sizes = snapshot.infer_draw_sizes(parsed).set_index("tournament")
+    assert sizes.loc["Australian Open", "draw_size"] == 2
+
+
+def test_a_missing_snapshot_says_it_cannot_be_re_downloaded():
+    """The Sackmann repository is gone, so this file is the only copy -- an
+    error that reads like a transient fetch failure would be misleading."""
+    with pytest.raises(FileNotFoundError, match="only copy"):
+        snapshot.load_matches([2025], root=pathlib.Path("/nonexistent"))
