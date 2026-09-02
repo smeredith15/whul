@@ -295,3 +295,41 @@ def test_cache_key_reflects_the_parameters(tmp_path, monkeypatch):
     a = mlb._cache_path("statsapi/hitting_2025", {"playerPool": "Qualified"})
     b = mlb._cache_path("statsapi/hitting_2025", {"playerPool": "All"})
     assert a != b
+
+
+# --- the probe reflects the two-way pipeline --------------------------------
+
+def test_probe_folds_two_way_players_after_normalizing(monkeypatch):
+    """score_players emits one row per player-role; is_two_way only exists after
+    combine_two_way, which runs post-normalization. The probe must follow that
+    order rather than expecting the column earlier."""
+    import pandas as pd
+
+    from whul.normalize import apply_benchmarks, compute_benchmarks
+    from whul.scoring import mlb as scoring
+
+    bats = pd.DataFrame(
+        [{"PlayerName": f"B{i}", "season": 2025, "AB": 400, "H": 100 + i, "2B": 20,
+          "3B": 1, "HR": 20, "BB": 50, "HBP": 3, "SB": 5, "CS": 2,
+          "Off": 10.0, "Def": 5.0, "G": 150} for i in range(70)]
+        + [{"PlayerName": "TwoWay", "season": 2025, "AB": 400, "H": 170, "2B": 30,
+            "3B": 5, "HR": 45, "BB": 80, "HBP": 5, "SB": 20, "CS": 3,
+            "Off": 60.0, "Def": -5.0, "G": 155}]
+    )
+    pits = pd.DataFrame(
+        [{"PlayerName": f"P{i}", "season": 2025, "IP": 150.0, "SO": 150 + i, "H": 130,
+          "BB": 40, "HBP": 4, "HR": 15, "SV": 0, "HLD": 0, "WAR": 3.0, "G": 30}
+         for i in range(70)]
+        + [{"PlayerName": "TwoWay", "season": 2025, "IP": 120.0, "SO": 160, "H": 90,
+            "BB": 35, "HBP": 3, "HR": 10, "SV": 0, "HLD": 0, "WAR": 4.0, "G": 22}]
+    )
+
+    roles = scoring.score_players(bats, pits)
+    assert "is_two_way" not in roles.columns, "not available before the fold"
+
+    combined = scoring.combine_two_way(
+        apply_benchmarks(roles, compute_benchmarks(roles, "Player"), "Player")
+    )
+    assert "is_two_way" in combined.columns
+    assert int(combined["is_two_way"].sum()) == 1
+    assert len(combined) == len(roles) - 1, "the two-way player's rows collapse to one"

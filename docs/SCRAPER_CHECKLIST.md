@@ -72,7 +72,10 @@ Scoring is therefore whole: `INCLUDE_ADVANCED_METRICS` stays on, no components
 are dropped, and one host serves the schedule, the counting stats and the
 advanced metrics.
 
-Two traps caught on the way:
+Confirmed live: 765 hitting and 873 pitching lines, every scoring column present
+on both sides, 1,391 scored role rows.
+
+Three traps caught on the way:
 
 - **Innings are thirds, not decimals.** `200.1` means 200 and one third. Read as
   a decimal it understates by a factor of three, and at 7.4 points per inning
@@ -81,7 +84,13 @@ Two traps caught on the way:
 - **Cache keys ignored request parameters.** That is why `stats_api_hitting`
   still reported 145 rows after the fix to request the full player pool: the
   qualified-only response was still cached. Keys now hash the parameters, so
-  changing a request changes what is cached.
+  changing a request changes what is cached. Confirmed fixed — the same call now
+  returns 765.
+- **The probe expected `is_two_way` too early.** My own regression from the
+  two-way refactor: `score_players` emits one row per player-*role*, and the
+  column only exists after `combine_two_way`, which runs post-normalization. The
+  probe now follows that order and reports the fold, so it exercises the
+  per-role normalization rather than assuming it.
 
 ## 4. NHL — BUILT and CONFIRMED
 

@@ -533,16 +533,41 @@ def probe(season: int = 2025) -> dict:
         result["stats_api_hitting"] = f"FAILED ({status}): {type(exc).__name__}"
 
     try:
+        from whul.normalize import apply_benchmarks, compute_benchmarks
         from whul.scoring import mlb as scoring
 
         batters = load_batters([season])
         pitchers = load_pitchers([season])
-        players = scoring.score_players(batters, pitchers)
-        result["scored_players"] = len(players)
-        result["two_way_players"] = int(players["is_two_way"].sum()) if len(players) else 0
-        if len(players):
-            top = players.nlargest(1, "total_points").iloc[0]
-            result["top_player"] = f"{top['player']} ({top['role']}) {top['total_points']:.1f}"
+
+        # score_players emits one row per player-*role*; two-way players are
+        # folded together only after each role has met its own benchmark.
+        roles = scoring.score_players(batters, pitchers)
+        result["scored_role_rows"] = len(roles)
+        if len(roles):
+            result["rows_by_role"] = roles["role"].value_counts().to_dict()
+            counts = roles.groupby(["season", "player"]).size()
+            result["two_way_players"] = int((counts > 1).sum())
+
+            bench = compute_benchmarks(roles, "Player")
+            result["benchmarks"] = {
+                row["norm_key"]: round(float(row["benchmark"]), 1)
+                for _, row in bench.iterrows()
+            }
+            combined = scoring.combine_two_way(apply_benchmarks(roles, bench, "Player"))
+            result["scored_players"] = len(combined)
+            top = combined.nlargest(1, "scaled_score").iloc[0]
+            result["top_player"] = (
+                f"{top['player']} ({top['role']}) "
+                f"{top['total_points']:.1f} raw, {top['scaled_score']:.1f} normalized"
+            )
+            two_way = combined[combined["is_two_way"]]
+            if len(two_way):
+                best = two_way.nlargest(1, "scaled_score").iloc[0]
+                result["top_two_way"] = (
+                    f"{best['player']}: {best['primary_score']:.1f} {best['role']} "
+                    f"+ 0.5 x {best['secondary_score']:.1f} {best['secondary_role']} "
+                    f"= {best['scaled_score']:.1f}"
+                )
     except Exception as exc:
         result["scoring"] = f"FAILED: {type(exc).__name__}: {exc}"
 
