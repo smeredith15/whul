@@ -120,6 +120,19 @@ _JS_STATE = re.compile(
 _TOURNAMENT_HREF = re.compile(r"/tournaments?/", re.I)
 
 
+def _soup(html: str):
+    """Parse HTML, failing loudly when the parser is not installed.
+
+    Returning an empty result instead would be indistinguishable from a page
+    that simply has no tournaments in it -- which is exactly how a missing
+    beautifulsoup4 read as "the DOM and link strategies found nothing", and
+    sent the diagnosis after the page's markup rather than the environment.
+    """
+    from bs4 import BeautifulSoup
+
+    return BeautifulSoup(html, "lxml")
+
+
 def classify_category(text: str | None) -> str | None:
     """Category from a badge, label or event name; None when nothing matches."""
     if not text:
@@ -253,12 +266,7 @@ CARD_SELECTORS = (
 
 def extract_from_dom(html: str, tour: str, season: int) -> list[dict]:
     """Tournaments from the rendered markup, when the JSON is absent."""
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:  # pragma: no cover - dependency is declared
-        return []
-
-    soup = BeautifulSoup(html, "lxml")
+    soup = _soup(html)
     rows: list[dict] = []
     seen: set[str] = set()
     for selector in CARD_SELECTORS:
@@ -293,12 +301,7 @@ def extract_from_links(html: str, tour: str, season: int) -> list[dict]:
     durable: it survives a redesign that moves every class name, because the
     links have to keep working.
     """
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError:  # pragma: no cover - dependency is declared
-        return []
-
-    soup = BeautifulSoup(html, "lxml")
+    soup = _soup(html)
     rows: list[dict] = []
     seen: set[str] = set()
     for link in soup.find_all("a", href=True):
@@ -525,9 +528,7 @@ def probe(source: str = "atp", season: int | None = None) -> dict:
         # This runs for a short scrape as well as an empty one: six events out
         # of sixty needs the same diagnosis as zero.
         try:
-            from bs4 import BeautifulSoup
-
-            soup = BeautifulSoup(html, "lxml")
+            soup = _soup(html)
             classes: dict[str, int] = {}
             for element in soup.find_all(class_=True):
                 for name in element.get("class", []):
@@ -537,11 +538,14 @@ def probe(source: str = "atp", season: int | None = None) -> dict:
                 classes.items(), key=lambda kv: -kv[1]
             )[:20]
             report["stages"]["extract"]["script_ids"] = [
-                s.get("id") or s.get("type") for s in soup.find_all("script")
-                if s.get("id") or s.get("type")
+                tag.get("id") or tag.get("type") for tag in soup.find_all("script")
+                if tag.get("id") or tag.get("type")
             ][:20]
-        except ImportError:
-            pass
+        except ImportError as exc:
+            report["stages"]["extract"]["parser_missing"] = (
+                f"{exc} -- run `pip install -e .` to pick up beautifulsoup4 "
+                f"and lxml; without them only the JSON strategy runs"
+            )
         report["stages"]["extract"]["note"] = (
             f"best strategy found {best} events, fewer than the "
             f"{MIN_PLAUSIBLE_EVENTS} a real season has -- the class names and "

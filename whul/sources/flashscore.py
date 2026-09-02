@@ -181,8 +181,12 @@ def parse_tournament_header(segment: str) -> dict | None:
         "tour": tour,
         "category": category,
         "tournament": name,
+        # The daily feed only sometimes ends its header with a round. When it
+        # does not, the round comes from the tournament page -- see
+        # ``fetch_round_map``.
         "round": ROUND_MAP.get(suffix, ""),
         "is_qualifying": "qualification" in lower,
+        "slug": _field(segment, "ZL") or "",
     }
 
 
@@ -230,6 +234,7 @@ def iter_matches(raw: str) -> Iterator[dict]:
 
         yield {
             "match_uid": uid,
+            "slug": header["slug"],
             "date": when.isoformat() if when else "",
             # A tennis season is a calendar year, so the match date names it.
             "season": when.year if when else None,
@@ -242,6 +247,76 @@ def iter_matches(raw: str) -> Iterator[dict]:
             "loser": away if winner == home else home,
             "score": score or "",
         }
+
+
+PAGE_BASE = "https://www.flashscore.com"
+PAGE_HEADERS = {
+    "accept": "text/html,application/xhtml+xml,*/*",
+    "accept-language": "en-US,en;q=0.9",
+    "user-agent": HEADERS["user-agent"],
+}
+#: A match record on a tournament page, and the round field inside it.
+_MATCH_BLOCK = re.compile(r"AA÷([^¬]+)¬([^~]*)")
+_ROUND_FIELD = re.compile(r"ER÷([^¬]*)¬")
+
+
+def fetch_round_map(slug: str, session: requests.Session | None = None) -> dict[str, str]:
+    """``{match_uid: round}`` for one tournament.
+
+    The daily feed carries no per-match round -- every match in a day's payload
+    inherits whatever its tournament header happened to say, which for a slam
+    is nothing at all. The per-tournament page does carry it, as ``ER÷`` inside
+    each match block, so the round has to be fetched per tournament rather than
+    read from the feed.
+
+    Both the results and fixtures pages are read: a tournament in progress has
+    its finished rounds on one and its remaining ones on the other.
+    """
+    if not slug:
+        return {}
+    client = session or requests
+    out: dict[str, str] = {}
+    for page in ("results/", "fixtures/"):
+        try:
+            response = client.get(
+                f"{PAGE_BASE}{slug}{page}", headers=PAGE_HEADERS, timeout=TIMEOUT
+            )
+            if response.status_code != 200:
+                continue
+        except requests.RequestException:
+            # One unreachable page must not lose the other, nor the tournament.
+            continue
+        for match in _MATCH_BLOCK.finditer(response.text):
+            found = _ROUND_FIELD.search(match.group(2))
+            if found:
+                out.setdefault(match.group(1), found.group(1))
+    return out
+
+
+def apply_rounds(matches: list[dict], session: requests.Session | None = None) -> list[dict]:
+    """Fill each match's round from its tournament page.
+
+    One request pair per tournament, not per match, and only for tournaments
+    whose matches are actually missing a round.
+    """
+    slugs = {
+        m["slug"] for m in matches
+        if m.get("slug") and not m.get("round")
+    }
+    maps: dict[str, dict[str, str]] = {}
+    with requests.Session() as owned:
+        client = session or owned
+        for slug in slugs:
+            maps[slug] = fetch_round_map(slug, client)
+
+    for match in matches:
+        if match.get("round"):
+            continue
+        raw = maps.get(match.get("slug", ""), {}).get(match["match_uid"])
+        if raw:
+            match["round"] = ROUND_MAP.get(raw.strip().lower(), "")
+            match["round_raw"] = raw
+    return matches
 
 
 def _get(day: int, cache_key: str | None = None) -> str:
@@ -297,9 +372,20 @@ def load_matches(
     """
     raw = fetch_window(days)
     rows = [m for m in iter_matches(raw) if not m["is_qualifying"]]
+    rows = apply_rounds(rows)
+    # A match with no round cannot be priced -- there is no bracket position to
+    # pay for -- so it is dropped here rather than scored as nothing.
+    unrounded = [m for m in rows if not m["round"]]
+    rows = [m for m in rows if m["round"]]
     frame = pd.DataFrame(rows)
     if verbose:
         print(f"flashscore: {len(rows)} completed main-draw matches in window", flush=True)
+        if unrounded:
+            print(
+                f"dropped {len(unrounded)} with no round from: "
+                f"{', '.join(sorted({m['tournament'] for m in unrounded}))}",
+                flush=True,
+            )
     if frame.empty or not use_calendar:
         return frame
 
@@ -394,12 +480,20 @@ def probe(days: range | None = None) -> dict:
         return report
 
     matches = list(iter_matches(raw))
+    from_feed = sum(1 for m in matches if m["round"])
+    matches = apply_rounds(matches)
     report["stages"]["matches"] = {
         "ok": bool(matches),
         "completed": len(matches),
-        "with_round": sum(1 for m in matches if m["round"]),
+        "round_from_feed": from_feed,
+        "round_after_tournament_pages": sum(1 for m in matches if m["round"]),
         "with_score": sum(1 for m in matches if m["score"]),
+        "slugs": sorted({m["slug"] for m in matches if m["slug"]})[:5],
         "sample": matches[:3],
+        "note": "" if any(m["round"] for m in matches) else (
+            "no rounds resolved -- the tournament pages did not answer, or "
+            "their ER field moved; the slugs above are what was requested"
+        ),
     }
     if not matches:
         report["stages"]["matches"]["note"] = (
@@ -411,7 +505,9 @@ def probe(days: range | None = None) -> dict:
     from whul.scoring.tennis import score_players
     from whul.sources import tennis_calendar
 
-    frame = pd.DataFrame([m for m in matches if not m["is_qualifying"]])
+    frame = pd.DataFrame(
+        [m for m in matches if not m["is_qualifying"] and m["round"]]
+    )
     resolved = tennis_calendar.resolve(frame)
     gaps = tennis_calendar.unresolved(frame)
     report["stages"]["calendar"] = {

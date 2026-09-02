@@ -462,8 +462,8 @@ Each increment ships end-to-end:
 | NFL | nflverse `stats_player` (GitHub) | ~1s / season | ~0.6s | verified through 2025 |
 | NBA | ESPN site API (per date) | ~690s / season | ~5s | verified on 2026 |
 | MLB | MLB Stats API + FanGraphs | not yet measured | not yet measured | **unverified** |
-| PGA | ESPN golf leaderboard (per event) | not yet measured | not yet measured | season list verified (49/49 events 2025); event endpoint being fixed |
-| NASCAR | ESPN racing (per event) | not yet measured | not yet measured | season list verified (41/41 events 2025); event endpoint being fixed |
+| PGA | ESPN golf scoreboard (season list) | 1 request / season | 1 request | **verified** on 2025: 49/49 events, 59-player field, all placed |
+| NASCAR | ESPN racing scoreboard (season list) | 1 request / season | 1 request | **verified** on 2025: 41/41 events, 23-car field, all placed |
 | F1 | Jolpica (Ergast successor) | ~5 requests / season | 1 request | **verified** on 2025: 479 results, 5 sprints |
 | Tennis | Sackmann archives (history) + Flashscore feed (live) | not yet measured | not yet measured | **unverified** |
 | Tennis calendar | atptour.com / wtatennis.com / tennistonic.com | one page per tour | once a season | **unverified**; 2026 seeded |

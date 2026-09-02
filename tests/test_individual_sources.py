@@ -8,6 +8,8 @@ broken before (a value nested one level deeper than the code looked).
 import json
 
 import pandas as pd
+import pytest
+import requests
 
 from whul.sources import espn_individual as espn_ind
 from whul.sources import flashscore, jolpica, sackmann
@@ -649,3 +651,107 @@ def test_tournament_links_are_the_durable_fallback():
 def test_non_tournament_links_are_ignored():
     page = '<div><a href="/rankings/singles">Rankings</a><span>WTA 500</span></div>'
     assert schedule.extract_from_links(page, "WTA", 2026) == []
+
+
+# --- Flashscore rounds -----------------------------------------------------
+
+TOURNAMENT_PAGE = (
+    "AA÷abc123¬ER÷Quarterfinal¬AD÷1770000000¬~"
+    "AA÷def456¬ER÷Semi-finals¬AD÷1770100000¬~"
+)
+
+
+def test_the_slug_is_kept_because_the_round_depends_on_it():
+    """The daily feed carries no per-match round -- a slam's header ends with
+    the country, not a round -- so the tournament page has to be fetched, and
+    the slug is the only thing that says which page."""
+    header = flashscore.parse_tournament_header(
+        "ZA÷ATP - SINGLES: US Open (USA), hard¬ZL÷/tennis/atp-singles/us-open/¬"
+    )
+    assert header["slug"] == "/tennis/atp-singles/us-open/"
+    assert header["round"] == ""
+
+
+def test_the_round_map_is_read_from_a_tournament_page(monkeypatch):
+    class Response:
+        status_code = 200
+        text = TOURNAMENT_PAGE
+
+    class Session:
+        def get(self, url, **kwargs):
+            return Response()
+
+    rounds = flashscore.fetch_round_map("/tennis/atp-singles/us-open/", Session())
+    assert rounds["abc123"] == "Quarterfinal"
+    assert rounds["def456"] == "Semi-finals"
+
+
+def test_rounds_from_the_tournament_page_are_normalized_onto_matches(monkeypatch):
+    monkeypatch.setattr(
+        flashscore, "fetch_round_map",
+        lambda slug, session=None: {"abc123": "Quarterfinal"},
+    )
+    matches = [{"match_uid": "abc123", "slug": "/x/", "round": "",
+                "tournament": "US Open"}]
+    assert flashscore.apply_rounds(matches)[0]["round"] == "QF"
+
+
+def test_a_round_the_feed_already_gave_is_not_refetched(monkeypatch):
+    """One request pair per tournament, and only for tournaments that need it."""
+    calls = []
+    monkeypatch.setattr(
+        flashscore, "fetch_round_map",
+        lambda slug, session=None: calls.append(slug) or {},
+    )
+    matches = [{"match_uid": "abc", "slug": "/x/", "round": "QF", "tournament": "Rome"}]
+    flashscore.apply_rounds(matches)
+    assert calls == []
+
+
+def test_an_unreachable_tournament_page_loses_only_its_rounds(monkeypatch):
+    class Session:
+        def get(self, url, **kwargs):
+            raise requests.RequestException("boom")
+
+    assert flashscore.fetch_round_map("/x/", Session()) == {}
+
+
+def test_a_page_that_answers_non_200_is_skipped():
+    class Response:
+        status_code = 404
+        text = TOURNAMENT_PAGE
+
+    class Session:
+        def get(self, url, **kwargs):
+            return Response()
+
+    assert flashscore.fetch_round_map("/x/", Session()) == {}
+
+
+# --- Sackmann URL forms ----------------------------------------------------
+
+def test_both_branches_and_both_url_forms_are_tried():
+    """The bare form 404'd where GitHub's own links use refs/heads."""
+    urls = sackmann.urls_for("ATP", 2025)
+    assert any("/master/atp_matches_2025.csv" in u for u in urls)
+    assert any("/refs/heads/master/" in u for u in urls)
+    assert any("/main/" in u for u in urls)
+
+
+# --- failing loudly on a missing parser ------------------------------------
+
+def test_a_missing_html_parser_is_an_error_not_an_empty_result(monkeypatch):
+    """Returning [] is indistinguishable from a page with no tournaments in
+    it, which sends the diagnosis after the markup instead of the install."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_bs4(name, *args, **kwargs):
+        if name == "bs4":
+            raise ImportError("No module named 'bs4'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_bs4)
+    with pytest.raises(ImportError):
+        schedule.extract_from_dom("<html></html>", "WTA", 2026)

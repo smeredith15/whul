@@ -40,9 +40,17 @@ REPOS = {
 #: GitHub renamed default branches en masse, and these repos 404 on ``master``.
 #: Both are tried rather than one being assumed, so a rename either way keeps
 #: working; the probe reports which one actually answered.
-BRANCHES = ("main", "master")
-RAW = "https://raw.githubusercontent.com/{repo}/{branch}/{filename}"
+BRANCHES = ("master", "main")
+#: Two URL forms. The bare one is the familiar shape; the ``refs/heads/`` one
+#: is what GitHub itself now links to, and it is served where the bare form has
+#: been seen to 404. Trying both is a line of code against a whole dead source.
+RAW_FORMS = (
+    "https://raw.githubusercontent.com/{repo}/{branch}/{filename}",
+    "https://raw.githubusercontent.com/{repo}/refs/heads/{branch}/{filename}",
+)
 API = "https://api.github.com/repos/{repo}"
+#: A file known to exist, used to tell a blocked host from a missing file.
+CANARY = "atp_players.csv"
 CACHE = Path("data/cache/sackmann")
 TIMEOUT = 60
 HEADERS = {"user-agent": "whul/1.0 (fantasy league scoring)"}
@@ -70,8 +78,9 @@ def urls_for(tour: str, year: int) -> list[str]:
     """Candidate raw URLs for one tour-season, in branch order."""
     repo, filename = REPOS[tour]
     return [
-        RAW.format(repo=repo, branch=branch, filename=filename.format(year=year))
+        form.format(repo=repo, branch=branch, filename=filename.format(year=year))
         for branch in BRANCHES
+        for form in RAW_FORMS
     ]
 
 
@@ -105,15 +114,40 @@ def describe_repo(tour: str) -> dict:
     a wrong branch from a missing file from a moved repository, and the API
     answers all three at once -- which turns the next probe run into a fix
     rather than another guess.
+
+    A canary file that is known to exist is fetched first. If that 404s too,
+    the repository is not the problem: something between here and GitHub is
+    answering 404 for everything, which is what a filtering proxy does and
+    what no amount of branch-guessing will fix.
     """
     repo, filename = REPOS[tour]
+
+    canary_url = RAW_FORMS[0].format(repo=repo, branch="master", filename=CANARY)
+    try:
+        canary = requests.get(canary_url, headers=HEADERS, timeout=TIMEOUT)
+        canary_ok = canary.status_code == 200
+    except requests.RequestException:
+        canary_ok = False
+
     try:
         response = requests.get(API.format(repo=repo), headers=HEADERS, timeout=TIMEOUT)
     except requests.RequestException as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"error": f"{type(exc).__name__}: {exc}", "canary_reachable": canary_ok}
     if response.status_code == 404:
-        return {"repo": repo, "exists": False,
-                "note": "the repository itself is not there under this name"}
+        return {
+            "repo": repo,
+            "exists": False,
+            "canary": canary_url,
+            "canary_reachable": canary_ok,
+            "note": (
+                "the repository is not there under this name"
+                if canary_ok else
+                "BOTH the API and a file known to exist answered 404, so this "
+                "is almost certainly a proxy or network filter between you and "
+                "GitHub rather than anything about the repository -- try the "
+                "canary URL above in a browser to confirm"
+            ),
+        }
     if response.status_code != 200:
         return {"repo": repo, "status": response.status_code,
                 "note": "GitHub API rate limits unauthenticated calls; try again shortly"}
