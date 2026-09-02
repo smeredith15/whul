@@ -243,10 +243,18 @@ def cmd_weekly(args: argparse.Namespace) -> int:
 
 
 def cmd_list(_: argparse.Namespace) -> int:
-    print(f"{'league':<8}{'assets':<18}{'seasons':<16}source")
-    print("-" * 70)
-    for name, cfg in LEAGUES.items():
-        print(f"{name:<8}{', '.join(cfg['assets']):<18}{cfg['seasons']:<16}{cfg['source']}")
+    rows = [
+        (name, ", ".join(cfg["assets"]), cfg["seasons"], cfg["source"])
+        for name, cfg in LEAGUES.items()
+    ]
+    headers = ("league", "assets", "seasons", "source")
+    # Size each column to its content so a long value cannot run into the next.
+    widths = [max(len(r[i]) for r in (*rows, headers)) for i in range(len(headers))]
+    line = "  ".join(h.ljust(w) for h, w in zip(headers, widths))
+    print(line)
+    print("-" * len(line))
+    for row in rows:
+        print("  ".join(value.ljust(w) for value, w in zip(row, widths)))
     return 0
 
 

@@ -8,6 +8,16 @@ def test_list_runs(capsys):
     assert "nfl" in capsys.readouterr().out
 
 
+def test_list_columns_do_not_run_together(capsys):
+    """A long value must not collide with the next column."""
+    main(["list"])
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("nba")]
+    assert lines, "nba row missing"
+    for cfg_value in (LEAGUES["nba"]["seasons"], LEAGUES["nba"]["source"]):
+        assert f" {cfg_value}" in lines[0] or lines[0].endswith(cfg_value)
+    assert "ESPNESPN" not in lines[0]
+
+
 def test_every_league_declares_its_assets_and_source():
     for name, cfg in LEAGUES.items():
         assert cfg["assets"], name
