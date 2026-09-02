@@ -91,6 +91,19 @@ def benchmarks(spec: LeagueSpec, raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.Da
     _say(_rule("2. BENCHMARKS -- 99th percentile per position group"))
 
     scored = spec.score(raw, True)
+
+    # A COVID-shortened season is not weak evidence, it is misleading evidence:
+    # a 56-game NHL year would set a bar every full season clears.
+    if spec.scale_benchmarks_for:
+        from whul.scoring.schedule import describe_exclusions, irregular_seasons
+
+        drop = irregular_seasons(spec.scale_benchmarks_for)
+        requested = sorted(scored["season"].dropna().unique().tolist())
+        for note in describe_exclusions(spec.scale_benchmarks_for, requested):
+            _say(f"  {note}")
+        if drop:
+            scored = scored[~scored["season"].isin(drop)]
+
     reg_only = scored.assign(total_points=scored["regular_points"])
     bench = compute_benchmarks(reg_only, "Player", season_col="season")
     if spec.scale_benchmarks_for:

@@ -72,11 +72,16 @@ Built, unverified — both hosts are blocked from my sandbox.
   2027 through mid-July, so ~80% of a season, inflating by ~1.25. Playoffs
   untouched, as you said.
 
-## 4. NHL — BUILT, unverified
+## 4. NHL — BUILT and CONFIRMED
 
 Skaters only. Goalies are still scored (the R script computes them) but hold no
 roster slots and are excluded from normalization, so nothing downstream reads
-them. 16 tests.
+them. 20 tests.
+
+Probe is fully green: all four endpoints respond, every scoring column is
+present, and 868 skaters score from 920 rows with MacKinnon top at 449.0.
+Playoffs arrive as separate requests — 332 skater rows and 16 team rows — so the
+discrete postseason split needs no disentangling.
 
 Source is the NHL's own stats API, which `fastRhockey` wraps: one request per
 season per endpoint, and `gameTypeId` separates regular season from playoffs, so
@@ -97,6 +102,14 @@ arise here.
   division title do not. So team regular-season components are scaled at source
   and the achievement terms left alone, which is why `score_teams` takes the
   factor rather than having it applied to the finished benchmark.
+- **COVID seasons are excluded from benchmark pools.** The probe reported
+  `games_per_team [82]` for 2025, which prompted checking the rest of the window:
+  NHL 2021 was **56 games**. Scaling that to 84 is a 1.5x extrapolation across a
+  year that also had no crowds and division-only schedules, so the distortion is
+  not only one of length — it is dropped rather than modelled, following the
+  precedent `MLB_Players_Teams.R` set by filtering 2020. The NHL default window
+  is now 2022-2026, and `IRREGULAR_SEASONS` records the same for NBA 2020-21,
+  MLB 2020 and WNBA 2020, with the report printing any exclusion it applies.
 
 ## 5. NCAA (all five) — BUILT; four of five confirmed reachable
 

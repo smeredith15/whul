@@ -46,6 +46,48 @@ SCHEDULE_CHANGES: dict[str, ScheduleChange] = {
 }
 
 
+@dataclass(frozen=True)
+class IrregularSeason:
+    """A season whose length makes it unusable as benchmark evidence."""
+
+    league: str
+    season: int
+    games: int
+    standard_games: int
+    reason: str
+
+
+#: Seasons excluded from benchmark pools. Scaling a 56-game season up to 84 is a
+#: 1.5x extrapolation across a year that also had no crowds, condensed travel and
+#: division-only schedules -- the distortion is not just one of length, so the
+#: honest move is to drop it rather than model it. `MLB_Players_Teams.R` set the
+#: precedent by filtering 2020 "to eradicate COVID season distortion".
+IRREGULAR_SEASONS: tuple[IrregularSeason, ...] = (
+    IrregularSeason("NHL", 2021, 56, 82, "COVID: 56 games, division-only schedule"),
+    IrregularSeason("NHL", 2020, 71, 82, "COVID: season halted in March"),
+    IrregularSeason("NBA", 2021, 72, 82, "COVID: 72-game season"),
+    IrregularSeason("NBA", 2020, 67, 82, "COVID: season suspended, bubble restart"),
+    IrregularSeason("MLB", 2020, 60, 162, "COVID: 60-game season"),
+    IrregularSeason("WNBA", 2020, 22, 34, "COVID: 22-game bubble season"),
+)
+
+
+def irregular_seasons(league: str) -> set[int]:
+    """Seasons to keep out of a league's benchmark pool."""
+    return {s.season for s in IRREGULAR_SEASONS if s.league == league}
+
+
+def describe_exclusions(league: str, seasons: list[int]) -> list[str]:
+    """Human-readable notes for whichever excluded seasons were requested."""
+    excluded = {s.season: s for s in IRREGULAR_SEASONS if s.league == league}
+    return [
+        f"{s} excluded: {excluded[s].games} of {excluded[s].standard_games} games "
+        f"({excluded[s].reason})"
+        for s in seasons
+        if s in excluded
+    ]
+
+
 def factor_for(league: str) -> float:
     """Scaling factor for a league, 1.0 when its schedule is unchanged."""
     change = SCHEDULE_CHANGES.get(league)

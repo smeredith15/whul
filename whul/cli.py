@@ -325,7 +325,8 @@ def _spec(league: str):
 
 DEFAULT_VALIDATE = {
     "mlb": ((2021, 2025), 2025),
-    "nhl": ((2021, 2025), 2025),
+    # 2021 was a 56-game COVID season; the window starts after it.
+    "nhl": ((2022, 2026), 2026),
     **{key: ((2021, 2025), 2025) for key in NCAA_LEAGUES},
     "nfl": ((2021, 2025), 2025),
     "nba": ((2022, 2026), 2026),

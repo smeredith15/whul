@@ -160,3 +160,40 @@ def test_schedule_change_is_documented_with_its_season():
     assert change.historical_games == 82
     assert change.current_games == 84
     assert change.effective_season == "2026-27"
+
+
+# --- irregular seasons ------------------------------------------------------
+
+def test_covid_seasons_are_excluded_from_benchmarks():
+    """A 56-game NHL season would set a bar every full season clears."""
+    from whul.scoring.schedule import irregular_seasons
+
+    assert 2021 in irregular_seasons("NHL")
+    assert 2022 not in irregular_seasons("NHL")
+    assert 2020 in irregular_seasons("MLB")
+
+
+def test_exclusions_explain_themselves():
+    from whul.scoring.schedule import describe_exclusions
+
+    notes = describe_exclusions("NHL", [2021, 2022, 2023])
+    assert len(notes) == 1
+    assert "56 of 82 games" in notes[0]
+    assert "COVID" in notes[0]
+
+
+def test_leagues_without_irregular_seasons_exclude_nothing():
+    from whul.scoring.schedule import describe_exclusions, irregular_seasons
+
+    assert irregular_seasons("NFL") == set()
+    assert describe_exclusions("NFL", [2020, 2021]) == []
+
+
+def test_shortened_seasons_are_dropped_not_scaled():
+    """Scaling 56 games to 84 is a 1.5x extrapolation across a year that also had
+    no crowds and division-only schedules -- the distortion is not only length."""
+    from whul.scoring.schedule import IRREGULAR_SEASONS
+
+    nhl_2021 = next(s for s in IRREGULAR_SEASONS if s.league == "NHL" and s.season == 2021)
+    assert nhl_2021.games == 56
+    assert nhl_2021.standard_games == 82
