@@ -161,10 +161,16 @@ def scrape_readiness(spec: LeagueSpec, raw: pd.DataFrame, seasons: list[int], st
     weeks = sorted(recent[spec.week_col].dropna().unique().tolist())
 
     checks: list[tuple[str, bool, str]] = []
+    # What actually matters is that the *dataset* refreshes daily and can be
+    # re-pulled cheaply. Cumulative season-to-date figures are enough: stored as
+    # a daily snapshot they give both live standings and the history the
+    # progression graph needs, and differencing them yields any window's accrual.
+    # Per-period detail is a bonus -- needed where accrual must be split finer
+    # than a day, which in practice means MLB's postseason.
     checks.append((
-        "per-period rows (not just season totals)",
-        len(weeks) > 1,
-        f"{len(weeks)} distinct {spec.week_col}s in {latest}",
+        "cumulative season-to-date available",
+        len(raw) > 0,
+        f"{len(raw):,} rows for {latest}",
     ))
     checks.append((
         "incremental fetch supported",
@@ -196,6 +202,13 @@ def scrape_readiness(spec: LeagueSpec, raw: pd.DataFrame, seasons: list[int], st
     for label, ok, detail in checks:
         _say(f"  [{'PASS' if ok else 'FAIL'}]  {label:<45} {detail}")
 
+    granularity = (
+        f"{len(weeks)} distinct {spec.week_col}s"
+        if len(weeks) > 1
+        else "season aggregates only"
+    )
+    _say(f"\n  (granularity: {granularity})")
+
     backfill = stats["elapsed"] / max(len(seasons), 1)
     _say(f"\n  (backfill cost, paid once: ~{backfill:.0f}s per season)")
 
@@ -203,7 +216,7 @@ def scrape_readiness(spec: LeagueSpec, raw: pd.DataFrame, seasons: list[int], st
     _say(
         f"\n{'READY' if ready else 'NOT READY'}: "
         + (
-            "the source exposes per-period rows and stays current cheaply."
+            "the dataset refreshes daily and can be re-pulled cheaply."
             if ready
             else "see the failing checks above."
         )

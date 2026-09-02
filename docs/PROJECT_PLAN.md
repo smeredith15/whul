@@ -454,9 +454,19 @@ Each increment ships end-to-end:
 |---|---|---:|---:|---|
 | NFL | nflverse `stats_player` (GitHub) | ~1s / season | ~0.6s | verified through 2025 |
 | NBA | ESPN site API (per date) | ~690s / season | ~5s | verified on 2026 |
+| MLB | MLB Stats API + FanGraphs | not yet measured | not yet measured | **unverified** |
 
 NBA 2026: 273 dates, 30,853 rows, 705 players, benchmarks 3800.7 Backcourt /
 4086.5 Frontcourt. Warm re-run 7.4s. Responses cache under `data/cache/espn`.
+
+**What a scraper actually has to provide is a dataset that updates daily** — not
+necessarily per-game rows. For most leagues, cumulative season-to-date figures
+pulled once a day are sufficient: stored as a daily snapshot they give both live
+standings and the history the progression line graph needs, and differencing two
+snapshots yields any window's accrual, which is what trades and owner stints
+require. Per-game detail is only needed where accrual must be split finer than a
+day — in practice MLB's postseason. This markedly simplifies most adapters: a
+season leaderboard endpoint is enough.
 
 **NCAA needs game results only, not box scores.** All five NCAA categories are
 team slots — there are no NCAA player slots at all — so those leagues need the

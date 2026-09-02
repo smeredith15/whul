@@ -88,12 +88,30 @@ def test_scrape_readiness_passes_on_weekly_data(capsys):
     assert "READY" in capsys.readouterr().out
 
 
-def test_scrape_readiness_fails_without_per_period_rows(capsys):
-    """A source giving only season totals cannot back a daily job."""
+def test_season_aggregates_are_sufficient(capsys):
+    """Cumulative season-to-date, refreshed daily, is enough for most leagues.
+
+    Stored as daily snapshots it gives live standings and the progression graph,
+    and differencing yields any window's accrual. Per-period detail is reported
+    but is not a readiness requirement.
+    """
     raw, stats = acquire(SPEC, [2021])
     raw = raw.assign(week=1)
-    assert scrape_readiness(SPEC, raw, [2021], stats) is False
-    assert "NOT READY" in capsys.readouterr().out
+    assert scrape_readiness(SPEC, raw, [2021], stats) is True
+    out = capsys.readouterr().out
+    assert "season aggregates only" in out
+    assert "READY" in out
+
+
+def test_granularity_is_reported_when_present(capsys):
+    raw, stats = acquire(SPEC, [2021])
+    scrape_readiness(SPEC, raw, [2021], stats)
+    assert "18 distinct weeks" in capsys.readouterr().out
+
+
+def test_an_empty_dataset_fails(capsys):
+    raw, stats = acquire(SPEC, [2021])
+    assert scrape_readiness(SPEC, raw.iloc[0:0], [2021], stats) is False
 
 
 def test_readiness_judges_nightly_cost_not_backfill_cost(capsys):

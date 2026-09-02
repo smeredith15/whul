@@ -33,6 +33,16 @@ def _nfl(season: int, assets: str) -> pd.DataFrame:
     return nfl.score_teams(nflverse.load_schedules([season]), nflverse.load_teams([season]))
 
 
+def _mlb(season: int, assets: str) -> pd.DataFrame:
+    from whul.scoring import mlb
+    from whul.sources import mlb as source
+
+    if assets == "players":
+        return mlb.score_players(source.load_batters([season]), source.load_pitchers([season]))
+    # The contract engine pairs consecutive seasons, so a team score needs both.
+    return mlb.score_teams(source.load_schedule([season, season + 1]))
+
+
 def _nba(season: int, assets: str) -> pd.DataFrame:
     from whul.scoring import nba
     from whul.sources import hoopr
@@ -48,6 +58,12 @@ LEAGUES = {
         "assets": ("players", "teams"),
         "seasons": "1999-present",
         "source": "nflverse `stats_player` release (live)",
+    },
+    "mlb": {
+        "fn": _mlb,
+        "assets": ("players", "teams"),
+        "seasons": "2000-present",
+        "source": "MLB Stats API + FanGraphs (UNVERIFIED)",
     },
     "nba": {
         "fn": _nba,
@@ -128,6 +144,40 @@ def _spec(league: str):
             # smaller unit, so one season IS the incremental update.
             daily_cost=lambda: _timed(lambda: nflverse.load_player_stats([2025])),
         )
+    if league == "mlb":
+        from whul.scoring import mlb
+        from whul.sources import mlb as source
+
+        def load(seasons):
+            batters = source.load_batters(seasons)
+            pitchers = source.load_pitchers(seasons)
+            batters["_phase"] = "bat"
+            pitchers["_phase"] = "pit"
+            return pd.concat([batters, pitchers], ignore_index=True)
+
+        def score(raw, postseason):
+            batters = raw[raw["_phase"] == "bat"]
+            pitchers = raw[raw["_phase"] == "pit"]
+            scored = mlb.score_players(batters, pitchers)
+            # MLB leaderboards are season aggregates, so there is no separate
+            # postseason phase to bonus here -- the contract weighting is what
+            # handles the split.
+            scored["regular_points"] = scored["total_points"]
+            scored["regular_games"] = scored.get("games", 0)
+            scored["postseason_points"] = 0.0
+            scored["postseason_games"] = 0.0
+            scored["postseason_bonus"] = 0.0
+            return scored
+
+        return LeagueSpec(
+            name="MLB",
+            load=load,
+            score=score,
+            id_col="player",
+            week_col="season",
+            source="MLB Stats API (schedule) + FanGraphs (leaderboards)",
+            daily_cost=source.daily_update_cost,
+        )
     if league == "nba":
         from whul.scoring import nba
         from whul.sources import espn
@@ -147,6 +197,7 @@ def _spec(league: str):
 
 
 DEFAULT_VALIDATE = {
+    "mlb": ((2021, 2025), 2025),
     "nfl": ((2021, 2025), 2025),
     "nba": ((2022, 2026), 2026),
 }
@@ -164,6 +215,22 @@ def cmd_probe(args: argparse.Namespace) -> int:
             return 1
         print(f"nflverse reachable: {len(df):,} rows for 2025, {len(df.columns)} columns")
         print(f"season types: {df['season_type'].value_counts().to_dict()}")
+        return 0
+
+    if args.league == "mlb":
+        from whul.sources import mlb as source
+
+        result = source.probe()
+        print(f"\nMLB probe -- season {result['season']}\n")
+        for key, value in result.items():
+            if key == "season":
+                continue
+            print(f"  {key:<20} {value}")
+        failed = any(isinstance(v, str) and v.startswith("FAILED") for v in result.values())
+        if failed:
+            print("\nA feed could not be reached or parsed. Send me this output.", file=sys.stderr)
+            return 1
+        print("\nBoth MLB feeds reachable and parsing.")
         return 0
 
     from datetime import date as _date
