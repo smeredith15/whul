@@ -21,7 +21,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from whul.scoring.tennis import CATEGORIES, TOUR_250
+from whul.scoring.tennis import (
+    CATEGORIES, GRAND_SLAM, INTERNATIONAL, TOUR_250, TOUR_FINALS,
+)
+
+#: Categories whose points table does not vary with the draw. A slam is always
+#: a 128 bracket, the Tour Finals is a round robin, and a team event pays a flat
+#: rate per win -- so a missing draw size costs nothing for these.
+DRAW_SIZE_OPTIONAL = (GRAND_SLAM, TOUR_FINALS, INTERNATIONAL)
 
 CALENDAR_PATH = Path("data/tennis/calendar.csv")
 COLUMNS = ("season", "tour", "tournament", "category", "draw_size")
@@ -198,13 +205,26 @@ def validate(calendar: pd.DataFrame) -> list[str]:
     if unknown:
         problems.append(f"unknown categories: {unknown}")
 
-    missing_draw = calendar[calendar["draw_size"].isna()]
+    # Only the categories whose table varies with the draw need one.
+    needs_draw = ~calendar["category"].isin(DRAW_SIZE_OPTIONAL)
+    missing_draw = calendar[needs_draw & calendar["draw_size"].isna()]
     if not missing_draw.empty:
         problems.append(
             f"{len(missing_draw)} entries without a draw size, which picks the "
-            f"wrong bracket for 500s and 250s: "
+            f"wrong bracket for 1000s, 500s and 250s: "
             f"{missing_draw['tournament'].head(5).tolist()}"
         )
+
+    # Each tour plays four slams. A count that is not four per tour means an
+    # event was missed or mislabelled -- which is exactly how WTA Wimbledon
+    # arrived from the tennis2026 seed data marked as a 1000.
+    slams = calendar[calendar["category"] == GRAND_SLAM]
+    for (season, tour), group in slams.groupby(["season", "tour"]):
+        if len(group) != 4:
+            problems.append(
+                f"{tour} {season} has {len(group)} slams, not 4: "
+                f"{sorted(group['tournament'])}"
+            )
 
     duplicated = calendar.duplicated(subset=["season", "tour", "tournament"], keep=False)
     if duplicated.any():

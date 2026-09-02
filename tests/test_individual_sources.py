@@ -5,11 +5,14 @@ against recorded response shapes -- which is where the adapters have actually
 broken before (a value nested one level deeper than the code looked).
 """
 
+import json
+
 import pandas as pd
 
 from whul.sources import espn_individual as espn_ind
 from whul.sources import flashscore, jolpica, sackmann
 from whul.sources import tennis_calendar as calendar
+from whul.sources import tour_schedule as schedule
 
 
 # --- ESPN golf and racing --------------------------------------------------
@@ -405,3 +408,172 @@ def test_a_seed_round_trips_from_sackmann_tournaments():
     seeded = calendar.from_sackmann(sackmann.tournaments(parsed))
     assert set(seeded.columns) == set(calendar.COLUMNS)
     assert seeded.set_index("tournament").loc["Rome", "draw_size"] == 96
+
+
+# --- tour schedule scraping ------------------------------------------------
+
+def test_every_category_a_tour_page_states_is_recognized():
+    cases = {
+        "Grand Slam": "Grand Slam",
+        "ATP Masters 1000": "Masters 1000",
+        "WTA 1000": "Masters 1000",
+        "Premier Mandatory": "Masters 1000",
+        "ATP 500": "500",
+        "ATP 250": "250",
+        "WTA International": "250",
+        "Nitto ATP Finals": "Tour Finals",
+        "Davis Cup": "International",
+        "United Cup": "International",
+    }
+    for text, expected in cases.items():
+        assert schedule.classify_category(text) == expected, text
+
+
+def test_team_events_are_classified_before_anything_else():
+    """'United Cup' carries no level number and no tour name, so a later rule
+    would have to fall through to 250 and halve every win at it."""
+    assert schedule.classify_category("United Cup 2026") == "International"
+    assert schedule.classify_category("Billie Jean King Cup Finals") == "International"
+
+
+def test_an_unlabelled_event_is_left_unclassified():
+    """Better no answer than a guessed one -- the caller can fall back."""
+    assert schedule.classify_category("Wimbledon") is None
+    assert schedule.classify_category("") is None
+    assert schedule.classify_category(None) is None
+
+
+def test_only_real_draw_sizes_are_accepted():
+    """A page is full of numbers. Prize money and years read as draws unless
+    the value is checked against the sizes a tour event actually uses."""
+    assert schedule.parse_draw_size("Draw: 96") == 96
+    assert schedule.parse_draw_size("128 player draw") == 128
+    assert schedule.parse_draw_size("Prize money $9,600,000") is None
+    assert schedule.parse_draw_size("draw 100") is None
+
+
+def test_tournaments_are_pulled_out_of_embedded_json():
+    """Tour sites ship the data as JSON well before they render it, and the
+    payload sits a dozen levels down inside framework state."""
+    page = (
+        '<script id="__NEXT_DATA__" type="application/json">'
+        + json.dumps({"props": {"pageProps": {"data": {"tournaments": [
+            {"name": "Indian Wells", "category": "ATP Masters 1000", "drawSize": 96},
+            {"name": "Basel", "level": "ATP 500", "drawSize": 32},
+        ]}}}})
+        + "</script>"
+    )
+    rows = schedule.extract_from_json(page, "ATP", 2026)
+    by_name = {r["tournament"]: r for r in rows}
+    assert by_name["Indian Wells"]["category"] == "Masters 1000"
+    assert by_name["Indian Wells"]["draw_size"] == 96
+    assert by_name["Basel"]["category"] == "500"
+
+
+def test_json_records_without_a_category_are_not_tournaments():
+    """Navigation entries and ad slots have names too."""
+    page = ('<script type="application/json">'
+            + json.dumps({"items": [{"name": "Rankings"}, {"name": "News"}]})
+            + "</script>")
+    assert schedule.extract_from_json(page, "ATP", 2026) == []
+
+
+def test_malformed_json_does_not_stop_the_other_blobs():
+    page = (
+        '<script type="application/json">{ this is not json </script>'
+        '<script type="application/json">'
+        + json.dumps({"t": [{"name": "Rome", "category": "ATP Masters 1000"}]})
+        + "</script>"
+    )
+    rows = schedule.extract_from_json(page, "ATP", 2026)
+    assert [r["tournament"] for r in rows] == ["Rome"]
+
+
+def test_the_dom_is_the_backstop_when_there_is_no_json():
+    page = """
+      <ul><li class="tourney-result">
+        <a href="/en/tournaments/rome/416/overview">Rome</a>
+        <span class="badge">ATP Masters 1000</span>
+        <span>Draw: 96</span>
+      </li></ul>
+    """
+    rows = schedule.extract_from_dom(page, "ATP", 2026)
+    assert rows[0]["tournament"] == "Rome"
+    assert rows[0]["category"] == "Masters 1000"
+    assert rows[0]["draw_size"] == 96
+
+
+def test_a_merge_reports_a_category_change_rather_than_applying_it_silently():
+    """An event moving between categories restates its points, so the diff is
+    the deliverable -- it is meant to be read before the result is saved."""
+    existing = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Dallas",
+                              "category": "250", "draw_size": 32}])
+    scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Dallas",
+                             "category": "500", "draw_size": 32}])
+    merged, changes = schedule.merge(existing, scraped)
+    assert merged.iloc[0]["category"] == "500"
+    assert "250 -> 500" in changes.iloc[0]["change"]
+
+
+def test_a_merge_names_events_the_scrape_did_not_find():
+    """A tournament dropping out of the scrape is usually a rename, not a
+    cancellation, and either way it needs a person to look."""
+    existing = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Basel",
+                              "category": "500", "draw_size": 32}])
+    scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Vienna",
+                             "category": "500", "draw_size": 32}])
+    _, changes = schedule.merge(existing, scraped)
+    kinds = set(changes["change"])
+    assert "added" in kinds
+    assert "missing from scrape" in kinds
+
+
+def test_a_scrape_that_omits_the_draw_does_not_erase_a_known_one():
+    """The page not stating a draw means it did not say, not that there is
+    none -- overwriting with NaN would move the event to the default bracket."""
+    existing = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Rome",
+                              "category": "Masters 1000", "draw_size": 96.0}])
+    scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Rome",
+                             "category": "Masters 1000", "draw_size": None}])
+    merged, _ = schedule.merge(existing, scraped)
+    assert merged.iloc[0]["draw_size"] == 96.0
+
+
+def test_merging_into_an_empty_calendar_takes_everything():
+    scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Rome",
+                             "category": "Masters 1000", "draw_size": 96}])
+    merged, changes = schedule.merge(pd.DataFrame(), scraped)
+    assert len(merged) == 1
+    assert list(changes["change"]) == ["added"]
+
+
+# --- the checked-in 2026 calendar ------------------------------------------
+
+def test_the_shipped_calendar_is_valid():
+    """The file the live season is scored against, checked on every run."""
+    shipped = calendar.load()
+    assert not shipped.empty, "data/tennis/calendar.csv is missing"
+    assert calendar.validate(shipped) == []
+
+
+def test_the_shipped_calendar_covers_both_tours_and_every_category():
+    shipped = calendar.load()
+    assert set(shipped["tour"]) == {"ATP", "WTA"}
+    # Every category scoring knows about should appear; one missing means a
+    # whole class of event is being scored on a fallback.
+    from whul.scoring.tennis import CATEGORIES
+
+    assert set(shipped["category"]) == set(CATEGORIES)
+
+
+def test_every_shipped_entry_resolves_to_a_real_tier():
+    """A row whose category scoring does not recognize would silently pay from
+    the 250 table."""
+    from whul.scoring.tennis import scoring_tier
+
+    shipped = calendar.load()
+    tiers = {
+        scoring_tier(row.category, row.draw_size) for row in shipped.itertuples()
+    }
+    assert "A250_32" in tiers and "GS" in tiers and "M1000_128" in tiers
+    assert "M1000_64" in tiers, "the 56-draw Masters events should reach the small table"

@@ -162,7 +162,7 @@ def _tennis(season: int, assets: str) -> pd.DataFrame:
 
 #: Sports read one event at a time rather than one date at a time. Their probes
 #: return a nested report keyed by stage, so they render differently.
-INDIVIDUAL_LEAGUES = ("pga", "nascar", "f1", "tennis", "sackmann")
+INDIVIDUAL_LEAGUES = ("pga", "nascar", "f1", "tennis", "sackmann", "schedule")
 
 
 LEAGUES = {
@@ -530,6 +530,23 @@ def cmd_probe(args: argparse.Namespace) -> int:
             f"Sackmann archive probe -- season {report['season']}", report
         )
 
+    if args.league == "schedule":
+        # Three sources, each probed on its own: the tours are authoritative
+        # but defended, and tennistonic is the fallback when they refuse.
+        from whul.sources import tour_schedule
+
+        season = int(args.season) if args.season else None
+        sources = [args.tour] if args.tour else list(tour_schedule.SOURCES)
+        status = 0
+        for source in sources:
+            report = tour_schedule.probe(source, season)
+            status = _print_stages(
+                f"Tour schedule probe -- {source} {report['season']} "
+                f"({report['url']})",
+                report,
+            ) or status
+        return status
+
     if args.league == "f1":
         from whul.sources import jolpica
 
@@ -826,6 +843,10 @@ def main(argv: list[str] | None = None) -> int:
     # The individual sports probe a whole season rather than a date: a golf
     # tournament or a race meeting spans days, so a single date says nothing.
     probe.add_argument("--season", help="season to probe (individual sports; default: last year)")
+    probe.add_argument(
+        "--tour", choices=("atp", "wta", "tennistonic"),
+        help="which schedule source to probe (default: all three)",
+    )
     probe.set_defaults(func=cmd_probe)
 
     validate = sub.add_parser("validate", help="full data-source validation report")
