@@ -92,11 +92,16 @@ def summary(league: str, event_id: str) -> dict:
 
 
 def _position(entry: dict, positions: dict[str, str] | None = None) -> str:
-    """Player position, which the boxscore does not reliably carry.
+    """Player position.
 
-    ESPN's boxscore athlete entries frequently omit position entirely (the field
-    comes back as an empty string), so a roster-derived lookup is the dependable
-    source. The inline paths are tried first for the cases where it is present.
+    ESPN carries this at ``entry["athlete"]["position"]``. The entry itself also
+    has a ``position`` key, but it is an empty dict -- reading that one is what
+    made positions look absent. Both are checked, then the roster map as a last
+    resort for a player the boxscore does not describe.
+
+    Values are the generic ``G`` / ``F`` / ``C`` (and hyphenated forms like
+    ``G-F``), not the fine-grained PG/SG/SF/PF, which is all the Backcourt and
+    Frontcourt split needs.
     """
     athlete = entry.get("athlete", {}) or {}
     for candidate in (
@@ -169,9 +174,9 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
     backfill is thousands of requests. Responses are cached per date and per
     game, so this is a one-time cost and a daily update is a single date.
     """
-    positions = load_positions("nba")
-    if verbose:
-        print(f"  position map: {len(positions)} players from team rosters")
+    # Only pay for the roster walk if the boxscore turns out to need it; that is
+    # decided lazily on the first game, since it is a property of the feed.
+    positions: dict[str, str] | None = None
 
     rows: list[dict] = []
     for season in seasons:
@@ -191,18 +196,32 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
                     (event.get("season") or {}).get("type", SEASON_TYPE_REGULAR)
                 )
                 try:
-                    rows.extend(
-                        _parse_box(
-                            summary("nba", event["id"]),
-                            event["id"],
-                            day,
-                            season,
-                            season_type,
-                            positions,
-                        )
+                    parsed = _parse_box(
+                        summary("nba", event["id"]),
+                        event["id"],
+                        day,
+                        season,
+                        season_type,
+                        positions,
                     )
                 except Exception:
                     continue
+
+                if positions is None and any(
+                    not r["athlete_position_abbreviation"] for r in parsed
+                ):
+                    positions = load_positions("nba")
+                    if verbose:
+                        print(f"  boxscore lacks positions; loaded {len(positions)} from rosters")
+                    parsed = _parse_box(
+                        summary("nba", event["id"]),
+                        event["id"],
+                        day,
+                        season,
+                        season_type,
+                        positions,
+                    )
+                rows.extend(parsed)
                 time.sleep(REQUEST_PAUSE)
             if verbose and index % 50 == 0 and index:
                 print(f"    {index}/{len(days)} dates, {len(rows):,} rows")
@@ -224,8 +243,9 @@ def default_probe_date(today: date | None = None) -> date:
 def load_positions(league: str = "nba") -> dict[str, str]:
     """Map athlete id -> position abbreviation, from every team's roster.
 
-    Thirty requests for the NBA, cached, and the only dependable source of
-    position -- which the scoring engine needs to split Backcourt from Frontcourt.
+    Insurance rather than the primary path: the boxscore does carry position, so
+    this only fills in players it fails to describe. Thirty requests for the NBA,
+    cached, and skipped entirely when the boxscore already resolves everyone.
     """
     sport, path = LEAGUE_PATHS[league]
     teams = _get(

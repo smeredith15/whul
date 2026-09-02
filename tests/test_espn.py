@@ -1,9 +1,9 @@
 """ESPN adapter tests.
 
 The fixture below mirrors a real payload returned by the live API on 2026-01-15:
-the label order is ESPN's actual order, and the athlete entry carries an **empty**
-position, which is what the API really does. Position therefore has to come from
-the team rosters -- see ``load_positions``.
+the label order is ESPN's actual order, and position sits at
+``entry["athlete"]["position"]`` while ``entry["position"]`` is an empty dict --
+reading the latter is what once made positions look absent.
 
 These prove the parsing and the stat mapping. Only `python -m whul.cli probe nba`
 proves the endpoint itself.
@@ -33,7 +33,13 @@ BOX = {
                         "labels": LABELS,
                         "athletes": [
                             {
-                                "athlete": {"id": "4277961", "displayName": "Jaren Jackson Jr."},
+                                # ESPN populates the athlete-level position and
+                                # leaves the entry-level one empty.
+                                "athlete": {
+                                    "id": "4277961",
+                                    "displayName": "Jaren Jackson Jr.",
+                                    "position": {"abbreviation": "F"},
+                                },
                                 "position": {},
                                 "stats": JJJ,
                             },
@@ -93,14 +99,14 @@ def test_parse_box_tolerates_an_empty_payload():
 
 # --- position resolution ---------------------------------------------------
 
-def test_boxscore_position_really_is_empty():
-    """Documents the live behaviour this adapter has to work around."""
-    assert parse()[0]["athlete_position_abbreviation"] == ""
+def test_position_is_read_from_the_athlete_not_the_entry():
+    """entry["position"] is an empty dict; the real value is one level in."""
+    assert parse()[0]["athlete_position_abbreviation"] == "F"
 
 
-def test_roster_map_fills_the_missing_position():
-    row = parse(positions={"4277961": "PF"})[0]
-    assert row["athlete_position_abbreviation"] == "PF"
+def test_roster_map_only_fills_what_the_boxscore_omits():
+    entry = {"athlete": {"id": "4277961"}}
+    assert espn._position(entry, {"4277961": "PF"}) == "PF"
 
 
 def test_inline_position_wins_when_present():
@@ -118,19 +124,24 @@ def test_position_is_empty_when_nothing_supplies_it():
     assert espn._position({"athlete": {"id": "1"}}, {"2": "PG"}) == ""
 
 
-def test_position_drives_the_normalization_group():
-    """Without a position every NBA player collapses into one group, which would
-    silently erase the Backcourt/Frontcourt split the scale depends on."""
+def test_espn_position_vocabulary_maps_to_the_normalization_groups():
+    """ESPN returns generic G/F/C and hyphenated forms, not PG/SG/SF/PF."""
     from whul.normalize import assign_norm_key
 
-    rows = parse(positions={"4277961": "PF"})
-    df = pd.DataFrame(rows).assign(league="NBA", role=lambda d: d["athlete_position_abbreviation"])
-    assert assign_norm_key(df, "Player").iloc[0] == "NBA_Frontcourt"
+    df = pd.DataFrame({"league": ["NBA"] * 5, "role": ["G", "F", "C", "G-F", "F-C"]})
+    assert list(assign_norm_key(df, "Player")) == [
+        "NBA_Backcourt", "NBA_Frontcourt", "NBA_Frontcourt",
+        "NBA_Backcourt", "NBA_Frontcourt",
+    ]
 
-    unresolved = pd.DataFrame(parse()).assign(
-        league="NBA", role=lambda d: d["athlete_position_abbreviation"]
-    )
-    assert assign_norm_key(unresolved, "Player").iloc[0] == "NBA", "the split is lost"
+
+def test_an_unresolved_position_collapses_the_group():
+    """The failure mode to guard against: no position means no Backcourt /
+    Frontcourt split, silently, with no error anywhere."""
+    from whul.normalize import assign_norm_key
+
+    df = pd.DataFrame({"league": ["NBA"], "role": [""]})
+    assert assign_norm_key(df, "Player").iloc[0] == "NBA", "the split is lost"
 
 
 # --- integration with the scorer -------------------------------------------
@@ -138,13 +149,13 @@ def test_position_drives_the_normalization_group():
 def test_parsed_rows_feed_the_nba_scorer():
     from whul.scoring.nba import score_players
 
-    box = pd.DataFrame(parse(positions={"4277961": "PF"}) * 20)  # clear the 15-game minimum
+    box = pd.DataFrame(parse() * 20)  # clear the 15-game minimum
     scored = score_players(box)
     assert len(scored) == 1
     # 30 + 3*1.2 + 1*1.5 + 2*3 + 2*3 + 4*-1 + 3*0.5 = 44.6, no double-double,
     # plus 0.1 * -21 = -2.1 -> 42.5 per game
     assert scored.iloc[0]["regular_points"] == pytest.approx(42.5 * 20)
-    assert scored.iloc[0]["role"] == "PF"
+    assert scored.iloc[0]["role"] == "F"
 
 
 # --- season windows --------------------------------------------------------

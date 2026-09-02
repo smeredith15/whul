@@ -1,13 +1,12 @@
 # Testing NBA data acquisition
 
-**Status:** ESPN was confirmed reachable on 2026-01-15 — the scoreboard and
-boxscore endpoints both respond and parse. One gap surfaced and is now handled:
-**the boxscore returns an empty position for every player**, so positions are
-pulled from team rosters instead (30 extra requests, cached). Re-run step 3 after
-pulling to confirm the fix resolves them.
+**Status:** ESPN is confirmed working as of 2026-01-15 — scoreboard and boxscore
+both respond, parse, and resolve positions (`positions_inline 20/20`). Position
+sits at `entry["athlete"]["position"]`; an earlier version read the empty
+`entry["position"]` and made it look absent.
 
-The adapter still has not been exercised over a full season, so treat this as a
-diagnostic rather than a settled source.
+The adapter has not yet been exercised over a full season, so treat this as
+promising rather than settled.
 
 Setup is identical to `TESTING_NFL.md` steps 1-3 — clone, venv, `pip install -e '.[dev]'`.
 
