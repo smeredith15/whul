@@ -111,12 +111,21 @@ def test_package_discovery_is_pinned():
     assert "data/*.csv" in config["tool"]["setuptools"]["package-data"]["whul"]
 
 
-def test_no_data_directory_sits_beside_the_package():
-    """The thing that broke the build. Package data belongs under whul/."""
+def test_a_stray_top_level_directory_cannot_be_taken_for_a_package():
+    """What actually broke `pip install -e .` was setuptools discovering a
+    second top-level package. Pinned discovery is the fix, so a runtime
+    directory like data/ -- which the simulator and the caches write into --
+    is now harmless. What must stay true is that nothing outside whul/ looks
+    importable, since that is what discovery would pick up."""
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    assert not (root / "data").is_dir(), (
-        "a top-level data/ directory breaks `pip install -e .`; "
-        "put package data under whul/data/ instead"
-    )
+    for directory in root.iterdir():
+        if not directory.is_dir() or directory.name in ("whul", "tests"):
+            continue
+        if directory.name.startswith("."):
+            continue
+        assert not (directory / "__init__.py").exists(), (
+            f"{directory.name}/ looks like a package; either move it under "
+            f"whul/ or exclude it from discovery in pyproject.toml"
+        )
