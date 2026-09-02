@@ -92,9 +92,26 @@ filtering works — the men's probe found 3 opponents outside the 362 listed tea
 (Lindenwood, Queens, Southern Indiana), exactly the reclassifying schools the old
 games floor was meant to exclude.
 
-**NCAA Softball rejects every parameter** (`groups` *and* `limit`), so the
-scoreboard now tries request shapes progressively and reports which one the
-endpoint accepted. Results only — no player slots exist, so no box scores. That is one
+Three findings from the probes:
+
+- **NCAA Softball's path is wrong, not its parameters.** `eligible_teams` is 0 and
+  every request shape 400s, so `softball/college-softball` is not a valid ESPN
+  endpoint. `whul.cli discover ncaasoftball` tries four candidate paths and
+  reports what each returns. If none works, ESPN has no softball API and this
+  league needs a different source — the NCAA's own stats site is the likely
+  fallback, which is what `softballR` used.
+- **NCAAF's division filter is currently ineffective.** `eligible_teams` returns
+  **759**, but FBS has ~134 teams, so `groups=80` is being ignored on the teams
+  endpoint and FCS opponents would enter the benchmark pool. The scoreboard also
+  returned only 25 games for a mid-November Saturday, which is low for FBS.
+  `discover ncaaf` reports team counts for several group ids so the right one can
+  be chosen. **This is a live correctness problem, not cosmetic.**
+- **Baseball's blank conference is harmless.** `conference_coverage 0/66` looked
+  alarming but diamond scoring never reads conference — wins, run differential
+  and series milestones only. The probe now says so explicitly rather than
+  printing a fraction that implies a fault.
+
+Results only — no player slots exist, so no box scores. That is one
 scoreboard request per date, and the ESPN adapter already proven for NBA covers it.
 
 - **[C-6] answered: keep the R scoring as written**, including the shared-title

@@ -42,11 +42,35 @@ LEAGUE_PATHS = {
     "ncaasoftball": ("softball", "college-softball"),
 }
 
-#: ESPN group id for Division I. Without it the scoreboard returns only a
+#: ESPN group id for the top division. Without it the scoreboard returns only a
 #: featured subset, which would silently omit most of the field.
 DIVISION_I_GROUPS = {
     "ncaam": 50, "ncaaw": 50, "ncaaf": 80,
     "ncaabaseball": 26, "ncaasoftball": 29,
+}
+
+#: Leagues whose scoring actually uses conference affiliation. Baseball and
+#: softball score wins, run differential and series milestones only, so a blank
+#: conference costs them nothing.
+CONFERENCE_REQUIRED = {"ncaaf", "ncaam", "ncaaw"}
+
+#: Candidate sport/league paths to try when a league's usual path is rejected.
+PATH_CANDIDATES = {
+    "ncaasoftball": [
+        ("softball", "college-softball"),
+        ("softball", "womens-college-softball"),
+        ("softball", "ncaa-softball"),
+        ("baseball", "college-softball"),
+    ],
+}
+
+#: Group ids worth trying when the configured one returns an implausible count.
+GROUP_CANDIDATES = {
+    "ncaaf": [80, 81, 90, None],
+    "ncaam": [50, 51, None],
+    "ncaaw": [50, 51, None],
+    "ncaabaseball": [26, 27, None],
+    "ncaasoftball": [29, 30, None],
 }
 
 #: An NBA season labelled 2026 runs Oct 2025 - Jun 2026.
@@ -283,6 +307,79 @@ def daily_results_cost(league: str, day: date | None = None) -> float:
     return time.monotonic() - started
 
 
+def discover(league: str, day: date | None = None) -> dict:
+    """Report what each candidate path and group id actually returns.
+
+    Used when a league's configured path or division filter looks wrong -- a
+    softball endpoint that rejects everything, or a football team list far larger
+    than the division it should describe. Rather than guessing from here, this
+    asks the API and reports counts so the right values can be chosen.
+    """
+    day = day or default_probe_date()
+    dates = day.strftime("%Y%m%d")
+    out: dict[str, object] = {"league": league, "date": day.isoformat()}
+
+    paths = PATH_CANDIDATES.get(league, [LEAGUE_PATHS[league]])
+    path_report: list[str] = []
+    for sport, path in paths:
+        teams_n: object = "?"
+        try:
+            payload = _get(f"{BASE}/{sport}/{path}/teams", {"limit": 1000})
+            teams_n = sum(
+                len(lb.get("teams", []))
+                for sb in payload.get("sports", [])
+                for lb in sb.get("leagues", [])
+            )
+        except Exception as exc:
+            teams_n = f"ERR {getattr(getattr(exc, 'response', None), 'status_code', '?')}"
+        try:
+            board = _get(f"{BASE}/{sport}/{path}/scoreboard", {"dates": dates})
+            games_n: object = len(board.get("events", []))
+        except Exception as exc:
+            games_n = f"ERR {getattr(getattr(exc, 'response', None), 'status_code', '?')}"
+        path_report.append(f"{sport}/{path}: teams={teams_n} games={games_n}")
+    out["paths"] = path_report
+
+    sport, path = LEAGUE_PATHS[league]
+    group_report: list[str] = []
+    for group in GROUP_CANDIDATES.get(league, [None]):
+        params: dict = {"limit": 1000}
+        if group is not None:
+            params["groups"] = group
+        try:
+            payload = _get(f"{BASE}/{sport}/{path}/teams", params)
+            count: object = sum(
+                len(lb.get("teams", []))
+                for sb in payload.get("sports", [])
+                for lb in sb.get("leagues", [])
+            )
+        except Exception as exc:
+            count = f"ERR {getattr(getattr(exc, 'response', None), 'status_code', '?')}"
+        group_report.append(f"groups={group}: teams={count}")
+    out["group_ids"] = group_report
+
+    try:
+        board = _get(
+            f"{BASE}/{sport}/{path}/scoreboard",
+            {"dates": dates, "limit": 900, **(
+                {"groups": DIVISION_I_GROUPS[league]} if league in DIVISION_I_GROUPS else {}
+            )},
+        )
+        events = board.get("events", [])
+        out["scoreboard_events"] = len(events)
+        names = sorted(
+            {
+                (c.get("team") or {}).get("displayName", "")
+                for e in events
+                for c in ((e.get("competitions") or [{}])[0]).get("competitors", [])
+            }
+        )
+        out["sample_teams"] = names[:6]
+    except Exception as exc:
+        out["scoreboard_events"] = f"ERR {exc}"
+    return out
+
+
 def probe_results(league: str, day: date | None = None) -> dict:
     """Reachability and shape check for a results-only league.
 
@@ -328,8 +425,11 @@ def probe_results(league: str, day: date | None = None) -> dict:
     rows = [r for r in (_event_rows(e, league, day.year, day) for e in events) if r]
     result["parsed_games"] = len(rows)
     if rows:
-        with_conf = sum(1 for r in rows if r["home_conference"] and r["away_conference"])
-        result["conference_coverage"] = f"{with_conf}/{len(rows)}"
+        if league in CONFERENCE_REQUIRED:
+            with_conf = sum(1 for r in rows if r["home_conference"] and r["away_conference"])
+            result["conference_coverage"] = f"{with_conf}/{len(rows)}"
+        else:
+            result["conference_coverage"] = "not used by this league's scoring"
         result["sample"] = rows[0]
 
     if rows and eligible:

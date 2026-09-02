@@ -261,6 +261,32 @@ DEFAULT_VALIDATE = {
 }
 
 
+def cmd_discover(args: argparse.Namespace) -> int:
+    """Ask the API what works, instead of guessing which path or group id is right."""
+    from datetime import date as _d
+
+    from whul.sources import espn
+
+    if args.league not in NCAA_LEAGUES and args.league != "nba":
+        print(f"discover is for ESPN-backed leagues; {args.league} uses another source",
+              file=sys.stderr)
+        return 2
+
+    day = _d.fromisoformat(args.date) if args.date else None
+    result = espn.discover(args.league, day)
+    print(f"\nESPN discovery -- {result['league']} on {result['date']}\n")
+    print("  candidate sport/league paths:")
+    for line in result.get("paths", []):
+        print(f"    {line}")
+    print("\n  candidate division group ids:")
+    for line in result.get("group_ids", []):
+        print(f"    {line}")
+    print(f"\n  scoreboard events with the configured filter: {result.get('scoreboard_events')}")
+    if result.get("sample_teams"):
+        print(f"  sample teams: {', '.join(result['sample_teams'])}")
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
     if args.league == "nfl":
@@ -473,6 +499,13 @@ def main(argv: list[str] | None = None) -> int:
     weekly.add_argument("--player", help="show one player's week-by-week line")
     weekly.add_argument("--top", type=int, default=15)
     weekly.set_defaults(func=cmd_weekly)
+
+    discover = sub.add_parser(
+        "discover", help="report what candidate paths and group ids actually return"
+    )
+    discover.add_argument("league", choices=sorted(LEAGUES))
+    discover.add_argument("--date", help="YYYY-MM-DD, in season for that sport")
+    discover.set_defaults(func=cmd_discover)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     probe.add_argument("league", choices=sorted(LEAGUES))

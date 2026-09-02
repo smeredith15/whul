@@ -304,3 +304,35 @@ def test_scoreboard_reraises_a_non_parameter_error(monkeypatch, tmp_path):
 
     with pytest.raises(requests.HTTPError):
         espn.scoreboard("ncaam", date(2026, 1, 15))
+
+
+# --- conference reporting ---------------------------------------------------
+
+def test_conference_is_only_required_where_scoring_uses_it():
+    """Baseball and softball score wins, run differential and series milestones
+    only, so a blank conference costs them nothing and must not read as a fault."""
+    assert espn.CONFERENCE_REQUIRED == {"ncaaf", "ncaam", "ncaaw"}
+    assert "ncaabaseball" not in espn.CONFERENCE_REQUIRED
+    assert "ncaasoftball" not in espn.CONFERENCE_REQUIRED
+
+
+def test_diamond_scoring_never_reads_conference():
+    """Pins the assumption behind the exemption above."""
+    import inspect
+
+    from whul.scoring import ncaa
+
+    assert "conference" not in inspect.getsource(ncaa.score_diamond)
+
+
+def test_discovery_offers_alternatives_for_the_failing_league():
+    """Softball's configured path is rejected outright, so candidates are needed."""
+    assert len(espn.PATH_CANDIDATES["ncaasoftball"]) > 1
+    assert espn.LEAGUE_PATHS["ncaasoftball"] in espn.PATH_CANDIDATES["ncaasoftball"]
+
+
+def test_group_candidates_include_dropping_the_filter():
+    """None must be among the options -- a league may not accept the filter."""
+    for league, candidates in espn.GROUP_CANDIDATES.items():
+        assert None in candidates, league
+        assert espn.DIVISION_I_GROUPS[league] in candidates, league
