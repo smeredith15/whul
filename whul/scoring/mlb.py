@@ -11,6 +11,14 @@ portion of year N+1 is inflated so the two shares reconcile to a full season.
 role in full plus half their secondary. This is not an Ohtani special case -- it
 applies to every player who accumulates in both, including a position player who
 mops up an inning in a blowout.
+
+Crucially the two halves are normalized **separately**: batting production is
+measured against the batter benchmark and pitching against the pitcher benchmark,
+and only then are the normalized scores combined. Raw batting and pitching points
+are on different scales, so combining before normalizing would compare unlike
+quantities -- and it is the normalized scores that decide which role is primary.
+Scoring therefore emits one row per player-role, and ``combine_two_way`` is
+applied after ``apply_benchmarks``.
 """
 
 from __future__ import annotations
@@ -142,45 +150,57 @@ def score_pitchers(df: pd.DataFrame) -> pd.DataFrame:
     return work[work["role_points"] > 0].reset_index(drop=True)
 
 
-def combine_roles(batters: pd.DataFrame, pitchers: pd.DataFrame) -> pd.DataFrame:
-    """Merge batting and pitching into one row per player-season.
+def score_players(batters: pd.DataFrame, pitchers: pd.DataFrame) -> pd.DataFrame:
+    """One row per player *per role*, ready for normalization.
 
-    A player accumulating in both scores their better role in full plus half the
-    other. The R script called this the Ohtani rule, but it is general: a position
-    player who pitches an inning in a blowout is handled by the same arithmetic,
-    and so is any future two-way player.
-
-    The player normalizes against their **primary** role's group, not a separate
-    two-way group. Position players pitching occasionally would otherwise create a
-    large, meaningless "Two-Way" cohort, and a genuine two-way star would be
-    measured against a handful of peers.
+    Deliberately not combined here: batting is normalized against the batter
+    benchmark and pitching against the pitcher benchmark, so the two halves must
+    stay separate until ``apply_benchmarks`` has run. Call ``combine_two_way``
+    afterwards to fold a two-way player's two rows into one.
     """
-    keys = ["season", "player"]
-    frames = [f for f in (batters, pitchers) if f is not None and not f.empty]
+    frames = [
+        f for f in (score_batters(batters), score_pitchers(pitchers))
+        if f is not None and not f.empty
+    ]
     if not frames:
         empty = _empty_role_frame()
-        for col in ("total_points", "secondary_points", "is_two_way", "league"):
-            empty[col] = pd.Series(dtype="object")
+        empty["total_points"] = pd.Series(dtype="object")
+        empty["league"] = pd.Series(dtype="object")
         return empty
-    both = pd.concat(frames, ignore_index=True)
 
-    ranked = both.sort_values("role_points", ascending=False)
-    primary = ranked.groupby(keys, as_index=False).first()
-    counts = ranked.groupby(keys, as_index=False).agg(
-        role_count=("role", "size"),
-        secondary_points=("role_points", lambda s: s.iloc[1] if len(s) > 1 else 0.0),
-    )
-
-    out = primary.merge(counts, on=keys, how="left")
-    out["is_two_way"] = out["role_count"] > 1
-    out["total_points"] = out["role_points"] + out["secondary_points"] * SECONDARY_ROLE_WEIGHT
+    out = pd.concat(frames, ignore_index=True)
+    # `total_points` is the column the normalization engine reads.
+    out["total_points"] = out["role_points"]
     out["league"] = "MLB"
     return out.reset_index(drop=True)
 
 
-def score_players(batters: pd.DataFrame, pitchers: pd.DataFrame) -> pd.DataFrame:
-    """Season totals per MLB player, with the two-way rule applied."""
-    return combine_roles(score_batters(batters), score_pitchers(pitchers))
+def combine_two_way(scored: pd.DataFrame) -> pd.DataFrame:
+    """Fold per-role normalized scores into one row per player.
+
+    Applied **after** normalization: the primary role is whichever scored higher
+    on the 0-100 scale, since raw batting and pitching points are not comparable.
+    The secondary role contributes half its normalized score.
+    """
+    keys = ["season", "player"]
+    if scored is None or scored.empty:
+        return scored
+
+    ranked = scored.sort_values("scaled_score", ascending=False)
+    primary = ranked.groupby(keys, as_index=False).first()
+    extras = ranked.groupby(keys, as_index=False).agg(
+        role_count=("role", "size"),
+        secondary_score=("scaled_score", lambda s: s.iloc[1] if len(s) > 1 else 0.0),
+        secondary_role=("role", lambda s: s.iloc[1] if len(s) > 1 else ""),
+    )
+
+    out = primary.merge(extras, on=keys, how="left")
+    out["is_two_way"] = out["role_count"] > 1
+    out["primary_score"] = out["scaled_score"]
+    out["scaled_score"] = (
+        out["primary_score"] + out["secondary_score"] * SECONDARY_ROLE_WEIGHT
+    ).round(2)
+    return out.reset_index(drop=True)
 
 
 def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:

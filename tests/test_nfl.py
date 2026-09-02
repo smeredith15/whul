@@ -202,3 +202,15 @@ def test_real_2024_season_sanity():
     assert teams["div_champ"].sum() == 8
     champ = teams.nlargest(1, "total_points").iloc[0]
     assert champ["team"] == "PHI" and champ["playoff_wins"] == 4
+
+
+def test_postseason_games_counts_player_appearances():
+    """The rate denominator is the player's own games, not his team's."""
+    stats = pd.DataFrame(
+        [weekly(week=w, passing_yards=1000) for w in range(1, 18)]
+        + [weekly(week=19, season_type="POST", passing_yards=500),
+           weekly(week=21, season_type="POST", passing_yards=500)]
+    )
+    out = score_players(stats).iloc[0]
+    assert out["postseason_games"] == 2, "week 20 was missed and must not count"
+    assert out["postseason_rate"] == pytest.approx(20.0)

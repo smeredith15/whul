@@ -201,3 +201,13 @@ def test_real_2023_season_sanity():
     teams = score_teams(hoopr.load_schedule([2023]))
     assert len(teams) == 30, "exhibition squads must not enter the team pool"
     assert teams.iloc[0]["team"] == "BOS"
+
+
+def test_postseason_games_counts_player_appearances():
+    """A player who sat out games is rated on the ones he played."""
+    games = pd.DataFrame(
+        [box(points=30, season_type=2)] * 20 + [box(points=40, season_type=3)] * 3
+    )
+    out = score_players(games).iloc[0]
+    assert out["postseason_games"] == 3
+    assert out["postseason_rate"] == pytest.approx(40.0)

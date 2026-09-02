@@ -38,6 +38,7 @@ def _mlb(season: int, assets: str) -> pd.DataFrame:
     from whul.sources import mlb as source
 
     if assets == "players":
+        # Per-role rows; combine_two_way runs after normalization.
         return mlb.score_players(source.load_batters([season]), source.load_pitchers([season]))
     # The contract engine pairs consecutive seasons, so a team score needs both.
     return mlb.score_teams(source.load_schedule([season, season + 1]))
@@ -177,6 +178,7 @@ def _spec(league: str):
             week_col="season",
             source="MLB Stats API (schedule) + FanGraphs (leaderboards)",
             daily_cost=source.daily_update_cost,
+            post_normalize=mlb.combine_two_way,
         )
     if league == "nba":
         from whul.scoring import nba

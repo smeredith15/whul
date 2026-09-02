@@ -131,3 +131,24 @@ def test_split_phases_fills_missing_phase_with_zero():
     rows = pd.DataFrame({"player": ["a"], "pts": [10.0], "g": [1]})
     out = split_phases(rows, ["player"], "pts", "g", pd.Series([REGULAR])).iloc[0]
     assert out["postseason_points"] == 0.0 and out["postseason_games"] == 0.0
+
+
+# --- the rate denominator --------------------------------------------------
+
+def test_rate_uses_player_games_not_team_games():
+    """A player who appeared in 2 of his team's 4 playoff games is rated on 2.
+
+    Using team games would halve the rate of anyone who missed a game, and would
+    reward a player who sat out for being on a team that went deep.
+    """
+    played_two = apply_bonus(phase_frame(170.0, 17, 60.0, 2), RULES["NFL"]).iloc[0]
+    played_four = apply_bonus(phase_frame(170.0, 17, 60.0, 4), RULES["NFL"]).iloc[0]
+    assert played_two["postseason_rate"] == pytest.approx(30.0)
+    assert played_four["postseason_rate"] == pytest.approx(15.0)
+    assert played_two["postseason_bonus"] > played_four["postseason_bonus"]
+
+
+def test_a_player_who_did_not_appear_earns_nothing_from_a_deep_run():
+    """Being rostered on a finalist is not itself worth anything."""
+    out = apply_bonus(phase_frame(170.0, 17, 0.0, 0), RULES["NFL"]).iloc[0]
+    assert out["postseason_bonus"] == 0.0

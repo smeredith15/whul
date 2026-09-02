@@ -6,18 +6,33 @@ Expected values are computed by hand from MLB_Players_Teams.R.
 import pandas as pd
 import pytest
 
+from whul.normalize import apply_benchmarks, compute_benchmarks
 from whul.scoring.mlb import (
     MULT_YEAR_N,
     MULT_YEAR_N1,
     SHARE_POST_ASB,
     SHARE_PRE_ASB,
-    combine_roles,
+    combine_two_way,
     score_batters,
     score_pitchers,
     score_players,
     score_teams,
     summarize_teams,
 )
+
+
+def normalized(batters, pitchers):
+    """Score, normalize per role, then fold two-way players together."""
+    roles = score_players(batters, pitchers)
+    bench = compute_benchmarks(roles, "Player")
+    return combine_two_way(apply_benchmarks(roles, bench, "Player"))
+
+
+def filler(n=70):
+    """Enough peers in each role that a benchmark is meaningful."""
+    bats = [batter(PlayerName=f"B{i}", H=80 + i, AB=400) for i in range(n)]
+    pits = [pitcher(PlayerName=f"P{i}", IP=150, SO=120 + i) for i in range(n)]
+    return bats, pits
 
 
 def batter(**over):
@@ -84,66 +99,90 @@ def test_home_runs_allowed_are_the_heaviest_penalty():
 
 # --- the two-way rule ------------------------------------------------------
 
-def test_single_role_player_scores_that_role_in_full():
-    out = score_players(pd.DataFrame([batter(H=100)]), pd.DataFrame([]))
-    assert len(out) == 1
-    assert out.iloc[0]["total_points"] == pytest.approx(560.0)
-    assert not out.iloc[0]["is_two_way"]
-
-
-def test_two_way_player_scores_primary_plus_half_secondary():
-    """Not an Ohtani special case -- the same arithmetic for anyone who does both."""
-    both = "Two Way Guy"
+def test_scoring_emits_one_row_per_player_role():
+    """Roles stay separate through scoring so each can meet its own benchmark."""
     out = score_players(
-        pd.DataFrame([batter(PlayerName=both, H=100)]),      # 560
-        pd.DataFrame([pitcher(PlayerName=both, IP=100)]),    # 740
-    ).iloc[0]
-    assert out["is_two_way"]
-    assert out["role"] == "Pitcher", "the higher-scoring role is primary"
-    assert out["total_points"] == pytest.approx(740 + 560 * 0.5)
+        pd.DataFrame([batter(PlayerName="X", H=100)]),
+        pd.DataFrame([pitcher(PlayerName="X", IP=100)]),
+    )
+    assert len(out) == 2
+    assert set(out["role"]) == {"Batter", "Pitcher"}
+
+
+def test_each_role_is_measured_against_its_own_benchmark():
+    """Batting against the batter p99, pitching against the pitcher p99.
+
+    Raw batting and pitching points are on unlike scales, so they can only be
+    combined once each has been put on the 0-100 scale.
+    """
+    from whul.normalize import assign_norm_key
+
+    bats, pits = filler()
+    roles = score_players(
+        pd.DataFrame(bats + [batter(PlayerName="X", H=200)]),
+        pd.DataFrame(pits + [pitcher(PlayerName="X", IP=200, SO=250)]),
+    )
+    assert set(assign_norm_key(roles, "Player")) == {"MLB_Batter", "MLB_Pitcher"}
+    bench = compute_benchmarks(roles, "Player")
+    assert set(bench["norm_key"]) == {"MLB_Batter", "MLB_Pitcher"}
+    assert "MLB_Two-Way" not in set(bench["norm_key"]), "no separate two-way group"
+
+
+def test_two_way_combines_normalized_scores_not_raw_points():
+    bats, pits = filler()
+    out = normalized(
+        pd.DataFrame(bats + [batter(PlayerName="X", H=200, HR=40)]),
+        pd.DataFrame(pits + [pitcher(PlayerName="X", IP=200, SO=250, WAR=6)]),
+    )
+    row = out[out["player"] == "X"].iloc[0]
+    assert row["is_two_way"]
+    assert row["scaled_score"] == pytest.approx(
+        row["primary_score"] + row["secondary_score"] * 0.5, abs=0.01
+    )
+
+
+def test_primary_role_is_decided_on_the_normalized_scale():
+    """Raw points would pick the wrong role: the two scales are not comparable."""
+    bats, pits = filler()
+    roles = score_players(
+        pd.DataFrame(bats + [batter(PlayerName="X", H=95, AB=400)]),
+        pd.DataFrame(pits + [pitcher(PlayerName="X", IP=210, SO=300, WAR=8)]),
+    )
+    raw = roles[roles["player"] == "X"].set_index("role")["total_points"]
+    scored = apply_benchmarks(roles, compute_benchmarks(roles, "Player"), "Player")
+    norm = scored[scored["player"] == "X"].set_index("role")["scaled_score"]
+    combined = combine_two_way(scored)
+    row = combined[combined["player"] == "X"].iloc[0]
+    assert row["role"] == norm.idxmax()
+    assert row["primary_score"] == pytest.approx(norm.max())
 
 
 def test_position_player_mopping_up_an_inning_uses_the_same_rule():
     """A blowout inning is a tiny secondary score, not a special case."""
-    name = "Utility Guy"
-    out = score_players(
-        pd.DataFrame([batter(PlayerName=name, H=120)]),          # 672
-        pd.DataFrame([pitcher(PlayerName=name, IP=1, SO=1)]),    # 9.4
-    ).iloc[0]
-    assert out["is_two_way"]
-    assert out["role"] == "Batter"
-    assert out["total_points"] == pytest.approx(672 + 9.4 * 0.5)
-
-
-def test_two_way_players_normalize_against_their_primary_role():
-    """A separate Two-Way group would be meaningless: position players who pitch
-    an inning would swamp it, and a genuine two-way star would have no peers."""
-    from whul.normalize import assign_norm_key
-
-    out = score_players(
-        pd.DataFrame([batter(PlayerName="X", H=200)]),
-        pd.DataFrame([pitcher(PlayerName="X", IP=10)]),
+    bats, pits = filler()
+    out = normalized(
+        pd.DataFrame(bats + [batter(PlayerName="Utility", H=140)]),
+        pd.DataFrame(pits + [pitcher(PlayerName="Utility", IP=1, SO=1)]),
     )
-    assert out.iloc[0]["role"] == "Batter"
-    assert assign_norm_key(out, "Player").iloc[0] == "MLB_Batter"
+    row = out[out["player"] == "Utility"].iloc[0]
+    assert row["is_two_way"]
+    assert row["role"] == "Batter"
+    assert row["secondary_score"] < 5, "one mop-up inning is worth very little"
 
 
-def test_players_are_matched_across_roles_by_name_and_season():
-    out = score_players(
-        pd.DataFrame([batter(PlayerName="A", H=100), batter(PlayerName="B", H=90)]),
-        pd.DataFrame([pitcher(PlayerName="A", IP=50)]),
-    )
-    assert len(out) == 2
-    assert out.set_index("player").loc["A", "is_two_way"]
-    assert not out.set_index("player").loc["B", "is_two_way"]
+def test_single_role_players_are_unaffected_by_the_fold():
+    bats, pits = filler()
+    out = normalized(pd.DataFrame(bats), pd.DataFrame(pits))
+    assert not out["is_two_way"].any()
+    assert out["scaled_score"].equals(out["primary_score"])
 
 
 def test_a_missing_feed_degrades_rather_than_raising():
     """A partial fetch must not crash the run before anything is scored."""
     assert score_batters(pd.DataFrame()).empty
     assert score_pitchers(pd.DataFrame()).empty
-    assert combine_roles(pd.DataFrame(), pd.DataFrame()).empty
     assert score_players(pd.DataFrame(), pd.DataFrame()).empty
+    assert combine_two_way(pd.DataFrame()).empty
     assert score_teams(pd.DataFrame()).empty
 
 

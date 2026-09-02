@@ -37,6 +37,10 @@ class LeagueSpec:
     #: Cost of ONE incremental update -- what the nightly job actually does.
     #: Not the backfill cost, which is paid once and may be far larger.
     daily_cost: Callable[[], float] | None = None
+    #: Applied after normalization. MLB uses it to fold a two-way player's two
+    #: normalized rows into one, which cannot happen before each role has met its
+    #: own benchmark.
+    post_normalize: Callable[[pd.DataFrame], pd.DataFrame] | None = None
 
 
 def _rule(title: str) -> str:
@@ -114,6 +118,9 @@ def leaders(
     # Normalize both variants against the same regular-season benchmark.
     excl = apply_benchmarks(season.assign(total_points=season["regular_points"]), bench, "Player")
     incl = apply_benchmarks(season, bench, "Player")
+    if spec.post_normalize is not None:
+        excl = spec.post_normalize(excl)
+        incl = spec.post_normalize(incl)
 
     merged = excl[["player", "role", "norm_key", "regular_points", "scaled_score"]].rename(
         columns={"regular_points": "raw_excl", "scaled_score": "norm_excl"}
