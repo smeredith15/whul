@@ -185,3 +185,45 @@ def test_warm_up_failure_does_not_prevent_the_request(monkeypatch):
     monkeypatch.setattr(mlb.time, "sleep", lambda _: None)
     assert mlb._session() is not None
     mlb._SESSION = None
+
+
+# --- MLB's own advanced metrics ---------------------------------------------
+
+def test_sabermetrics_flattens_like_the_season_stats(monkeypatch, tmp_path):
+    payload = {
+        "stats": [
+            {
+                "splits": [
+                    {
+                        "player": {"fullName": "Aaron Judge", "id": 592450},
+                        "stat": {"war": 9.1, "wRaa": 75.2, "battingRuns": 70.0},
+                    }
+                ]
+            }
+        ]
+    }
+    monkeypatch.setattr(mlb, "_get", lambda *a, **k: payload)
+    frame = mlb.load_sabermetrics(2025, "hitting")
+    assert frame.iloc[0]["war"] == 9.1
+    assert frame.iloc[0]["wRaa"] == 75.2
+
+
+def test_advanced_equivalents_name_what_each_field_would_replace():
+    """Adopting MLB's metrics is a scoring decision, so the mapping is explicit
+    rather than assumed."""
+    assert mlb.ADVANCED_EQUIVALENTS["war"].startswith("WAR")
+    assert "Off" in mlb.ADVANCED_EQUIVALENTS["wRaa"]
+    assert "Def" in mlb.ADVANCED_EQUIVALENTS["fieldingRuns"]
+
+
+def test_season_stats_request_all_players_not_just_qualifiers(monkeypatch):
+    """The default pool returned 145 rows; the R thresholds admit several hundred."""
+    captured = {}
+
+    def fake_get(url, params, cache_key=None):
+        captured.update(params)
+        return {"stats": []}
+
+    monkeypatch.setattr(mlb, "_get", fake_get)
+    mlb.load_stats_api_players(2025, "hitting")
+    assert captured["playerPool"] == "All"

@@ -259,6 +259,49 @@ def load_pitchers(seasons: list[int]) -> pd.DataFrame:
     )
 
 
+#: Fields the scoring needs from an advanced-metrics feed, and the FanGraphs
+#: column each would stand in for.
+ADVANCED_EQUIVALENTS = {
+    "war": "WAR (pitchers)",
+    "wRaa": "Off (offensive runs above average)",
+    "wRc": "Off (runs created)",
+    "battingRuns": "Off",
+    "baseRunningRuns": "Off",
+    "fieldingRuns": "Def",
+    "defensiveRuns": "Def",
+    "totalRuns": "Off + Def",
+}
+
+
+def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:
+    """Advanced metrics from the MLB Stats API.
+
+    Worth trying before conceding the FanGraphs terms: this is the same host that
+    already serves the schedule successfully, and its ``sabermetrics`` group
+    carries run-value and WAR figures that may stand in for Offense, Defense and
+    WAR. They will not be numerically identical to FanGraphs' -- different
+    models -- so adopting them is a scoring decision, but a far smaller one than
+    dropping the components entirely.
+    """
+    payload = _get(
+        f"{STATS_API}/stats",
+        {
+            "stats": "sabermetrics", "group": group, "season": season,
+            "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
+        },
+        cache_key=f"statsapi/saber_{group}_{season}",
+    )
+    rows: list[dict] = []
+    for split_group in payload.get("stats", []):
+        for split in split_group.get("splits", []):
+            player = split.get("player") or {}
+            stat = split.get("stat") or {}
+            rows.append({"player": player.get("fullName", ""),
+                         "player_id": player.get("id", ""),
+                         "season": season, **stat})
+    return pd.DataFrame(rows)
+
+
 def load_stats_api_players(season: int, group: str = "hitting") -> pd.DataFrame:
     """Season counting stats from the MLB Stats API.
 
@@ -271,8 +314,10 @@ def load_stats_api_players(season: int, group: str = "hitting") -> pd.DataFrame:
     payload = _get(
         f"{STATS_API}/stats",
         {
+            # playerPool=All matters: the default returns qualified players only
+            # (~145), where the R script's thresholds admit several hundred.
             "stats": "season", "group": group, "season": season,
-            "sportId": 1, "limit": 2000, "gameType": "R",
+            "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
         },
         cache_key=f"statsapi/{group}_{season}",
     )
@@ -345,6 +390,22 @@ def probe(season: int = 2025) -> dict:
             result[f"fangraphs_{label}"] = f"FAILED ({status}): {type(exc).__name__}: {exc}"
 
     # --- do the scoring inputs actually resolve? ---
+    # Can the working host supply the advanced metrics FanGraphs is withholding?
+    for group in ("hitting", "pitching"):
+        try:
+            saber = load_sabermetrics(season, group)
+            result[f"sabermetrics_{group}"] = f"ok ({len(saber)} rows)" if len(saber) else "EMPTY"
+            if len(saber):
+                fields = [c for c in saber.columns if c not in ("player", "player_id", "season")]
+                result[f"sabermetrics_{group}_fields"] = sorted(fields)
+                useful = [f for f in fields if f in ADVANCED_EQUIVALENTS]
+                result[f"sabermetrics_{group}_usable"] = (
+                    {f: ADVANCED_EQUIVALENTS[f] for f in useful} if useful else "none recognised"
+                )
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            result[f"sabermetrics_{group}"] = f"FAILED ({status}): {type(exc).__name__}"
+
     # Is there a usable fallback if FanGraphs stays out of reach?
     try:
         hitting = load_stats_api_players(season, "hitting")

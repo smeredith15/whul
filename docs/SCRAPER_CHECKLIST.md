@@ -55,10 +55,22 @@ Nothing outstanding. The five-season backfill is the remaining step and is runni
 (R 2434, D 18, F 11, L 11, W 7) and all 30 teams. Team scoring and the contract
 engine are unblocked.
 
-**FanGraphs answers 403 to all four parameter shapes.** It sits behind bot
-protection, so the adapter now warms a session against the HTML leaderboard to
-collect cookies before calling the API — the sequence a browser performs. If that
-still 403s, the decision below is live.
+**FanGraphs answers 403 to all four parameter shapes, and cookie warming did not
+clear it.** It blocks the target machine as well as the sandbox, which almost
+certainly means datacenter IPs generally — so a self-hosted fetch from the
+production server would be blocked too. Treat FanGraphs as unavailable for
+automated use.
+
+**Next lead: MLB's own sabermetrics.** The Stats API already serves the schedule
+successfully, and its `stats=sabermetrics` group carries run-value and WAR
+figures. If those arrive, substituting them is a far smaller decision than
+dropping the components — different models, so not numerically identical to
+FanGraphs, but the same quantities. `ADVANCED_EQUIVALENTS` records which field
+would stand in for which. The probe reports every field the endpoint returns.
+
+Also fixed: the season-stats request now sends `playerPool=All`. The default
+returns qualified players only — the 145 rows in the probe — where the R script's
+thresholds (100 PA for batters, 30 IP for pitchers) admit several hundred.
 
 ### What is at stake if FanGraphs stays unreachable
 
