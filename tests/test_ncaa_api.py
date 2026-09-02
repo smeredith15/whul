@@ -90,3 +90,32 @@ def test_parsed_rows_feed_the_ncaa_scorer():
 
 def test_empty_payload_is_tolerated():
     assert ncaa_api.parse_scoreboard({}, "ncaaf", date(2025, 11, 15)) == []
+
+
+# --- name and conference extraction ----------------------------------------
+
+def test_team_name_falls_back_through_the_name_forms():
+    """`full` came back blank for football; `short` carried the value."""
+    assert ncaa_api._team_name({"names": {"full": "Ohio State Buckeyes"}}) == "Ohio State Buckeyes"
+    assert ncaa_api._team_name({"names": {"full": "", "short": "Massachusetts"}}) == "Massachusetts"
+    assert ncaa_api._team_name({"names": {"char6": "AKRON"}}) == "AKRON"
+    assert ncaa_api._team_name({"names": {}}) == ""
+
+
+def test_conference_falls_back_through_key_names():
+    assert ncaa_api._team_conference({"conferences": [{"conferenceName": "Big Ten"}]}) == "Big Ten"
+    assert ncaa_api._team_conference({"conferences": [{"name": "SEC"}]}) == "SEC"
+    assert ncaa_api._team_conference({"conference": "ACC"}) == "ACC"
+    assert ncaa_api._team_conference({"conferences": []}) == ""
+
+
+def test_probe_reports_raw_keys_when_extraction_comes_up_empty():
+    """A blank name should hand back the payload keys needed to fix it, rather
+    than costing another round trip to diagnose."""
+    payload = {"games": [{"game": {"gameID": "1", "gameState": "final",
+                                   "home": {"names": {"unknownKey": "X"}, "score": "1"},
+                                   "away": {"names": {}, "score": "0"}}}]}
+    rows = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2025, 11, 15))
+    assert rows[0]["home_team"] == ""
+    inner = payload["games"][0]["game"]
+    assert "names" in inner["home"]

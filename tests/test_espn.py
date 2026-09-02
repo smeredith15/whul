@@ -282,7 +282,7 @@ def test_scoreboard_falls_back_when_a_shape_is_rejected(monkeypatch, tmp_path):
     monkeypatch.setattr(espn.time, "sleep", lambda _: None)
     monkeypatch.setattr(espn, "CACHE", tmp_path)
 
-    board = espn.scoreboard("ncaasoftball", date(2026, 5, 1))
+    board = espn.scoreboard("ncaam", date(2026, 1, 15))
     assert board["events"][0]["id"] == "1"
     assert seen[-1] == [], "the bare request is what finally succeeds"
     assert len(seen) == 4
@@ -335,7 +335,17 @@ def test_group_candidates_include_dropping_the_filter():
     """None must be among the options -- a league may not accept the filter."""
     for league, candidates in espn.GROUP_CANDIDATES.items():
         assert None in candidates, league
-        assert espn.DIVISION_I_GROUPS[league] in candidates, league
+        configured = espn.DIVISION_I_GROUPS.get(league)
+        if configured is not None:
+            assert configured in candidates, league
+
+
+def test_softball_has_no_division_filter():
+    """groups=29 returns zero events on dates a bare request shows 52 games on,
+    so it excludes everything rather than narrowing to a division."""
+    assert "ncaasoftball" not in espn.DIVISION_I_GROUPS
+    shapes = espn.scoreboard_variants("ncaasoftball", date(2026, 5, 1))
+    assert all("groups" not in p for p in shapes)
 
 
 def test_softball_lives_under_the_baseball_sport_path():

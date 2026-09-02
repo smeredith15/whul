@@ -46,9 +46,12 @@ LEAGUE_PATHS = {
 
 #: ESPN group id for the top division. Without it the scoreboard returns only a
 #: featured subset, which would silently omit most of the field.
+#: Softball is absent deliberately: groups=29 returns zero events on dates that
+#: bare requests show 52 games on, so the filter excludes everything rather than
+#: narrowing to a division.
 DIVISION_I_GROUPS = {
     "ncaam": 50, "ncaaw": 50, "ncaaf": 80,
-    "ncaabaseball": 26, "ncaasoftball": 29,
+    "ncaabaseball": 26,
 }
 
 #: Leagues whose scoring actually uses conference affiliation. Baseball and
@@ -70,7 +73,7 @@ GROUP_CANDIDATES = {
     "ncaam": [50, 51, None],
     "ncaaw": [50, 51, None],
     "ncaabaseball": [26, 27, None],
-    "ncaasoftball": [29, 30, None],
+    "ncaasoftball": [29, 30, 100, None],
 }
 
 #: An NBA season labelled 2026 runs Oct 2025 - Jun 2026.
@@ -361,7 +364,7 @@ def discover(league: str, day: date | None = None) -> dict:
     # The teams endpoint may ignore `groups` entirely (college football returns
     # every division whatever is passed), so measure the scoreboard directly:
     # which parameter combination actually narrows the field, and to what.
-    group = DIVISION_I_GROUPS.get(league)
+    group = DIVISION_I_GROUPS.get(league) or (GROUP_CANDIDATES.get(league) or [None])[0]
     combos: list[tuple[str, dict]] = [
         ("groups+limit", {"dates": dates, "limit": 900, **({"groups": group} if group else {})}),
         ("groups only", {"dates": dates, **({"groups": group} if group else {})}),

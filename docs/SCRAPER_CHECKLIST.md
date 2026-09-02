@@ -94,9 +94,12 @@ games floor was meant to exclude.
 
 Three findings from the probes:
 
-- **NCAA Softball — solved.** It lives under the **baseball** sport path:
-  `baseball/college-softball` returns 446 teams and 52 games, while every
-  `softball/...` variant answers 404. Fixed.
+- **NCAA Softball — path solved, filter removed.** It lives under the **baseball**
+  sport path: `baseball/college-softball` returns 442 teams, while every
+  `softball/...` variant answers 404. Its `groups=29` filter then returned zero
+  events on a date a bare request shows 52 games on, so the filter excluded
+  everything rather than narrowing a division; softball now sends no group
+  filter, and relies on the eligible-teams list instead.
 - **NCAAF's division filter cannot be fixed through ESPN.** The teams endpoint
   returns **760** for `groups` 80, 81, 90 *and* none — the parameter is simply
   ignored, so there is no value that yields the ~134 FBS programs. FCS opponents
@@ -113,7 +116,13 @@ implemented alongside ESPN. Its decisive advantage is that division membership i
 stated in the URL — `football/fbs`, `basketball-men/d1` — which is exactly what
 ESPN refuses to express. Its parsed rows use the same column names as the ESPN
 adapter, so the scoring modules work against either without a translation layer.
-It is unverified from here; `probe-ncaa-api` checks it.
+**Confirmed on the division question:** it returned **54 FBS games** for
+2025-11-15, against ESPN's 25 filtered / 53 unfiltered. That is the correct FBS
+count for a mid-November Saturday, so its division filter genuinely works where
+ESPN's does not. Team-name extraction needed a second pass — the API exposes
+several name forms and leaves `full` blank for football, with `short` carrying
+the value — so extraction now falls back through them and the probe reports the
+raw payload keys when it still comes up empty.
 
 Results only — no player slots exist, so no box scores. That is one
 scoreboard request per date, and the ESPN adapter already proven for NBA covers it.

@@ -68,6 +68,37 @@ def scoreboard(league: str, day: date) -> dict:
     return _get(path, cache_key=f"{league}/{day.isoformat()}")
 
 
+#: The API exposes several name forms and does not populate all of them; the
+#: first non-empty one wins. `full` came back blank for football, where `short`
+#: carries the value.
+NAME_KEYS = ("full", "short", "seo", "char6", "sixCharacter", "nameShort")
+CONFERENCE_KEYS = ("conferenceName", "name", "conferenceSeo")
+
+
+def _team_name(side: dict) -> str:
+    names = side.get("names") or {}
+    for key in NAME_KEYS:
+        value = names.get(key)
+        if value:
+            return str(value)
+    for key in ("nameShort", "name", "shortName"):
+        if side.get(key):
+            return str(side[key])
+    return ""
+
+
+def _team_conference(side: dict) -> str:
+    conferences = side.get("conferences") or []
+    if conferences and isinstance(conferences[0], dict):
+        for key in CONFERENCE_KEYS:
+            if conferences[0].get(key):
+                return str(conferences[0][key])
+    for key in ("conference", "conferenceName"):
+        if side.get(key):
+            return str(side[key])
+    return ""
+
+
 def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
     """Flatten one date's games into rows matching the ESPN adapter's shape.
 
@@ -93,14 +124,10 @@ def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
                 "game_date": day.isoformat(),
                 "season_type": 2,
                 "completed": str(inner.get("gameState", "")).lower() == "final",
-                "home_team": (home.get("names") or {}).get("full", ""),
-                "away_team": (away.get("names") or {}).get("full", ""),
-                "home_conference": home.get("conferences", [{}])[0].get("conferenceName", "")
-                if home.get("conferences")
-                else "",
-                "away_conference": away.get("conferences", [{}])[0].get("conferenceName", "")
-                if away.get("conferences")
-                else "",
+                "home_team": _team_name(home),
+                "away_team": _team_name(away),
+                "home_conference": _team_conference(home),
+                "away_conference": _team_conference(away),
                 "home_score": score(home),
                 "away_score": score(away),
                 "notes": inner.get("title", "") or inner.get("bracketRound", ""),
@@ -138,6 +165,18 @@ def probe(league: str = "ncaaf", day: date | None = None) -> dict:
     if rows:
         with_conf = sum(1 for r in rows if r["home_conference"] and r["away_conference"])
         result["conference_coverage"] = f"{with_conf}/{len(rows)}"
-        result["teams_seen"] = len({r["home_team"] for r in rows} | {r["away_team"] for r in rows})
+        names = {r["home_team"] for r in rows} | {r["away_team"] for r in rows}
+        result["teams_seen"] = len(names - {""})
         result["sample"] = rows[0]
+
+    # When extraction comes up empty the payload keys are what is needed to fix
+    # it, so report them rather than requiring another round trip.
+    raw_games = payload.get("games") or []
+    if raw_games and (not rows or not rows[0]["home_team"] or not rows[0]["home_conference"]):
+        inner = raw_games[0].get("game", raw_games[0])
+        result["raw_game_keys"] = sorted(inner)
+        home = inner.get("home") or {}
+        result["raw_home_keys"] = sorted(home)
+        result["raw_home_names"] = home.get("names")
+        result["raw_home_conferences"] = home.get("conferences")
     return result
