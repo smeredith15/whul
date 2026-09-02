@@ -57,9 +57,9 @@ Nothing outstanding. The five-season backfill is the remaining step and is runni
 
 Built, unverified — both hosts are blocked from my sandbox.
 
-- **[C-2] Season end date.** You wrote **7/17/27** here but **~7/13/27** earlier.
-  Which is the fencepost? It sets the season window and every proration derived
-  from it.
+- **[C-2] Season end date — answered: 7/13/27**, tracking the MLB All-Star Game
+  and shifting slightly each season. The drift is too small to re-base benchmarks
+  for, which is noted in the config.
 - **[C-3] Benchmark basis.** You offered two options and I have a recommendation:
   **use full MLB seasons.** A July→July league year contains almost exactly one
   full MLB season's worth of games, just split across two calendar seasons, so a
@@ -86,16 +86,14 @@ Not started. Skaters only — goalies are excluded from normalization, matching
   leave them on an 82-game basis and accept scores running slightly high? I lean
   toward scaling, for the same reason as [C-1].
 
-## 5. NCAA (all five)
+## 5. NCAA (all five) — BUILT, unverified
 
-Not started. Results only — no player slots exist, so no box scores. That is one
+Scoring ported for all five and covered by 20 tests. Results only — no player slots exist, so no box scores. That is one
 scoreboard request per date, and the ESPN adapter already proven for NBA covers it.
 
-- **[C-6] NCAAF needs more than results.** `NCAAF_Players_Teams.R` scores
-  `conf_wins`, `reg_season_champ` (split `6 / tie_count` among co-champions) and
-  `conf_title_win` — all of which need conference affiliation and a
-  conference-game flag, not just scores. ESPN exposes both, but confirm you want
-  the shared-title split kept as the R script has it.
+- **[C-6] answered: keep the R scoring as written**, including the shared-title
+  split. Built and tested. Conference affiliation is load-bearing — without it
+  `score_football` returns nothing rather than silently scoring zero.
 - NCAA Baseball and Softball are simpler: `reg_wins`, `run_diff × 0.05`, and flat
   series milestones (regional 5, super 6, CWS champion 8).
 - **[C-7]** NCAAM/NCAAW: confirm tournament rounds are scored off results alone, or
@@ -107,9 +105,13 @@ Not started, and **this is the largest data gap in the project**. In the R scrip
 NASCAR, PGA and tennis all ran off hand-built local CSVs; only F1 had a live
 source (Jolpica), and that host is blocked from my sandbox too.
 
-- **[C-8]** Do you still have those CSVs, and do you know their provenance? Even
-  knowing they came from a specific Kaggle set or an FBref export would save a lot
-  of guessing.
+- **[C-8] answered:** the historical CSVs are recoverable, and you have
+  flashscore scrapers for tennis, but there is no live source for golf or
+  motorsport. **ESPN may already solve this** — `Board.R` used its `golf/pga` and
+  `racing/nascar-premier` endpoints, and the same scoreboard adapter now proven
+  for NBA and NCAA should reach both, plus F1. Worth probing before building
+  anything bespoke; if it works, historical CSVs are needed only for the
+  five-year benchmark, not for live results.
 - Bespoke window p99 is agreed for these three, and is tractable because all four
   competitions are event-based with dates — but only once each has a real source.
 

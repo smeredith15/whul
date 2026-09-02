@@ -37,16 +37,37 @@ LEAGUE_PATHS = {
     "wnba": ("basketball", "wnba"),
     "ncaam": ("basketball", "mens-college-basketball"),
     "ncaaw": ("basketball", "womens-college-basketball"),
+    "ncaaf": ("football", "college-football"),
+    "ncaabaseball": ("baseball", "college-baseball"),
+    "ncaasoftball": ("softball", "college-softball"),
+}
+
+#: ESPN group id for Division I. Without it the scoreboard returns only a
+#: featured subset, which would silently omit most of the field.
+DIVISION_I_GROUPS = {
+    "ncaam": 50, "ncaaw": 50, "ncaaf": 80,
+    "ncaabaseball": 26, "ncaasoftball": 29,
+}
+
+#: An NBA season labelled 2026 runs Oct 2025 - Jun 2026.
+NBA_SEASON_START = (10, 1)
+NBA_SEASON_END = (6, 30)
+
+#: (start month, day) -> (end month, day), and whether the season label is the
+#: calendar year it ends in. Football is labelled by the year it starts.
+SEASON_WINDOWS = {
+    "ncaaf": ((8, 1), (1, 31), True),
+    "ncaam": ((11, 1), (4, 15), True),
+    "ncaaw": ((11, 1), (4, 15), True),
+    "ncaabaseball": ((2, 1), (6, 30), False),
+    "ncaasoftball": ((2, 1), (6, 30), False),
+    "nba": (NBA_SEASON_START, NBA_SEASON_END, True),
 }
 
 # ESPN season_type ids, matching the codes hoopR exposed.
 SEASON_TYPE_REGULAR = 2
 SEASON_TYPE_POST = 3
 SEASON_TYPE_PLAYIN = 5
-
-#: An NBA season labelled 2026 runs Oct 2025 - Jun 2026.
-NBA_SEASON_START = (10, 1)
-NBA_SEASON_END = (6, 30)
 
 
 def _get(url: str, params: dict, cache_key: str | None = None) -> dict:
@@ -74,20 +95,161 @@ def _get(url: str, params: dict, cache_key: str | None = None) -> dict:
     return payload
 
 
-def season_dates(season: int) -> list[date]:
-    """Every date an NBA season labelled ``season`` could have games on."""
-    start = date(season - 1, *NBA_SEASON_START)
-    end = min(date(season, *NBA_SEASON_END), date.today())
+def season_dates(season: int, league: str = "nba") -> list[date]:
+    """Every date a season labelled ``season`` could have games on.
+
+    Never runs past today, so a season that has not started yields nothing.
+    """
+    start_md, end_md, ends_in_label_year = SEASON_WINDOWS[league]
+    if ends_in_label_year:
+        start = date(season - 1, *start_md)
+        end = date(season, *end_md)
+    else:
+        start = date(season, *start_md)
+        end = date(season, *end_md)
+    end = min(end, date.today())
+    if end < start:
+        return []
     return [start + timedelta(days=n) for n in range((end - start).days + 1)]
 
 
 def scoreboard(league: str, day: date) -> dict:
+    params: dict = {"dates": day.strftime("%Y%m%d"), "limit": 900}
+    if league in DIVISION_I_GROUPS:
+        params["groups"] = DIVISION_I_GROUPS[league]
     sport, path = LEAGUE_PATHS[league]
     return _get(
         f"{BASE}/{sport}/{path}/scoreboard",
-        {"dates": day.strftime("%Y%m%d")},
+        params,
         cache_key=f"{league}/scoreboard/{day.isoformat()}",
     )
+
+
+def _competitor(competition: dict, home_away: str) -> dict:
+    for entry in competition.get("competitors", []):
+        if entry.get("homeAway") == home_away:
+            return entry
+    return {}
+
+
+def _conference(entry: dict) -> str:
+    """Conference identifier, wherever ESPN happens to put it.
+
+    Load-bearing for football and basketball: conference wins are scored, and the
+    regular-season title is split among co-champions. A blank here silently
+    zeroes those terms rather than erroring, so the probe reports coverage.
+    """
+    team = entry.get("team", {}) or {}
+    for value in (team.get("conferenceId"), entry.get("conferenceId")):
+        if value not in (None, ""):
+            return str(value)
+    for group in (team.get("groups") or {}), (entry.get("groups") or {}):
+        if isinstance(group, dict):
+            for key in ("id", "parentGroupId"):
+                if group.get(key):
+                    return str(group[key])
+    return ""
+
+
+def _event_rows(event: dict, league: str, season: int, day: date) -> dict | None:
+    """Flatten one scoreboard event into a single game row."""
+    competition = (event.get("competitions") or [{}])[0]
+    status = (competition.get("status") or {}).get("type", {}) or {}
+    home, away = _competitor(competition, "home"), _competitor(competition, "away")
+    if not home or not away:
+        return None
+
+    notes = " ".join(
+        str(n.get("headline", "")) for n in (competition.get("notes") or []) if isinstance(n, dict)
+    )
+    if not notes:
+        notes = str(event.get("name", ""))
+
+    def score(entry: dict) -> float | None:
+        value = entry.get("score")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "season": season,
+        "game_id": event.get("id"),
+        "game_date": day.isoformat(),
+        "season_type": int((event.get("season") or {}).get("type", 2)),
+        "completed": bool(status.get("completed")),
+        "home_team": (home.get("team") or {}).get("displayName", ""),
+        "away_team": (away.get("team") or {}).get("displayName", ""),
+        "home_conference": _conference(home),
+        "away_conference": _conference(away),
+        "home_score": score(home),
+        "away_score": score(away),
+        "notes": notes,
+    }
+
+
+def load_team_results(league: str, seasons: list[int], verbose: bool = True) -> pd.DataFrame:
+    """Completed game results for whole seasons -- no box scores.
+
+    This is all the NCAA leagues need, since they have team slots only. One
+    scoreboard request per date rather than one per game, which is what keeps
+    these leagues affordable despite their game volume.
+    """
+    rows: list[dict] = []
+    for season in seasons:
+        days = season_dates(season, league)
+        if verbose:
+            print(f"  {league} {season}: walking {len(days)} dates ...", flush=True)
+        for index, day in enumerate(days):
+            try:
+                board = scoreboard(league, day)
+            except Exception:
+                continue
+            for event in board.get("events", []):
+                row = _event_rows(event, league, season, day)
+                if row and row["completed"]:
+                    rows.append(row)
+            if verbose and index and index % 50 == 0:
+                print(f"    {index}/{len(days)} dates, {len(rows):,} games", flush=True)
+    return pd.DataFrame(rows)
+
+
+def daily_results_cost(league: str, day: date | None = None) -> float:
+    """Seconds to pull one date of results -- the nightly job for a team league.
+
+    Bypasses the cache so the figure reflects real network cost. Results-only
+    leagues cost a single request per date, whatever their game volume.
+    """
+    day = day or default_probe_date()
+    params: dict = {"dates": day.strftime("%Y%m%d"), "limit": 900}
+    if league in DIVISION_I_GROUPS:
+        params["groups"] = DIVISION_I_GROUPS[league]
+    sport, path = LEAGUE_PATHS[league]
+    started = time.monotonic()
+    _get(f"{BASE}/{sport}/{path}/scoreboard", params)
+    return time.monotonic() - started
+
+
+def probe_results(league: str, day: date | None = None) -> dict:
+    """Reachability and shape check for a results-only league."""
+    day = day or default_probe_date()
+    result: dict[str, object] = {"league": league, "date": day.isoformat()}
+    try:
+        board = scoreboard(league, day)
+    except Exception as exc:
+        result["scoreboard"] = f"FAILED: {type(exc).__name__}: {exc}"
+        return result
+
+    events = board.get("events", [])
+    result["scoreboard"] = "ok"
+    result["events"] = len(events)
+    rows = [r for r in (_event_rows(e, league, day.year, day) for e in events) if r]
+    result["parsed_games"] = len(rows)
+    if rows:
+        with_conf = sum(1 for r in rows if r["home_conference"] and r["away_conference"])
+        result["conference_coverage"] = f"{with_conf}/{len(rows)}"
+        result["sample"] = rows[0]
+    return result
 
 
 def summary(league: str, event_id: str) -> dict:

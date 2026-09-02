@@ -33,6 +33,26 @@ def _nfl(season: int, assets: str) -> pd.DataFrame:
     return nfl.score_teams(nflverse.load_schedules([season]), nflverse.load_teams([season]))
 
 
+#: Fantasy category -> ESPN league key, for the results-only NCAA leagues.
+NCAA_LEAGUES = {
+    "ncaaf": "NCAAF",
+    "ncaam": "NCAAM",
+    "ncaaw": "NCAAW",
+    "ncaabaseball": "NCAA Baseball",
+    "ncaasoftball": "NCAA Softball",
+}
+
+
+def _ncaa(key: str):
+    def load(season: int, assets: str) -> pd.DataFrame:
+        from whul.scoring.ncaa import SCORERS
+        from whul.sources import espn
+
+        return SCORERS[NCAA_LEAGUES[key]](espn.load_team_results(key, [season]))
+
+    return load
+
+
 def _mlb(season: int, assets: str) -> pd.DataFrame:
     from whul.scoring import mlb
     from whul.sources import mlb as source
@@ -65,6 +85,15 @@ LEAGUES = {
         "assets": ("players", "teams"),
         "seasons": "2000-present",
         "source": "MLB Stats API + FanGraphs (UNVERIFIED)",
+    },
+    **{
+        key: {
+            "fn": _ncaa(key),
+            "assets": ("teams",),
+            "seasons": "2003-present",
+            "source": "ESPN scoreboard, results only (UNVERIFIED)",
+        }
+        for key in NCAA_LEAGUES
     },
     "nba": {
         "fn": _nba,
@@ -145,6 +174,28 @@ def _spec(league: str):
             # smaller unit, so one season IS the incremental update.
             daily_cost=lambda: _timed(lambda: nflverse.load_player_stats([2025])),
         )
+    if league in NCAA_LEAGUES:
+        from whul.scoring.ncaa import SCORERS
+        from whul.sources import espn
+
+        category = NCAA_LEAGUES[league]
+        return LeagueSpec(
+            name=category,
+            load=lambda seasons: espn.load_team_results(league, seasons),
+            # Teams only -- there is no postseason player bonus to apply.
+            score=lambda raw, post: SCORERS[category](raw).assign(
+                regular_points=lambda d: d["total_points"],
+                regular_games=lambda d: d["games_played"],
+                postseason_points=0.0,
+                postseason_games=0.0,
+                postseason_bonus=0.0,
+                player=lambda d: d["team"],
+            ),
+            id_col="game_id",
+            week_col="game_date",
+            source=f"ESPN scoreboard, results only ({league})",
+            daily_cost=lambda: espn.daily_results_cost(league),
+        )
     if league == "mlb":
         from whul.scoring import mlb
         from whul.sources import mlb as source
@@ -200,6 +251,7 @@ def _spec(league: str):
 
 DEFAULT_VALIDATE = {
     "mlb": ((2021, 2025), 2025),
+    **{key: ((2021, 2025), 2025) for key in NCAA_LEAGUES},
     "nfl": ((2021, 2025), 2025),
     "nba": ((2022, 2026), 2026),
 }
@@ -217,6 +269,24 @@ def cmd_probe(args: argparse.Namespace) -> int:
             return 1
         print(f"nflverse reachable: {len(df):,} rows for 2025, {len(df.columns)} columns")
         print(f"season types: {df['season_type'].value_counts().to_dict()}")
+        return 0
+
+    if args.league in NCAA_LEAGUES:
+        from datetime import date as _d
+
+        from whul.sources import espn
+
+        day = _d.fromisoformat(args.date) if args.date else None
+        result = espn.probe_results(args.league, day)
+        print(f"\nESPN probe -- {result['league']} on {result['date']}\n")
+        for key, value in result.items():
+            if key in ("league", "date"):
+                continue
+            print(f"  {key:<22} {value}")
+        if any(isinstance(v, str) and v.startswith("FAILED") for v in result.values()):
+            print("\nCould not reach or parse ESPN. Send me this output.", file=sys.stderr)
+            return 1
+        print("\nESPN reachable and the scoreboard schema parses.")
         return 0
 
     if args.league == "mlb":

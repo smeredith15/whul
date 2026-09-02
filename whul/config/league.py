@@ -39,10 +39,12 @@ class SeasonWindow:
     benchmark_cutoff: date
 
 
+#: The end date tracks the MLB All-Star Game and so shifts a little each year.
+#: The drift is small enough that benchmarks do not need re-basing for it.
 SEASON = SeasonWindow(
     label="2026-27",
     start=date(2026, 8, 21),
-    end=date(2027, 7, 13),  # ~MLB All-Star Game
+    end=date(2027, 7, 13),  # MLB All-Star Game
     benchmark_cutoff=date(2026, 8, 20),
 )
 
