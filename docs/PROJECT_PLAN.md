@@ -466,6 +466,7 @@ Each increment ships end-to-end:
 | NASCAR | ESPN racing (per event) | not yet measured | not yet measured | **unverified** |
 | F1 | Jolpica (Ergast successor) | not yet measured | not yet measured | **unverified** |
 | Tennis | Sackmann archives (history) + Flashscore feed (live) | not yet measured | not yet measured | **unverified** |
+| Tennis calendar | atptour.com / wtatennis.com / tennistonic.com | one page per tour | once a season | **unverified**; 2026 seeded |
 
 The individual sports are fetched per event rather than per date: a golf tournament runs Thursday to
 Sunday and a race meeting spans a weekend, so walking the calendar would re-read the same event four
