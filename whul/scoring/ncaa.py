@@ -16,6 +16,13 @@ Three shapes cover the five leagues:
 Conference affiliation is load-bearing in football and basketball: conference
 wins are scored directly, and the regular-season title is split among
 co-champions. A feed that omits conference data cannot score these leagues.
+
+Every scorer takes an optional ``eligible`` set of team names. A scoreboard
+request returns games *involving* a listed team, so the opponent may be from a
+lower division -- those teams would otherwise enter the pool with one or two
+games apiece and drag the benchmark down. The R scripts approximated this with a
+minimum-games filter; naming the division's members is exact, and leaves genuine
+short seasons intact.
 """
 
 from __future__ import annotations
@@ -28,7 +35,6 @@ from whul.scoring.base import resolve_num, resolve_str
 
 # --- football -------------------------------------------------------------
 FB_BIG_WIN_MARGIN = 9
-FB_MIN_GAMES = 6
 FB_WEIGHTS = {
     "wins": 10.0, "big_wins": 2.0, "conf_wins": 2.0,
     "conf_title_win": 6.0, "playoff_app": 10.0, "playoff_wins": 15.0,
@@ -47,7 +53,6 @@ BB_WEIGHTS = {
     "mm_appearance": 8.0, "mm_wins": 5.0, "point_diff": 0.03,
 }
 BB_REG_CHAMP_POOL = 8.0
-BB_MIN_GAMES = {"NCAAM": 10, "NCAAW": 6}
 MM_PATTERN = (
     r"NCAA Tournament|March Madness|First Four|First Round|Second Round|"
     r"Sweet 16|Elite Eight|Final Four|National Championship"
@@ -72,17 +77,23 @@ CWS_PATTERN = r"College World Series|Women's College World Series|WCWS|CWS"
 
 @dataclass(frozen=True)
 class DiamondRules:
-    """Baseball and softball differ only in these two thresholds."""
+    """Baseball and softball differ only in the College World Series threshold."""
 
     league: str
     cws_wins_for_title: int
-    min_games: int
 
 
 DIAMOND = {
-    "NCAA Baseball": DiamondRules("NCAA Baseball", 4, 10),
-    "NCAA Softball": DiamondRules("NCAA Softball", 5, 20),
+    "NCAA Baseball": DiamondRules("NCAA Baseball", 4),
+    "NCAA Softball": DiamondRules("NCAA Softball", 5),
 }
+
+
+def _restrict(games: pd.DataFrame, eligible: set[str] | None) -> pd.DataFrame:
+    """Keep only the division's own teams, when the caller knows who they are."""
+    if not eligible:
+        return games
+    return games[games["team"].isin(eligible)]
 
 
 def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
@@ -150,9 +161,11 @@ def _split_conference_title(summary: pd.DataFrame, pool: float) -> pd.Series:
     return (is_champ.astype(float) * pool / ties.where(ties > 0, 1)).fillna(0.0)
 
 
-def score_football(schedule: pd.DataFrame) -> pd.DataFrame:
+def score_football(
+    schedule: pd.DataFrame, eligible: set[str] | None = None
+) -> pd.DataFrame:
     """NCAAF team scoring."""
-    games = _team_games(schedule)
+    games = _restrict(_team_games(schedule), eligible)
     if games.empty:
         return pd.DataFrame()
 
@@ -179,8 +192,7 @@ def score_football(schedule: pd.DataFrame) -> pd.DataFrame:
             }
         ),
         include_groups=False,
-    )
-    summary = summary[summary["games_played"] >= FB_MIN_GAMES].reset_index(drop=True)
+    ).reset_index(drop=True)
     if summary.empty:
         return summary
 
@@ -194,9 +206,11 @@ def score_football(schedule: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def score_basketball(schedule: pd.DataFrame, league: str = "NCAAM") -> pd.DataFrame:
-    """NCAAM and NCAAW team scoring -- identical but for the minimum-games filter."""
-    games = _team_games(schedule)
+def score_basketball(
+    schedule: pd.DataFrame, league: str = "NCAAM", eligible: set[str] | None = None
+) -> pd.DataFrame:
+    """NCAAM and NCAAW team scoring -- the two are scored identically."""
+    games = _restrict(_team_games(schedule), eligible)
     if games.empty:
         return pd.DataFrame()
 
@@ -234,8 +248,7 @@ def score_basketball(schedule: pd.DataFrame, league: str = "NCAAM") -> pd.DataFr
             }
         ),
         include_groups=False,
-    )
-    summary = summary[summary["games_played"] >= BB_MIN_GAMES[league]].reset_index(drop=True)
+    ).reset_index(drop=True)
     if summary.empty:
         return summary
 
@@ -249,10 +262,14 @@ def score_basketball(schedule: pd.DataFrame, league: str = "NCAAM") -> pd.DataFr
     )
 
 
-def score_diamond(schedule: pd.DataFrame, league: str = "NCAA Baseball") -> pd.DataFrame:
+def score_diamond(
+    schedule: pd.DataFrame,
+    league: str = "NCAA Baseball",
+    eligible: set[str] | None = None,
+) -> pd.DataFrame:
     """NCAA Baseball and Softball team scoring."""
     rules = DIAMOND[league]
-    games = _team_games(schedule)
+    games = _restrict(_team_games(schedule), eligible)
     if games.empty:
         return pd.DataFrame()
 
@@ -276,8 +293,7 @@ def score_diamond(schedule: pd.DataFrame, league: str = "NCAA Baseball") -> pd.D
             }
         ),
         include_groups=False,
-    )
-    summary = summary[summary["games_played"] >= rules.min_games].reset_index(drop=True)
+    ).reset_index(drop=True)
     if summary.empty:
         return summary
 
@@ -300,8 +316,8 @@ def score_diamond(schedule: pd.DataFrame, league: str = "NCAA Baseball") -> pd.D
 
 SCORERS = {
     "NCAAF": score_football,
-    "NCAAM": lambda s: score_basketball(s, "NCAAM"),
-    "NCAAW": lambda s: score_basketball(s, "NCAAW"),
-    "NCAA Baseball": lambda s: score_diamond(s, "NCAA Baseball"),
-    "NCAA Softball": lambda s: score_diamond(s, "NCAA Softball"),
+    "NCAAM": lambda s, eligible=None: score_basketball(s, "NCAAM", eligible),
+    "NCAAW": lambda s, eligible=None: score_basketball(s, "NCAAW", eligible),
+    "NCAA Baseball": lambda s, eligible=None: score_diamond(s, "NCAA Baseball", eligible),
+    "NCAA Softball": lambda s, eligible=None: score_diamond(s, "NCAA Softball", eligible),
 }

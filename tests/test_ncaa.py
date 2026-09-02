@@ -71,8 +71,22 @@ def test_football_playoff_appearance_and_wins():
     assert out.loc["B", "playoff_wins"] == 0
 
 
-def test_football_needs_six_games():
-    assert score_football(pd.DataFrame(pad([game("A", "B", 20, 10)], 2))).empty
+def test_lower_division_opponents_are_excluded_by_name():
+    """A scoreboard request returns games *involving* a listed team, so the
+    opponent may be from a lower division. Those teams played one or two games in
+    the ledger and would drag the benchmark down if scored.
+    """
+    sched = pd.DataFrame(pad([game("A", "FCS School", 45, 3, ac="ACC")], 6))
+    out = score_football(sched, eligible={"A", "B"})
+    assert set(out["team"]) == {"A", "B"}
+    assert "FCS School" not in set(out["team"])
+
+
+def test_short_seasons_are_kept_when_the_team_belongs():
+    """Removing the games floor means a genuinely short season still scores."""
+    sched = pd.DataFrame([game("A", "B", 20, 10)])
+    out = score_football(sched, eligible={"A", "B"}).set_index("team")
+    assert out.loc["A", "wins"] == 1
 
 
 def test_football_requires_conference_affiliation():
@@ -136,11 +150,17 @@ def test_postseason_margins_excluded_from_point_diff():
     assert score_basketball(sched, "NCAAM").set_index("team").loc["A", "point_diff"] == 0
 
 
-def test_womens_basketball_uses_a_lower_games_floor():
-    """Identical scoring; NCAAW qualifies at 6 games where NCAAM needs 10."""
+def test_mens_and_womens_basketball_score_identically():
     sched = pd.DataFrame(pad([game("A", "B", 80, 60)], 6))
-    assert score_basketball(sched, "NCAAM").empty
-    assert not score_basketball(sched, "NCAAW").empty
+    men = score_basketball(sched, "NCAAM").set_index("team")["total_points"]
+    women = score_basketball(sched, "NCAAW").set_index("team")["total_points"]
+    assert men.equals(women)
+
+
+def test_basketball_excludes_teams_outside_the_division():
+    sched = pd.DataFrame(pad([game("A", "DII School", 110, 40, ac="SEC")], 10))
+    out = score_basketball(sched, "NCAAM", eligible={"A", "B"})
+    assert "DII School" not in set(out["team"])
 
 
 # --- baseball and softball -------------------------------------------------
@@ -164,7 +184,7 @@ def test_super_regional_is_not_counted_as_a_regional():
     """'Super Regional' contains 'Regional', so order of testing matters."""
     sched = pd.DataFrame(
         [diamond_game("A", "B", 5, 1, notes="Super Regional Game 1", season_type=3)] * 2
-        + [diamond_game("A", "B", 3, 3)] * 10
+        + [diamond_game("A", "B", 3, 3)]
     )
     out = score_diamond(sched, "NCAA Baseball").set_index("team")
     assert out.loc["A", "super_wins"] == 2
@@ -186,7 +206,7 @@ def test_softball_needs_a_fifth_college_world_series_win():
     """Baseball crowns a champion at 4 CWS wins, softball at 5."""
     four = pd.DataFrame(
         [diamond_game("A", "B", 5, 1, notes="Women's College World Series", season_type=3)] * 4
-        + [diamond_game("A", "B", 3, 3)] * 20
+        + [diamond_game("A", "B", 3, 3)]
     )
     assert score_diamond(four, "NCAA Baseball").set_index("team").loc["A", "series_cws_champ"] == 1
     assert score_diamond(four, "NCAA Softball").set_index("team").loc["A", "series_cws_champ"] == 0
@@ -200,10 +220,12 @@ def test_postseason_excluded_from_run_differential():
     assert score_diamond(sched, "NCAA Baseball").set_index("team").loc["A", "run_diff"] == 0
 
 
-def test_diamond_minimum_games_differ():
-    sched = pd.DataFrame([diamond_game("A", "B", 5, 1)] * 12)
-    assert not score_diamond(sched, "NCAA Baseball").empty
-    assert score_diamond(sched, "NCAA Softball").empty
+def test_diamond_excludes_teams_outside_the_division():
+    sched = pd.DataFrame(
+        [diamond_game("A", "JC School", 15, 0)] + [diamond_game("A", "B", 3, 3)] * 10
+    )
+    out = score_diamond(sched, "NCAA Baseball", eligible={"A", "B"})
+    assert "JC School" not in set(out["team"])
 
 
 def test_empty_schedules_return_empty():

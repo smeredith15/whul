@@ -37,13 +37,9 @@ Done: daily-updating source (nflverse `stats_player`), per-week rows, playoff ro
 present and usable (`season_type` REG/POST), position-specific benchmarks over five
 seasons.
 
-- **[C-1] Schedule expansion.** When does the 18th game land, and should historical
-  benchmarks be rescaled to an 18-game basis? My proposal: scale historical
-  *counting* stats by `18/17` for benchmark purposes only — never live scoring —
-  and leave achievement-style team points (division title, playoff appearance)
-  untouched, matching the proration rule already agreed for shortened seasons.
-  Team scoring needs the same treatment, since wins and point differential both
-  scale with games.
+- **[C-1] answered:** the NFL is **not** expanding yet — expected at some future
+  point. When it does, scale regular-season counting stats only. The mechanism is
+  the same one NHL needs now (see [C-5]), so building it there covers NFL later.
 
 ## 2. NBA
 
@@ -81,10 +77,11 @@ Built, unverified — both hosts are blocked from my sandbox.
 Not started. Skaters only — goalies are excluded from normalization, matching
 `All_Analysis.R` and your earlier decision.
 
-- **[C-5] 84-game expansion.** This happens *this* season, so unlike NFL it is not
-  hypothetical. Scale five years of historical benchmarks by `84/82` (≈2.4%), or
-  leave them on an 82-game basis and accept scores running slightly high? I lean
-  toward scaling, for the same reason as [C-1].
+- **[C-5] answered: scale the p99 itself to an 84-game pace**, rather than scaling
+  every historical score and re-deriving. Better call than mine — the benchmark
+  already excludes playoffs, so it is a single multiplication on one number per
+  group, and a manager checking the arithmetic has one fewer normalization step
+  to follow. Same mechanism will serve NFL when it expands.
 
 ## 5. NCAA (all five) — BUILT, unverified
 
@@ -96,8 +93,15 @@ scoreboard request per date, and the ESPN adapter already proven for NBA covers 
   `score_football` returns nothing rather than silently scoring zero.
 - NCAA Baseball and Softball are simpler: `reg_wins`, `run_diff × 0.05`, and flat
   series milestones (regional 5, super 6, CWS champion 8).
-- **[C-7]** NCAAM/NCAAW: confirm tournament rounds are scored off results alone, or
-  tell me if seeding matters.
+- **[C-7] answered:** results alone; seeding does not matter. No change needed.
+- **Minimum-games filters removed.** They existed in the R scripts to drop
+  non-Division-I opponents, which appear in the ledger with one or two games from
+  the non-conference schedule. Filtering by actual division membership (from
+  ESPN's teams endpoint) is exact, and no longer discards a genuinely short
+  season.
+- **Big-win threshold:** `NCAAF_Players_Teams.R` line 50 reads `is_big_win =
+  margin >= 9`, which is what the port uses. Flagging rather than changing it —
+  tell me the intended value if 9 is wrong.
 
 ## 6. Motorsports, golf, tennis
 
@@ -120,17 +124,20 @@ source (Jolpica), and that host is blocked from my sandbox too.
 Not started. League-specific p99 confirmed — each of EPL, La Liga, Serie A,
 Bundesliga, Ligue 1 and NWSL normalizes against itself.
 
-- **[C-9] Competition stages.** Qualifying rounds are excluded and competition
-  proper counts. I need the boundary stated per competition: for the current UCL
-  format, does the league phase count as proper (I assume yes)? And is the
-  play-off round between league phase and Round of 16 in or out?
-- **[C-10] Domestic cups.** `Club_Soccer.R` awards 4 points for a cup win (FA Cup,
-  Copa del Rey, DFB-Pokal, Coppa Italia). Are those still in, and do they carry a
-  postseason bonus or only their win value?
-- **[C-11] International soccer.** Men's and Women's national teams are separate
-  team slots. Is that inside this item or its own workstream? The Women's World
-  Cup rule (counting entirely to 2026-27 even if it runs past the draft) is
-  already recorded.
+- **[C-9] answered:** league phase counts as competition proper; qualifying does
+  not. **Byes score as though the team won the skipped round in a sweep** — this
+  applies to every playoff competition, not just soccer, so it belongs in shared
+  logic rather than each league's module.
+  *Exception: tennis*, where a bye earns first-round points only if the player
+  wins their second-round match. `Tennis_Players.R` already encodes this as
+  `bye_bonus` gated on `is_first_win`.
+- **[C-10] answered:** domestic cups stay in at their normal win value (4), with
+  no postseason bonus, since every team qualifies.
+- **[C-11] answered:** the two Intl Soccer slots may be filled by any combination
+  of men's and women's national teams. The current config already matches this —
+  one `Intl Soccer` category of 2, with Men's and Women's normalizing separately
+  against their own benchmarks. Picking teams likely to play competitive matches
+  during the league year is the manager's problem, not the app's.
 
 ## 8. MLS
 
@@ -148,11 +155,13 @@ season either side of the draft. Deferred until the 2027 draft.
 
 ## Additions I would make
 
-**10. Asset identity across feeds.** Not on your list and it will bite. The same
-person is "Shohei Ohtani", "Ohtani, Shohei" and "S. Ohtani" depending on the feed,
-and a mismatch silently drops a rostered player to zero. Needs a canonical id per
-asset, an alias table, and an admin queue for unresolved names. Worth building
-before six more feeds arrive rather than after.
+**10. Asset identity across feeds — agreed, canonical IDs.** The hard part is not
+the aliasing but the near-collisions: distinct people with identical or similar
+names. Feed-native ids (ESPN athlete id, FanGraphs playerid, nflverse gsis id)
+are the reliable anchor where available; names are only a fallback, and any
+name-only match between two feeds should land in an admin review queue rather
+than auto-merging. Same problem exists for teams, where "Miami" is two different
+schools.
 
 **11. Daily snapshot storage.** This is what makes cumulative scraping sufficient
 for everything except MLB's postseason: store each day's cumulative figures, and

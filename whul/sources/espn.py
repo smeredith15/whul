@@ -114,15 +114,53 @@ def season_dates(season: int, league: str = "nba") -> list[date]:
 
 
 def scoreboard(league: str, day: date) -> dict:
-    params: dict = {"dates": day.strftime("%Y%m%d"), "limit": 900}
+    """One date's games.
+
+    Some leagues reject the ``groups`` filter outright (college softball answers
+    400), so a rejection falls back to an unfiltered request rather than losing
+    the whole league.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    url = f"{BASE}/{sport}/{path}/scoreboard"
+    base_params: dict = {"dates": day.strftime("%Y%m%d"), "limit": 900}
+    cache_key = f"{league}/scoreboard/{day.isoformat()}"
+
+    if league in DIVISION_I_GROUPS:
+        try:
+            return _get(url, {**base_params, "groups": DIVISION_I_GROUPS[league]}, cache_key)
+        except requests.HTTPError as exc:
+            if exc.response is None or exc.response.status_code != 400:
+                raise
+    return _get(url, base_params, cache_key)
+
+
+def load_eligible_teams(league: str) -> set[str]:
+    """Display names of the league's own teams.
+
+    Needed because a scoreboard request returns games *involving* a listed team,
+    so the opponent may be from a lower division. Those opponents would otherwise
+    enter the team pool with one or two games apiece and distort the benchmark.
+    The R scripts approximated this with a minimum-games filter; asking the feed
+    which teams belong is exact.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    params: dict = {"limit": 1000}
     if league in DIVISION_I_GROUPS:
         params["groups"] = DIVISION_I_GROUPS[league]
-    sport, path = LEAGUE_PATHS[league]
-    return _get(
-        f"{BASE}/{sport}/{path}/scoreboard",
-        params,
-        cache_key=f"{league}/scoreboard/{day.isoformat()}",
-    )
+    try:
+        payload = _get(f"{BASE}/{sport}/{path}/teams", params, cache_key=f"{league}/teams")
+    except Exception:
+        return set()
+
+    names: set[str] = set()
+    for sport_block in payload.get("sports", []):
+        for league_block in sport_block.get("leagues", []):
+            for entry in league_block.get("teams", []):
+                team = entry.get("team") or {}
+                name = team.get("displayName")
+                if name:
+                    names.add(str(name))
+    return names
 
 
 def _competitor(competition: dict, home_away: str) -> dict:
@@ -249,6 +287,15 @@ def probe_results(league: str, day: date | None = None) -> dict:
         with_conf = sum(1 for r in rows if r["home_conference"] and r["away_conference"])
         result["conference_coverage"] = f"{with_conf}/{len(rows)}"
         result["sample"] = rows[0]
+
+    eligible = load_eligible_teams(league)
+    result["eligible_teams"] = len(eligible)
+    if rows and eligible:
+        seen = {r["home_team"] for r in rows} | {r["away_team"] for r in rows}
+        outside = sorted(seen - eligible)
+        result["opponents_outside_division"] = len(outside)
+        if outside:
+            result["example_outside"] = outside[:3]
     return result
 
 

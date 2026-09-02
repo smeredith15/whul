@@ -48,7 +48,9 @@ def _ncaa(key: str):
         from whul.scoring.ncaa import SCORERS
         from whul.sources import espn
 
-        return SCORERS[NCAA_LEAGUES[key]](espn.load_team_results(key, [season]))
+        results = espn.load_team_results(key, [season])
+        eligible = espn.load_eligible_teams(key)
+        return SCORERS[NCAA_LEAGUES[key]](results, eligible)
 
     return load
 
@@ -183,7 +185,9 @@ def _spec(league: str):
             name=category,
             load=lambda seasons: espn.load_team_results(league, seasons),
             # Teams only -- there is no postseason player bonus to apply.
-            score=lambda raw, post: SCORERS[category](raw).assign(
+            score=lambda raw, post: SCORERS[category](
+                raw, espn.load_eligible_teams(league)
+            ).assign(
                 regular_points=lambda d: d["total_points"],
                 regular_games=lambda d: d["games_played"],
                 postseason_points=0.0,
