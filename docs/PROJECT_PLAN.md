@@ -1,7 +1,8 @@
 # Cross-Sport Fantasy League — Web App Plan
 
-**Status:** v0.2 — decisions locked from the Q&A round. Sections marked **[OPEN]** still need input.
-Reference material on the existing R scripts is in §7.
+**Status:** v0.3 — all opening questions resolved. Build underway: league config, normalization,
+best-ball rollup and the NFL module are implemented and tested. Reference material on the R scripts
+is in §8.
 
 ---
 
@@ -71,12 +72,21 @@ UI must reflect the live selection (see §4.2).
 ### 1.5 Transactions
 
 - No waivers, no free-agent pickups, no weekly lineups.
-- **Trades only.** On a trade, **points accrued to date stay with the original owner**; the receiving
-  manager accrues from the trade date forward.
-- Consequence for the data model: an asset's season is a sequence of **owner stints**. Standings sum
-  *accrued stint values*, not an asset's overall season score. Best-ball ranks stint values within a
-  manager's category.
-- Injured / retired / inactive assets simply stop accruing. That is what bench slots are for.
+- **Trades only, and necessarily reciprocal** — without free agency, a trade is a swap of slot
+  occupants, not an addition.
+- **The scoring unit is the slot, not the asset.** A slot is a persistent container; a trade changes
+  who occupies it. The slot's score is the sum of what each occupant accrued while it sat there:
+
+  ```
+  slot_score = (outgoing player's start-to-trade score) + (incoming player's trade-to-now score)
+  ```
+
+  That single number is what competes for a starter slot. Points earned before a trade stay with the
+  manager who earned them, which is exactly what the slot model gives for free.
+- **Pairing is explicit.** When multiple players from the same league are traded together, the admin
+  designates which outgoing player pairs with which incoming one — it cannot be inferred.
+- Injured / retired / inactive assets simply stop accruing and sink below the best-ball cut on their
+  own. That is what bench slots are for; no transaction is needed.
 
 ---
 
@@ -132,10 +142,10 @@ contract_pts = pts_N × share_post × mult_N  +  pts_N1 × share_pre × mult_N1
 mult_N1      = (1 − share_post × mult_N) / share_pre
 ```
 
-MLB (computed): `share_post = 0.42`, `share_pre = 0.58`, `mult_N = 0.75` → `mult_N1 ≈ 1.181`.
+MLB (computed, confirmed): `share_post = 0.42`, `share_pre = 0.58`, **`mult_N = 0.75`** → `mult_N1 ≈ 1.181`.
 
-**Still to compute: WNBA and NWSL**, using each league's own schedule shares. See **[OPEN-2]** on the
-`mult_N` value.
+**Still to compute: WNBA and NWSL.** The `mult_N1` inflation differs per league because each captures a
+different proportion of its season on either side of the draft, so each needs its own schedule shares.
 
 **MLS** is a special case: moving to a fall–spring calendar, with a shortened 2027 transition
 ("sprint") season. It needs *both* bisection weighting for 2026 *and* short-season proration for 2027.
@@ -158,9 +168,9 @@ This dissolves the problem — the offseason proportion is identical in the benc
 scoring, so no correction factor exists to get wrong. It generalizes for free: every future season
 just uses that season's own start/end dates, and a July→July year needs no special handling.
 
-Cost: event-level data with dates, rather than season aggregates. Feasible and free for all four —
-F1 via Jolpica per-round results, NASCAR from the race-level CSV, PGA via the ESPN golf scoreboard
-by date, tennis from match-level ledgers. Confirm at **[OPEN-3]**.
+**Approved.** Cost is event-level data with dates rather than season aggregates — free for all four:
+F1 via Jolpica per-round results, NASCAR from race-level data, PGA via the ESPN golf scoreboard by
+date, tennis from match-level ledgers. Each source is verified independently before its league ships.
 
 ### 2.4 Season-length proration
 
@@ -182,9 +192,18 @@ to the *asset's event*, not strictly to the season end date.
 
 ### 2.6 Soccer transfers across pool boundaries
 
-A player transferring between a Top-3 league and an Other league gets the manager a courtesy fractional
-slot: **3.5 in the origin category, 4.5 in the destination** (the 0.5 representing each partial stint).
-Scores need no weighting beyond normal normalization. Needs a concrete algorithm — **[OPEN-4]**.
+When a drafted player transfers between a Top-3 league (EPL / Serie A / La Liga) and an Other league
+(Bundesliga / Ligue 1 / MLS):
+
+- The **original entry keeps every stat earned before the transfer** and stays in its origin category.
+- A **duplicate entry is created in the destination league**, accruing the player's stats from the
+  transfer forward.
+- **Each entry is normalized against the league it was acquired in** — the original against the origin
+  pool's benchmark, the duplicate against the destination pool's.
+
+This is the concrete form of the "3.5 / 4.5 courtesy slot": the manager ends up with a partial entry
+on each side rather than losing the player's pre-transfer production. No extra weighting is applied
+beyond normal normalization.
 
 ---
 
@@ -232,7 +251,8 @@ Design commitments:
   to 2026-08-21** rather than starting at app launch.
 - **`benchmarks` is versioned** — a frozen season benchmark is a row you point at. Re-normalizing is
   explicit, never accidental.
-- **`roster_stints`** carry valid-from / valid-to so trades split accrual correctly.
+- **`slot_occupancy`** carries valid-from / valid-to per slot, so a trade splits accrual correctly and
+  the slot — not the asset — is what best-ball ranks.
 - **Best-ball selection is recomputed and stored per day**, so the UI can show which slots counted on
   any given date.
 
@@ -291,16 +311,18 @@ before sending the offer sheet — replacing the R script's interactive console 
 ## 6. To-do
 
 ### Phase 1 — Foundation
-- [ ] Python project scaffold, CI, lint/format/test
+- [x] Python project scaffold and test suite
+- [x] League/pool/roster config seeded from the R scripts
+- [x] Normalization engine (buffer pool → frozen benchmark → 0-100)
+- [x] Best-ball rollup with slot occupancy and trade accrual
 - [ ] Postgres schema + migrations (assets, leagues, pools, benchmarks, raw_stats, daily_scores,
-      roster_stints, standings_snapshots, admin_overrides)
-- [ ] Seed league/pool/normalization-group/roster-cap config from the R scripts
+      slot_occupancy, standings_snapshots, admin_overrides)
 - [ ] Import drafted rosters from `Master_Drafted_Assets.xlsx`
 - [ ] Asset identity layer (canonical IDs + alias table) — name matching across feeds will be a
       recurring chore and needs to be designed in, not bolted on
 
 ### Phase 2 — Per-league increments *(one league at a time, per your preference)*
-For each league, in order: **NFL → NBA → MLB → NHL → Club Soccer → NCAA (F/M/W/Baseball/Softball) →
+For each league, in order: **NFL ✅ → NBA → MLB → NHL → Club Soccer → NCAA (F/M/W/Baseball/Softball) →
 Intl Soccer → PGA → Tennis → Motorsports → (Olympics, WNBA deferred)**
 
 Each increment ships end-to-end:
@@ -314,7 +336,8 @@ Each increment ships end-to-end:
 ### Phase 3 — Scoring pipeline
 - [ ] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
 - [ ] Window-based benchmarking for individual sports (§2.3)
-- [ ] Bisection weighting: MLB (known), WNBA, NWSL, MLS
+- [ ] Bisection weighting: MLB (`mult_N = 0.75`, known), then NWSL, MLS, and WNBA — each needs its
+      own schedule shares, so `mult_N1` differs per league
 - [ ] Proration engine (§2.4)
 - [ ] Owner-stint accrual + best-ball rollup
 - [ ] Nightly standings snapshot + retroactive backfill to season start
@@ -342,23 +365,47 @@ Each increment ships end-to-end:
 
 ---
 
-## 7. Open items
+## 7. Status and open items
 
-- **[OPEN-1]** Benchmark pool rates: team rates equal roster caps exactly, but player rates don't —
-  NFL/NBA/MLB/NHL are 3 per manager against a cap of 4, and club soccer is 6 against a cap of 5.
-  Intentional, or drift? Preserved as-is for now.
-- **[OPEN-2]** `MLB_Players_Teams.R` uses `mult_year_n = 0.75` (a 25% discount), but you described the
-  post-draft portion as weighted **80%**. Which is correct for MLB, and which should WNBA/NWSL use?
-- **[OPEN-3]** Confirm the §2.3 window-benchmarking approach for individual sports, which replaces the
-  undevised scalar correction.
-- **[OPEN-4]** Concrete rule for the 3.5 / 4.5 courtesy slot on cross-pool soccer transfers (§2.6).
-- **[OPEN-5]** Trades split an asset across two managers. Confirm each stint competes independently
-  for a best-ball starter slot in its owner's category.
-- **[OPEN-6]** Per-league data source decisions, resolved as each league is built (Phase 2). The five
-  leagues previously fed by hand-built CSVs — Club Soccer, Olympics, Tennis, NASCAR — need free
-  replacements; PGA needs one regardless, since `golfastr` is R-only.
+### Built and tested (48 tests passing)
 
----
+| Module | Covers |
+|---|---|
+| `whul/config/league.py` | Roster template, season window, per-manager pool rates |
+| `whul/normalize.py` | Buffer pool → frozen p99 benchmark → 0-100 scale |
+| `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
+| `whul/scoring/nfl.py` | Half-PPR players + team scoring |
+| `whul/sources/nflverse.py` | nflverse release assets (free, no R dependency) |
+
+### Resolved
+
+- **Benchmark pool rates** — my earlier question was about `Target_N`, the size of the *historical
+  pool* the 99th percentile is drawn from, which is a separate knob from roster caps and starter
+  counts. The R values are preserved exactly and stored as per-manager rates, so they scale with the
+  benchmark manager count. Worth noting the pool sizes don't track roster shape uniformly: NFL and
+  friends draw from 3/manager against a cap of 4 and 2 starters, while club soccer draws from
+  6/manager against a cap of 5. Preserved as-is; revisit only if the scale looks off in practice.
+- **MLB post-draft weight** — `mult_N = 0.75`, per the R script.
+- **Window benchmarking** for individual sports — approved, subject to data availability per league.
+- **Cross-pool soccer transfers** — see §2.6.
+- **Trades** — slot-based, reciprocal, explicit pairing. See §1.5.
+- **Data sources** — each verified independently as its league is built.
+
+### Open
+
+- **[OPEN-A] NWSL this season.** NWSL was grouped with WNBA as "not relevant for this league year,"
+  but NWSL sits in the **Club Soccer Other** pool, so its players and teams are rosterable in
+  2026-27 and its season is bisected by the 8/21 start. It needs a defined treatment now, unlike
+  WNBA which is genuinely sitting out. Should NWSL use bisection weights this year?
+- **[OPEN-B] Validating the ports against R.** R is not installed in this environment, so I cannot
+  diff Python output against R output directly. Current tests assert against values computed by hand
+  from the R formulas plus real-season sanity checks, which catches formula errors but not subtle
+  data-frame semantics. The stronger check is for you to run each R script once and commit its
+  `Master_Data` CSV as a golden file. Worth doing for at least MLB and Club Soccer, where the R
+  logic is most intricate.
+- **[OPEN-C] NFL postseason.** `nflreadr::load_player_stats` returned regular season only, but the
+  nflverse release carries both REG and POST rows. The port defaults to REG. Should playoff
+  production count toward a player's live score?
 
 ## 8. Reference: the existing R scripts
 
