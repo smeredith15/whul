@@ -94,22 +94,26 @@ games floor was meant to exclude.
 
 Three findings from the probes:
 
-- **NCAA Softball's path is wrong, not its parameters.** `eligible_teams` is 0 and
-  every request shape 400s, so `softball/college-softball` is not a valid ESPN
-  endpoint. `whul.cli discover ncaasoftball` tries four candidate paths and
-  reports what each returns. If none works, ESPN has no softball API and this
-  league needs a different source — the NCAA's own stats site is the likely
-  fallback, which is what `softballR` used.
-- **NCAAF's division filter is currently ineffective.** `eligible_teams` returns
-  **759**, but FBS has ~134 teams, so `groups=80` is being ignored on the teams
-  endpoint and FCS opponents would enter the benchmark pool. The scoreboard also
-  returned only 25 games for a mid-November Saturday, which is low for FBS.
-  `discover ncaaf` reports team counts for several group ids so the right one can
-  be chosen. **This is a live correctness problem, not cosmetic.**
+- **NCAA Softball — solved.** It lives under the **baseball** sport path:
+  `baseball/college-softball` returns 446 teams and 52 games, while every
+  `softball/...` variant answers 404. Fixed.
+- **NCAAF's division filter cannot be fixed through ESPN.** The teams endpoint
+  returns **760** for `groups` 80, 81, 90 *and* none — the parameter is simply
+  ignored, so there is no value that yields the ~134 FBS programs. FCS opponents
+  would therefore enter the benchmark pool. **This is a live correctness problem.**
+  The scoreboard does respond to `groups` (25 events against 53 bare), but 25 is
+  too few for a mid-November Saturday, so that filter is not FBS either.
 - **Baseball's blank conference is harmless.** `conference_coverage 0/66` looked
   alarming but diamond scoring never reads conference — wins, run differential
   and series milestones only. The probe now says so explicitly rather than
   printing a fraction that implies a fault.
+
+**The NCAA stats API is the better source for these leagues**, and is now
+implemented alongside ESPN. Its decisive advantage is that division membership is
+stated in the URL — `football/fbs`, `basketball-men/d1` — which is exactly what
+ESPN refuses to express. Its parsed rows use the same column names as the ESPN
+adapter, so the scoring modules work against either without a translation layer.
+It is unverified from here; `probe-ncaa-api` checks it.
 
 Results only — no player slots exist, so no box scores. That is one
 scoreboard request per date, and the ESPN adapter already proven for NBA covers it.

@@ -39,7 +39,9 @@ LEAGUE_PATHS = {
     "ncaaw": ("basketball", "womens-college-basketball"),
     "ncaaf": ("football", "college-football"),
     "ncaabaseball": ("baseball", "college-baseball"),
-    "ncaasoftball": ("softball", "college-softball"),
+    # College softball lives under the *baseball* sport path; every
+    # softball/... variant answers 404.
+    "ncaasoftball": ("baseball", "college-softball"),
 }
 
 #: ESPN group id for the top division. Without it the scoreboard returns only a
@@ -57,10 +59,8 @@ CONFERENCE_REQUIRED = {"ncaaf", "ncaam", "ncaaw"}
 #: Candidate sport/league paths to try when a league's usual path is rejected.
 PATH_CANDIDATES = {
     "ncaasoftball": [
-        ("softball", "college-softball"),
-        ("softball", "womens-college-softball"),
-        ("softball", "ncaa-softball"),
         ("baseball", "college-softball"),
+        ("softball", "college-softball"),
     ],
 }
 
@@ -358,25 +358,42 @@ def discover(league: str, day: date | None = None) -> dict:
         group_report.append(f"groups={group}: teams={count}")
     out["group_ids"] = group_report
 
-    try:
-        board = _get(
-            f"{BASE}/{sport}/{path}/scoreboard",
-            {"dates": dates, "limit": 900, **(
-                {"groups": DIVISION_I_GROUPS[league]} if league in DIVISION_I_GROUPS else {}
-            )},
-        )
-        events = board.get("events", [])
-        out["scoreboard_events"] = len(events)
-        names = sorted(
-            {
-                (c.get("team") or {}).get("displayName", "")
-                for e in events
-                for c in ((e.get("competitions") or [{}])[0]).get("competitors", [])
-            }
-        )
-        out["sample_teams"] = names[:6]
-    except Exception as exc:
-        out["scoreboard_events"] = f"ERR {exc}"
+    # The teams endpoint may ignore `groups` entirely (college football returns
+    # every division whatever is passed), so measure the scoreboard directly:
+    # which parameter combination actually narrows the field, and to what.
+    group = DIVISION_I_GROUPS.get(league)
+    combos: list[tuple[str, dict]] = [
+        ("groups+limit", {"dates": dates, "limit": 900, **({"groups": group} if group else {})}),
+        ("groups only", {"dates": dates, **({"groups": group} if group else {})}),
+        ("limit only", {"dates": dates, "limit": 900}),
+        ("bare", {"dates": dates}),
+    ]
+    combo_report: list[str] = []
+    conferences: dict[str, int] = {}
+    for label, params in combos:
+        try:
+            board = _get(f"{BASE}/{sport}/{path}/scoreboard", params)
+            events = board.get("events", [])
+            combo_report.append(f"{label}: {len(events)} events")
+            if label == "groups+limit":
+                names = sorted(
+                    {
+                        (c.get("team") or {}).get("displayName", "")
+                        for e in events
+                        for c in ((e.get("competitions") or [{}])[0]).get("competitors", [])
+                    }
+                )
+                out["sample_teams"] = names[:6]
+            for event in events:
+                for competitor in ((event.get("competitions") or [{}])[0]).get("competitors", []):
+                    conf = _conference(competitor)
+                    if conf:
+                        conferences[conf] = conferences.get(conf, 0) + 1
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            combo_report.append(f"{label}: ERR {status}")
+    out["scoreboard_by_params"] = combo_report
+    out["conference_ids"] = sorted(conferences.items(), key=lambda kv: -kv[1])[:20]
     return out
 
 

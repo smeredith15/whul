@@ -336,3 +336,8 @@ def test_group_candidates_include_dropping_the_filter():
     for league, candidates in espn.GROUP_CANDIDATES.items():
         assert None in candidates, league
         assert espn.DIVISION_I_GROUPS[league] in candidates, league
+
+
+def test_softball_lives_under_the_baseball_sport_path():
+    """Every softball/... variant answers 404; baseball/college-softball works."""
+    assert espn.LEAGUE_PATHS["ncaasoftball"] == ("baseball", "college-softball")

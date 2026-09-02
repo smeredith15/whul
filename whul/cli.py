@@ -261,6 +261,25 @@ DEFAULT_VALIDATE = {
 }
 
 
+def cmd_probe_ncaa_api(args: argparse.Namespace) -> int:
+    """The NCAA stats API states division in the URL, which ESPN will not do."""
+    from datetime import date as _d
+
+    from whul.sources import ncaa_api
+
+    day = _d.fromisoformat(args.date) if args.date else None
+    result = ncaa_api.probe(args.league, day)
+    print(f"\nNCAA API probe -- {result['league']} on {result['date']}\n")
+    for key, value in result.items():
+        if key in ("league", "date"):
+            continue
+        print(f"  {key:<20} {value}")
+    if any(isinstance(v, str) and v.startswith("FAILED") for v in result.values()):
+        print("\nCould not reach the NCAA API. Send me this output.", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_discover(args: argparse.Namespace) -> int:
     """Ask the API what works, instead of guessing which path or group id is right."""
     from datetime import date as _d
@@ -281,9 +300,14 @@ def cmd_discover(args: argparse.Namespace) -> int:
     print("\n  candidate division group ids:")
     for line in result.get("group_ids", []):
         print(f"    {line}")
-    print(f"\n  scoreboard events with the configured filter: {result.get('scoreboard_events')}")
+    print("\n  scoreboard events by parameter combination:")
+    for line in result.get("scoreboard_by_params", []):
+        print(f"    {line}")
     if result.get("sample_teams"):
-        print(f"  sample teams: {', '.join(result['sample_teams'])}")
+        print(f"\n  sample teams: {', '.join(result['sample_teams'])}")
+    if result.get("conference_ids"):
+        print("\n  conference ids seen (id: appearances):")
+        print("    " + ", ".join(f"{cid}:{n}" for cid, n in result["conference_ids"]))
     return 0
 
 
@@ -506,6 +530,13 @@ def main(argv: list[str] | None = None) -> int:
     discover.add_argument("league", choices=sorted(LEAGUES))
     discover.add_argument("--date", help="YYYY-MM-DD, in season for that sport")
     discover.set_defaults(func=cmd_discover)
+
+    ncaa_api = sub.add_parser(
+        "probe-ncaa-api", help="check the NCAA stats API as an alternative to ESPN"
+    )
+    ncaa_api.add_argument("league", choices=sorted(NCAA_LEAGUES))
+    ncaa_api.add_argument("--date", help="YYYY-MM-DD, in season for that sport")
+    ncaa_api.set_defaults(func=cmd_probe_ncaa_api)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     probe.add_argument("league", choices=sorted(LEAGUES))
