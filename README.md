@@ -36,6 +36,14 @@ Tests marked `network` fetch live data from nflverse and assert against known
 `--normalize` applies the 0-100 scale and prints the benchmark it used.
 `--managers` overrides the benchmark manager count (default 15).
 
+Two commands exist for checking a data source:
+
+```bash
+.venv/bin/python -m whul.cli probe nba                    # is it reachable, does it parse
+.venv/bin/python -m whul.cli validate nfl                 # acquisition, benchmarks, leaders, readiness
+.venv/bin/python -m whul.cli validate nfl --seasons 2020-2024 --target 2024
+```
+
 ## Layout
 
 | Path | Purpose |
@@ -49,11 +57,15 @@ Tests marked `network` fetch live data from nflverse and assert against known
 
 ## Data source status
 
-| League | Source | Live? |
+| League | Source | Status |
 |---|---|---|
-| NFL | nflverse release assets | yes |
-| NBA | hoopR-data | **no** — archived 2026-08-07, stops at season 2023 |
+| NFL | nflverse `stats_player` release | verified through 2025 |
+| NBA | ESPN site API | **unverified** — blocked where written; run `probe nba` |
+| NBA (historical) | hoopR-data | archived 2026-08-07, stops at season 2023 |
 
-hoopR-data being archived means NBA (and likely WNBA / NCAA, which use the sibling
-`wehoop` feeds) need a live source before the season can be scored daily. See
-`docs/PROJECT_PLAN.md` §7.
+Per-league verification guides live in `docs/TESTING_<LEAGUE>.md`. Start with:
+
+```bash
+.venv/bin/python -m whul.cli probe nfl        # cheap reachability check
+.venv/bin/python -m whul.cli validate nfl     # full acquisition report
+```

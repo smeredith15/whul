@@ -67,11 +67,17 @@ def buffer_pool(
     df: pd.DataFrame,
     asset_type: str,
     managers: int = BENCHMARK_MANAGER_COUNT,
+    season_col: str | None = None,
 ) -> pd.DataFrame:
-    """Truncate each draft pool to its fantasy-relevant buffer pool.
+    """Truncate each normalization group to its fantasy-relevant buffer pool.
 
     The benchmark is deliberately computed *after* this truncation, so 100 means
     the 99th percentile of draftable assets rather than of every professional.
+
+    With ``season_col``, truncation happens within each season separately and the
+    survivors are pooled. Over five seasons that yields five times the sample at
+    the same relevance cutoff -- a far more stable percentile than one season
+    gives, without letting one exceptional year crowd out the others.
     """
     rates = _rate_lookup(asset_type)
     mult = TEAM_BUFFER_MULTIPLIER if asset_type == "Team" else PLAYER_BUFFER_MULTIPLIER
@@ -101,7 +107,8 @@ def buffer_pool(
     out["buffer_n"] = out["draft_pool"].map(lambda p: round(rates[p] * managers * mult)).astype(int)
     out = out.sort_values("total_points", ascending=False)
     # Rank within the normalization group so every position keeps its own pool.
-    out["pool_rank"] = out.groupby("norm_key").cumcount() + 1
+    rank_by = ([season_col] if season_col else []) + ["norm_key"]
+    out["pool_rank"] = out.groupby(rank_by).cumcount() + 1
     return out[out["pool_rank"] <= out["buffer_n"]].reset_index(drop=True)
 
 
@@ -109,12 +116,15 @@ def compute_benchmarks(
     df: pd.DataFrame,
     asset_type: str,
     managers: int = BENCHMARK_MANAGER_COUNT,
+    season_col: str | None = None,
 ) -> pd.DataFrame:
     """Frozen 99th-percentile benchmark per normalization group.
 
-    Expects columns ``league``, ``total_points`` and (for players) ``role``.
+    Expects columns ``league``, ``total_points`` and (for players) ``role``. Pass
+    ``season_col`` when ``df`` spans several seasons, so each season is truncated
+    to its own top-N before the percentile is taken across the pooled result.
     """
-    pool = buffer_pool(df, asset_type, managers)
+    pool = buffer_pool(df, asset_type, managers, season_col=season_col)
     # pandas' linear interpolation matches R's default quantile type 7.
     bench = (
         pool.groupby("norm_key")["total_points"]
@@ -124,6 +134,10 @@ def compute_benchmarks(
     )
     bench["asset_type"] = asset_type
     bench["n_in_pool"] = pool.groupby("norm_key").size().reindex(bench["norm_key"]).to_numpy()
+    if season_col:
+        bench["n_seasons"] = (
+            pool.groupby("norm_key")[season_col].nunique().reindex(bench["norm_key"]).to_numpy()
+        )
     return bench
 
 

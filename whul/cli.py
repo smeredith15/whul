@@ -10,6 +10,8 @@ results -- the quickest way to sanity-check a league's data source and formula::
     python -m whul.cli score nfl --season 2024 --csv out.csv
     python -m whul.cli weekly nfl --season 2024
     python -m whul.cli weekly nfl --season 2024 --week 5 --player "Josh Allen"
+    python -m whul.cli validate nfl
+    python -m whul.cli validate nba --seasons 2022-2026 --target 2026
 """
 
 from __future__ import annotations
@@ -45,13 +47,13 @@ LEAGUES = {
         "fn": _nfl,
         "assets": ("players", "teams"),
         "seasons": "1999-present",
-        "source": "nflverse (live)",
+        "source": "nflverse `stats_player` release (live)",
     },
     "nba": {
         "fn": _nba,
         "assets": ("players", "teams"),
-        "seasons": "2002-2023",
-        "source": "hoopR-data (ARCHIVED, historical only)",
+        "seasons": "2002-2023 via hoopR; 2024+ needs ESPN",
+        "source": "ESPN site API (UNVERIFIED) / hoopR-data (archived at 2023)",
     },
 }
 
@@ -97,6 +99,109 @@ def _nfl_weekly(season: int) -> pd.DataFrame:
 
 
 WEEKLY = {"nfl": _nfl_weekly}
+
+
+def _spec(league: str):
+    from whul.validate import LeagueSpec
+
+    if league == "nfl":
+        from whul.scoring import nfl
+        from whul.sources import nflverse
+
+        return LeagueSpec(
+            name="NFL",
+            load=lambda seasons: nflverse.load_player_stats(seasons),
+            score=lambda raw, post: nfl.score_players(raw, postseason=post),
+            id_col="player_id",
+            week_col="week",
+            source="nflverse-data release `stats_player` (parquet per season)",
+        )
+    if league == "nba":
+        from whul.scoring import nba
+        from whul.sources import espn
+
+        return LeagueSpec(
+            name="NBA",
+            load=lambda seasons: espn.load_nba_player_box(seasons),
+            score=lambda raw, post: nba.score_players(raw, postseason=post),
+            id_col="athlete_id",
+            week_col="game_date",
+            source="ESPN site API (scoreboard + boxscore, per date)",
+        )
+    raise KeyError(league)
+
+
+DEFAULT_VALIDATE = {
+    "nfl": ((2021, 2025), 2025),
+    "nba": ((2022, 2026), 2026),
+}
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Cheap reachability + schema check, before committing to a full pull."""
+    if args.league == "nfl":
+        from whul.sources import nflverse
+
+        try:
+            df = nflverse.load_player_stats([2025])
+        except Exception as exc:
+            print(f"FAILED to reach nflverse: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+        print(f"nflverse reachable: {len(df):,} rows for 2025, {len(df.columns)} columns")
+        print(f"season types: {df['season_type'].value_counts().to_dict()}")
+        return 0
+
+    from datetime import date as _date
+
+    from whul.sources import espn
+
+    day = _date.fromisoformat(args.date) if args.date else None
+    result = espn.probe(args.league, day)
+    print(f"\nESPN probe -- {result['league']} on {result['date']}\n")
+    for key, value in result.items():
+        if key in ("league", "date"):
+            continue
+        print(f"  {key:<16} {value}")
+    failed = any(isinstance(v, str) and v.startswith("FAILED") for v in result.values())
+    if failed:
+        print("\nThe adapter could not reach or parse ESPN. Send me this output.", file=sys.stderr)
+        return 1
+    print("\nESPN reachable and the boxscore schema parses.")
+    return 0
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Full acquisition + benchmark + leaders + scrape-readiness report."""
+    from whul.validate import run
+
+    default_span, default_target = DEFAULT_VALIDATE[args.league]
+    if args.seasons:
+        first, _, last = args.seasons.partition("-")
+        span = (int(first), int(last or first))
+    else:
+        span = default_span
+    seasons = list(range(span[0], span[1] + 1))
+    target = args.target or default_target
+
+    try:
+        spec = _spec(args.league)
+    except KeyError:
+        print(f"no validation spec for {args.league}", file=sys.stderr)
+        return 2
+
+    try:
+        return run(spec, seasons, target)
+    except Exception as exc:  # surfaced deliberately: this command exists to diagnose
+        print(
+            f"\nVALIDATION FAILED: {type(exc).__name__}: {exc}", file=sys.stderr
+        )
+        print(
+            "\nIf this is a network error, the host may be blocked by your egress "
+            "policy. See the troubleshooting section of the league's testing guide "
+            "in docs/.",
+            file=sys.stderr,
+        )
+        return 1
 
 
 def cmd_weekly(args: argparse.Namespace) -> int:
@@ -202,6 +307,17 @@ def main(argv: list[str] | None = None) -> int:
     weekly.add_argument("--player", help="show one player's week-by-week line")
     weekly.add_argument("--top", type=int, default=15)
     weekly.set_defaults(func=cmd_weekly)
+
+    probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
+    probe.add_argument("league", choices=sorted(LEAGUES))
+    probe.add_argument("--date", help="YYYY-MM-DD to probe (default: yesterday)")
+    probe.set_defaults(func=cmd_probe)
+
+    validate = sub.add_parser("validate", help="full data-source validation report")
+    validate.add_argument("league", choices=sorted(LEAGUES))
+    validate.add_argument("--seasons", help="range like 2021-2025 (default: last 5)")
+    validate.add_argument("--target", type=int, help="season to report leaders for")
+    validate.set_defaults(func=cmd_validate)
 
     args = parser.parse_args(argv)
     return args.func(args)

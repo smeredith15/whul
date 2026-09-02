@@ -51,7 +51,7 @@ Offline tests first — these need no network and should pass instantly:
 .venv/bin/python -m pytest -m "not network" -q
 ```
 
-**Expect:** `89 passed, 2 deselected` (roughly — the count grows as leagues are added).
+**Expect:** `103 passed, 2 deselected` (roughly — the count grows as leagues are added).
 
 Now the whole suite, including tests that fetch real nflverse data:
 
@@ -59,10 +59,37 @@ Now the whole suite, including tests that fetch real nflverse data:
 .venv/bin/python -m pytest -q
 ```
 
-**Expect:** `91 passed`. If the offline tests pass but these fail, the problem is
+**Expect:** `105 passed`. If the offline tests pass but these fail, the problem is
 network access, not the code — jump to Troubleshooting.
 
-## 5. Confirm the season aggregate
+## 5. Run the full validation report
+
+This is the one command that answers everything at once — acquisition, benchmarks,
+leaders and scrape readiness:
+
+```bash
+.venv/bin/python -m whul.cli validate nfl
+```
+
+**Expect** four sections and a `SUMMARY` ending in `scrape: READY`:
+
+- **Acquisition** — seasons 2021-2025, ~19,000 rows and 22 weeks each, no gaps.
+- **Benchmarks** — four position groups, each pooled from 340 player-seasons
+  (68 per season × 5): QB ~390, RB ~337, TE ~213, WR ~314.
+- **Leaders** — #1 and #10 per position for 2025, raw and normalized, with and
+  without the postseason bonus. Josh Allen leads QB at 93.1 normalized excluding
+  playoffs and 104.5 including; McCaffrey leads RB at 108.4 / 117.6.
+- **Readiness** — four PASS lines.
+
+Exit code is 0 when everything passes: `echo $?` after the run.
+
+To change the window:
+
+```bash
+.venv/bin/python -m whul.cli validate nfl --seasons 2020-2024 --target 2024
+```
+
+## 6. Confirm the season aggregate
 
 ```bash
 .venv/bin/python -m whul.cli score nfl --season 2024
@@ -72,6 +99,10 @@ network access, not the code — jump to Troubleshooting.
 Baker Mayfield, Jayden Daniels. That 428.38 is the assertion the integration test
 checks, so it is the single best signal the feed is intact.
 
+> Note: nflverse retired the `player_stats` release and weekly stats now live
+> under `stats_player`. The adapter reads the new location and falls back to the
+> old one, which is how 2025 became available at all.
+
 Team scoring:
 
 ```bash
@@ -80,7 +111,7 @@ Team scoring:
 
 **Expect:** 32 teams, Philadelphia first (they won that Super Bowl, 4 playoff wins).
 
-## 6. Confirm week-by-week granularity
+## 7. Confirm week-by-week granularity
 
 This is the important one for daily scoring — it proves the feed carries
 per-week rows rather than only season totals.
@@ -111,7 +142,7 @@ A single week:
 
 **Expect:** Ja'Marr Chase 36.30, Kirk Cousins 34.36, Joe Burrow 33.78.
 
-## 7. Confirm normalization
+## 8. Confirm normalization
 
 ```bash
 .venv/bin/python -m whul.cli score nfl --season 2024 --normalize --top 20
@@ -139,7 +170,7 @@ Try a different benchmark manager count to see the pools resize:
 percentile. Every position still gets a benchmark, because truncation is applied
 per position group rather than across the NFL pool as a whole.
 
-## 8. Export for inspection
+## 9. Export for inspection
 
 ```bash
 .venv/bin/python -m whul.cli score nfl --season 2024 --csv nfl_2024.csv
@@ -149,7 +180,7 @@ Open `nfl_2024.csv` in CodeOSS and check `regular_points`, `postseason_games`,
 `postseason_rate`, `postseason_bonus` and `total_points` per player. Players who
 missed the playoffs should show a zero bonus; Joe Burrow is a good example.
 
-## 9. Spot-check several seasons
+## 10. Spot-check several seasons
 
 ```bash
 for y in 2021 2022 2023 2024; do
@@ -168,10 +199,11 @@ is the check that the source is stable across years, not just for 2024.
 |---|---|
 | Offline tests | Formulas match the R scripts |
 | Network tests | The feed is reachable and its schema hasn't drifted |
-| Step 5 (428.38) | Season aggregation is exact |
-| Step 6 (22 weeks) | Per-week rows exist — daily scoring is possible |
-| Step 7 | The 0-100 scale is being computed |
-| Step 9 | The source is stable across seasons |
+| Step 5 | Everything, in one command |
+| Step 6 (428.38) | Season aggregation is exact |
+| Step 7 (22 weeks) | Per-week rows exist — daily scoring is possible |
+| Step 8 | The 0-100 scale is being computed |
+| Step 10 | The source is stable across seasons |
 
 ---
 
