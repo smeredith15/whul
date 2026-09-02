@@ -36,6 +36,7 @@ def fake_score(raw, postseason):
 SPEC = LeagueSpec(
     name="Fake", load=lambda s: fake_raw(s), score=fake_score,
     id_col="player_id", week_col="week", source="synthetic",
+    daily_cost=lambda: 0.5,
 )
 
 
@@ -93,3 +94,46 @@ def test_scrape_readiness_fails_without_per_period_rows(capsys):
     raw = raw.assign(week=1)
     assert scrape_readiness(SPEC, raw, [2021], stats) is False
     assert "NOT READY" in capsys.readouterr().out
+
+
+def test_readiness_judges_nightly_cost_not_backfill_cost(capsys):
+    """A slow one-time backfill must not fail a source that stays current cheaply.
+
+    ESPN takes ~27 minutes to backfill an NBA season but seconds to fetch one
+    day, which is all the nightly job does.
+    """
+    slow_backfill = LeagueSpec(
+        name="SlowBackfill", load=lambda s: fake_raw(s), score=fake_score,
+        id_col="player_id", week_col="week", source="synthetic",
+        daily_cost=lambda: 3.0,
+    )
+    raw, stats = acquire(slow_backfill, [2021])
+    stats["elapsed"] = 1613.2  # as measured against the real NBA season
+    assert scrape_readiness(slow_backfill, raw, [2021], stats) is True
+    out = capsys.readouterr().out
+    assert "~3.0s per day" in out
+    assert "backfill cost, paid once" in out
+
+
+def test_expensive_nightly_update_fails(capsys):
+    costly = LeagueSpec(
+        name="Costly", load=lambda s: fake_raw(s), score=fake_score,
+        id_col="player_id", week_col="week", source="synthetic",
+        daily_cost=lambda: 600.0,
+    )
+    raw, stats = acquire(costly, [2021])
+    assert scrape_readiness(costly, raw, [2021], stats) is False
+
+
+def test_unmeasurable_nightly_cost_fails_loudly(capsys):
+    def boom():
+        raise RuntimeError("endpoint down")
+
+    spec = LeagueSpec(
+        name="Broken", load=lambda s: fake_raw(s), score=fake_score,
+        id_col="player_id", week_col="week", source="synthetic",
+        daily_cost=boom,
+    )
+    raw, stats = acquire(spec, [2021])
+    assert scrape_readiness(spec, raw, [2021], stats) is False
+    assert "measurement failed" in capsys.readouterr().out

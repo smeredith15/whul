@@ -101,6 +101,15 @@ def _nfl_weekly(season: int) -> pd.DataFrame:
 WEEKLY = {"nfl": _nfl_weekly}
 
 
+def _timed(fn) -> float:
+    """Seconds one call takes, for the nightly-cost check."""
+    import time
+
+    started = time.monotonic()
+    fn()
+    return time.monotonic() - started
+
+
 def _spec(league: str):
     from whul.validate import LeagueSpec
 
@@ -115,6 +124,9 @@ def _spec(league: str):
             id_col="player_id",
             week_col="week",
             source="nflverse-data release `stats_player` (parquet per season)",
+            # The nightly job re-reads the current season's file; there is no
+            # smaller unit, so one season IS the incremental update.
+            daily_cost=lambda: _timed(lambda: nflverse.load_player_stats([2025])),
         )
     if league == "nba":
         from whul.scoring import nba
@@ -127,6 +139,9 @@ def _spec(league: str):
             id_col="athlete_id",
             week_col="game_date",
             source="ESPN site API (scoreboard + boxscore, per date)",
+            # ESPN is queried per date, so the nightly job is one date -- a tiny
+            # fraction of the backfill cost.
+            daily_cost=lambda: espn.daily_update_cost("nba"),
         )
     raise KeyError(league)
 

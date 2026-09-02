@@ -34,6 +34,9 @@ class LeagueSpec:
     week_col: str
     source: str
     supports_incremental: bool = True
+    #: Cost of ONE incremental update -- what the nightly job actually does.
+    #: Not the backfill cost, which is paid once and may be far larger.
+    daily_cost: Callable[[], float] | None = None
 
 
 def _rule(title: str) -> str:
@@ -61,14 +64,14 @@ def acquire(spec: LeagueSpec, seasons: list[int]) -> tuple[pd.DataFrame, dict]:
     per_season = raw.groupby("season").agg(
         rows=(spec.id_col, "size"),
         assets=(spec.id_col, "nunique"),
-        weeks=(spec.week_col, "nunique"),
+        **{f"{spec.week_col}s": (spec.week_col, "nunique")},
     )
     _say(per_season.to_string())
     _say(f"\nfetched {len(raw):,} rows in {elapsed:.1f}s")
     if missing:
-        print(f"MISSING SEASONS: {missing}  <-- investigate before trusting this source")
+        _say(f"MISSING SEASONS: {missing}  <-- investigate before trusting this source")
     else:
-        print(f"all {len(seasons)} requested seasons present")
+        _say(f"all {len(seasons)} requested seasons present")
     return raw, {"elapsed": elapsed, "missing": missing, "seasons": got}
 
 
@@ -84,12 +87,12 @@ def benchmarks(spec: LeagueSpec, raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.Da
     reg_only = scored.assign(total_points=scored["regular_points"])
     bench = compute_benchmarks(reg_only, "Player", season_col="season")
 
-    print("pool: regular-season production, truncated per season per group\n")
+    _say("pool: regular-season production, truncated per season per group\n")
     cols = ["norm_key", "benchmark", "n_in_pool"] + (
         ["n_seasons"] if "n_seasons" in bench.columns else []
     )
-    print(bench[cols].to_string(index=False))
-    print("\n100 on the normalized scale = these values. Scores above 100 are expected.")
+    _say(bench[cols].to_string(index=False))
+    _say("\n100 on the normalized scale = these values. Scores above 100 are expected.")
     return scored, bench
 
 
@@ -105,7 +108,7 @@ def leaders(
 
     season = scored[scored["season"] == target].copy()
     if season.empty:
-        print(f"No {target} data. Cannot report leaders.")
+        _say(f"No {target} data. Cannot report leaders.")
         return pd.DataFrame()
 
     # Normalize both variants against the same regular-season benchmark.
@@ -131,18 +134,18 @@ def leaders(
 
     out = pd.DataFrame(rows)
     if out.empty:
-        print("No rows.")
+        _say("No rows.")
         return out
 
     display = out[
         ["group", "rank", "player", "po_games", "raw_excl", "norm_excl", "raw_incl", "norm_incl"]
     ].round(2)
-    print("raw_excl / norm_excl  = regular season only")
-    print("raw_incl / norm_incl  = regular season + postseason bonus\n")
-    print(display.to_string(index=False))
+    _say("raw_excl / norm_excl  = regular season only")
+    _say("raw_incl / norm_incl  = regular season + postseason bonus\n")
+    _say(display.to_string(index=False))
 
     gap = out[out["rank"] == 1]["norm_excl"].describe()
-    print(
+    _say(
         f"\n#1 normalized scores span {gap['min']:.1f} to {gap['max']:.1f} across groups."
         "\nValues clustered near 100 mean each position is being measured against itself."
     )
@@ -164,16 +167,26 @@ def scrape_readiness(spec: LeagueSpec, raw: pd.DataFrame, seasons: list[int], st
         f"{len(weeks)} distinct {spec.week_col}s in {latest}",
     ))
     checks.append((
-        "incremental fetch (one season at a time)",
+        "incremental fetch supported",
         spec.supports_incremental,
-        "a daily job re-pulls only the current season",
+        "the nightly job pulls only what is new",
     ))
-    per_season = stats["elapsed"] / max(len(seasons), 1)
-    checks.append((
-        "fetch cost acceptable for a nightly job",
-        per_season < 60,
-        f"~{per_season:.1f}s per season",
-    ))
+
+    # Readiness is about the *nightly* cost, not the backfill. A source can be
+    # slow to backfill once and still be trivially cheap to keep current.
+    if spec.daily_cost is not None:
+        try:
+            daily = spec.daily_cost()
+            checks.append((
+                "nightly update cost",
+                daily < 120,
+                f"~{daily:.1f}s per day",
+            ))
+        except Exception as exc:
+            checks.append(("nightly update cost", False, f"measurement failed: {exc}"))
+    else:
+        checks.append(("nightly update cost", False, "not measured -- no probe defined"))
+
     checks.append((
         "all requested seasons available",
         not stats["missing"],
@@ -181,18 +194,21 @@ def scrape_readiness(spec: LeagueSpec, raw: pd.DataFrame, seasons: list[int], st
     ))
 
     for label, ok, detail in checks:
-        print(f"  [{'PASS' if ok else 'FAIL'}]  {label:<45} {detail}")
+        _say(f"  [{'PASS' if ok else 'FAIL'}]  {label:<45} {detail}")
+
+    backfill = stats["elapsed"] / max(len(seasons), 1)
+    _say(f"\n  (backfill cost, paid once: ~{backfill:.0f}s per season)")
 
     ready = all(ok for _, ok, _ in checks)
-    print(
+    _say(
         f"\n{'READY' if ready else 'NOT READY'}: "
         + (
-            "the source exposes per-period rows and can be re-pulled cheaply."
+            "the source exposes per-period rows and stays current cheaply."
             if ready
             else "see the failing checks above."
         )
     )
-    print(
+    _say(
         "\nNote: this confirms historical acquisition. Live in-season refresh can only be\n"
         "confirmed once games are being played -- rerun this against the live season then."
     )
@@ -205,8 +221,8 @@ def run(spec: LeagueSpec, seasons: list[int], target: int) -> int:
     leaders(spec, scored, bench, target)
     ready = scrape_readiness(spec, raw, seasons, stats)
     _say(_rule("SUMMARY"))
-    print(f"league:     {spec.name}")
-    print(f"seasons:    {stats['seasons']}")
-    print(f"groups:     {sorted(bench['norm_key'])}")
-    print(f"scrape:     {'READY' if ready else 'NOT READY'}")
+    _say(f"league:     {spec.name}")
+    _say(f"seasons:    {stats['seasons']}")
+    _say(f"groups:     {sorted(bench['norm_key'])}")
+    _say(f"scrape:     {'READY' if ready else 'NOT READY'}")
     return 0 if ready and not stats["missing"] else 1

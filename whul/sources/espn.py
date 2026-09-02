@@ -292,6 +292,26 @@ def load_positions(league: str = "nba") -> dict[str, str]:
     return positions
 
 
+def daily_update_cost(league: str = "nba", day: date | None = None) -> float:
+    """Seconds to pull one date -- exactly what the nightly job does.
+
+    Measured on a cold cache: the cache is bypassed so the number reflects real
+    network cost rather than a replay.
+    """
+    day = day or default_probe_date()
+    sport, path = LEAGUE_PATHS[league]
+
+    started = time.monotonic()
+    board = _get(f"{BASE}/{sport}/{path}/scoreboard", {"dates": day.strftime("%Y%m%d")})
+    for event in board.get("events", []):
+        competition = (event.get("competitions") or [{}])[0]
+        if not competition.get("status", {}).get("type", {}).get("completed"):
+            continue
+        _get(f"{BASE}/{sport}/{path}/summary", {"event": event["id"]})
+        time.sleep(REQUEST_PAUSE)
+    return time.monotonic() - started
+
+
 def probe(league: str = "nba", day: date | None = None) -> dict:
     """Check reachability and schema without pulling a whole season.
 
