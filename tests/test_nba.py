@@ -33,26 +33,26 @@ def test_game_score_matches_hand_calculation():
                            turnovers=3, three_point_field_goals_made=2)], n=20)
     out = score_players(games).iloc[0]
     assert out["games_played"] == 20
-    assert out["fantasy_points"] == pytest.approx(40.5 * 20)
+    assert out["regular_points"] == pytest.approx(40.5 * 20)
 
 
 def test_double_double_bonus():
     """10 pts + 10 reb = 10 + 12 + 1.5 = 23.5"""
     games = season_of([box(points=10, rebounds=10)], n=20)
-    assert score_players(games).iloc[0]["fantasy_points"] == pytest.approx(23.5 * 20)
+    assert score_players(games).iloc[0]["regular_points"] == pytest.approx(23.5 * 20)
 
 
 def test_triple_double_earns_both_bonuses():
     """A triple-double is also a double-double: 10 + 12 + 15 + 1.5 + 3 = 41.5"""
     games = season_of([box(points=10, rebounds=10, assists=10)], n=20)
-    assert score_players(games).iloc[0]["fantasy_points"] == pytest.approx(41.5 * 20)
+    assert score_players(games).iloc[0]["regular_points"] == pytest.approx(41.5 * 20)
 
 
 def test_steals_and_blocks_count_toward_doubles():
     """Per the R script, all five categories can trigger the bonus."""
     games = season_of([box(steals=10, blocks=10)], n=20)
     # 30 + 30 + 1.5 double-double
-    assert score_players(games).iloc[0]["fantasy_points"] == pytest.approx(61.5 * 20)
+    assert score_players(games).iloc[0]["regular_points"] == pytest.approx(61.5 * 20)
 
 
 def test_plus_minus_is_parsed_from_signed_strings():
@@ -60,8 +60,9 @@ def test_plus_minus_is_parsed_from_signed_strings():
         [box(points=30, plus_minus="+10")] * 10 + [box(points=30, plus_minus="-4")] * 10
     )
     out = score_players(games).iloc[0]
-    assert out["plus_minus"] == pytest.approx(60.0)  # 10*10 - 4*10
-    assert out["total_points"] == pytest.approx(out["fantasy_points"] + 6.0)
+    # 30 pts/game * 20 games = 600, plus 0.1 * (10*10 - 4*10) = 6.0
+    assert out["regular_points"] == pytest.approx(606.0)
+    assert out["total_points"] == pytest.approx(606.0)
 
 
 def test_minimum_games_filter():

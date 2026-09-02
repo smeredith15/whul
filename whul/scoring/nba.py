@@ -13,6 +13,7 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
+from whul.scoring.postseason import RULES, apply_bonus, split_phases
 
 # Per-game box score weights, per NBA_Players_Teams.R
 BOX_WEIGHTS = {
@@ -70,8 +71,14 @@ def _plus_minus(df: pd.DataFrame) -> pd.Series:
     return pd.to_numeric(raw.str.replace("+", "", regex=False), errors="coerce").fillna(0.0)
 
 
-def score_players(box: pd.DataFrame) -> pd.DataFrame:
-    """Season totals per player from per-game box scores."""
+def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
+    """Season totals per player from per-game box scores.
+
+    Playoff rows (``season_type`` 3) are credited as a bonus worth a fixed number
+    of extra games at the player's own rate rather than as raw counting stats;
+    Play-In games (5) count as regular season, being an extension of it. Pass
+    ``postseason=False`` for benchmark computation.
+    """
     work = pd.DataFrame(
         {
             "season": resolve_num(box, ["season"], required=True).astype(int),
@@ -102,14 +109,18 @@ def score_players(box: pd.DataFrame) -> pd.DataFrame:
         + (doubles >= 3).astype(float) * TRIPLE_DOUBLE_BONUS
     )
 
-    agg = work.groupby(
-        ["season", "athlete_id", "player", "position"], as_index=False
-    ).agg(
-        games_played=("game_points", "size"),
-        fantasy_points=("game_points", "sum"),
-        plus_minus=("plus_minus", "sum"),
+    # Net plus-minus is folded in per game so it rides along with the phase split.
+    work["game_points"] = work["game_points"] + work["plus_minus"] * PLUS_MINUS_WEIGHT
+    work["game_count"] = 1
+    work["is_post"] = (
+        resolve_num(box, ["season_type"], default=SEASON_TYPE_REGULAR)
+        .reindex(work.index)
+        .eq(SEASON_TYPE_POST)
     )
-    agg["total_points"] = agg["fantasy_points"] + agg["plus_minus"] * PLUS_MINUS_WEIGHT
+
+    keys = ["season", "athlete_id", "player", "position"]
+    phases = split_phases(work, keys, "game_points", "game_count", work["is_post"])
+    agg = apply_bonus(phases, RULES["NBA"] if postseason else None)
     agg["league"] = "NBA"
     agg["role"] = agg["position"]
     keep = (agg["games_played"] >= MIN_GAMES) & (agg["total_points"] > MIN_SCORE)

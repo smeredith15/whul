@@ -12,6 +12,7 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
+from whul.scoring.postseason import RULES, apply_bonus, split_phases
 
 SCORING_POSITIONS = ("QB", "RB", "WR", "TE")
 
@@ -43,16 +44,16 @@ TEAM_WEIGHTS = {
 BIG_WIN_MARGIN = 9  # a "big win" is a two-possession game or better
 
 
-def score_players(stats: pd.DataFrame, season_type: str | None = "REG") -> pd.DataFrame:
+def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     """Season half-PPR totals per player.
 
-    ``season_type`` filters the feed; the nflverse release carries both REG and
-    POST rows. Defaults to regular season only.
+    The nflverse release carries both REG and POST rows. Regular-season points
+    are summed directly; postseason production is credited as a bonus worth a
+    fixed number of extra games at the player's own rate (see
+    ``whul.scoring.postseason``). Pass ``postseason=False`` to score the regular
+    season alone -- which is what benchmark computation uses.
     """
     df = stats
-    if season_type is not None and "season_type" in df.columns:
-        df = df[df["season_type"] == season_type]
-
     work = pd.DataFrame(
         {
             "season": resolve_num(df, ["season"], required=True).astype(int),
@@ -79,18 +80,18 @@ def score_players(stats: pd.DataFrame, season_type: str | None = "REG") -> pd.Da
     work["fumbles_lost"] = (
         work["sack_fumbles_lost"] + work["rushing_fumbles_lost"] + work["receiving_fumbles_lost"]
     )
+    work = work[work["position"].isin(SCORING_POSITIONS)].copy()
+    work["game_points"] = sum(work[c] * w for c, w in PLAYER_WEIGHTS.items())
+    work["game_count"] = 1
+    work["is_post"] = resolve_str(stats, ["season_type"], default="REG").reindex(work.index) == "POST"
 
-    stat_cols = list(PLAYER_WEIGHTS)
-    agg = (
-        work.groupby(["season", "player_id", "player", "position"], as_index=False)
-        .agg(
-            team=("team", lambda s: "/".join(sorted(set(x for x in s if x)))),
-            games_played=("week", "nunique"),
-            **{c: (c, "sum") for c in stat_cols},
-        )
+    keys = ["season", "player_id", "player", "position"]
+    phases = split_phases(work, keys, "game_points", "game_count", work["is_post"])
+    teams = (
+        work.groupby(keys, as_index=False)["team"]
+        .agg(lambda s: "/".join(sorted(set(x for x in s if x))))
     )
-    agg = agg[agg["position"].isin(SCORING_POSITIONS)].copy()
-    agg["total_points"] = sum(agg[c] * w for c, w in PLAYER_WEIGHTS.items())
+    agg = apply_bonus(phases.merge(teams, on=keys, how="left"), RULES["NFL"] if postseason else None)
     agg["league"] = "NFL"
     agg["role"] = agg["position"]
     return agg[agg["total_points"] > 0].reset_index(drop=True)

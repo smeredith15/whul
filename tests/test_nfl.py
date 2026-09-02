@@ -69,14 +69,33 @@ def test_non_positive_scorers_are_dropped():
     assert score_players(stats).empty
 
 
-def test_postseason_excluded_by_default():
+def test_postseason_counts_as_a_bonus_not_raw_stats():
+    """One 40-point regular game and one 200-point playoff game.
+
+    rate = (40 + 200) / 2 games = 120/game; bonus = 120 * 4.25 = 510.
+    total = regular 40 + 510. Raw playoff stats never enter the total directly.
+    """
     stats = pd.DataFrame([
         weekly(week=1, passing_yards=1000),
         weekly(week=20, season_type="POST", passing_yards=5000),
     ])
-    assert score_players(stats).iloc[0]["total_points"] == pytest.approx(40.0)
-    both = score_players(stats, season_type=None).iloc[0]
-    assert both["total_points"] == pytest.approx(240.0)
+    out = score_players(stats).iloc[0]
+    assert out["regular_points"] == pytest.approx(40.0)
+    assert out["postseason_games"] == 1
+    assert out["per_game_rate"] == pytest.approx(120.0)
+    assert out["postseason_bonus"] == pytest.approx(510.0)
+    assert out["total_points"] == pytest.approx(550.0)
+
+
+def test_regular_season_only_mode_ignores_the_postseason():
+    """Benchmarks are built this way, so the scale is never skewed by playoffs."""
+    stats = pd.DataFrame([
+        weekly(week=1, passing_yards=1000),
+        weekly(week=20, season_type="POST", passing_yards=5000),
+    ])
+    out = score_players(stats, postseason=False).iloc[0]
+    assert out["total_points"] == pytest.approx(40.0)
+    assert out["postseason_bonus"] == 0.0
 
 
 def test_renamed_upstream_columns_resolve():
@@ -171,7 +190,12 @@ def test_real_2024_season_sanity():
     players = score_players(nflverse.load_player_stats([2024]))
     top = players.nlargest(1, "total_points").iloc[0]
     assert top["player"] == "Lamar Jackson"
-    assert top["total_points"] == pytest.approx(428.38, abs=0.01)
+    assert top["regular_points"] == pytest.approx(428.38, abs=0.01)
+
+    reg_only = score_players(nflverse.load_player_stats([2024]), postseason=False)
+    assert reg_only.nlargest(1, "total_points").iloc[0]["total_points"] == pytest.approx(
+        428.38, abs=0.01
+    )
 
     teams = score_teams(nflverse.load_schedules([2024]), nflverse.load_teams([2024]))
     assert len(teams) == 32
