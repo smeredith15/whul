@@ -49,6 +49,14 @@ BATTER_WEIGHTS = {
 OFFENSE_FACTOR = 0.25
 DEFENSE_FACTOR = 1.5
 
+#: Offense, Defense and WAR exist only on FanGraphs among free sources. If it is
+#: unreachable, scoring can fall back to counting stats alone -- but that is a
+#: rules change, not a source swap: the advanced terms are 0.7-5% of a score and
+#: they are not uniform, being worth most to glove-first players and least to
+#: sluggers, so dropping them compresses the gap between those profiles.
+#: Never flip this silently.
+INCLUDE_ADVANCED_METRICS = True
+
 # --- pitcher scoring ------------------------------------------------------
 PITCHER_WEIGHTS = {
     "ip": 7.4, "so": 2.0, "h": -2.6, "bb": -3.0, "hbp": -3.0,
@@ -86,8 +94,12 @@ def _empty_role_frame() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype="object") for c in EMPTY_ROLE_COLUMNS})
 
 
-def score_batters(df: pd.DataFrame) -> pd.DataFrame:
-    """Season batting points per player."""
+def score_batters(df: pd.DataFrame, include_advanced: bool | None = None) -> pd.DataFrame:
+    """Season batting points per player.
+
+    ``include_advanced`` gates the FanGraphs Offense and Defense terms; see
+    ``INCLUDE_ADVANCED_METRICS``.
+    """
     if df is None or df.empty:
         return _empty_role_frame()
     work = pd.DataFrame(
@@ -111,17 +123,20 @@ def score_batters(df: pd.DataFrame) -> pd.DataFrame:
             "games": resolve_num(df, ["g", "G", "games"]),
         }
     )
-    work["role_points"] = (
-        sum(work[c] * w for c, w in BATTER_WEIGHTS.items())
-        + work["offense"] * OFFENSE_FACTOR
-        + work["defense"] * DEFENSE_FACTOR
-    )
+    advanced = INCLUDE_ADVANCED_METRICS if include_advanced is None else include_advanced
+    work["role_points"] = sum(work[c] * w for c, w in BATTER_WEIGHTS.items())
+    if advanced:
+        work["role_points"] += work["offense"] * OFFENSE_FACTOR + work["defense"] * DEFENSE_FACTOR
     work["role"] = "Batter"
     return work[work["role_points"] > 0].reset_index(drop=True)
 
 
-def score_pitchers(df: pd.DataFrame) -> pd.DataFrame:
-    """Season pitching points per player."""
+def score_pitchers(df: pd.DataFrame, include_advanced: bool | None = None) -> pd.DataFrame:
+    """Season pitching points per player.
+
+    ``include_advanced`` gates the FanGraphs WAR term; see
+    ``INCLUDE_ADVANCED_METRICS``.
+    """
     if df is None or df.empty:
         return _empty_role_frame()
     work = pd.DataFrame(
@@ -143,14 +158,19 @@ def score_pitchers(df: pd.DataFrame) -> pd.DataFrame:
             "games": resolve_num(df, ["g", "G", "games"]),
         }
     )
-    work["role_points"] = (
-        sum(work[c] * w for c, w in PITCHER_WEIGHTS.items()) + work["war"] * WAR_FACTOR * 10
-    )
+    advanced = INCLUDE_ADVANCED_METRICS if include_advanced is None else include_advanced
+    work["role_points"] = sum(work[c] * w for c, w in PITCHER_WEIGHTS.items())
+    if advanced:
+        work["role_points"] += work["war"] * WAR_FACTOR * 10
     work["role"] = "Pitcher"
     return work[work["role_points"] > 0].reset_index(drop=True)
 
 
-def score_players(batters: pd.DataFrame, pitchers: pd.DataFrame) -> pd.DataFrame:
+def score_players(
+    batters: pd.DataFrame,
+    pitchers: pd.DataFrame,
+    include_advanced: bool | None = None,
+) -> pd.DataFrame:
     """One row per player *per role*, ready for normalization.
 
     Deliberately not combined here: batting is normalized against the batter
@@ -159,7 +179,10 @@ def score_players(batters: pd.DataFrame, pitchers: pd.DataFrame) -> pd.DataFrame
     afterwards to fold a two-way player's two rows into one.
     """
     frames = [
-        f for f in (score_batters(batters), score_pitchers(pitchers))
+        f for f in (
+            score_batters(batters, include_advanced),
+            score_pitchers(pitchers, include_advanced),
+        )
         if f is not None and not f.empty
     ]
     if not frames:

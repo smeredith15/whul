@@ -280,3 +280,44 @@ def test_series_milestones_are_not_deflated():
     nyy = nyy[nyy["team"] == "NYY"].iloc[0]
     # wc_or_bye 5 + lds 6 = 11 flat, plus the discounted regular-season terms
     assert nyy["year_n_points"] > 11.0
+
+
+# --- the FanGraphs dependency ----------------------------------------------
+
+def test_advanced_metrics_are_included_by_default():
+    """Offense, Defense and WAR are part of the scoring as the R script defines it."""
+    from whul.scoring.mlb import INCLUDE_ADVANCED_METRICS
+
+    assert INCLUDE_ADVANCED_METRICS is True
+
+
+def test_batters_can_be_scored_without_the_advanced_terms():
+    """Available only if FanGraphs proves permanently unreachable, and only as a
+    deliberate rules change -- never as a silent fallback."""
+    df = pd.DataFrame([batter(AB=500, H=150, HR=30, Off=60, Def=20)])
+    with_adv = score_batters(df, include_advanced=True).iloc[0]["role_points"]
+    without = score_batters(df, include_advanced=False).iloc[0]["role_points"]
+    # Off 60 * 0.25 + Def 20 * 1.5 = 15 + 30 = 45
+    assert with_adv - without == pytest.approx(45.0)
+
+
+def test_pitchers_can_be_scored_without_war():
+    df = pd.DataFrame([pitcher(IP=200, SO=220, H=160, BB=50, WAR=6)])
+    with_adv = score_pitchers(df, include_advanced=True).iloc[0]["role_points"]
+    without = score_pitchers(df, include_advanced=False).iloc[0]["role_points"]
+    assert with_adv - without == pytest.approx(6 * 0.5 * 10)
+
+
+def test_dropping_advanced_terms_hurts_defenders_most():
+    """The reason this is a rules change rather than a source swap: the terms are
+    not uniform, so removing them compresses glove-first against bat-first."""
+    slugger = pd.DataFrame([batter(AB=550, H=180, HR=50, BB=120, Off=70, Def=-5)])
+    glove = pd.DataFrame([batter(AB=500, H=125, HR=10, BB=40, Off=-10, Def=20)])
+
+    def share(df):
+        full = score_batters(df, include_advanced=True).iloc[0]["role_points"]
+        bare = score_batters(df, include_advanced=False).iloc[0]["role_points"]
+        return (full - bare) / full
+
+    assert share(glove) > share(slugger)
+    assert share(slugger) < 0.02

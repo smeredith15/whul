@@ -41,13 +41,60 @@ GAME_TYPES = ("R", "F", "D", "L", "W")
 BATTER_QUAL = 100
 PITCHER_QUAL = 30
 
+#: FanGraphs sits behind bot protection that answers 403 to a plain request.
+#: Warming a session against the HTML leaderboard first collects the cookies the
+#: API call is checked against -- the same sequence a browser performs.
+FANGRAPHS_HOME = "https://www.fangraphs.com/leaders/major-league"
+_SESSION: requests.Session | None = None
+
+
+def _session() -> requests.Session:
+    """A cookie-bearing session, warmed once against the HTML leaderboard."""
+    global _SESSION
+    if _SESSION is not None:
+        return _SESSION
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+        ),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": FANGRAPHS_HOME,
+    })
+    try:
+        session.get(FANGRAPHS_HOME, timeout=TIMEOUT)
+        time.sleep(REQUEST_PAUSE)
+    except Exception:
+        # A failed warm-up is not fatal; the API call may still succeed.
+        pass
+    _SESSION = session
+    return session
+
 
 def _get(url: str, params: dict, cache_key: str | None = None) -> dict | list:
-    """Fetch, caching by key. The pause applies only to real requests."""
+    """Fetch, caching by key. The pause applies only to real requests.
+
+    FanGraphs requests go through a warmed session carrying its cookies; the MLB
+    Stats API needs nothing special.
+    """
     if cache_key:
         cached = CACHE / f"{cache_key}.json"
         if cached.exists():
             return json.loads(cached.read_text())
+
+    if url.startswith(FANGRAPHS_API):
+        response = _session().get(url, params=params, timeout=TIMEOUT)
+        response.raise_for_status()
+        payload = response.json()
+        if cache_key:
+            target = CACHE / f"{cache_key}.json"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(json.dumps(payload))
+        time.sleep(REQUEST_PAUSE)
+        return payload
 
     response = requests.get(
         url,

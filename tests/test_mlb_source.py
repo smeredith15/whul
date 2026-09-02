@@ -133,3 +133,55 @@ def test_stats_api_cannot_replace_fangraphs():
 def test_season_id_helpers_are_absent_here():
     """MLB seasons are plain years, unlike the NHL's concatenated form."""
     assert not hasattr(mlb, "season_id")
+
+
+# --- FanGraphs bot protection ----------------------------------------------
+
+def test_a_warmed_session_is_used_for_fangraphs(monkeypatch):
+    """A plain request answers 403; a browser collects cookies from the HTML
+    leaderboard first, so the session does the same."""
+    mlb._SESSION = None
+    warmed = []
+
+    class FakeSession:
+        headers: dict = {}
+
+        def get(self, url, params=None, timeout=None):
+            warmed.append(url)
+
+            class R:
+                status_code = 200
+
+                @staticmethod
+                def raise_for_status():
+                    return None
+
+                @staticmethod
+                def json():
+                    return {"data": [{"PlayerName": "X", "AB": 1}]}
+
+            return R()
+
+    monkeypatch.setattr(mlb.requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(mlb.time, "sleep", lambda _: None)
+
+    session = mlb._session()
+    assert warmed == [mlb.FANGRAPHS_HOME], "the HTML page is fetched first"
+    assert mlb._session() is session, "the session is reused, not re-warmed"
+    mlb._SESSION = None
+
+
+def test_warm_up_failure_does_not_prevent_the_request(monkeypatch):
+    """The API call may still succeed, so a failed warm-up must not be fatal."""
+    mlb._SESSION = None
+
+    class FakeSession:
+        headers: dict = {}
+
+        def get(self, url, params=None, timeout=None):
+            raise RuntimeError("blocked")
+
+    monkeypatch.setattr(mlb.requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(mlb.time, "sleep", lambda _: None)
+    assert mlb._session() is not None
+    mlb._SESSION = None

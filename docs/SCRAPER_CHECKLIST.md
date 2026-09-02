@@ -49,10 +49,39 @@ over the pool. 2026 measured at 273 dates / 30,853 rows / 705 players.
 
 Nothing outstanding. The five-season backfill is the remaining step and is running.
 
-## 3. MLB — BUILT, unverified; next to confirm
+## 3. MLB — team scoring CONFIRMED; player scoring blocked on FanGraphs
 
-Both hosts are blocked from my sandbox, so nothing here has touched a live
-response. The diagnostics that NBA and NCAA taught me to build up front are in
+**MLB Stats API works**: 2,481 games for 2025 with the postseason correctly typed
+(R 2434, D 18, F 11, L 11, W 7) and all 30 teams. Team scoring and the contract
+engine are unblocked.
+
+**FanGraphs answers 403 to all four parameter shapes.** It sits behind bot
+protection, so the adapter now warms a session against the HTML leaderboard to
+collect cookies before calling the API — the sequence a browser performs. If that
+still 403s, the decision below is live.
+
+### What is at stake if FanGraphs stays unreachable
+
+Offense, Defense and WAR exist on no other free source. The MLB Stats API carries
+every counting stat (confirmed: 145 rows with all nine) but not those three.
+Their contribution, computed from the actual weights:
+
+| Profile | Counting | Advanced | Advanced share |
+|---|---:|---:|---:|
+| Elite slugger (Off 70, Def −5) | 1423.6 | 10.0 | 0.7% |
+| Elite all-round (Off 55, Def 15) | 1256.6 | 36.2 | 2.8% |
+| Average bat (Off 0, Def 0) | 674.7 | 0.0 | 0.0% |
+| Glove-first (Off −10, Def 20) | 526.9 | 27.5 | **5.0%** |
+| Ace (WAR 6.5) | 1198.6 | 32.5 | 2.6% |
+| Mid rotation (WAR 2.5) | 688.4 | 12.5 | 1.8% |
+
+Small in aggregate, but **not uniform**: worth most to glove-first players and
+least to sluggers, so dropping them compresses the gap between those profiles.
+That makes it a rules change, not a source swap.
+
+`INCLUDE_ADVANCED_METRICS` gates it so either decision is one line, and it is
+deliberately never flipped automatically — a silent fallback would produce
+plausible, wrong numbers. The diagnostics that NBA and NCAA taught me to build up front are in
 place from the start this time:
 
 - **Two feeds, reported separately.** MLB Stats API for schedules (a whole season
