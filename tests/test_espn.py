@@ -1,35 +1,44 @@
 """ESPN adapter tests.
 
-The live API is unreachable from the environment this was written in, so these
-exercise the parsing against a payload shaped like ESPN's. They cannot prove the
-endpoint works -- `python -m whul.cli probe nba` does that from a machine with
-access.
+The fixture below mirrors a real payload returned by the live API on 2026-01-15:
+the label order is ESPN's actual order, and the athlete entry carries an **empty**
+position, which is what the API really does. Position therefore has to come from
+the team rosters -- see ``load_positions``.
+
+These prove the parsing and the stat mapping. Only `python -m whul.cli probe nba`
+proves the endpoint itself.
 """
 
 from datetime import date
 
+import pandas as pd
 import pytest
 
 from whul.sources import espn
 
+LABELS = ["MIN", "PTS", "FG", "3PT", "FT", "REB", "AST", "TO", "STL", "BLK",
+          "OREB", "DREB", "PF", "+/-"]
+
+# Jaren Jackson Jr., MEM, 2026-01-15: 30 pts, 3 reb, 1 ast, 4 to, 2 stl, 2 blk,
+# 3 threes, -21. Position comes back empty, exactly as the live API returns it.
+JJJ = ["38", "30", "10-20", "3-9", "7-8", "3", "1", "4", "2", "2", "0", "3", "3", "-21"]
 
 BOX = {
     "boxscore": {
         "players": [
             {
-                "team": {"abbreviation": "BOS"},
+                "team": {"abbreviation": "MEM"},
                 "statistics": [
                     {
-                        "labels": ["MIN", "FG", "3PT", "FT", "REB", "AST", "STL", "BLK", "TO", "PTS", "+/-"],
+                        "labels": LABELS,
                         "athletes": [
                             {
-                                "athlete": {"id": "1966", "displayName": "Jayson Tatum"},
-                                "position": {"abbreviation": "SF"},
-                                "stats": ["38", "10-20", "4-9", "6-6", "11", "5", "2", "1", "3", "30", "+12"],
+                                "athlete": {"id": "4277961", "displayName": "Jaren Jackson Jr."},
+                                "position": {},
+                                "stats": JJJ,
                             },
                             {
-                                "athlete": {"id": "4065648", "displayName": "Did Not Play"},
-                                "position": {"abbreviation": "PG"},
+                                "athlete": {"id": "9999", "displayName": "Did Not Play"},
                                 "stats": [],
                             },
                         ],
@@ -41,50 +50,104 @@ BOX = {
 }
 
 
-def test_parse_box_extracts_scoring_inputs():
-    rows = espn._parse_box(BOX, "401", date(2026, 1, 15), 2026, espn.SEASON_TYPE_REGULAR)
-    assert len(rows) == 1, "players who did not play are skipped"
-    row = rows[0]
-    assert row["athlete_display_name"] == "Jayson Tatum"
+def parse(positions=None, season_type=espn.SEASON_TYPE_REGULAR):
+    return espn._parse_box(BOX, "401810433", date(2026, 1, 15), 2026, season_type, positions)
+
+
+# --- stat mapping ----------------------------------------------------------
+
+def test_stats_are_looked_up_by_label_not_position():
+    """ESPN's label order is not the order the scorer needs, so lookup is by name."""
+    row = parse()[0]
+    assert row["athlete_display_name"] == "Jaren Jackson Jr."
     assert row["points"] == "30"
-    assert row["rebounds"] == "11"
-    assert row["assists"] == "5"
-    assert row["turnovers"] == "3"
-    assert row["plus_minus"] == "+12"
+    assert row["rebounds"] == "3"
+    assert row["assists"] == "1"
+    assert row["turnovers"] == "4"
+    assert row["steals"] == "2"
+    assert row["blocks"] == "2"
+    assert row["plus_minus"] == "-21"
 
 
-def test_three_pointers_are_taken_from_the_made_side_of_the_split():
-    """ESPN reports '4-9' for made-attempted; only the made count scores."""
-    rows = espn._parse_box(BOX, "401", date(2026, 1, 15), 2026, espn.SEASON_TYPE_REGULAR)
-    assert rows[0]["three_point_field_goals_made"] == "4"
+def test_three_pointers_come_from_the_made_side_of_the_split():
+    """ESPN reports '3-9' made-attempted; only the made count scores."""
+    assert parse()[0]["three_point_field_goals_made"] == "3"
 
 
-def test_parse_box_carries_season_context():
-    rows = espn._parse_box(BOX, "401", date(2026, 1, 15), 2026, espn.SEASON_TYPE_POST)
-    assert rows[0]["season"] == 2026
-    assert rows[0]["season_type"] == espn.SEASON_TYPE_POST
-    assert rows[0]["game_date"] == "2026-01-15"
-    assert rows[0]["game_id"] == "401"
+def test_players_who_did_not_play_are_skipped():
+    assert len(parse()) == 1
+
+
+def test_season_context_is_carried():
+    row = parse(season_type=espn.SEASON_TYPE_POST)[0]
+    assert row["season"] == 2026
+    assert row["season_type"] == espn.SEASON_TYPE_POST
+    assert row["game_date"] == "2026-01-15"
+    assert row["game_id"] == "401810433"
+    assert row["team"] == "MEM"
 
 
 def test_parse_box_tolerates_an_empty_payload():
     assert espn._parse_box({}, "1", date(2026, 1, 1), 2026, 2) == []
 
 
-def test_parsed_rows_feed_the_nba_scorer():
-    """The adapter's column names must match what scoring/nba.py resolves."""
-    import pandas as pd
+# --- position resolution ---------------------------------------------------
 
+def test_boxscore_position_really_is_empty():
+    """Documents the live behaviour this adapter has to work around."""
+    assert parse()[0]["athlete_position_abbreviation"] == ""
+
+
+def test_roster_map_fills_the_missing_position():
+    row = parse(positions={"4277961": "PF"})[0]
+    assert row["athlete_position_abbreviation"] == "PF"
+
+
+def test_inline_position_wins_when_present():
+    entry = {"athlete": {"id": "1"}, "position": {"abbreviation": "SG"}}
+    assert espn._position(entry, {"1": "PF"}) == "SG"
+
+
+def test_position_found_under_the_athlete_too():
+    entry = {"athlete": {"id": "1", "position": {"abbreviation": "C"}}}
+    assert espn._position(entry) == "C"
+
+
+def test_position_is_empty_when_nothing_supplies_it():
+    assert espn._position({"athlete": {"id": "1"}}) == ""
+    assert espn._position({"athlete": {"id": "1"}}, {"2": "PG"}) == ""
+
+
+def test_position_drives_the_normalization_group():
+    """Without a position every NBA player collapses into one group, which would
+    silently erase the Backcourt/Frontcourt split the scale depends on."""
+    from whul.normalize import assign_norm_key
+
+    rows = parse(positions={"4277961": "PF"})
+    df = pd.DataFrame(rows).assign(league="NBA", role=lambda d: d["athlete_position_abbreviation"])
+    assert assign_norm_key(df, "Player").iloc[0] == "NBA_Frontcourt"
+
+    unresolved = pd.DataFrame(parse()).assign(
+        league="NBA", role=lambda d: d["athlete_position_abbreviation"]
+    )
+    assert assign_norm_key(unresolved, "Player").iloc[0] == "NBA", "the split is lost"
+
+
+# --- integration with the scorer -------------------------------------------
+
+def test_parsed_rows_feed_the_nba_scorer():
     from whul.scoring.nba import score_players
 
-    rows = espn._parse_box(BOX, "401", date(2026, 1, 15), 2026, espn.SEASON_TYPE_REGULAR)
-    box = pd.DataFrame(rows * 20)  # clear the 15-game minimum
+    box = pd.DataFrame(parse(positions={"4277961": "PF"}) * 20)  # clear the 15-game minimum
     scored = score_players(box)
     assert len(scored) == 1
-    # 30 + 11*1.2 + 5*1.5 + 2*3 + 1*3 + 3*-1 + 4*0.5 = 58.7
-    # + 1.5 double-double (points and rebounds) + 0.1*12 plus-minus = 61.4 per game
-    assert scored.iloc[0]["regular_points"] == pytest.approx(61.4 * 20)
+    # 30 + 3*1.2 + 1*1.5 + 2*3 + 2*3 + 4*-1 + 3*0.5 = 44.6, no double-double,
+    # plus 0.1 * -21 = -2.1 -> 42.5 per game
+    assert scored.iloc[0]["regular_points"] == pytest.approx(42.5 * 20)
+    assert scored.iloc[0]["role"] == "PF"
 
+
+# --- season windows --------------------------------------------------------
 
 def test_season_dates_spans_october_to_june():
     days = espn.season_dates(2024)
@@ -94,10 +157,8 @@ def test_season_dates_spans_october_to_june():
 
 
 def test_season_dates_never_runs_past_today():
-    """A live season stops at today; one that has not tipped off yields nothing."""
     for season in (2024, 2025, 2026, 2027, 2028):
-        days = espn.season_dates(season)
-        assert all(d <= date.today() for d in days), season
+        assert all(d <= date.today() for d in espn.season_dates(season)), season
 
 
 def test_default_probe_date_lands_in_season():

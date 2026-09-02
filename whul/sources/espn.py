@@ -91,7 +91,38 @@ def summary(league: str, event_id: str) -> dict:
     )
 
 
-def _parse_box(payload: dict, event_id: str, day: date, season: int, season_type: int) -> list[dict]:
+def _position(entry: dict, positions: dict[str, str] | None = None) -> str:
+    """Player position, which the boxscore does not reliably carry.
+
+    ESPN's boxscore athlete entries frequently omit position entirely (the field
+    comes back as an empty string), so a roster-derived lookup is the dependable
+    source. The inline paths are tried first for the cases where it is present.
+    """
+    athlete = entry.get("athlete", {}) or {}
+    for candidate in (
+        entry.get("position"),
+        athlete.get("position"),
+    ):
+        if isinstance(candidate, dict):
+            abbr = candidate.get("abbreviation") or candidate.get("displayName") or ""
+            if abbr:
+                return str(abbr)
+        elif isinstance(candidate, str) and candidate:
+            return candidate
+
+    if positions:
+        return positions.get(str(athlete.get("id", "")), "")
+    return ""
+
+
+def _parse_box(
+    payload: dict,
+    event_id: str,
+    day: date,
+    season: int,
+    season_type: int,
+    positions: dict[str, str] | None = None,
+) -> list[dict]:
     """Flatten one game's boxscore into per-player rows.
 
     ESPN returns stats as a parallel list of labels and string values, so
@@ -117,9 +148,7 @@ def _parse_box(payload: dict, event_id: str, day: date, season: int, season_type
                         "team": team,
                         "athlete_id": str(athlete.get("id", "")),
                         "athlete_display_name": athlete.get("displayName", ""),
-                        "athlete_position_abbreviation": (
-                            entry.get("position", {}).get("abbreviation", "")
-                        ),
+                        "athlete_position_abbreviation": _position(entry, positions),
                         "points": stats.get("PTS"),
                         "rebounds": stats.get("REB"),
                         "assists": stats.get("AST"),
@@ -140,6 +169,10 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
     backfill is thousands of requests. Responses are cached per date and per
     game, so this is a one-time cost and a daily update is a single date.
     """
+    positions = load_positions("nba")
+    if verbose:
+        print(f"  position map: {len(positions)} players from team rosters")
+
     rows: list[dict] = []
     for season in seasons:
         days = season_dates(season)
@@ -165,6 +198,7 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
                             day,
                             season,
                             season_type,
+                            positions,
                         )
                     )
                 except Exception:
@@ -185,6 +219,49 @@ def default_probe_date(today: date | None = None) -> date:
     today = today or date.today()
     candidate = date(today.year, 1, 15)
     return candidate if candidate <= today else date(today.year - 1, 1, 15)
+
+
+def load_positions(league: str = "nba") -> dict[str, str]:
+    """Map athlete id -> position abbreviation, from every team's roster.
+
+    Thirty requests for the NBA, cached, and the only dependable source of
+    position -- which the scoring engine needs to split Backcourt from Frontcourt.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    teams = _get(
+        f"{BASE}/{sport}/{path}/teams",
+        {"limit": 1000},
+        cache_key=f"{league}/teams",
+    )
+
+    entries: list[dict] = []
+    for sport_block in teams.get("sports", []):
+        for league_block in sport_block.get("leagues", []):
+            entries.extend(league_block.get("teams", []))
+
+    positions: dict[str, str] = {}
+    for entry in entries:
+        team_id = str((entry.get("team") or {}).get("id", ""))
+        if not team_id:
+            continue
+        try:
+            roster = _get(
+                f"{BASE}/{sport}/{path}/teams/{team_id}/roster",
+                {},
+                cache_key=f"{league}/roster/{team_id}",
+            )
+        except Exception:
+            continue
+        for athlete in roster.get("athletes", []):
+            # Some leagues nest athletes one level deeper, under position groups.
+            group = athlete.get("items") if isinstance(athlete, dict) else None
+            for person in group or [athlete]:
+                pid = str(person.get("id", ""))
+                pos = (person.get("position") or {}).get("abbreviation", "")
+                if pid and pos:
+                    positions[pid] = pos
+        time.sleep(REQUEST_PAUSE)
+    return positions
 
 
 def probe(league: str = "nba", day: date | None = None) -> dict:
@@ -217,6 +294,21 @@ def probe(league: str = "nba", day: date | None = None) -> dict:
             result["stat_labels"] = players[0].get("statistics", [{}])[0].get("labels", [])
         rows = _parse_box(payload, events[0]["id"], day, day.year, SEASON_TYPE_REGULAR)
         result["parsed_rows"] = len(rows)
+        inline = sum(1 for r in rows if r["athlete_position_abbreviation"])
+        result["positions_inline"] = f"{inline}/{len(rows)}"
+
+        if inline < len(rows):
+            try:
+                positions = load_positions(league)
+                rows = _parse_box(
+                    payload, events[0]["id"], day, day.year, SEASON_TYPE_REGULAR, positions
+                )
+                filled = sum(1 for r in rows if r["athlete_position_abbreviation"])
+                result["position_map_size"] = len(positions)
+                result["positions_after_roster"] = f"{filled}/{len(rows)}"
+            except Exception as exc:
+                result["positions_after_roster"] = f"FAILED: {type(exc).__name__}: {exc}"
+
         result["sample"] = rows[0] if rows else None
     except Exception as exc:
         result["boxscore"] = f"FAILED: {type(exc).__name__}: {exc}"

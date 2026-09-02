@@ -1,10 +1,13 @@
 # Testing NBA data acquisition
 
-**Read this first:** unlike NFL, the NBA adapter is **unverified**. It could not be
-exercised where it was written — ESPN is blocked by that environment's egress
-policy, and every alternative host (`stats.nba.com`, `basketball-reference.com`,
-`cdn.nba.com`) is blocked too. So this guide is as much a diagnostic as a test.
-Step 3 is the one that matters; if it fails, stop and send me the output.
+**Status:** ESPN was confirmed reachable on 2026-01-15 — the scoreboard and
+boxscore endpoints both respond and parse. One gap surfaced and is now handled:
+**the boxscore returns an empty position for every player**, so positions are
+pulled from team rosters instead (30 extra requests, cached). Re-run step 3 after
+pulling to confirm the fix resolves them.
+
+The adapter still has not been exercised over a full season, so treat this as a
+diagnostic rather than a settled source.
 
 Setup is identical to `TESTING_NFL.md` steps 1-3 — clone, venv, `pip install -e '.[dev]'`.
 
