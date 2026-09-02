@@ -159,21 +159,48 @@ def scoreboard_variants(league: str, day: date) -> list[dict]:
 
 
 def scoreboard(league: str, day: date) -> dict:
-    """One date's games, trying each request shape until one is accepted."""
+    """One date's games, trying request shapes until one returns games.
+
+    A 200 is not sufficient: college softball *accepts* ``limit`` and then
+    returns zero events for a date a bare request shows 52 games on. Accepting
+    the first non-error response would silently yield an empty season with
+    nothing logged, so a shape that returns no games is treated as suspect and
+    the next one is tried. An empty response is still returned if every shape
+    gives one, since a date genuinely without games looks the same.
+
+    Variants are fetched uncached -- the cache key is shared, so caching a shape
+    under test would short-circuit the search on the next run -- and only the
+    chosen payload is written.
+    """
     sport, path = LEAGUE_PATHS[league]
     url = f"{BASE}/{sport}/{path}/scoreboard"
-    cache_key = f"{league}/scoreboard/{day.isoformat()}"
+    cached = CACHE / f"{league}/scoreboard/{day.isoformat()}.json"
+    if cached.exists():
+        return json.loads(cached.read_text())
 
+    best: dict | None = None
     last: Exception | None = None
     for params in scoreboard_variants(league, day):
         try:
-            return _get(url, params, cache_key)
+            payload = _get(url, params)
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
             if status not in (400, 404):
                 raise
             last = exc
-    raise last if last else RuntimeError(f"no scoreboard variant succeeded for {league}")
+            continue
+        if payload.get("events"):
+            best = payload
+            break
+        if best is None:
+            best = payload
+
+    if best is None:
+        raise last if last else RuntimeError(f"no scoreboard variant succeeded for {league}")
+
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_text(json.dumps(best))
+    return best
 
 
 def load_eligible_teams(league: str) -> set[str]:

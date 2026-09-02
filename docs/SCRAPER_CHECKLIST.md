@@ -116,13 +116,18 @@ implemented alongside ESPN. Its decisive advantage is that division membership i
 stated in the URL — `football/fbs`, `basketball-men/d1` — which is exactly what
 ESPN refuses to express. Its parsed rows use the same column names as the ESPN
 adapter, so the scoring modules work against either without a translation layer.
-**Confirmed on the division question:** it returned **54 FBS games** for
-2025-11-15, against ESPN's 25 filtered / 53 unfiltered. That is the correct FBS
-count for a mid-November Saturday, so its division filter genuinely works where
-ESPN's does not. Team-name extraction needed a second pass — the API exposes
-several name forms and leaves `full` blank for football, with `short` carrying
-the value — so extraction now falls back through them and the probe reports the
-raw payload keys when it still comes up empty.
+**Confirmed and now primary for all five NCAA leagues.** Football returned 54
+games with **54/54 conference coverage and 108 distinct teams**; men's basketball
+50 games, 50/50, 100 teams. Since the URL already restricts to the division,
+every team in its results belongs there by construction — no separate
+eligible-teams call is needed, and the football correctness problem is closed.
+
+Conference arrives as a slug (`mac`, `cusa`) rather than an ESPN numeric id,
+which is more legible and equally usable for the conference-wins and shared-title
+terms.
+
+Rate limits and third-party uptime remain the open risk; the project is
+self-hostable and that is the right move before the season starts.
 
 Results only — no player slots exist, so no box scores. That is one
 scoreboard request per date, and the ESPN adapter already proven for NBA covers it.

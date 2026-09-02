@@ -44,12 +44,20 @@ NCAA_LEAGUES = {
 
 
 def _ncaa(key: str):
+    """NCAA leagues read from the NCAA stats API rather than ESPN.
+
+    ESPN cannot express division membership -- its teams endpoint returns all 760
+    college football programs whatever group filter is passed -- while the NCAA
+    API states the division in the URL. Every team in its results therefore
+    belongs to the division by construction.
+    """
+
     def load(season: int, assets: str) -> pd.DataFrame:
         from whul.scoring.ncaa import SCORERS
-        from whul.sources import espn
+        from whul.sources import ncaa_api
 
-        results = espn.load_team_results(key, [season])
-        eligible = espn.load_eligible_teams(key)
+        results = ncaa_api.load_team_results(key, [season])
+        eligible = set(results["home_team"]) | set(results["away_team"]) if not results.empty else None
         return SCORERS[NCAA_LEAGUES[key]](results, eligible)
 
     return load
@@ -93,7 +101,7 @@ LEAGUES = {
             "fn": _ncaa(key),
             "assets": ("teams",),
             "seasons": "2003-present",
-            "source": "ESPN scoreboard, results only (UNVERIFIED)",
+            "source": "NCAA stats API, results only (division-filtered)",
         }
         for key in NCAA_LEAGUES
     },
@@ -178,16 +186,20 @@ def _spec(league: str):
         )
     if league in NCAA_LEAGUES:
         from whul.scoring.ncaa import SCORERS
-        from whul.sources import espn
+        from whul.sources import ncaa_api
 
         category = NCAA_LEAGUES[league]
+
+        def _eligible(raw):
+            if raw is None or raw.empty:
+                return None
+            return set(raw["home_team"]) | set(raw["away_team"])
+
         return LeagueSpec(
             name=category,
-            load=lambda seasons: espn.load_team_results(league, seasons),
+            load=lambda seasons: ncaa_api.load_team_results(league, seasons),
             # Teams only -- there is no postseason player bonus to apply.
-            score=lambda raw, post: SCORERS[category](
-                raw, espn.load_eligible_teams(league)
-            ).assign(
+            score=lambda raw, post: SCORERS[category](raw, _eligible(raw)).assign(
                 regular_points=lambda d: d["total_points"],
                 regular_games=lambda d: d["games_played"],
                 postseason_points=0.0,
@@ -197,8 +209,8 @@ def _spec(league: str):
             ),
             id_col="game_id",
             week_col="game_date",
-            source=f"ESPN scoreboard, results only ({league})",
-            daily_cost=lambda: espn.daily_results_cost(league),
+            source=f"NCAA stats API, results only ({league})",
+            daily_cost=lambda: ncaa_api.daily_update_cost(league),
         )
     if league == "mlb":
         from whul.scoring import mlb

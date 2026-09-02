@@ -136,7 +136,24 @@ def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
     return rows
 
 
-def load_team_results(league: str, days: list[date], verbose: bool = True) -> pd.DataFrame:
+def season_days(league: str, seasons: list[int]) -> list[date]:
+    """Dates to walk, reusing the per-sport season windows."""
+    from whul.sources import espn
+
+    days: list[date] = []
+    for season in seasons:
+        days.extend(espn.season_dates(season, league))
+    return days
+
+
+def load_team_results(
+    league: str, seasons: list[int], verbose: bool = True
+) -> pd.DataFrame:
+    """Completed results for whole seasons, one request per date."""
+    days = season_days(league, seasons)
+    if verbose:
+        print(f"  {league}: walking {len(days)} dates ...", flush=True)
+
     rows: list[dict] = []
     for index, day in enumerate(days):
         try:
@@ -145,7 +162,31 @@ def load_team_results(league: str, days: list[date], verbose: bool = True) -> pd
             continue
         if verbose and index and index % 50 == 0:
             print(f"    {index}/{len(days)} dates, {len(rows):,} games", flush=True)
-    return pd.DataFrame(rows)
+
+    frame = pd.DataFrame(rows)
+    return frame[frame["completed"]].reset_index(drop=True) if not frame.empty else frame
+
+
+def load_eligible_teams(league: str, seasons: list[int]) -> set[str]:
+    """Teams in the division, taken from the games the API returns.
+
+    The URL already restricts to the division, so every team appearing in these
+    results belongs to it -- which is exactly what ESPN could not express.
+    """
+    results = load_team_results(league, seasons, verbose=False)
+    if results.empty:
+        return set()
+    return set(results["home_team"]) | set(results["away_team"])
+
+
+def daily_update_cost(league: str, day: date | None = None) -> float:
+    """Seconds to pull one date -- the nightly job for a results-only league."""
+    day = day or date(2025, 11, 15)
+    sport, division = SPORT_PATHS[league]
+    path = f"/scoreboard/{sport}/{division}/{day.year}/{day.month:02d}/{day.day:02d}/all-conf"
+    started = time.monotonic()
+    _get(path)
+    return time.monotonic() - started
 
 
 def probe(league: str = "ncaaf", day: date | None = None) -> dict:

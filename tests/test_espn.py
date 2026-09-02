@@ -351,3 +351,79 @@ def test_softball_has_no_division_filter():
 def test_softball_lives_under_the_baseball_sport_path():
     """Every softball/... variant answers 404; baseball/college-softball works."""
     assert espn.LEAGUE_PATHS["ncaasoftball"] == ("baseball", "college-softball")
+
+
+def test_a_shape_that_returns_no_games_is_treated_as_suspect(monkeypatch, tmp_path):
+    """College softball accepts `limit` and then returns zero events for a date a
+    bare request shows 52 games on. Taking the first 200 would silently produce
+    an empty season with nothing logged."""
+    class Response:
+        status_code = 200
+
+        def __init__(self, params):
+            self.params = params
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            # Only the bare request returns games, as softball behaves.
+            if set(self.params) - {"dates"}:
+                return {"events": []}
+            return {"events": [{"id": "real"}]}
+
+    monkeypatch.setattr(espn.requests, "get", lambda url, params=None, **k: Response(params or {}))
+    monkeypatch.setattr(espn.time, "sleep", lambda _: None)
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+
+    board = espn.scoreboard("ncaam", date(2026, 1, 15))
+    assert board["events"][0]["id"] == "real"
+
+
+def test_an_empty_date_is_still_returned(monkeypatch, tmp_path):
+    """An offseason date legitimately has no games and must not raise."""
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"events": []}
+
+    monkeypatch.setattr(espn.requests, "get", lambda *a, **k: Response())
+    monkeypatch.setattr(espn.time, "sleep", lambda _: None)
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+
+    assert espn.scoreboard("ncaam", date(2026, 7, 4))["events"] == []
+
+
+def test_variant_search_is_not_short_circuited_by_the_cache(monkeypatch, tmp_path):
+    """Variants share a cache key, so caching a shape under test would poison the
+    search on the next run."""
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, params):
+            self.params = params
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            calls.append(sorted(k for k in self.params if k != "dates"))
+            return {"events": [] if set(self.params) - {"dates"} else [{"id": "x"}]}
+
+    monkeypatch.setattr(espn.requests, "get", lambda url, params=None, **k: Response(params or {}))
+    monkeypatch.setattr(espn.time, "sleep", lambda _: None)
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+
+    espn.scoreboard("ncaam", date(2026, 1, 15))
+    assert len(calls) == 4, "every shape should have been tried"
+    calls.clear()
+    espn.scoreboard("ncaam", date(2026, 1, 15))
+    assert calls == [], "the chosen payload is cached"
