@@ -144,10 +144,19 @@ def resolve(
         .set_index(["tour", "key"])
     )
 
+    # ``DataFrame.get`` returns the *scalar* default when a column is absent,
+    # not a column of it. Zipping that crashes on a float and, worse, silently
+    # iterates the characters of a string default -- so the columns are built
+    # explicitly.
+    def column(name: str, default):
+        if name in out.columns:
+            return out[name]
+        return pd.Series([default] * len(out), index=out.index)
+
     categories, draws, sources = [], [], []
     for season, tour, key, feed_category, feed_draw in zip(
-        out["season"], out.get("tour", ""), out["key"],
-        out.get("category", ""), out.get("draw_size", float("nan")),
+        column("season", None), column("tour", ""), out["key"],
+        column("category", ""), column("draw_size", float("nan")),
     ):
         row = None
         source = "feed"

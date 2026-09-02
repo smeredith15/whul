@@ -77,6 +77,21 @@ CATEGORY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"atp\s*250|wta\s*250|\b250\b|international\b", re.I), TOUR_250),
 )
 
+#: A tour plays somewhere between 55 and 65 singles events a season. A scrape
+#: returning far fewer has matched a fragment of the page -- a "this week"
+#: strip, a featured carousel -- and must not be merged: the calendar would
+#: gain a handful of rows and lose nothing, which reads as success while
+#: leaving every other event on whatever it had.
+MIN_PLAUSIBLE_EVENTS = 30
+
+#: Names that are not tournaments. Governing bodies and tours appear in page
+#: JSON next to real events and carry enough text to classify.
+NON_TOURNAMENT_PATTERN = re.compile(
+    r"^\s*(international tennis federation|association of tennis professionals|"
+    r"women'?s tennis association|itf|atp tour|wta tour|atp|wta)\s*$",
+    re.I,
+)
+
 #: Draw sizes a tour event actually uses. A number outside this set came from
 #: somewhere other than the draw -- prize money, a year, a ranking -- and taking
 #: it would move the event onto the wrong points table.
@@ -93,6 +108,16 @@ _JSON_SCRIPT = re.compile(
     r'<script[^>]*(?:id="__NEXT_DATA__"|type="application/(?:ld\+)?json")[^>]*>(.*?)</script>',
     re.S | re.I,
 )
+#: Frameworks that are not Next.js hand their state over as a JS assignment
+#: rather than a JSON script tag. The WTA site has no ``__NEXT_DATA__``, so
+#: without this its payload is invisible to the JSON strategy.
+_JS_STATE = re.compile(
+    r"window\.(?:__NUXT__|__INITIAL_STATE__|__APOLLO_STATE__|__DATA__)\s*=\s*(\{.*?\});?\s*</script>",
+    re.S,
+)
+#: Tournament detail links, which every schedule page has whatever it renders
+#: them as. The slug is the most stable identifier on these pages.
+_TOURNAMENT_HREF = re.compile(r"/tournaments?/", re.I)
 
 
 def classify_category(text: str | None) -> str | None:
@@ -137,12 +162,18 @@ def _fetch(source: str, season: int | None = None, refresh: bool = False) -> str
 # the probe reports which one that was.
 
 def _iter_json_blobs(html: str):
-    """Every JSON blob embedded in the page that parses."""
-    for match in _JSON_SCRIPT.finditer(html):
-        try:
-            yield json.loads(match.group(1))
-        except (json.JSONDecodeError, ValueError):
-            continue
+    """Every JSON blob embedded in the page that parses.
+
+    Both shapes are read: a JSON script tag, and a framework state assignment.
+    A blob that does not parse is skipped rather than aborting the sweep -- a
+    page carries several and only one is usually the payload.
+    """
+    for pattern in (_JSON_SCRIPT, _JS_STATE):
+        for match in pattern.finditer(html):
+            try:
+                yield json.loads(match.group(1))
+            except (json.JSONDecodeError, ValueError):
+                continue
 
 
 def _walk(node, depth: int = 0):
@@ -200,7 +231,7 @@ def extract_from_json(html: str, tour: str, season: int) -> list[dict]:
             draw = _first(record, DRAW_KEYS)
             draw_size = int(draw) if draw and str(draw).isdigit() and int(draw) in VALID_DRAW_SIZES else None
             key = f"{name}|{category}"
-            if key in seen:
+            if key in seen or NON_TOURNAMENT_PATTERN.match(name):
                 continue
             seen.add(key)
             rows.append({
@@ -241,7 +272,7 @@ def extract_from_dom(html: str, tour: str, season: int) -> list[dict]:
             link = card.select_one("a[href]")
             name = (link.get_text(strip=True) if link else "") or text[:60]
             key = f"{name}|{category}"
-            if not name or key in seen:
+            if not name or key in seen or NON_TOURNAMENT_PATTERN.match(name):
                 continue
             seen.add(key)
             rows.append({
@@ -254,7 +285,50 @@ def extract_from_dom(html: str, tour: str, season: int) -> list[dict]:
     return rows
 
 
-STRATEGIES = (extract_from_json, extract_from_dom)
+def extract_from_links(html: str, tour: str, season: int) -> list[dict]:
+    """Tournaments from their detail links.
+
+    Every schedule page links each event to its own page, whatever markup it
+    renders the row in. This is the least structured strategy and the most
+    durable: it survives a redesign that moves every class name, because the
+    links have to keep working.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:  # pragma: no cover - dependency is declared
+        return []
+
+    soup = BeautifulSoup(html, "lxml")
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for link in soup.find_all("a", href=True):
+        if not _TOURNAMENT_HREF.search(link["href"]):
+            continue
+        name = link.get_text(" ", strip=True)
+        if not name or len(name) > 80 or NON_TOURNAMENT_PATTERN.match(name):
+            continue
+        # The category is rarely inside the link, so the row around it is read
+        # too -- two levels up is usually the card.
+        context = link
+        for _ in range(3):
+            context = context.parent or context
+        text = context.get_text(" ", strip=True) if context else name
+        category = classify_category(text) or classify_category(name)
+        if not category:
+            continue
+        key = f"{name}|{category}"
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "season": season, "tour": tour.upper(), "tournament": name,
+            "category": category, "draw_size": parse_draw_size(text),
+            "strategy": "links",
+        })
+    return rows
+
+
+STRATEGIES = (extract_from_json, extract_from_dom, extract_from_links)
 
 
 def scrape(source: str, season: int | None = None, refresh: bool = False) -> pd.DataFrame:
@@ -262,10 +336,19 @@ def scrape(source: str, season: int | None = None, refresh: bool = False) -> pd.
     season = season or date.today().year
     html = _fetch(source, season, refresh)
     tour = "ATP" if source == "atp" else "WTA" if source == "wta" else ""
+    # The first strategy to find anything is not necessarily the right one: on
+    # the WTA page the JSON sweep finds six events out of sixty. So every
+    # strategy runs and the fullest result wins.
+    best: list[dict] = []
     for strategy in STRATEGIES:
-        rows = strategy(html, tour, season)
-        if rows:
-            return pd.DataFrame(rows)
+        try:
+            rows = strategy(html, tour, season)
+        except Exception:  # noqa: BLE001 - one broken strategy must not lose the others
+            continue
+        if len(rows) > len(best):
+            best = rows
+    if best:
+        return pd.DataFrame(best)
     return pd.DataFrame(columns=["season", "tour", "tournament", "category", "draw_size", "strategy"])
 
 
@@ -302,17 +385,49 @@ def build_calendar(season: int | None = None, refresh: bool = False) -> pd.DataF
     return pd.concat(frames, ignore_index=True)
 
 
-def merge(existing: pd.DataFrame, scraped: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def completeness(scraped: pd.DataFrame) -> dict[str, int]:
+    """Events found per tour -- the number the plausibility gate turns on."""
+    if scraped is None or scraped.empty:
+        return {}
+    return scraped.groupby("tour").size().to_dict()
+
+
+def is_plausible(scraped: pd.DataFrame, minimum: int = MIN_PLAUSIBLE_EVENTS) -> bool:
+    """Whether a scrape found enough of a season to be worth merging."""
+    counts = completeness(scraped)
+    return bool(counts) and all(n >= minimum for n in counts.values())
+
+
+def merge(
+    existing: pd.DataFrame,
+    scraped: pd.DataFrame,
+    require_complete: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fold scraped rows into a calendar, reporting what changed.
 
     Returns the merged calendar and a frame of differences. Changes are not
     applied blind: an event moving between categories restates its points, so
     the diff is meant to be read before the result is saved.
+
+    A scrape that found too few events for a tour is refused outright rather
+    than merged. A partial scrape adds a few rows and removes none, so the
+    result looks like a success while leaving every event it missed untouched
+    -- and the missing ones are reported as "missing from scrape", which reads
+    as though the tour dropped fifty tournaments. Pass ``require_complete=False``
+    only to merge a deliberately partial list.
     """
     from whul.sources.tennis_calendar import COLUMNS, normalize_name
 
     if scraped is None or scraped.empty:
         return existing, pd.DataFrame(columns=["season", "tour", "tournament", "change"])
+
+    if require_complete and not is_plausible(scraped):
+        found = completeness(scraped)
+        return existing, pd.DataFrame([{
+            "season": None, "tour": tour, "tournament": "",
+            "change": f"refused: only {n} events found, fewer than the "
+                      f"{MIN_PLAUSIBLE_EVENTS} a real season has",
+        } for tour, n in found.items()])
 
     new = scraped[list(COLUMNS)].copy()
     new["key"] = new["tournament"].map(normalize_name)
@@ -403,9 +518,12 @@ def probe(source: str = "atp", season: int | None = None) -> dict:
         **per_strategy,
     }
 
-    if not report["stages"]["extract"]["ok"]:
-        # Nothing matched, so hand back the raw structure to fix the selectors
-        # from -- which is the only thing that makes a blind fix possible.
+    best = max((s.get("rows", 0) for s in per_strategy.values()), default=0)
+    if best < MIN_PLAUSIBLE_EVENTS:
+        # Too little matched, so hand back the raw structure to fix the
+        # selectors from -- the only thing that makes a blind fix possible.
+        # This runs for a short scrape as well as an empty one: six events out
+        # of sixty needs the same diagnosis as zero.
         try:
             from bs4 import BeautifulSoup
 
@@ -425,20 +543,31 @@ def probe(source: str = "atp", season: int | None = None) -> dict:
         except ImportError:
             pass
         report["stages"]["extract"]["note"] = (
-            "no strategy matched -- the class names and script ids above say "
-            "what this page actually uses"
+            f"best strategy found {best} events, fewer than the "
+            f"{MIN_PLAUSIBLE_EVENTS} a real season has -- the class names and "
+            f"script ids above say what this page actually uses"
         )
-        return report
+        report["stages"]["extract"]["ok"] = False
+        if best == 0:
+            return report
 
     scraped = scrape(source, season)
     from whul.sources import tennis_calendar
 
+    complete = is_plausible(scraped)
     merged, changes = merge(tennis_calendar.load(), scraped)
     report["stages"]["merge"] = {
-        "ok": not merged.empty,
+        # A partial scrape is a failed scrape, not a small success.
+        "ok": complete,
         "scraped": len(scraped),
+        "per_tour": completeness(scraped),
         "calendar_after": len(merged),
         "changes": changes.head(15).to_dict("records"),
         "problems": tennis_calendar.validate(merged),
+        "note": "" if complete else (
+            f"refused: a tour season has 55-65 events, so this matched a "
+            f"fragment of the page. The extract stage's sample says which "
+            f"fragment; the calendar was left alone."
+        ),
     }
     return report

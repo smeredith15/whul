@@ -98,16 +98,63 @@ def season_events(league: str, season: int) -> list[dict]:
     return best.get("events", [])
 
 
+#: Endpoints that serve one event's field, most specific first. ``summary`` is
+#: what the team sports use, but golf answers 404 to it and serves the field at
+#: ``leaderboard`` instead; racing has answered 502 to ``summary`` for a
+#: completed race. Trying them in turn costs nothing once one works, since only
+#: the successful response is cached.
+EVENT_ENDPOINTS = {
+    "pga": ("leaderboard", "summary"),
+    "nascar": ("summary", "leaderboard", "scoreboard"),
+    "f1": ("summary", "leaderboard", "scoreboard"),
+}
+DEFAULT_EVENT_ENDPOINTS = ("summary", "leaderboard")
+
+
 def event_summary(league: str, event_id: str) -> dict:
     """One event's full result, cached by id.
 
     A finished event never changes, so this is cached permanently; an event
     still in progress is cached too, and the nightly job clears the entry for
     anything not yet final.
+
+    An endpoint that answers 404, 502 or a payload with no field is treated as
+    the wrong one and the next is tried. A 502 is included deliberately: ESPN
+    returns it for endpoints that exist for other sports but not this one, so
+    treating it as a transient server fault would abandon a league that a
+    different path serves perfectly.
     """
     sport, path = LEAGUE_PATHS[league]
-    url = f"{BASE}/{sport}/{path}/summary"
-    return _get(url, {"event": event_id}, cache_key=f"{league}/event/{event_id}")
+    cached = CACHE / f"{league}/event/{event_id}.json"
+    if cached.exists():
+        return json.loads(cached.read_text())
+
+    best: dict | None = None
+    last: Exception | None = None
+    for endpoint in EVENT_ENDPOINTS.get(league, DEFAULT_EVENT_ENDPOINTS):
+        url = f"{BASE}/{sport}/{path}/{endpoint}"
+        try:
+            payload = _get(url, {"event": event_id})
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in (400, 404, 500, 502, 503):
+                raise
+            last = exc
+            continue
+        if _competitors(payload):
+            best = payload
+            break
+        if best is None:
+            best = payload
+
+    if best is None:
+        raise last if last else RuntimeError(
+            f"no event endpoint served {league} event {event_id}"
+        )
+
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_text(json.dumps(best))
+    return best
 
 
 def _is_final(event: dict) -> bool:
@@ -200,8 +247,13 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
             event_id = str(event.get("id") or "")
             if not event_id:
                 continue
-            payload = event_summary(league, event_id)
-            for entry in _competitors(payload):
+            # The season scoreboard sometimes carries the whole field already.
+            # Where it does, the per-event request is pure cost -- one request
+            # for the season instead of fifty.
+            field = _competitors(event)
+            if not field:
+                field = _competitors(event_summary(league, event_id))
+            for entry in field:
                 name = _athlete_name(entry)
                 if not name:
                     continue
@@ -267,10 +319,32 @@ def probe(league: str = "pga", season: int | None = None) -> dict:
 
     event = finished[0]
     event_id = str(event.get("id") or "")
+
+    # Whether the season list already carries the field decides whether a
+    # per-event request is needed at all, so it is reported before one is made.
+    inline = _competitors(event)
+    report["stages"]["inline_field"] = {
+        "ok": True,
+        "field_in_season_list": len(inline),
+        "event_keys": sorted(event.keys()),
+        "competition_keys": sorted(
+            (event.get("competitions") or [{}])[0].keys()
+        ) if event.get("competitions") else [],
+        "note": "the season list already carries the field; no per-event "
+                "request needed" if inline else
+                "the season list has no field, so an event endpoint must serve it",
+    }
+
     try:
-        payload = event_summary(league, event_id)
+        payload = event if inline else event_summary(league, event_id)
     except Exception as exc:  # noqa: BLE001
-        report["stages"]["event_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        report["stages"]["event_summary"] = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "endpoints_tried": list(EVENT_ENDPOINTS.get(league, DEFAULT_EVENT_ENDPOINTS)),
+            "note": "every endpoint refused -- the competition_keys above say "
+                    "what the season list holds instead",
+        }
         return report
 
     field = _competitors(payload)

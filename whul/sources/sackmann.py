@@ -34,9 +34,15 @@ from whul.scoring.tennis import (
 )
 
 REPOS = {
-    "ATP": "https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv",
-    "WTA": "https://raw.githubusercontent.com/JeffSackmann/tennis_wta/master/wta_matches_{year}.csv",
+    "ATP": ("JeffSackmann/tennis_atp", "atp_matches_{year}.csv"),
+    "WTA": ("JeffSackmann/tennis_wta", "wta_matches_{year}.csv"),
 }
+#: GitHub renamed default branches en masse, and these repos 404 on ``master``.
+#: Both are tried rather than one being assumed, so a rename either way keeps
+#: working; the probe reports which one actually answered.
+BRANCHES = ("main", "master")
+RAW = "https://raw.githubusercontent.com/{repo}/{branch}/{filename}"
+API = "https://api.github.com/repos/{repo}"
 CACHE = Path("data/cache/sackmann")
 TIMEOUT = 60
 HEADERS = {"user-agent": "whul/1.0 (fantasy league scoring)"}
@@ -60,16 +66,65 @@ LEVEL_MAP = {
 EXCLUDED_LEVELS = ("C", "S", "O")  # Challenger, Satellite/futures, Olympics
 
 
+def urls_for(tour: str, year: int) -> list[str]:
+    """Candidate raw URLs for one tour-season, in branch order."""
+    repo, filename = REPOS[tour]
+    return [
+        RAW.format(repo=repo, branch=branch, filename=filename.format(year=year))
+        for branch in BRANCHES
+    ]
+
+
 def _fetch(tour: str, year: int) -> str:
     cached = CACHE / f"{tour.lower()}_{year}.csv"
     if cached.exists():
         return cached.read_text()
 
-    response = requests.get(REPOS[tour].format(year=year), headers=HEADERS, timeout=TIMEOUT)
-    response.raise_for_status()
-    cached.parent.mkdir(parents=True, exist_ok=True)
-    cached.write_text(response.text)
-    return response.text
+    last: Exception | None = None
+    for url in urls_for(tour, year):
+        try:
+            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status != 404:
+                raise
+            last = exc
+            continue
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(response.text)
+        return response.text
+
+    raise last if last else RuntimeError(f"no branch served {tour} {year}")
+
+
+def describe_repo(tour: str) -> dict:
+    """What the repository actually looks like right now.
+
+    Called only when every candidate URL 404s. A 404 on a raw path cannot tell
+    a wrong branch from a missing file from a moved repository, and the API
+    answers all three at once -- which turns the next probe run into a fix
+    rather than another guess.
+    """
+    repo, filename = REPOS[tour]
+    try:
+        response = requests.get(API.format(repo=repo), headers=HEADERS, timeout=TIMEOUT)
+    except requests.RequestException as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+    if response.status_code == 404:
+        return {"repo": repo, "exists": False,
+                "note": "the repository itself is not there under this name"}
+    if response.status_code != 200:
+        return {"repo": repo, "status": response.status_code,
+                "note": "GitHub API rate limits unauthenticated calls; try again shortly"}
+    body = response.json()
+    return {
+        "repo": repo,
+        "exists": True,
+        "default_branch": body.get("default_branch"),
+        "pushed_at": body.get("pushed_at"),
+        "note": f"put {body.get('default_branch')!r} in BRANCHES if it is not there",
+    }
 
 
 def load_matches(
@@ -163,9 +218,10 @@ def probe(season: int | None = None) -> dict:
         report["stages"]["fetch"] = {
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
-            "url": REPOS["ATP"].format(year=season),
-            "note": "a 404 usually means the year has no file yet; anything "
-                    "else means the repo moved or the network blocked it",
+            "urls_tried": urls_for("ATP", season),
+            "repository": describe_repo("ATP"),
+            "note": "every branch 404'd -- the repository block above gives "
+                    "the real default branch, or says the repo has moved",
         }
         return report
 

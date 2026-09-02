@@ -510,7 +510,7 @@ def test_a_merge_reports_a_category_change_rather_than_applying_it_silently():
                               "category": "250", "draw_size": 32}])
     scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Dallas",
                              "category": "500", "draw_size": 32}])
-    merged, changes = schedule.merge(existing, scraped)
+    merged, changes = schedule.merge(existing, scraped, require_complete=False)
     assert merged.iloc[0]["category"] == "500"
     assert "250 -> 500" in changes.iloc[0]["change"]
 
@@ -522,7 +522,7 @@ def test_a_merge_names_events_the_scrape_did_not_find():
                               "category": "500", "draw_size": 32}])
     scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Vienna",
                              "category": "500", "draw_size": 32}])
-    _, changes = schedule.merge(existing, scraped)
+    _, changes = schedule.merge(existing, scraped, require_complete=False)
     kinds = set(changes["change"])
     assert "added" in kinds
     assert "missing from scrape" in kinds
@@ -535,14 +535,14 @@ def test_a_scrape_that_omits_the_draw_does_not_erase_a_known_one():
                               "category": "Masters 1000", "draw_size": 96.0}])
     scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Rome",
                              "category": "Masters 1000", "draw_size": None}])
-    merged, _ = schedule.merge(existing, scraped)
+    merged, _ = schedule.merge(existing, scraped, require_complete=False)
     assert merged.iloc[0]["draw_size"] == 96.0
 
 
 def test_merging_into_an_empty_calendar_takes_everything():
     scraped = pd.DataFrame([{"season": 2026, "tour": "ATP", "tournament": "Rome",
                              "category": "Masters 1000", "draw_size": 96}])
-    merged, changes = schedule.merge(pd.DataFrame(), scraped)
+    merged, changes = schedule.merge(pd.DataFrame(), scraped, require_complete=False)
     assert len(merged) == 1
     assert list(changes["change"]) == ["added"]
 
@@ -577,3 +577,75 @@ def test_every_shipped_entry_resolves_to_a_real_tier():
     }
     assert "A250_32" in tiers and "GS" in tiers and "M1000_128" in tiers
     assert "M1000_64" in tiers, "the 56-draw Masters events should reach the small table"
+
+
+def full_season(tour="WTA", n=40, season=2026):
+    return pd.DataFrame([
+        {"season": season, "tour": tour, "tournament": f"Event {i}",
+         "category": "250", "draw_size": 32}
+        for i in range(n)
+    ])
+
+
+def test_a_partial_scrape_is_refused_rather_than_merged():
+    """The WTA page yielded six events out of about sixty. Merging that adds a
+    handful of rows and removes none, so it reads as a success while leaving
+    every event it missed on whatever it had -- and reports the other fifty as
+    'missing from scrape', as though the tour cancelled them."""
+    existing = full_season("ATP", 60)
+    merged, changes = schedule.merge(existing, full_season("WTA", 6))
+    assert len(merged) == 60, "the calendar must be left alone"
+    assert "refused" in changes.iloc[0]["change"]
+
+
+def test_a_full_scrape_is_accepted():
+    merged, _ = schedule.merge(full_season("WTA", 6), full_season("WTA", 40))
+    assert len(merged) == 40
+
+
+def test_plausibility_is_judged_per_tour():
+    """A run that gets the ATP right and the WTA wrong is still wrong."""
+    mixed = pd.concat([full_season("ATP", 60), full_season("WTA", 5)], ignore_index=True)
+    assert schedule.is_plausible(mixed) is False
+    assert schedule.completeness(mixed) == {"ATP": 60, "WTA": 5}
+
+
+def test_governing_bodies_are_not_tournaments():
+    """'International Tennis Federation' sits in the WTA page's JSON next to
+    real events and carries enough text to classify as a 250."""
+    page = ('<script type="application/json">' + json.dumps({"t": [
+        {"name": "International Tennis Federation", "category": "WTA International"},
+        {"name": "Brisbane International", "category": "WTA International"},
+    ]}) + "</script>")
+    rows = schedule.extract_from_json(page, "WTA", 2026)
+    assert [r["tournament"] for r in rows] == ["Brisbane International"]
+
+
+def test_framework_state_outside_a_json_script_tag_is_read():
+    """The WTA page has no __NEXT_DATA__, so a JSON-script-only sweep cannot
+    see its payload at all."""
+    page = ('<script>window.__NUXT__ = '
+            + json.dumps({"data": [{"name": "Rome", "category": "WTA 1000"}]})
+            + ';</script>')
+    rows = schedule.extract_from_json(page, "WTA", 2026)
+    assert rows[0]["tournament"] == "Rome"
+    assert rows[0]["category"] == "Masters 1000"
+
+
+def test_tournament_links_are_the_durable_fallback():
+    """Links have to keep working across a redesign that renames every class."""
+    page = """
+      <div class="whatever-new-name">
+        <a href="/tournaments/901/brisbane/">Brisbane International</a>
+        <span>WTA 500 · Draw: 32</span>
+      </div>
+    """
+    rows = schedule.extract_from_links(page, "WTA", 2026)
+    assert rows[0]["tournament"] == "Brisbane International"
+    assert rows[0]["category"] == "500"
+    assert rows[0]["draw_size"] == 32
+
+
+def test_non_tournament_links_are_ignored():
+    page = '<div><a href="/rankings/singles">Rankings</a><span>WTA 500</span></div>'
+    assert schedule.extract_from_links(page, "WTA", 2026) == []
