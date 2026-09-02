@@ -124,6 +124,36 @@ def _nba(season: int, assets: str) -> pd.DataFrame:
     return nba.score_teams(hoopr.load_schedule([season]))
 
 
+def _pga(season: int, assets: str) -> pd.DataFrame:
+    from whul.scoring import golf
+    from whul.sources import espn_individual
+
+    return golf.score_players(espn_individual.load_results("pga", [season]))
+
+
+def _motorsports(season: int, assets: str) -> pd.DataFrame:
+    """NASCAR and Formula 1 together -- one roster category, one benchmark."""
+    from whul.scoring import motorsport
+    from whul.sources import espn_individual, jolpica
+
+    return motorsport.score_players(
+        espn_individual.load_results("nascar", [season]),
+        jolpica.load_results([season]),
+    )
+
+
+def _tennis(season: int, assets: str) -> pd.DataFrame:
+    from whul.scoring import tennis
+    from whul.sources import tennis_ledger
+
+    return tennis.score_players(tennis_ledger.load_matches([season]))
+
+
+#: Sports read one event at a time rather than one date at a time. Their probes
+#: return a nested report keyed by stage, so they render differently.
+INDIVIDUAL_LEAGUES = ("pga", "nascar", "f1", "tennis")
+
+
 LEAGUES = {
     "nfl": {
         "fn": _nfl,
@@ -160,6 +190,24 @@ LEAGUES = {
             "source": "ESPN scoreboard, league + cups + Europe (UNVERIFIED)",
         }
         for key in SOCCER_LEAGUES
+    },
+    "pga": {
+        "fn": _pga,
+        "assets": ("players",),
+        "seasons": "2015-present",
+        "source": "ESPN golf leaderboard (UNVERIFIED)",
+    },
+    "motorsports": {
+        "fn": _motorsports,
+        "assets": ("players",),
+        "seasons": "2015-present",
+        "source": "ESPN racing (UNVERIFIED) + Jolpica/Ergast for F1 (UNVERIFIED)",
+    },
+    "tennis": {
+        "fn": _tennis,
+        "assets": ("players",),
+        "seasons": "2024-present",
+        "source": "Flashscore match ledgers under data/tennis (local files)",
     },
     "nba": {
         "fn": _nba,
@@ -421,8 +469,80 @@ def cmd_discover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_stages(title: str, report: dict) -> int:
+    """Render a staged probe report.
+
+    The individual sports probe in stages -- reach the season, read one event,
+    parse the field -- and report where they stopped, so a failure names the
+    stage and what it saw rather than only an exception.
+    """
+    print(f"\n{title}\n")
+    for key, value in report.items():
+        if key == "stages":
+            continue
+        print(f"  {key:<12} {value}")
+
+    stages = report.get("stages", {})
+    failed = False
+    for name, detail in stages.items():
+        ok = detail.get("ok")
+        mark = "ok  " if ok else "FAIL"
+        failed = failed or not ok
+        print(f"\n  [{mark}] {name}")
+        for key, value in detail.items():
+            if key == "ok":
+                continue
+            print(f"        {key:<18} {value}")
+
+    if failed or not stages:
+        print("\nThe adapter stopped at the stage marked FAIL. Send me this output.")
+        return 1
+    print("\nAll stages passed.")
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
+    if args.league == "tennis":
+        from pathlib import Path as _Path
+
+        from whul.sources import tennis_ledger
+
+        seasons = [int(args.season)] if args.season else None
+        directory = _Path(args.dir) if args.dir else None
+        report = tennis_ledger.probe(seasons, directory)
+        return _print_stages(
+            f"Tennis ledger probe -- seasons {report['seasons']} in {report['directory']}",
+            report,
+        )
+
+    if args.league == "f1":
+        from whul.sources import jolpica
+
+        report = jolpica.probe(int(args.season) if args.season else None)
+        return _print_stages(f"Jolpica F1 probe -- season {report['season']}", report)
+
+    if args.league in ("pga", "nascar"):
+        from whul.sources import espn_individual
+
+        report = espn_individual.probe(args.league, int(args.season) if args.season else None)
+        return _print_stages(
+            f"ESPN {report['league']} probe -- season {report['season']}", report
+        )
+
+    if args.league == "motorsports":
+        # The category is two series from two different feeds, so both are
+        # probed: either one failing leaves the category half-scored.
+        from whul.sources import espn_individual, jolpica
+
+        season = int(args.season) if args.season else None
+        nascar = espn_individual.probe("nascar", season)
+        status = _print_stages(
+            f"ESPN nascar probe -- season {nascar['season']}", nascar
+        )
+        f1 = jolpica.probe(season)
+        return _print_stages(f"Jolpica F1 probe -- season {f1['season']}", f1) or status
+
     if args.league == "nfl":
         from whul.sources import nflverse
 
@@ -685,10 +805,14 @@ def main(argv: list[str] | None = None) -> int:
     # scored as leagues in their own right.
     probe.add_argument(
         "league",
-        choices=sorted(set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS)),
+        choices=sorted(set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)),
         metavar="league",
     )
     probe.add_argument("--date", help="YYYY-MM-DD to probe (default: yesterday)")
+    # The individual sports probe a whole season rather than a date: a golf
+    # tournament or a race meeting spans days, so a single date says nothing.
+    probe.add_argument("--season", help="season to probe (individual sports; default: last year)")
+    probe.add_argument("--dir", help="directory holding the tennis match ledgers")
     probe.set_defaults(func=cmd_probe)
 
     validate = sub.add_parser("validate", help="full data-source validation report")

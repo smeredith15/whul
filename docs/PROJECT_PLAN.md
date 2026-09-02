@@ -447,6 +447,15 @@ Each increment ships end-to-end:
 - **Data sources** — each verified independently as its league is built.
 - **Postseason weighting** — regular-season-only benchmarks plus a bonus worth a flat 10% of a
   regular season, equalized across leagues. See §2.5.
+- **Tennis draw-size cutoffs — needs a decision.** `Tennis_Players.R` picks the points table from
+  how many matches a tournament played: ≥50 gets the Masters 128-draw table, ≥30 the 500/250
+  64-draw tables. Those sit below the real boundaries — a 128-draw plays 127 matches, a 96-draw 95,
+  a 64-draw 63, a 56-draw 55, a 32-draw 31. At 50, both Masters shapes land on the 128 table; at 30,
+  a 32-draw 500 lands on the 64 table. The smaller tables are effectively unreachable on complete
+  tour data. Ported unchanged because the benchmark and the live season run through the same
+  function, so the 0-100 scale largely absorbs it, and moving the cutoffs would restate every
+  historical tennis score. Raising them to 75 and 40 would separate the real shapes — a scoring
+  change, and yours to make. See `MASTERS_LARGE_DRAW_MATCHES` / `TOUR_LARGE_DRAW_MATCHES`.
 
 ### Data acquisition, as measured
 
@@ -455,6 +464,20 @@ Each increment ships end-to-end:
 | NFL | nflverse `stats_player` (GitHub) | ~1s / season | ~0.6s | verified through 2025 |
 | NBA | ESPN site API (per date) | ~690s / season | ~5s | verified on 2026 |
 | MLB | MLB Stats API + FanGraphs | not yet measured | not yet measured | **unverified** |
+| PGA | ESPN golf leaderboard (per event) | not yet measured | not yet measured | **unverified** |
+| NASCAR | ESPN racing (per event) | not yet measured | not yet measured | **unverified** |
+| F1 | Jolpica (Ergast successor) | not yet measured | not yet measured | **unverified** |
+| Tennis | Flashscore ledgers under `data/tennis` | local files | local files | needs ledgers |
+
+The individual sports are fetched per event rather than per date: a golf tournament runs Thursday to
+Sunday and a race meeting spans a weekend, so walking the calendar would re-read the same event four
+times. That also makes the nightly job cheap — it re-reads only what is in progress or newly final.
+
+Tennis is the one league scored from files. The existing Flashscore scrapers already produce a
+season ledger per tour, which is what `Tennis_Players.R` reads; `whul/sources/tennis_ledger.py`
+reads the same `YYYY-atp-season.csv` / `YYYY-wta-season.csv` files, normalizing headers the way
+`janitor::clean_names` does. Run `python -m whul.cli probe tennis --season 2025 --dir <path>` to
+check a ledger carries what scoring needs before wiring it in.
 
 NBA 2026: 273 dates, 30,853 rows, 705 players, benchmarks 3800.7 Backcourt /
 4086.5 Frontcourt. Warm re-run 7.4s. Responses cache under `data/cache/espn`.
