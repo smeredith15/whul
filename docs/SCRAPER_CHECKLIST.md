@@ -211,10 +211,26 @@ source (Jolpica), and that host is blocked from my sandbox too.
 - Bespoke window p99 is agreed for these three, and is tractable because all four
   competitions are event-based with dates — but only once each has a real source.
 
-## 7. Soccer except MLS
+## 7. Soccer except MLS — SCORING BUILT, source next
 
-Not started. League-specific p99 confirmed — each of EPL, La Liga, Serie A,
-Bundesliga, Ligue 1 and NWSL normalizes against itself.
+League-specific p99 confirmed — each of EPL, La Liga, Serie A, Bundesliga,
+Ligue 1 and NWSL normalizes against itself. 21 tests.
+
+`whul/scoring/competition.py` places every match before scoring it. Qualifying is
+tested **before** the tier patterns, because a qualifying tie carries its parent
+competition's name — checking tiers first would score "Champions League
+Qualifying" as the Champions League. The knockout play-off is exempted, since it
+reads like a qualifying round but sits inside the competition, between the league
+phase and the round of 16.
+
+**[C-12] The player appearance term is broken in the R script.**
+`pts_minutes = ifelse(Min >= 60, 2, 1)` tests *season-total* minutes, so every
+regular gets 2 points for an entire year — a per-appearance rule applied to
+aggregate data. Ported as 2 per start and 1 per substitute appearance, which is
+the usual fantasy-soccer convention and makes the term meaningful: 64 points for
+a 30-start season against 2 under the literal reading, or roughly the value of a
+dozen goals. `per_appearance=False` reproduces the literal behaviour. **Confirm
+which you intend** — this is the same class of bug as the NCAAF blowout threshold.
 
 - **[C-9] answered:** league phase counts as competition proper; qualifying does
   not. **Byes score as though the team won the skipped round in a sweep** — this
