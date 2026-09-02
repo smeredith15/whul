@@ -182,7 +182,7 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
     for season in seasons:
         days = season_dates(season)
         if verbose:
-            print(f"  {season}: walking {len(days)} dates ...")
+            print(f"  {season}: walking {len(days)} dates ...", flush=True)
         for index, day in enumerate(days):
             try:
                 board = scoreboard("nba", day)
@@ -212,7 +212,10 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
                 ):
                     positions = load_positions("nba")
                     if verbose:
-                        print(f"  boxscore lacks positions; loaded {len(positions)} from rosters")
+                        print(
+                            f"  boxscore lacks positions; loaded {len(positions)} from rosters",
+                            flush=True,
+                        )
                     parsed = _parse_box(
                         summary("nba", event["id"]),
                         event["id"],
@@ -224,7 +227,12 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
                 rows.extend(parsed)
                 time.sleep(REQUEST_PAUSE)
             if verbose and index % 50 == 0 and index:
-                print(f"    {index}/{len(days)} dates, {len(rows):,} rows")
+                # flush: stdout is block-buffered when redirected to a file, so
+                # without this a long backfill shows no progress until it ends.
+                print(
+                    f"    {index}/{len(days)} dates, {len(rows):,} rows",
+                    flush=True,
+                )
             time.sleep(REQUEST_PAUSE)
     return pd.DataFrame(rows)
 

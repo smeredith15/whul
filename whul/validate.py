@@ -40,10 +40,16 @@ def _rule(title: str) -> str:
     return f"\n{'=' * 78}\n{title}\n{'=' * 78}"
 
 
+def _say(*args) -> None:
+    """Print immediately. Output is usually redirected to a file, where Python
+    block-buffers stdout and a long run would otherwise look stalled."""
+    print(*args, flush=True)
+
+
 def acquire(spec: LeagueSpec, seasons: list[int]) -> tuple[pd.DataFrame, dict]:
     """Section 1 -- pull the raw rows and describe what came back."""
-    print(_rule(f"1. ACQUISITION -- {spec.name}, seasons {seasons[0]}-{seasons[-1]}"))
-    print(f"source: {spec.source}\n")
+    _say(_rule(f"1. ACQUISITION -- {spec.name}, seasons {seasons[0]}-{seasons[-1]}"))
+    _say(f"source: {spec.source}\n")
 
     started = time.monotonic()
     raw = spec.load(seasons)
@@ -57,8 +63,8 @@ def acquire(spec: LeagueSpec, seasons: list[int]) -> tuple[pd.DataFrame, dict]:
         assets=(spec.id_col, "nunique"),
         weeks=(spec.week_col, "nunique"),
     )
-    print(per_season.to_string())
-    print(f"\nfetched {len(raw):,} rows in {elapsed:.1f}s")
+    _say(per_season.to_string())
+    _say(f"\nfetched {len(raw):,} rows in {elapsed:.1f}s")
     if missing:
         print(f"MISSING SEASONS: {missing}  <-- investigate before trusting this source")
     else:
@@ -72,7 +78,7 @@ def benchmarks(spec: LeagueSpec, raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.Da
     Benchmarks use regular-season production only, so the scale is never skewed
     by the small subset of players who reach the postseason.
     """
-    print(_rule("2. BENCHMARKS -- 99th percentile per position group"))
+    _say(_rule("2. BENCHMARKS -- 99th percentile per position group"))
 
     scored = spec.score(raw, True)
     reg_only = scored.assign(total_points=scored["regular_points"])
@@ -95,7 +101,7 @@ def leaders(
     ranks: tuple[int, ...] = (1, 10),
 ) -> pd.DataFrame:
     """Section 3 -- #1 and #10 per group, raw and normalized, both variants."""
-    print(_rule(f"3. LEADERS -- {target} season, ranks {', '.join(f'#{r}' for r in ranks)}"))
+    _say(_rule(f"3. LEADERS -- {target} season, ranks {', '.join(f'#{r}' for r in ranks)}"))
 
     season = scored[scored["season"] == target].copy()
     if season.empty:
@@ -145,7 +151,7 @@ def leaders(
 
 def scrape_readiness(spec: LeagueSpec, raw: pd.DataFrame, seasons: list[int], stats: dict) -> bool:
     """Section 4 -- can this source back a daily job?"""
-    print(_rule("4. DAILY SCRAPE READINESS"))
+    _say(_rule("4. DAILY SCRAPE READINESS"))
 
     latest = max(stats["seasons"]) if stats["seasons"] else None
     recent = raw[raw["season"] == latest]
@@ -198,7 +204,7 @@ def run(spec: LeagueSpec, seasons: list[int], target: int) -> int:
     scored, bench = benchmarks(spec, raw)
     leaders(spec, scored, bench, target)
     ready = scrape_readiness(spec, raw, seasons, stats)
-    print(_rule("SUMMARY"))
+    _say(_rule("SUMMARY"))
     print(f"league:     {spec.name}")
     print(f"seasons:    {stats['seasons']}")
     print(f"groups:     {sorted(bench['norm_key'])}")
