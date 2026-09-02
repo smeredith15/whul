@@ -24,6 +24,8 @@ the code uses `X | Y` type syntax that older versions reject.
 
 ### A3. Clone the repository
 
+If you have **not** cloned it before:
+
 ```bash
 cd ~
 git clone https://github.com/smeredith15/whul.git
@@ -31,12 +33,19 @@ cd whul
 git checkout claude/fantasy-league-webapp-dp99e3
 ```
 
-If you already cloned it earlier, just refresh instead:
+If you **have** cloned it before, refresh instead — `git clone` will refuse and
+`git checkout` alone does not fetch new commits:
 
 ```bash
 cd ~/whul
 git checkout claude/fantasy-league-webapp-dp99e3
 git pull
+```
+
+Confirm you are current:
+
+```bash
+git log --oneline -1
 ```
 
 ### A4. Create the virtual environment
@@ -49,6 +58,61 @@ python3 -m venv .venv
 
 The last line takes 1-3 minutes (pyarrow is a large wheel). It should end with
 `Successfully installed ... whul-0.1.0`.
+
+#### If venv fails with "ensurepip is not available"
+
+Debian and Ubuntu ship the `venv` module without the `ensurepip` bootstrap, so
+this is common on a fresh cloud instance:
+
+```
+The virtual environment was not created successfully because ensurepip is not
+available.  On Debian/Ubuntu systems, you need to install the python3-venv
+package ...
+```
+
+The `.venv` directory it left behind is broken — **delete it before retrying**.
+Then use whichever of these works for your instance.
+
+**Option A — install the missing package (cleanest, needs sudo):**
+
+```bash
+rm -rf .venv
+sudo apt update && sudo apt install -y python3.12-venv
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -e '.[dev]'
+```
+
+Match the version to your Python: `python3 --version` reporting 3.12.x means
+`python3.12-venv`.
+
+**Option B — use `uv` (no sudo; it builds venvs without ensurepip):**
+
+```bash
+rm -rf .venv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv venv .venv
+uv pip install --python .venv/bin/python -e '.[dev]'
+```
+
+Everything afterwards is unchanged — `uv` produces an ordinary venv, so
+`.venv/bin/python` works exactly as documented.
+
+**Option C — no virtual environment at all (last resort):**
+
+```bash
+rm -rf .venv
+pip3 install --user --break-system-packages -e '.[dev]'
+```
+
+`--break-system-packages` is needed because Ubuntu 24.04 marks the system Python
+as externally managed. It installs into your user site directory, not the system
+one, so it is less alarming than it sounds — but it does mean these packages are
+visible to every Python project you run as this user.
+
+**With Option C, drop the `.venv/bin/` prefix from every command below** — use
+`python3 -m pytest -q` and `python3 -m whul.cli validate nfl` instead.
 
 > Every command below uses `.venv/bin/python` explicitly rather than a bare
 > `python`, so nothing depends on the venv being "activated". If you prefer,
@@ -315,3 +379,15 @@ ones are worth reporting.
 
 **Command not found: `python3`**
 Try `python --version`. If that is 3.11+, substitute `python` for `python3` in A4.
+
+**`ensurepip is not available` when creating the venv**
+See the three options under A4. Delete the broken `.venv` first.
+
+**`error: externally-managed-environment`**
+Ubuntu 24.04 protects the system Python. Use a venv (A4 Option A or B), or add
+`--break-system-packages` as in Option C.
+
+**`ModuleNotFoundError: No module named 'pandas'`**
+The install in A4 did not complete, or you are running the system `python3`
+instead of `.venv/bin/python`. Re-run A4 and watch for
+`Successfully installed ... whul-0.1.0`.
