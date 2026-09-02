@@ -59,11 +59,18 @@ class PostseasonRule:
         return self.bonus_share * self.regular_games
 
 
+#: Byes score as though the team swept the round it skipped -- MLB's top seeds
+#: skipping the wild-card round, a conference tournament's top seeds, a European
+#: competition's league-phase leaders. Tennis is the documented exception: a bye
+#: earns first-round credit only if the player wins their second-round match.
+BYE_COUNTS_AS_SWEEP = True
+
 RULES: dict[str, PostseasonRule] = {
     "NFL": PostseasonRule("NFL", 17),
     "MLB": PostseasonRule("MLB", 162),
     "NBA": PostseasonRule("NBA", 82),
-    # The NHL regular season expands to 84 games in 2026-27.
+    # The NHL regular season expands to 84 games in 2026-27. All sixteen
+    # qualifiers play a first round, so no bye credit arises here.
     "NHL": PostseasonRule("NHL", 84),
     # Club soccer has no playoffs; European competition proper plays the role.
     # Referenced to a 38-game domestic league. Qualifying rounds do not count.

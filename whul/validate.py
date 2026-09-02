@@ -41,6 +41,9 @@ class LeagueSpec:
     #: normalized rows into one, which cannot happen before each role has met its
     #: own benchmark.
     post_normalize: Callable[[pd.DataFrame], pd.DataFrame] | None = None
+    #: League key whose schedule change should lift the benchmarks. Set for the
+    #: NHL, whose 82-game history understates an 84-game season.
+    scale_benchmarks_for: str | None = None
 
 
 def _rule(title: str) -> str:
@@ -90,6 +93,16 @@ def benchmarks(spec: LeagueSpec, raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.Da
     scored = spec.score(raw, True)
     reg_only = scored.assign(total_points=scored["regular_points"])
     bench = compute_benchmarks(reg_only, "Player", season_col="season")
+    if spec.scale_benchmarks_for:
+        from whul.scoring.schedule import SCHEDULE_CHANGES, scale_benchmarks
+
+        change = SCHEDULE_CHANGES.get(spec.scale_benchmarks_for)
+        bench = scale_benchmarks(bench, spec.scale_benchmarks_for)
+        if change:
+            _say(
+                f"schedule change: {change.historical_games} -> {change.current_games} games "
+                f"from {change.effective_season}; benchmarks lifted by {change.factor:.4f}\n"
+            )
 
     _say("pool: regular-season production, truncated per season per group\n")
     cols = ["norm_key", "benchmark", "n_in_pool"] + (

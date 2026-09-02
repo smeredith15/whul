@@ -72,16 +72,31 @@ Built, unverified — both hosts are blocked from my sandbox.
   2027 through mid-July, so ~80% of a season, inflating by ~1.25. Playoffs
   untouched, as you said.
 
-## 4. NHL
+## 4. NHL — BUILT, unverified
 
-Not started. Skaters only — goalies are excluded from normalization, matching
-`All_Analysis.R` and your earlier decision.
+Skaters only. Goalies are still scored (the R script computes them) but hold no
+roster slots and are excluded from normalization, so nothing downstream reads
+them. 16 tests.
 
-- **[C-5] answered: scale the p99 itself to an 84-game pace**, rather than scaling
-  every historical score and re-deriving. Better call than mine — the benchmark
-  already excludes playoffs, so it is a single multiplication on one number per
-  group, and a manager checking the arithmetic has one fewer normalization step
-  to follow. Same mechanism will serve NFL when it expands.
+Source is the NHL's own stats API, which `fastRhockey` wraps: one request per
+season per endpoint, and `gameTypeId` separates regular season from playoffs, so
+the discrete postseason split falls out of the request rather than needing to be
+disentangled afterwards.
+
+All sixteen qualifiers play a first round, so the bye rule from [C-9] does not
+arise here.
+
+- **[C-5] answered and built: scale the p99 to an 84-game pace.** Better call than
+  mine — one multiplication per group, and one fewer step for anyone checking the
+  arithmetic. `whul/scoring/schedule.py` holds the change (82 → 84, effective
+  2026-27, factor 1.0244) and the NFL is registered as unchanged, so its
+  expansion is a one-line addition when a date is known.
+  **One wrinkle worth stating:** this works cleanly for players because their
+  scoring is entirely counting stats. Team scoring is not — wins, overtime losses
+  and goal differential scale with games, but a playoff berth, series wins and a
+  division title do not. So team regular-season components are scaled at source
+  and the achievement terms left alone, which is why `score_teams` takes the
+  factor rather than having it applied to the finished benchmark.
 
 ## 5. NCAA (all five) — BUILT; four of five confirmed reachable
 

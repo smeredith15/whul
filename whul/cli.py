@@ -63,6 +63,18 @@ def _ncaa(key: str):
     return load
 
 
+def _nhl(season: int, assets: str) -> pd.DataFrame:
+    from whul.scoring import nhl
+    from whul.sources import nhl as source
+
+    if assets == "players":
+        return nhl.score_players(source.load_skaters([season]))
+    return nhl.score_teams(
+        source.load_teams([season], source.GAME_TYPE_REGULAR),
+        source.load_teams([season], source.GAME_TYPE_PLAYOFFS),
+    )
+
+
 def _mlb(season: int, assets: str) -> pd.DataFrame:
     from whul.scoring import mlb
     from whul.sources import mlb as source
@@ -104,6 +116,12 @@ LEAGUES = {
             "source": "NCAA stats API, results only (division-filtered)",
         }
         for key in NCAA_LEAGUES
+    },
+    "nhl": {
+        "fn": _nhl,
+        "assets": ("players", "teams"),
+        "seasons": "2009-present",
+        "source": "NHL stats API (UNVERIFIED); 84 games from 2026-27",
     },
     "nba": {
         "fn": _nba,
@@ -212,6 +230,46 @@ def _spec(league: str):
             source=f"NCAA stats API, results only ({league})",
             daily_cost=lambda: ncaa_api.daily_update_cost(league),
         )
+    if league == "nhl":
+        from whul.scoring import nhl
+        from whul.sources import nhl as source
+
+        def load(seasons):
+            regular = source.load_skaters(seasons, source.GAME_TYPE_REGULAR)
+            playoffs = source.load_skaters(seasons, source.GAME_TYPE_PLAYOFFS)
+            regular["_phase"] = "reg"
+            if not playoffs.empty:
+                playoffs["_phase"] = "post"
+            return pd.concat([regular, playoffs], ignore_index=True)
+
+        def score(raw, postseason):
+            from whul.scoring.postseason import POSTSEASON, REGULAR, RULES, apply_bonus, split_phases
+
+            scored = nhl.score_skaters(raw)
+            phase = raw["_phase"].reindex(scored.index) if "_phase" in raw.columns else None
+            scored["phase"] = (
+                phase.map({"reg": REGULAR, "post": POSTSEASON}).fillna(REGULAR)
+                if phase is not None
+                else REGULAR
+            )
+            phases = split_phases(
+                scored, ["season", "player"], "total_points", "games_played", scored["phase"]
+            )
+            out = apply_bonus(phases, RULES["NHL"] if postseason else None)
+            out["league"] = "NHL"
+            out["role"] = nhl.SKATER_ROLE
+            return out
+
+        return LeagueSpec(
+            name="NHL",
+            load=load,
+            score=score,
+            id_col="player",
+            week_col="season",
+            source="NHL stats API (skater summaries, regular and playoffs)",
+            daily_cost=source.daily_update_cost,
+            scale_benchmarks_for="NHL",
+        )
     if league == "mlb":
         from whul.scoring import mlb
         from whul.sources import mlb as source
@@ -267,6 +325,7 @@ def _spec(league: str):
 
 DEFAULT_VALIDATE = {
     "mlb": ((2021, 2025), 2025),
+    "nhl": ((2021, 2025), 2025),
     **{key: ((2021, 2025), 2025) for key in NCAA_LEAGUES},
     "nfl": ((2021, 2025), 2025),
     "nba": ((2022, 2026), 2026),
@@ -353,6 +412,21 @@ def cmd_probe(args: argparse.Namespace) -> int:
             print("\nCould not reach or parse ESPN. Send me this output.", file=sys.stderr)
             return 1
         print("\nESPN reachable and the scoreboard schema parses.")
+        return 0
+
+    if args.league == "nhl":
+        from whul.sources import nhl as source
+
+        result = source.probe()
+        print(f"\nNHL probe -- season {result['season']} (id {result['season_id']})\n")
+        for key, value in result.items():
+            if key in ("season", "season_id"):
+                continue
+            print(f"  {key:<24} {value}")
+        if any(isinstance(v, str) and v.startswith("FAILED") for v in result.values()):
+            print("\nAn endpoint could not be reached. Send me this output.", file=sys.stderr)
+            return 1
+        print("\nNHL stats API reachable and parsing.")
         return 0
 
     if args.league == "mlb":
