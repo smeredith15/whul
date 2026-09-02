@@ -176,16 +176,38 @@ def test_defender_goals_outscore_forward_goals():
     assert gap == pytest.approx(20.0)  # 10 goals * (6 - 4)
 
 
-def test_appearance_points_are_per_appearance_not_per_season():
-    """The R script tests season-total minutes against 60, which awards 2 points
-    for an entire year and makes the term meaningless. Per appearance it is
-    worth roughly as much as a dozen goals to a regular starter.
-    """
+def test_appearance_points_are_per_game_not_per_season():
+    """The R script tested season-total minutes against 60, awarding 2 points for
+    an entire year. Per game the term is worth roughly a dozen goals to a
+    regular starter."""
     df = pd.DataFrame([player(MP=34, Starts=30, Min=2800, Gls=0)])
-    per_appearance = score_players(df, per_appearance=True).iloc[0]["total_points"]
-    literal = score_players(df, per_appearance=False).iloc[0]["total_points"]
-    assert per_appearance == pytest.approx(64.0)
-    assert literal == pytest.approx(2.0)
+    assert score_players(df).iloc[0]["total_points"] == pytest.approx(64.0)
+
+
+def test_per_match_minutes_are_used_exactly_when_available():
+    """60 minutes or more is a full appearance; less is a short one."""
+    from whul.scoring.soccer import appearance_points_from_matches
+
+    minutes = pd.Series([90, 60, 59, 12, 0])
+    assert list(appearance_points_from_matches(minutes)) == [2, 2, 1, 1, 0]
+
+
+def test_season_aggregates_approximate_the_same_rule():
+    from whul.scoring.soccer import appearance_points_from_season
+
+    points = appearance_points_from_season(pd.Series([30]), pd.Series([34]))
+    assert points.iloc[0] == pytest.approx(64.0)
+
+
+def test_the_season_approximation_is_documented_as_inexact():
+    """A starter withdrawn at 50 minutes scores 2 by this route and 1 by the
+    rule, so the imprecision is stated rather than hidden."""
+    import inspect
+
+    from whul.scoring.soccer import appearance_points_from_season
+
+    doc = inspect.getdoc(appearance_points_from_season)
+    assert "not exact" in doc
 
 
 def test_substitute_appearances_score_less_than_starts():

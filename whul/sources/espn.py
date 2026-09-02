@@ -38,6 +38,25 @@ LEAGUE_PATHS = {
     "ncaam": ("basketball", "mens-college-basketball"),
     "ncaaw": ("basketball", "womens-college-basketball"),
     "ncaaf": ("football", "college-football"),
+    # Club soccer. ESPN keys each competition separately, so a club's European
+    # and domestic-cup matches come from different requests than its league ones
+    # -- all of which must be gathered for the competition tiers to mean anything.
+    "epl": ("soccer", "eng.1"),
+    "laliga": ("soccer", "esp.1"),
+    "seriea": ("soccer", "ita.1"),
+    "bundesliga": ("soccer", "ger.1"),
+    "ligue1": ("soccer", "fra.1"),
+    "mls": ("soccer", "usa.1"),
+    "nwsl": ("soccer", "usa.nwsl"),
+    "ucl": ("soccer", "uefa.champions"),
+    "uel": ("soccer", "uefa.europa"),
+    "uecl": ("soccer", "uefa.europa.conf"),
+    "facup": ("soccer", "eng.fa"),
+    "efl_cup": ("soccer", "eng.league_cup"),
+    "copadelrey": ("soccer", "esp.copa_del_rey"),
+    "dfbpokal": ("soccer", "ger.dfb_pokal"),
+    "coppaitalia": ("soccer", "ita.coppa_italia"),
+    "coupedefrance": ("soccer", "fra.coupe_de_france"),
     "ncaabaseball": ("baseball", "college-baseball"),
     # College softball lives under the *baseball* sport path; every
     # softball/... variant answers 404.
@@ -80,6 +99,21 @@ GROUP_CANDIDATES = {
 NBA_SEASON_START = (10, 1)
 NBA_SEASON_END = (6, 30)
 
+#: Soccer competitions a club may play in, beyond its own league. Gathering
+#: these is what makes the competition tiers meaningful: without them every win
+#: is a league win.
+SOCCER_LEAGUES = ("epl", "laliga", "seriea", "bundesliga", "ligue1", "mls", "nwsl")
+EUROPEAN_COMPETITIONS = ("ucl", "uel", "uecl")
+DOMESTIC_CUPS = {
+    "epl": ("facup", "efl_cup"),
+    "laliga": ("copadelrey",),
+    "bundesliga": ("dfbpokal",),
+    "seriea": ("coppaitalia",),
+    "ligue1": ("coupedefrance",),
+    "mls": (),
+    "nwsl": (),
+}
+
 #: (start month, day) -> (end month, day), and whether the season label is the
 #: calendar year it ends in. Football is labelled by the year it starts.
 SEASON_WINDOWS = {
@@ -88,6 +122,14 @@ SEASON_WINDOWS = {
     "ncaaw": ((11, 1), (4, 15), True),
     "ncaabaseball": ((2, 1), (6, 30), False),
     "ncaasoftball": ((2, 1), (6, 30), False),
+    # European seasons run August to May and are labelled by the year they end.
+    **{key: ((8, 1), (5, 31), True) for key in
+       ("epl", "laliga", "seriea", "bundesliga", "ligue1",
+        "ucl", "uel", "uecl", "facup", "efl_cup", "copadelrey",
+        "dfbpokal", "coppaitalia", "coupedefrance")},
+    # MLS and NWSL run within a calendar year.
+    "mls": ((2, 20), (12, 15), False),
+    "nwsl": ((3, 1), (11, 30), False),
     "nba": (NBA_SEASON_START, NBA_SEASON_END, True),
 }
 
@@ -425,6 +467,119 @@ def discover(league: str, day: date | None = None) -> dict:
     out["scoreboard_by_params"] = combo_report
     out["conference_ids"] = sorted(conferences.items(), key=lambda kv: -kv[1])[:20]
     return out
+
+
+def load_soccer_matches(
+    league: str, seasons: list[int], include_cups: bool = True, verbose: bool = True
+) -> pd.DataFrame:
+    """Every match a league's clubs played, across all their competitions.
+
+    Gathering the European competitions and domestic cups alongside the league
+    is what gives the competition tiers meaning -- restricted to league fixtures,
+    every win would be worth three points and the Champions League premium would
+    never appear.
+
+    Returns two rows per match, one per club, which is the shape the soccer
+    scorer expects.
+    """
+    competitions = [league]
+    if include_cups:
+        competitions += list(DOMESTIC_CUPS.get(league, ())) + list(EUROPEAN_COMPETITIONS)
+
+    rows: list[dict] = []
+    for competition in competitions:
+        if competition not in LEAGUE_PATHS:
+            continue
+        for season in seasons:
+            days = season_dates(season, competition)
+            if verbose:
+                print(f"  {competition} {season}: {len(days)} dates ...", flush=True)
+            for index, day in enumerate(days):
+                try:
+                    board = scoreboard(competition, day)
+                except Exception:
+                    continue
+                for event in board.get("events", []):
+                    rows.extend(_soccer_rows(event, competition, day))
+                if verbose and index and index % 60 == 0:
+                    print(f"    {index}/{len(days)} dates, {len(rows):,} rows", flush=True)
+    return pd.DataFrame(rows)
+
+
+def _soccer_rows(event: dict, competition: str, day: date) -> list[dict]:
+    """One match as two team rows, carrying the competition name for tiering."""
+    inner = (event.get("competitions") or [{}])[0]
+    status = (inner.get("status") or {}).get("type", {}) or {}
+    if not status.get("completed"):
+        return []
+
+    home, away = _competitor(inner, "home"), _competitor(inner, "away")
+    if not home or not away:
+        return []
+
+    def score(entry: dict) -> float | None:
+        try:
+            return float(entry.get("score"))
+        except (TypeError, ValueError):
+            return None
+
+    home_goals, away_goals = score(home), score(away)
+    if home_goals is None or away_goals is None:
+        return []
+
+    # The round name matters: it distinguishes a qualifying tie from the
+    # competition proper, and the knockout play-off from either.
+    league_name = (event.get("league") or {}).get("name", "") or competition
+    notes = " ".join(
+        str(n.get("headline", "")) for n in (inner.get("notes") or []) if isinstance(n, dict)
+    )
+    competition_label = f"{league_name} {notes}".strip()
+
+    rows = []
+    for side, other in ((home, away), (away, home)):
+        rows.append({
+            "team": (side.get("team") or {}).get("displayName", ""),
+            "opponent": (other.get("team") or {}).get("displayName", ""),
+            "date": day.isoformat(),
+            "competition": competition_label,
+            "competition_key": competition,
+            "goals_for": score(side),
+            "goals_against": score(other),
+        })
+    return rows
+
+
+def probe_soccer(league: str, day: date | None = None) -> dict:
+    """Reachability and shape check for one soccer competition."""
+    day = day or date(2025, 10, 25)
+    result: dict[str, object] = {"league": league, "date": day.isoformat()}
+    if league not in LEAGUE_PATHS:
+        result["path"] = f"FAILED: no ESPN path configured for {league}"
+        return result
+
+    result["path"] = "/".join(LEAGUE_PATHS[league])
+    try:
+        board = scoreboard(league, day)
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", "?")
+        result["scoreboard"] = f"FAILED ({status}): {type(exc).__name__}: {exc}"
+        return result
+
+    events = board.get("events", [])
+    result["scoreboard"] = "ok"
+    result["events"] = len(events)
+    rows = [r for e in events for r in _soccer_rows(e, league, day)]
+    result["team_rows"] = len(rows)
+    if rows:
+        from whul.scoring.competition import classify
+
+        labels = sorted({r["competition"] for r in rows})
+        result["competition_labels"] = labels[:4]
+        result["classified_as"] = {
+            label: classify(label).tier.value for label in labels[:4]
+        }
+        result["sample"] = rows[0]
+    return result
 
 
 def probe_results(league: str, day: date | None = None) -> dict:

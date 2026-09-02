@@ -223,14 +223,23 @@ Qualifying" as the Champions League. The knockout play-off is exempted, since it
 reads like a qualifying round but sits inside the competition, between the league
 phase and the round of 16.
 
-**[C-12] The player appearance term is broken in the R script.**
-`pts_minutes = ifelse(Min >= 60, 2, 1)` tests *season-total* minutes, so every
-regular gets 2 points for an entire year — a per-appearance rule applied to
-aggregate data. Ported as 2 per start and 1 per substitute appearance, which is
-the usual fantasy-soccer convention and makes the term meaningful: 64 points for
-a 30-start season against 2 under the literal reading, or roughly the value of a
-dozen goals. `per_appearance=False` reproduces the literal behaviour. **Confirm
-which you intend** — this is the same class of bug as the NCAAF blowout threshold.
+**[C-12] answered: appearance points are per game.** The R script's
+`pts_minutes = ifelse(Min >= 60, 2, 1)` tested *season-total* minutes, awarding
+2 points for an entire year — a per-game rule applied to aggregate data, the same
+class of bug as the NCAAF blowout threshold. Now 2 for a 60-minute appearance,
+1 for a shorter one: 64 points across a 30-start season against 2 under the
+literal reading, roughly the value of a dozen goals.
+
+Where per-match minutes are available they are applied exactly. Season feeds
+carry only totals, so starts and substitute outings approximate the rule there —
+a starter withdrawn at 50 minutes scores 2 rather than 1. The imprecision is
+documented rather than hidden, and disappears once per-match data is in use.
+
+**Source built.** ESPN keys each competition separately, so the loader gathers a
+league's own fixtures *plus* its domestic cups and the three European
+competitions. That is what makes the tiers mean anything: restricted to league
+matches every win is worth three points and the Champions League premium never
+appears.
 
 - **[C-9] answered:** league phase counts as competition proper; qualifying does
   not. **Byes score as though the team won the skipped round in a sweep** — this

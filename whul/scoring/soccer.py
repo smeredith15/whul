@@ -29,13 +29,13 @@ PTS_BIG_MARGIN = 1
 PTS_CLEAN_SHEET = 1
 
 # --- players --------------------------------------------------------------
-#: Appearance points, as the R script intends rather than as it computes: the
-#: script tests season-total minutes against 60, which awards 2 points for an
-#: entire season. Applied per appearance -- 2 for a start, 1 off the bench --
-#: the term is meaningful and matches the usual fantasy-soccer convention.
-PTS_START = 2
-PTS_SUBSTITUTE = 1
-START_MINUTES = 60
+#: Appearance points are **per game**: 2 for playing 60 minutes or more in a
+#: match, 1 for a shorter appearance. The R script tested *season-total* minutes
+#: against 60, which awarded 2 points for an entire year -- a per-game rule
+#: applied to aggregate data.
+PTS_FULL_APPEARANCE = 2
+PTS_SHORT_APPEARANCE = 1
+FULL_APPEARANCE_MINUTES = 60
 
 #: Goals are worth more the further back the scorer plays.
 GOAL_POINTS_BY_POSITION = {"defender": 6, "midfielder": 5, "forward": 4}
@@ -67,6 +67,36 @@ def goal_points_for(position: str | None) -> int:
     if code in MIDFIELD_CODES or code[:1] == "M":
         return GOAL_POINTS_BY_POSITION["midfielder"]
     return GOAL_POINTS_BY_POSITION["forward"]
+
+
+def appearance_points_from_matches(minutes: pd.Series) -> pd.Series:
+    """Exact appearance points, given one row per player per match.
+
+    The rule as written: 60 minutes or more is a full appearance, anything less
+    is a short one. Use this wherever per-match minutes are available.
+    """
+    played = pd.to_numeric(minutes, errors="coerce").fillna(0.0)
+    return played.where(played <= 0, 0).mask(
+        played >= FULL_APPEARANCE_MINUTES, PTS_FULL_APPEARANCE
+    ).mask(
+        (played > 0) & (played < FULL_APPEARANCE_MINUTES), PTS_SHORT_APPEARANCE
+    )
+
+
+def appearance_points_from_season(starts: pd.Series, matches: pd.Series) -> pd.Series:
+    """Appearance points approximated from season aggregates.
+
+    Starts stand in for full appearances and substitute outings for short ones.
+    That is very close but not exact: a starter withdrawn at 50 minutes earns 2
+    here and 1 under the true rule, and a substitute who plays 45 earns 1 here
+    and 2. Season feeds carry only totals, so this is the best available from
+    them -- prefer ``appearance_points_from_matches`` where per-match minutes
+    exist.
+    """
+    starts = pd.to_numeric(starts, errors="coerce").fillna(0.0)
+    matches = pd.to_numeric(matches, errors="coerce").fillna(0.0)
+    substitute = (matches - starts).clip(lower=0)
+    return starts * PTS_FULL_APPEARANCE + substitute * PTS_SHORT_APPEARANCE
 
 
 def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
@@ -148,13 +178,12 @@ def score_teams(
     ).reset_index(drop=True)
 
 
-def score_players(players: pd.DataFrame, per_appearance: bool = True) -> pd.DataFrame:
+def score_players(players: pd.DataFrame) -> pd.DataFrame:
     """Season totals per player.
 
-    ``per_appearance`` awards 2 points for a start and 1 for a substitute
-    appearance. With it off, the R script's literal behaviour is reproduced:
-    season-total minutes tested against 60, which gives every regular 2 points
-    for the whole year and makes the term meaningless.
+    Appearance points are per game. Where the input carries per-match minutes in
+    a ``match_minutes`` column they are used exactly; otherwise starts and
+    substitute outings approximate them from season aggregates.
     """
     if players is None or players.empty:
         return pd.DataFrame()
@@ -175,12 +204,11 @@ def score_players(players: pd.DataFrame, per_appearance: bool = True) -> pd.Data
         }
     )
 
-    if per_appearance:
-        subs = (work["matches"] - work["starts"]).clip(lower=0)
-        work["appearance_points"] = work["starts"] * PTS_START + subs * PTS_SUBSTITUTE
+    if "match_minutes" in players.columns:
+        work["appearance_points"] = appearance_points_from_matches(players["match_minutes"])
     else:
-        work["appearance_points"] = (work["minutes"] >= START_MINUTES).map(
-            {True: PTS_START, False: PTS_SUBSTITUTE}
+        work["appearance_points"] = appearance_points_from_season(
+            work["starts"], work["matches"]
         )
 
     work["goal_points"] = work["goals"] * work["position"].map(goal_points_for)

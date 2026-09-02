@@ -427,3 +427,83 @@ def test_variant_search_is_not_short_circuited_by_the_cache(monkeypatch, tmp_pat
     calls.clear()
     espn.scoreboard("ncaam", date(2026, 1, 15))
     assert calls == [], "the chosen payload is cached"
+
+
+# --- soccer -----------------------------------------------------------------
+
+SOCCER_EVENT = {
+    "league": {"name": "UEFA Champions League"},
+    "competitions": [
+        {
+            "status": {"type": {"completed": True}},
+            "notes": [{"headline": "League Phase - Matchday 3"}],
+            "competitors": [
+                {"homeAway": "home", "score": "3",
+                 "team": {"displayName": "Arsenal", "conferenceId": ""}},
+                {"homeAway": "away", "score": "1",
+                 "team": {"displayName": "Bayern Munich", "conferenceId": ""}},
+            ],
+        }
+    ],
+}
+
+
+def test_a_soccer_match_becomes_two_team_rows():
+    rows = espn._soccer_rows(SOCCER_EVENT, "ucl", date(2026, 10, 22))
+    assert len(rows) == 2
+    home = next(r for r in rows if r["team"] == "Arsenal")
+    assert home["goals_for"] == 3.0 and home["goals_against"] == 1.0
+    assert home["opponent"] == "Bayern Munich"
+
+
+def test_the_competition_label_carries_the_round():
+    """The round distinguishes a qualifying tie from the competition proper, and
+    the knockout play-off from either."""
+    rows = espn._soccer_rows(SOCCER_EVENT, "ucl", date(2026, 10, 22))
+    assert "Champions League" in rows[0]["competition"]
+    assert "League Phase" in rows[0]["competition"]
+
+
+def test_soccer_rows_feed_the_scorer_at_the_right_tier():
+    import pandas as pd
+
+    from whul.scoring.soccer import score_team_matches
+
+    rows = espn._soccer_rows(SOCCER_EVENT, "ucl", date(2026, 10, 22))
+    frame = pd.DataFrame(rows).assign(league="Premier League")
+    scored = score_team_matches(frame).set_index("team")
+    # Champions League win, two-goal margin, no clean sheet: 5 + 1 = 6
+    assert scored.loc["Arsenal", "match_points"] == 6
+    assert scored.loc["Bayern Munich", "match_points"] == 0
+
+
+def test_unfinished_matches_are_skipped():
+    event = {**SOCCER_EVENT, "competitions": [
+        {**SOCCER_EVENT["competitions"][0], "status": {"type": {"completed": False}}}
+    ]}
+    assert espn._soccer_rows(event, "ucl", date(2026, 10, 22)) == []
+
+
+def test_every_scored_league_has_a_path_and_a_season_window():
+    for key in espn.SOCCER_LEAGUES:
+        assert key in espn.LEAGUE_PATHS, key
+        assert key in espn.SEASON_WINDOWS, key
+
+
+def test_european_competitions_and_cups_are_reachable():
+    """Restricted to league fixtures, every win would be worth three points and
+    the Champions League premium would never appear."""
+    for key in espn.EUROPEAN_COMPETITIONS:
+        assert key in espn.LEAGUE_PATHS, key
+    for cups in espn.DOMESTIC_CUPS.values():
+        for cup in cups:
+            assert cup in espn.LEAGUE_PATHS, cup
+
+
+def test_mls_and_nwsl_run_within_a_calendar_year():
+    for key in ("mls", "nwsl"):
+        _, _, ends_in_label_year = espn.SEASON_WINDOWS[key]
+        assert ends_in_label_year is False, key
+    for key in ("epl", "laliga", "ucl"):
+        _, _, ends_in_label_year = espn.SEASON_WINDOWS[key]
+        assert ends_in_label_year is True, key

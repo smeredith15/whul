@@ -34,6 +34,12 @@ def _nfl(season: int, assets: str) -> pd.DataFrame:
 
 
 #: Fantasy category -> ESPN league key, for the results-only NCAA leagues.
+#: Club soccer competitions the app scores directly.
+SOCCER_LEAGUES = {
+    "epl": "Premier League", "laliga": "La Liga", "seriea": "Serie A",
+    "bundesliga": "Bundesliga", "ligue1": "Ligue 1", "mls": "MLS", "nwsl": "NWSL",
+}
+
 NCAA_LEAGUES = {
     "ncaaf": "NCAAF",
     "ncaam": "NCAAM",
@@ -41,6 +47,22 @@ NCAA_LEAGUES = {
     "ncaabaseball": "NCAA Baseball",
     "ncaasoftball": "NCAA Softball",
 }
+
+
+def _soccer(key: str):
+    """Club soccer reads every competition its clubs play, not just the league."""
+
+    def load(season: int, assets: str) -> pd.DataFrame:
+        from whul.scoring import soccer
+        from whul.sources import espn
+
+        matches = espn.load_soccer_matches(key, [season])
+        if matches.empty:
+            return matches
+        matches["league"] = SOCCER_LEAGUES[key]
+        return soccer.score_teams(matches)
+
+    return load
 
 
 def _ncaa(key: str):
@@ -122,6 +144,15 @@ LEAGUES = {
         "assets": ("players", "teams"),
         "seasons": "2009-present",
         "source": "NHL stats API (UNVERIFIED); 84 games from 2026-27",
+    },
+    **{
+        key: {
+            "fn": _soccer(key),
+            "assets": ("teams",),
+            "seasons": "2001-present",
+            "source": "ESPN scoreboard, league + cups + Europe (UNVERIFIED)",
+        }
+        for key in SOCCER_LEAGUES
     },
     "nba": {
         "fn": _nba,
@@ -395,6 +426,23 @@ def cmd_probe(args: argparse.Namespace) -> int:
             return 1
         print(f"nflverse reachable: {len(df):,} rows for 2025, {len(df.columns)} columns")
         print(f"season types: {df['season_type'].value_counts().to_dict()}")
+        return 0
+
+    if args.league in SOCCER_LEAGUES:
+        from datetime import date as _d
+
+        from whul.sources import espn
+
+        day = _d.fromisoformat(args.date) if args.date else None
+        result = espn.probe_soccer(args.league, day)
+        print(f"\nESPN soccer probe -- {result['league']} on {result['date']}\n")
+        for key, value in result.items():
+            if key in ("league", "date"):
+                continue
+            print(f"  {key:<22} {value}")
+        if any(isinstance(v, str) and v.startswith("FAILED") for v in result.values()):
+            print("\nCould not reach or parse ESPN. Send me this output.", file=sys.stderr)
+            return 1
         return 0
 
     if args.league in NCAA_LEAGUES:
