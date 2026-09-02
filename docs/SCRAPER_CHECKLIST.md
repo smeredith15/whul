@@ -49,9 +49,26 @@ over the pool. 2026 measured at 273 dates / 30,853 rows / 705 players.
 
 Nothing outstanding. The five-season backfill is the remaining step and is running.
 
-## 3. MLB
+## 3. MLB — BUILT, unverified; next to confirm
 
-Built, unverified — both hosts are blocked from my sandbox.
+Both hosts are blocked from my sandbox, so nothing here has touched a live
+response. The diagnostics that NBA and NCAA taught me to build up front are in
+place from the start this time:
+
+- **Two feeds, reported separately.** MLB Stats API for schedules (a whole season
+  in one request), FanGraphs for leaderboards. A partial failure names which.
+- **Four FanGraphs parameter shapes**, tried most specific first, with a shape
+  that answers 200 and no rows treated as suspect rather than accepted — the same
+  trap college softball sprang, where an empty season looks exactly like a real
+  one with no error.
+- **A browser-like header set**, since FanGraphs rejects unadorned clients.
+- **Explicit scoring-column reporting**: the probe names any of `Off`, `Def`,
+  `WAR` and the counting stats that failed to arrive, rather than leaving them to
+  silently resolve as zero.
+- **A fallback availability check.** MLB Stats API carries every counting stat
+  but **not** Off, Def or WAR. If FanGraphs proves unreachable, substituting it
+  is a scoring decision — dropping three components — not a source swap, so the
+  probe reports whether the fallback exists without ever taking it automatically.
 
 - **[C-2] Season end date — answered: 7/13/27**, tracking the MLB All-Star Game
   and shifting slightly each season. The drift is too small to re-base benchmarks

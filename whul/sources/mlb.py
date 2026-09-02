@@ -53,7 +53,15 @@ def _get(url: str, params: dict, cache_key: str | None = None) -> dict | list:
         url,
         params=params,
         timeout=TIMEOUT,
-        headers={"User-Agent": "whul-fantasy/0.1"},
+        headers={
+            # FanGraphs rejects unadorned clients; these are the minimum a
+            # browser sends that it appears to check.
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+        },
     )
     response.raise_for_status()
     payload = response.json()
@@ -109,30 +117,84 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+#: Keys the leaderboard has returned its rows under across versions.
+ROW_KEYS = ("data", "results", "leaders", "rows")
+
+
+def fangraphs_variants(season: int, stats: str, qual: int) -> list[dict]:
+    """Parameter shapes to try, most specific first.
+
+    The leaderboard's query parameters have changed shape more than once, and a
+    rejected or empty response looks the same as a season with no qualifiers, so
+    guessing one shape and trusting it is how a season silently comes back empty.
+    """
+    common = {"pos": "all", "stats": stats, "lg": "all", "qual": qual, "type": 8}
+    return [
+        {**common, "age": "", "season": season, "season1": season,
+         "startdate": "", "enddate": "", "month": 0, "ind": 0,
+         "pageitems": 2000, "pagenum": 1},
+        {**common, "season": season, "season1": season, "month": 0, "ind": 0,
+         "pageitems": 2000, "pagenum": 1},
+        {**common, "startseason": season, "endseason": season, "month": 0, "ind": 0},
+        {**common, "season": season, "season1": season},
+    ]
+
+
+def _rows_from(payload) -> list:
+    """Rows out of a leaderboard response, whatever key they arrived under."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ROW_KEYS:
+            value = payload.get(key)
+            if isinstance(value, list) and value:
+                return value
+        # Some versions nest one level deeper.
+        for value in payload.values():
+            if isinstance(value, dict):
+                for key in ROW_KEYS:
+                    nested = value.get(key)
+                    if isinstance(nested, list) and nested:
+                        return nested
+    return []
+
+
 def _fangraphs(season: int, stats: str, qual: int) -> pd.DataFrame:
     """One FanGraphs leaderboard as a frame.
 
-    The endpoint has returned its rows under several different keys over time, so
-    the shape is probed rather than assumed.
+    Tries each parameter shape until one returns rows. A shape that answers 200
+    with nothing is treated as suspect rather than accepted, for the same reason
+    it is in the ESPN adapter: an empty season with no error is the worst
+    scraper failure, because the standings simply stay at zero.
     """
-    payload = _get(
-        FANGRAPHS_API,
-        {
-            "age": "", "pos": "all", "stats": stats, "lg": "all",
-            "season": season, "season1": season, "startdate": "", "enddate": "",
-            "qual": qual, "type": 8, "month": 0, "ind": 0,
-            "pageitems": 2000, "pagenum": 1,
-        },
-        cache_key=f"fangraphs/{stats}_{season}",
-    )
-    if isinstance(payload, list):
-        rows = payload
-    elif isinstance(payload, dict):
-        rows = payload.get("data") or payload.get("results") or []
-    else:
-        rows = []
+    cached = CACHE / f"fangraphs/{stats}_{season}.json"
+    if cached.exists():
+        frame = pd.DataFrame(_rows_from(json.loads(cached.read_text())))
+        if not frame.empty and "Season" not in frame.columns:
+            frame["Season"] = season
+        return frame
 
-    frame = pd.DataFrame(rows)
+    best: object = None
+    last: Exception | None = None
+    for params in fangraphs_variants(season, stats, qual):
+        try:
+            payload = _get(FANGRAPHS_API, params)
+        except Exception as exc:
+            last = exc
+            continue
+        if _rows_from(payload):
+            best = payload
+            break
+        if best is None:
+            best = payload
+
+    if best is None:
+        raise last if last else RuntimeError(f"no FanGraphs shape returned for {stats} {season}")
+
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_text(json.dumps(best))
+
+    frame = pd.DataFrame(_rows_from(best))
     if not frame.empty and "Season" not in frame.columns:
         frame["Season"] = season
     return frame
@@ -148,6 +210,34 @@ def load_pitchers(seasons: list[int]) -> pd.DataFrame:
     return pd.concat(
         [_fangraphs(y, "pit", PITCHER_QUAL) for y in seasons], ignore_index=True
     )
+
+
+def load_stats_api_players(season: int, group: str = "hitting") -> pd.DataFrame:
+    """Season counting stats from the MLB Stats API.
+
+    A fallback, not a replacement: it carries every counting stat the formulas
+    use but **not** FanGraphs' Offense, Defense or WAR, which contribute a
+    meaningful share of a player's score. If FanGraphs becomes unavailable this
+    is what remains, and dropping those three components is a scoring decision
+    rather than something to do silently.
+    """
+    payload = _get(
+        f"{STATS_API}/stats",
+        {
+            "stats": "season", "group": group, "season": season,
+            "sportId": 1, "limit": 2000, "gameType": "R",
+        },
+        cache_key=f"statsapi/{group}_{season}",
+    )
+    rows: list[dict] = []
+    for split_group in payload.get("stats", []):
+        for split in split_group.get("splits", []):
+            player = split.get("player") or {}
+            stat = split.get("stat") or {}
+            rows.append({"player": player.get("fullName", ""),
+                         "player_id": player.get("id", ""),
+                         "season": season, **stat})
+    return pd.DataFrame(rows)
 
 
 def daily_update_cost(season: int | None = None) -> float:
@@ -186,17 +276,44 @@ def probe(season: int = 2025) -> dict:
         result["stats_api"] = f"FAILED: {type(exc).__name__}: {exc}"
 
     # --- FanGraphs ---
+    # Off, Def and WAR live here and nowhere free; report explicitly whether the
+    # scoring inputs arrived, since a leaderboard can answer 200 with nothing.
+    needed = {
+        "batters": ["AB", "H", "2B", "3B", "HR", "BB", "HBP", "SB", "CS", "Off", "Def"],
+        "pitchers": ["IP", "SO", "H", "BB", "HBP", "HR", "SV", "HLD", "WAR"],
+    }
     for label, loader in (("batters", load_batters), ("pitchers", load_pitchers)):
         try:
             frame = loader([season])
             result[f"fangraphs_{label}"] = "ok" if not frame.empty else "EMPTY"
             result[f"{label}_rows"] = len(frame)
             if not frame.empty:
-                result[f"{label}_columns"] = sorted(frame.columns)[:40]
+                columns = set(frame.columns)
+                lowered = {c.lower() for c in columns}
+                missing = [c for c in needed[label] if c not in columns and c.lower() not in lowered]
+                result[f"{label}_scoring_columns_missing"] = missing or "none"
+                result[f"{label}_columns"] = sorted(columns)[:40]
         except Exception as exc:
-            result[f"fangraphs_{label}"] = f"FAILED: {type(exc).__name__}: {exc}"
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            result[f"fangraphs_{label}"] = f"FAILED ({status}): {type(exc).__name__}: {exc}"
 
     # --- do the scoring inputs actually resolve? ---
+    # Is there a usable fallback if FanGraphs stays out of reach?
+    try:
+        hitting = load_stats_api_players(season, "hitting")
+        result["stats_api_hitting"] = f"ok ({len(hitting)} rows)" if len(hitting) else "EMPTY"
+        if len(hitting):
+            counting = ["atBats", "hits", "doubles", "triples", "homeRuns",
+                        "baseOnBalls", "hitByPitch", "stolenBases", "caughtStealing"]
+            result["stats_api_counting_present"] = [c for c in counting if c in hitting.columns]
+            result["stats_api_note"] = (
+                "counting stats only -- no Off/Def/WAR, so using this would drop "
+                "those scoring components"
+            )
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", "?")
+        result["stats_api_hitting"] = f"FAILED ({status}): {type(exc).__name__}"
+
     try:
         from whul.scoring import mlb as scoring
 
