@@ -1,0 +1,126 @@
+"""Motorsport scoring tests.
+
+Expected values follow NASCAR.R and the Formula 1 championship table.
+"""
+
+import pandas as pd
+
+from whul.normalize import assign_norm_key
+from whul.scoring.motorsport import (
+    NASCAR_MIN_RACES,
+    f1_points,
+    nascar_points,
+    score_f1,
+    score_nascar,
+    score_players,
+)
+
+
+def race(driver="Kyle Larson", finish=1, season=2026, date="2026-02-15"):
+    return {"driver": driver, "finish": finish, "season": season, "date": date}
+
+
+def grand_prix(driver="Max Verstappen", position=1, season=2026, date="2026-03-08", **extra):
+    row = {"driver_name": driver, "position": position, "season": season, "date": date}
+    row.update(extra)
+    return row
+
+
+# --- NASCAR ----------------------------------------------------------------
+
+def test_a_win_is_worth_more_than_the_gap_to_second_suggests():
+    """The 2026 scale jumps from 35 to 55 for a win -- the largest single step
+    on the board, and the reason a win-heavy season outruns a consistent one."""
+    assert nascar_points(1) == 55
+    assert nascar_points(2) == 35
+
+
+def test_positions_below_second_descend_by_one():
+    assert nascar_points(3) == 34
+    assert nascar_points(10) == 27
+    assert nascar_points(36) == 1
+
+
+def test_beyond_the_scoring_field_everyone_gets_a_point():
+    assert nascar_points(37) == 1
+    assert nascar_points(40) == 1
+
+
+def test_a_missing_finish_scores_nothing():
+    assert nascar_points(None) == 0.0
+    assert nascar_points(float("nan")) == 0.0
+
+
+def test_nascar_season_total_sums_races():
+    results = pd.DataFrame([race(finish=1), race(finish=3), race(finish=40)])
+    totals = score_nascar(results, min_races=1)
+    row = totals.iloc[0]
+    assert row["total_points"] == 55 + 34 + 1
+    assert row["races_started"] == 3
+    assert row["wins"] == 1
+    assert row["league"] == "NASCAR"
+
+
+def test_part_time_entries_stay_out_of_the_pool():
+    full = [race(driver="Full Time", finish=5) for _ in range(NASCAR_MIN_RACES)]
+    partial = [race(driver="Substitute", finish=1)]
+    totals = score_nascar(pd.DataFrame(full + partial))
+    assert list(totals["player"]) == ["Full Time"]
+
+
+# --- Formula 1 -------------------------------------------------------------
+
+def test_f1_uses_the_championship_table():
+    assert f1_points(1) == 25
+    assert f1_points(2) == 18
+    assert f1_points(3) == 15
+    assert f1_points(10) == 1
+
+
+def test_f1_scores_only_the_top_ten():
+    assert f1_points(11) == 0.0
+    assert f1_points(20) == 0.0
+
+
+def test_sprints_pay_their_own_shorter_table():
+    assert f1_points(1, sprint=True) == 8
+    assert f1_points(8, sprint=True) == 1
+    assert f1_points(9, sprint=True) == 0.0
+
+
+def test_the_fastest_lap_point_needs_a_top_ten_finish():
+    assert f1_points(5, fastest_lap=True) == 10 + 1
+    assert f1_points(11, fastest_lap=True) == 0.0
+
+
+def test_the_feeds_own_points_win_over_the_computed_table():
+    """Standings feeds report points directly and already account for
+    regulation changes, so a reported value is preferred where present."""
+    results = pd.DataFrame([grand_prix(position=1, points=26.0)])
+    assert score_f1(results).iloc[0]["total_points"] == 26.0
+
+
+def test_points_are_computed_when_the_feed_omits_them():
+    results = pd.DataFrame([grand_prix(position=1), grand_prix(position=2, driver="Lando Norris")])
+    totals = score_f1(results).set_index("player")
+    assert totals.loc["Max Verstappen", "total_points"] == 25
+    assert totals.loc["Lando Norris", "total_points"] == 18
+
+
+# --- the shared pool -------------------------------------------------------
+
+def test_both_series_normalize_against_one_distribution():
+    """NASCAR and Formula 1 fill the same roster slots, so they are ranked
+    against each other rather than each against its own series."""
+    nascar = pd.DataFrame([race(finish=1) for _ in range(NASCAR_MIN_RACES)])
+    f1 = pd.DataFrame([grand_prix(position=1)])
+    pooled = score_players(nascar, f1)
+    assert set(pooled["league"]) == {"NASCAR", "F1"}
+    assert set(pooled["norm_league"]) == {"Motorsports"}
+    assert set(assign_norm_key(pooled, "Player")) == {"Motorsports"}
+
+
+def test_empty_input_is_empty_output():
+    assert score_players(pd.DataFrame(), pd.DataFrame()).empty
+    assert score_nascar(pd.DataFrame()).empty
+    assert score_f1(pd.DataFrame()).empty

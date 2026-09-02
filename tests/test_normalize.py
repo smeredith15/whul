@@ -176,3 +176,45 @@ def test_non_strict_mode_allows_nan_for_exploration():
     frozen = frozen[frozen["norm_key"] != "NFL_TE"]
     out = apply_benchmarks(df, frozen, "Player", strict=False)
     assert out["scaled_score"].isna().sum() == 3
+
+
+# --- pooled normalization groups -------------------------------------------
+
+def test_norm_league_pools_tours_that_share_a_benchmark():
+    """ATP with WTA, NASCAR with Formula 1: one roster category, one
+    distribution. Without the override each tour would be ranked against itself
+    while drawing a buffer sized for the whole category, so both would keep
+    twice the intended field."""
+    df = pd.DataFrame({
+        "league": ["ATP", "WTA", "NASCAR", "F1"],
+        "norm_league": ["Tennis", "Tennis", "Motorsports", "Motorsports"],
+        "role": ["Singles", "Singles", "Driver", "Driver"],
+    })
+    assert list(assign_norm_key(df, "Player")) == [
+        "Tennis", "Tennis", "Motorsports", "Motorsports"
+    ]
+
+
+def test_the_league_still_decides_when_no_override_is_present():
+    df = pd.DataFrame({"league": ["NHL", "PGA"], "role": ["Skater", "Golfer"]})
+    assert list(assign_norm_key(df, "Player")) == ["NHL", "PGA"]
+
+
+def test_a_blank_or_missing_override_falls_back_to_the_league():
+    """Concatenating a pooled sport with an unpooled one leaves gaps in the
+    column; those rows must keep their own league, not become empty groups."""
+    df = pd.DataFrame({
+        "league": ["ATP", "PGA", "NHL"],
+        "norm_league": ["Tennis", None, ""],
+        "role": ["Singles", "Golfer", "Skater"],
+    })
+    assert list(assign_norm_key(df, "Player")) == ["Tennis", "PGA", "NHL"]
+
+
+def test_positions_still_split_within_an_overridden_league():
+    df = pd.DataFrame({
+        "league": ["NFL", "NFL"],
+        "norm_league": [None, None],
+        "role": ["QB", "TE"],
+    })
+    assert list(assign_norm_key(df, "Player")) == ["NFL_QB", "NFL_TE"]

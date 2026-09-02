@@ -44,11 +44,22 @@ def assign_norm_key(df: pd.DataFrame, asset_type: str) -> pd.Series:
 
     Players are split by position where the league's positions have materially
     different scoring distributions; everything else normalizes league-wide.
-    """
-    if asset_type == "Team":
-        return df["league"].astype(str)
 
-    league = df["league"].astype(str)
+    A ``norm_league`` column overrides the league for grouping purposes, which is
+    how sports that share a benchmark across tours or series -- ATP with WTA,
+    NASCAR with Formula 1 -- get one distribution instead of two pools each
+    sized for the whole category.
+    """
+    if "norm_league" in df.columns:
+        basis = df["norm_league"].astype("string").fillna(df["league"].astype("string"))
+        basis = basis.mask(basis.str.strip() == "", df["league"].astype("string"))
+    else:
+        basis = df["league"].astype("string")
+
+    if asset_type == "Team":
+        return basis.astype(str)
+
+    league = basis.astype(str)
     role = df.get("role", pd.Series("", index=df.index)).astype(str)
 
     key = league.copy()
