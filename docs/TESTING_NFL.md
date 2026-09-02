@@ -51,7 +51,7 @@ Offline tests first — these need no network and should pass instantly:
 .venv/bin/python -m pytest -m "not network" -q
 ```
 
-**Expect:** `87 passed, 2 deselected` (roughly — the count grows as leagues are added).
+**Expect:** `89 passed, 2 deselected` (roughly — the count grows as leagues are added).
 
 Now the whole suite, including tests that fetch real nflverse data:
 
@@ -59,7 +59,7 @@ Now the whole suite, including tests that fetch real nflverse data:
 .venv/bin/python -m pytest -q
 ```
 
-**Expect:** `89 passed`. If the offline tests pass but these fail, the problem is
+**Expect:** `91 passed`. If the offline tests pass but these fail, the problem is
 network access, not the code — jump to Troubleshooting.
 
 ## 5. Confirm the season aggregate
@@ -117,9 +117,16 @@ A single week:
 .venv/bin/python -m whul.cli score nfl --season 2024 --normalize --top 20
 ```
 
-**Expect:** a benchmark table printed per position group (`NFL_QB`, `NFL_RB`,
-`NFL_WR`, `NFL_TE`), then `scaled_score` values where ~100 marks the 99th
-percentile of the draftable pool. Scores above 100 are correct and expected.
+**Expect:** a benchmark table per position group — `NFL_QB` ~391, `NFL_RB` ~330,
+`NFL_WR` ~290, `NFL_TE` ~201, each drawn from a pool of 68 — then `scaled_score`
+values where ~100 marks the 99th percentile *of that position*. Scores above 100
+are correct and expected.
+
+Sorting by `scaled_score` rather than raw points should put roughly one player
+from each position at the top (Chase ~117 WR, Jackson ~110 QB, Bowers ~103 TE,
+Barkley ~101 RB). That spread across positions is the signal that per-position
+normalization is working: a tight end is being measured against tight ends, not
+against quarterbacks.
 
 Try a different benchmark manager count to see the pools resize:
 
@@ -127,17 +134,10 @@ Try a different benchmark manager count to see the pools resize:
 .venv/bin/python -m whul.cli score nfl --season 2024 --normalize --managers 5
 ```
 
-**Expect this to fail**, with:
-
-```
-Cannot normalize: No benchmark for 114 players in groups ['NFL_TE'] ...
-```
-
-That is correct behaviour, and it demonstrates why the benchmark manager count is
-held at 15 while the league has 5 managers. Pool truncation happens per *draft
-pool* but benchmarks are computed per *position group*; at 5 managers the NFL pool
-is only the top 22 players, which contains no tight end — so every TE would be
-unscoreable. Rather than emit silent `NaN` scores, it refuses.
+**Expect:** the same four position groups, each with `n_in_pool` of 22 instead of
+68, and slightly higher benchmarks — a shallower pool means a stiffer 99th
+percentile. Every position still gets a benchmark, because truncation is applied
+per position group rather than across the NFL pool as a whole.
 
 ## 8. Export for inspection
 

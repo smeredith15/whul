@@ -2,10 +2,17 @@
 
 Ports the engine in ``All_Analysis.R``:
 
-1. Map league -> draft pool.
-2. Rank the pool by total points and truncate to the buffer pool.
-3. Within each normalization group, take the 99th percentile as the benchmark.
+1. Map league -> draft pool, and assign a normalization group.
+2. Rank within each *normalization group* and truncate to the buffer pool.
+3. Take the 99th percentile of each group as its benchmark.
 4. ``scaled = total / benchmark * 100``.
+
+Truncation is per normalization group, not per draft pool. Each position is
+measured against its own historical distribution: a tight end against tight ends,
+a pitcher against pitchers, a backcourt player against the backcourt.
+``All_Analysis.R`` ranked within ``Draft_Pool`` before grouping by ``Norm_Key``,
+which let a low-scoring position be squeezed out of the pool entirely and left
+unscoreable -- at 5 benchmark managers the top-22 NFL pool contains no tight end.
 
 Benchmarks are frozen before the season and reused unchanged for its duration, so
 standings never silently rewrite themselves. ``compute_benchmarks`` is therefore
@@ -84,11 +91,17 @@ def buffer_pool(
         raise ValueError(f"No benchmark rate configured for {asset_type} pools: {unknown}")
 
     if out.empty:
-        return out.assign(buffer_n=pd.Series(dtype="int64"), pool_rank=pd.Series(dtype="int64"))
+        return out.assign(
+            norm_key=pd.Series(dtype="object"),
+            buffer_n=pd.Series(dtype="int64"),
+            pool_rank=pd.Series(dtype="int64"),
+        )
 
+    out["norm_key"] = assign_norm_key(out, asset_type)
     out["buffer_n"] = out["draft_pool"].map(lambda p: round(rates[p] * managers * mult)).astype(int)
     out = out.sort_values("total_points", ascending=False)
-    out["pool_rank"] = out.groupby("draft_pool").cumcount() + 1
+    # Rank within the normalization group so every position keeps its own pool.
+    out["pool_rank"] = out.groupby("norm_key").cumcount() + 1
     return out[out["pool_rank"] <= out["buffer_n"]].reset_index(drop=True)
 
 
@@ -102,7 +115,6 @@ def compute_benchmarks(
     Expects columns ``league``, ``total_points`` and (for players) ``role``.
     """
     pool = buffer_pool(df, asset_type, managers)
-    pool["norm_key"] = assign_norm_key(pool, asset_type)
     # pandas' linear interpolation matches R's default quantile type 7.
     bench = (
         pool.groupby("norm_key")["total_points"]
@@ -129,13 +141,9 @@ def apply_benchmarks(
 ) -> pd.DataFrame:
     """Attach ``norm_key``, ``benchmark`` and ``scaled_score`` to scored assets.
 
-    Raises if any normalization group has no benchmark. That happens when a thin
-    position is squeezed entirely out of the buffer pool: pool truncation is
-    applied per *draft pool* but benchmarks are computed per *normalization
-    group*, so a low-scoring position can vanish from the pool while its players
-    still need scoring. At 5 benchmark managers the top-22 NFL pool contains no
-    tight end, leaving every TE unscoreable -- which is one reason the benchmark
-    manager count is held at 15 regardless of actual league size.
+    Raises if any normalization group has no benchmark. Since truncation is now
+    per normalization group, this cannot happen for a group with any members at
+    all, so it signals a genuine configuration problem.
 
     Pass ``strict=False`` to allow NaN scores instead, for exploratory use only.
     """

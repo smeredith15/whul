@@ -96,12 +96,20 @@ UI must reflect the live selection (see §4.2).
 
 Unchanged from `All_Analysis.R`, with the pool cutoffs made parametric:
 
-1. Map league → draft pool.
+1. Map league → draft pool, and assign a normalization group.
 2. `Target_N = per_manager_rate × benchmark_manager_count`; `Buffer_N = Target_N × 1.50` (players)
    or `× 1.33` (teams).
-3. Rank the pool by `Total_Points`, truncate to `Buffer_N`.
-4. Within each normalization group, `benchmark = quantile(Total_Points, 0.99)`.
+3. Rank **within each normalization group** by `Total_Points`, truncate to `Buffer_N`.
+4. `benchmark = quantile(Total_Points, 0.99)` for that group.
 5. `Scaled_Score = Total_Points / benchmark × 100`.
+
+**Truncation is per normalization group, not per draft pool.** Each position is measured against its
+own historical distribution — a tight end against tight ends, a pitcher against pitchers, a backcourt
+player against the backcourt. `All_Analysis.R` ranked within `Draft_Pool` and only *then* grouped by
+`Norm_Key`, which meant a position's benchmark could be computed from whatever few of its members
+happened to crack the combined pool. For NFL 2024 at 15 managers that gave the tight end benchmark a
+sample of **4 players**; per-group truncation gives it 68. Benchmarks shift by up to ~11% (WR) as a
+result, and every position's leader now lands near 100, which is the intended meaning of the scale.
 
 Every `Target_N` in the R script is an exact multiple of 15, so the per-manager rates are clean:
 

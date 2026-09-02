@@ -60,8 +60,28 @@ def test_buffer_pool_truncates_to_buffer_n():
     assert pool["total_points"].min() == 33  # 100 - 68 + 1
 
 
-def test_buffer_pool_ranks_across_the_whole_draft_pool():
-    """La Liga and Serie A share the Club Soccer Top 3 pool, so they compete."""
+def test_each_position_keeps_its_own_pool():
+    """Truncation is per normalization group, so a thin position is never squeezed
+    out by higher-scoring positions sharing its draft pool.
+
+    Every TE here scores below every QB. Ranking across the NFL draft pool would
+    discard the tight ends entirely; ranking within each position keeps both.
+    """
+    df = pd.DataFrame(
+        {
+            "league": ["NFL"] * 200,
+            "role": ["QB"] * 100 + ["TE"] * 100,
+            "total_points": list(range(300, 200, -1)) + list(range(100, 0, -1)),
+        }
+    )
+    pool = buffer_pool(df, "Player")
+    by_group = pool.groupby("norm_key").size().to_dict()
+    assert by_group == {"NFL_QB": 68, "NFL_TE": 68}, "each position truncates separately"
+
+
+def test_soccer_leagues_normalize_separately():
+    """Norm groups for club soccer are individual leagues, so each gets its own
+    pool -- La Liga players are measured against La Liga, not against Serie A."""
     df = pd.DataFrame(
         {
             "league": ["La Liga"] * 100 + ["Serie A"] * 100,
@@ -70,8 +90,10 @@ def test_buffer_pool_ranks_across_the_whole_draft_pool():
         }
     )
     pool = buffer_pool(df, "Player")
-    assert len(pool) == round(90 * 1.5) == 135
     assert set(pool["draft_pool"]) == {"Club Soccer Top 3"}
+    assert set(pool["norm_key"]) == {"La Liga", "Serie A"}
+    # buffer_n is 135 per group and each league has only 100, so all survive
+    assert len(pool) == 200
 
 
 def test_benchmark_is_computed_after_truncation():
@@ -110,31 +132,47 @@ def test_apply_benchmarks_roundtrip():
     )
 
 
-def test_missing_benchmark_raises_rather_than_scoring_nan():
-    """A thin position can be squeezed out of the buffer pool entirely.
+def test_thin_positions_survive_truncation():
+    """The case that previously produced silent NaN scores.
 
-    Truncation happens per draft pool but benchmarks are per normalization group,
-    so a low-scoring position may vanish from the pool while its players still
-    need scoring. Those players must not pass through with a silent NaN.
+    Every TE scores below every QB. Under draft-pool ranking a small pool kept
+    only QBs and left every TE unscoreable; per-group ranking scores both.
     """
     df = pd.DataFrame({
         "league": ["NFL"] * 30,
         "role": ["QB"] * 25 + ["TE"] * 5,
-        # every TE scores below every QB, so a small pool keeps only QBs
         "total_points": list(range(100, 75, -1)) + [5, 4, 3, 2, 1],
     })
     bench = compute_benchmarks(df, "Player", managers=1)
-    assert "NFL_TE" not in set(bench["norm_key"])
+    assert {"NFL_QB", "NFL_TE"} == set(bench["norm_key"])
+    scored = apply_benchmarks(df, bench, "Player")
+    assert scored["scaled_score"].notna().all()
+    # The best TE is elite among TEs even though he trails every QB outright.
+    best_te = scored[scored["role"] == "TE"].nlargest(1, "total_points").iloc[0]
+    assert best_te["scaled_score"] > 90
+
+
+def test_missing_benchmark_still_raises():
+    """A frozen benchmark set that lacks a group must not score NaN silently --
+    e.g. a position appearing mid-season that the frozen set never saw."""
+    df = pd.DataFrame({
+        "league": ["NFL"] * 6,
+        "role": ["QB"] * 3 + ["TE"] * 3,
+        "total_points": [100.0, 90.0, 80.0, 50.0, 40.0, 30.0],
+    })
+    bench = compute_benchmarks(df, "Player")
+    frozen = bench[bench["norm_key"] != "NFL_TE"]
     with pytest.raises(ValueError, match="NFL_TE"):
-        apply_benchmarks(df, bench, "Player")
+        apply_benchmarks(df, frozen, "Player")
 
 
 def test_non_strict_mode_allows_nan_for_exploration():
     df = pd.DataFrame({
-        "league": ["NFL"] * 30,
-        "role": ["QB"] * 25 + ["TE"] * 5,
-        "total_points": list(range(100, 75, -1)) + [5, 4, 3, 2, 1],
+        "league": ["NFL"] * 6,
+        "role": ["QB"] * 3 + ["TE"] * 3,
+        "total_points": [100.0, 90.0, 80.0, 50.0, 40.0, 30.0],
     })
-    bench = compute_benchmarks(df, "Player", managers=1)
-    out = apply_benchmarks(df, bench, "Player", strict=False)
-    assert out["scaled_score"].isna().sum() == 5
+    frozen = compute_benchmarks(df, "Player")
+    frozen = frozen[frozen["norm_key"] != "NFL_TE"]
+    out = apply_benchmarks(df, frozen, "Player", strict=False)
+    assert out["scaled_score"].isna().sum() == 3
