@@ -447,15 +447,13 @@ Each increment ships end-to-end:
 - **Data sources** — each verified independently as its league is built.
 - **Postseason weighting** — regular-season-only benchmarks plus a bonus worth a flat 10% of a
   regular season, equalized across leagues. See §2.5.
-- **Tennis draw-size cutoffs — needs a decision.** `Tennis_Players.R` picks the points table from
-  how many matches a tournament played: ≥50 gets the Masters 128-draw table, ≥30 the 500/250
-  64-draw tables. Those sit below the real boundaries — a 128-draw plays 127 matches, a 96-draw 95,
-  a 64-draw 63, a 56-draw 55, a 32-draw 31. At 50, both Masters shapes land on the 128 table; at 30,
-  a 32-draw 500 lands on the 64 table. The smaller tables are effectively unreachable on complete
-  tour data. Ported unchanged because the benchmark and the live season run through the same
-  function, so the 0-100 scale largely absorbs it, and moving the cutoffs would restate every
-  historical tennis score. Raising them to 75 and 40 would separate the real shapes — a scoring
-  change, and yours to make. See `MASTERS_LARGE_DRAW_MATCHES` / `TOUR_LARGE_DRAW_MATCHES`.
+- **Tennis 500 vs 250 — needs your input.** Everything else about a tennis tier now comes from
+  data (see §2.9), but Sackmann's archives mark 500s and 250s alike as `tourney_level = A`, and
+  Flashscore's header does not distinguish them either. The calendar seeds every `A` event as a
+  250, so the ~15 events per tour that are really 500s are underpaid by half until their rows are
+  corrected. `tennis_calendar.validate` refuses to call a calendar finished while it contains no
+  500s. Either hand me the 500 list, or point me at the ATP/WTA schedule pages and I will scrape
+  the designation.
 
 ### Data acquisition, as measured
 
@@ -467,17 +465,44 @@ Each increment ships end-to-end:
 | PGA | ESPN golf leaderboard (per event) | not yet measured | not yet measured | **unverified** |
 | NASCAR | ESPN racing (per event) | not yet measured | not yet measured | **unverified** |
 | F1 | Jolpica (Ergast successor) | not yet measured | not yet measured | **unverified** |
-| Tennis | Flashscore ledgers under `data/tennis` | local files | local files | needs ledgers |
+| Tennis | Sackmann archives (history) + Flashscore feed (live) | not yet measured | not yet measured | **unverified** |
 
 The individual sports are fetched per event rather than per date: a golf tournament runs Thursday to
 Sunday and a race meeting spans a weekend, so walking the calendar would re-read the same event four
 times. That also makes the nightly job cheap — it re-reads only what is in progress or newly final.
 
-Tennis is the one league scored from files. The existing Flashscore scrapers already produce a
-season ledger per tour, which is what `Tennis_Players.R` reads; `whul/sources/tennis_ledger.py`
-reads the same `YYYY-atp-season.csv` / `YYYY-wta-season.csv` files, normalizing headers the way
-`janitor::clean_names` does. Run `python -m whul.cli probe tennis --season 2025 --dir <path>` to
-check a ledger carries what scoring needs before wiring it in.
+Tennis reads from two sources because no single one covers both jobs. Jeff Sackmann's
+`tennis_atp` / `tennis_wta` archives are the historical record and carry `tourney_level` and
+`draw_size` per event, which is what benchmarks need. The Flashscore feed
+(`global.flashscore.ninja`, ported from `smeredith15/tennis2026`) serves a rolling ±7-day window,
+so it can only answer for the season in progress — run it nightly and it accumulates.
+
+### §2.9 How a tennis win is priced
+
+Two facts decide which ATP points table a win pays from, and neither can be read off a
+tournament's name:
+
+- **Category** — slam, 1000, 500, 250, Tour Finals, or a team event.
+- **Draw size** — a 96-draw Masters and a 56-draw Masters pay differently in the early rounds,
+  because the same round is one win deeper into the larger field.
+
+Both live in `data/tennis/calendar.csv`, seeded from Sackmann and versioned in the repo, and
+`tennis_calendar.unresolved` names any tournament a feed references that the calendar does not
+know — so a renamed or new event surfaces as a gap rather than as quietly wrong points.
+
+A **bye** is the absence of a result in the preceding round, per ATP rules: a player with no R128
+row in a 96-draw was not in that round, so its points come with their R64 win. This covers
+structural byes, where the seeds skip the opening round without a bye ever being recorded.
+
+This replaces the heuristic ported from `Tennis_Players.R`, which inferred the tier from a keyword
+list of host cities and a count of matches played. Its cutoffs sat below the real draw boundaries,
+so a 56-draw Masters and a 96-draw Masters landed on the same table and a 32-draw 500 landed on
+the 64-draw one — the smaller tables were unreachable on complete tour data. The approach is taken
+from `smeredith15/tennis2026`, which is already running against these feeds.
+
+Each tier's column sums to the event's face value for a champion — 2000 at a slam, 1000 at a
+Masters, 500, 250 — which is the arithmetic check that the tables are transcribed right, and it is
+asserted in the tests.
 
 NBA 2026: 273 dates, 30,853 rows, 705 players, benchmarks 3800.7 Backcourt /
 4086.5 Frontcourt. Warm re-run 7.4s. Responses cache under `data/cache/espn`.

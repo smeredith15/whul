@@ -143,15 +143,26 @@ def _motorsports(season: int, assets: str) -> pd.DataFrame:
 
 
 def _tennis(season: int, assets: str) -> pd.DataFrame:
-    from whul.scoring import tennis
-    from whul.sources import tennis_ledger
+    """Sackmann for a completed season, the live feed for the current one.
 
-    return tennis.score_players(tennis_ledger.load_matches([season]))
+    The archives are the record and carry the category and draw size a score
+    depends on; the Flashscore window only reaches back a fortnight, so it can
+    only answer for the season in progress.
+    """
+    from datetime import date
+
+    from whul.scoring import tennis
+    from whul.sources import flashscore, sackmann, tennis_calendar
+
+    if season < date.today().year:
+        matches = sackmann.load_matches([season])
+        return tennis.score_players(tennis_calendar.resolve(matches))
+    return tennis.score_players(flashscore.load_matches())
 
 
 #: Sports read one event at a time rather than one date at a time. Their probes
 #: return a nested report keyed by stage, so they render differently.
-INDIVIDUAL_LEAGUES = ("pga", "nascar", "f1", "tennis")
+INDIVIDUAL_LEAGUES = ("pga", "nascar", "f1", "tennis", "sackmann")
 
 
 LEAGUES = {
@@ -206,8 +217,8 @@ LEAGUES = {
     "tennis": {
         "fn": _tennis,
         "assets": ("players",),
-        "seasons": "2024-present",
-        "source": "Flashscore match ledgers under data/tennis (local files)",
+        "seasons": "1990-present",
+        "source": "Sackmann archives for history + Flashscore feed live (UNVERIFIED)",
     },
     "nba": {
         "fn": _nba,
@@ -504,16 +515,19 @@ def _print_stages(title: str, report: dict) -> int:
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
     if args.league == "tennis":
-        from pathlib import Path as _Path
+        from whul.sources import flashscore
 
-        from whul.sources import tennis_ledger
-
-        seasons = [int(args.season)] if args.season else None
-        directory = _Path(args.dir) if args.dir else None
-        report = tennis_ledger.probe(seasons, directory)
+        report = flashscore.probe()
         return _print_stages(
-            f"Tennis ledger probe -- seasons {report['seasons']} in {report['directory']}",
-            report,
+            f"Flashscore probe -- days {report['days']}", report
+        )
+
+    if args.league == "sackmann":
+        from whul.sources import sackmann
+
+        report = sackmann.probe(int(args.season) if args.season else None)
+        return _print_stages(
+            f"Sackmann archive probe -- season {report['season']}", report
         )
 
     if args.league == "f1":
@@ -812,7 +826,6 @@ def main(argv: list[str] | None = None) -> int:
     # The individual sports probe a whole season rather than a date: a golf
     # tournament or a race meeting spans days, so a single date says nothing.
     probe.add_argument("--season", help="season to probe (individual sports; default: last year)")
-    probe.add_argument("--dir", help="directory holding the tennis match ledgers")
     probe.set_defaults(func=cmd_probe)
 
     validate = sub.add_parser("validate", help="full data-source validation report")

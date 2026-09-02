@@ -6,10 +6,10 @@ broken before (a value nested one level deeper than the code looked).
 """
 
 import pandas as pd
-import pytest
 
 from whul.sources import espn_individual as espn_ind
-from whul.sources import jolpica, tennis_ledger
+from whul.sources import flashscore, jolpica, sackmann
+from whul.sources import tennis_calendar as calendar
 
 
 # --- ESPN golf and racing --------------------------------------------------
@@ -158,78 +158,250 @@ def test_the_feeds_points_reach_the_scorer():
     assert motorsport.score_f1(raw).iloc[0]["total_points"] == 26
 
 
-# --- tennis ledgers --------------------------------------------------------
+# --- Flashscore live feed --------------------------------------------------
 
-def test_headers_are_cleaned_the_way_the_r_script_cleans_them():
-    assert tennis_ledger.clean_names(
-        ["Winner Code", "home.set.score", "Season  Year", "TOUR_TYPE_HUMAN"]
-    ) == ["winner_code", "home_set_score", "season_year", "tour_type_human"]
-
-
-def test_ledger_names_follow_the_scrapers_convention():
-    assert tennis_ledger.ledger_path(2025, "ATP").name == "2025-atp-season.csv"
+HEADER = ("ZA÷ATP - SINGLES: Rome (Italy), clay - Quarterfinal¬"
+          "ZL÷/tennis/atp-singles/rome/¬")
+RECORD = ("AA÷abc123¬AD÷1770000000¬AC÷3¬AS÷1¬"
+          "WU÷sinner-jannik¬WV÷alcaraz-carlos¬BA÷6¬BB÷3¬BC÷7¬BD÷5¬")
 
 
-def test_season_and_tour_come_from_the_filename_when_the_file_omits_them(tmp_path):
-    """A ledger without a season column would pool every year into one, and the
-    filename already carries both facts."""
-    path = tmp_path / "2025-atp-season.csv"
-    path.write_text("Tournament,Round\nWimbledon,Final\n")
-    frame = tennis_ledger.read_ledger(path, tour="atp", season=2025)
-    assert list(frame["season_year"]) == [2025]
-    assert list(frame["tour_type_human"]) == ["ATP Tour"]
+def test_a_slug_becomes_a_readable_name():
+    assert flashscore.slug_to_name("sinner-jannik") == "Jannik Sinner"
 
 
-def test_a_file_that_carries_its_own_season_is_left_alone(tmp_path):
-    path = tmp_path / "2025-atp-season.csv"
-    path.write_text("tournament,season_year\nWimbledon,2024\n")
-    frame = tennis_ledger.read_ledger(path, tour="atp", season=2025)
-    assert list(frame["season_year"]) == [2024]
+def test_a_multi_part_surname_keeps_all_its_parts():
+    """Flashscore puts the surname first, so everything but the last token is
+    the surname -- 'auger-aliassime-felix' is one player, not two."""
+    assert flashscore.slug_to_name("auger-aliassime-felix") == "Felix Auger Aliassime"
 
 
-def test_a_missing_ledger_is_reported_not_raised(tmp_path, capsys):
-    """A season part-way through has no completed ledger yet, and the WTA file
-    often lands after the ATP one."""
-    (tmp_path / "2025-atp-season.csv").write_text("tournament\nWimbledon\n")
-    frame = tennis_ledger.load_matches([2025], directory=tmp_path)
-    assert len(frame) == 1
-    assert "missing ledgers" in capsys.readouterr().out
+def test_set_scores_come_from_paired_fields():
+    assert flashscore.parse_score(RECORD) == "6-3 7-5"
 
 
-def test_no_ledgers_at_all_is_an_empty_frame(tmp_path):
-    assert tennis_ledger.load_matches([2025], directory=tmp_path).empty
+def test_a_header_yields_tour_category_and_round():
+    header = flashscore.parse_tournament_header(HEADER)
+    assert header["tour"] == "ATP"
+    assert header["tournament"] == "Rome"
+    assert header["round"] == "QF"
 
 
-def test_required_columns_are_named_when_absent():
-    frame = pd.DataFrame({"tournament": ["Wimbledon"]})
-    gaps = tennis_ledger.missing_columns(frame)
-    assert "winner_code" in gaps
-    assert "tournament" not in gaps
-
-
-def test_the_probe_says_which_ledgers_are_absent(tmp_path):
-    report = tennis_ledger.probe([2025], tmp_path)
-    assert report["stages"]["files"]["ok"] is False
-    assert set(report["stages"]["files"]["absent"]) == {"atp-2025", "wta-2025"}
-
-
-def test_the_probe_scores_a_ledger_it_can_read(tmp_path):
-    (tmp_path / "2025-atp-season.csv").write_text(
-        "tournament,round,home_name,away_name,winner_code,home_set_score,"
-        "away_set_score,status,date_timestamp\n"
-        "Wimbledon,Round of 128,Sinner,Alcaraz,1,3,0,FINISHED,1\n"
+def test_slams_are_recognized_in_the_header():
+    header = flashscore.parse_tournament_header(
+        "ZA÷ATP - SINGLES: Australian Open (Australia), hard - Final¬"
     )
-    report = tennis_ledger.probe([2025], tmp_path)
-    assert report["stages"]["read"]["ok"] is True
-    assert report["stages"]["score"]["ok"] is True
-    assert report["stages"]["score"]["top"][0]["player"] == "Sinner"
+    assert header["category"] == "Grand Slam"
+    assert header["round"] == "F"
 
 
-def test_the_probe_names_the_columns_that_did_arrive(tmp_path):
-    """A scraper rename must say what it sent, not only that something is
-    missing -- that is what makes the output actionable."""
-    (tmp_path / "2025-atp-season.csv").write_text("event,winner\nWimbledon,Sinner\n")
-    report = tennis_ledger.probe([2025], tmp_path)
-    assert report["stages"]["read"]["ok"] is False
-    assert "winner_code" in report["stages"]["read"]["missing_required"]
-    assert "event" in report["stages"]["read"]["columns"]
+def test_doubles_and_below_tour_events_are_filtered_out():
+    for raw in ("ZA÷ATP - DOUBLES: Rome¬",
+                "ZA÷ATP - SINGLES: Challenger Phoenix¬",
+                "ZA÷Exhibition: Some Event¬",
+                "ZA÷ITF MEN - SINGLES: Tunis¬"):
+        assert flashscore.parse_tournament_header(raw) is None, raw
+
+
+def test_a_match_belongs_to_the_header_above_it():
+    """Records carry no tournament of their own -- position in the stream is
+    what assigns them, so the parser has to walk in order."""
+    rows = list(flashscore.iter_matches(HEADER + "~" + RECORD))
+    assert len(rows) == 1
+    assert rows[0]["tournament"] == "Rome"
+    assert rows[0]["winner"] == "Jannik Sinner"
+    assert rows[0]["loser"] == "Carlos Alcaraz"
+    assert rows[0]["score"] == "6-3 7-5"
+
+
+def test_a_record_before_any_header_is_skipped():
+    assert list(flashscore.iter_matches(RECORD)) == []
+
+
+def test_upcoming_matches_are_not_results():
+    upcoming = RECORD.replace("AC÷3¬", "AC÷1¬")
+    assert list(flashscore.iter_matches(HEADER + "~" + upcoming)) == []
+
+
+def test_a_match_with_no_stated_winner_is_skipped():
+    """Scoring it would have to invent which player won."""
+    unknown = RECORD.replace("AS÷1¬", "AS÷¬")
+    assert list(flashscore.iter_matches(HEADER + "~" + unknown)) == []
+
+
+def test_a_retirement_is_marked_in_the_score():
+    retired = RECORD.replace("AC÷3¬", "AC÷8¬")
+    row = list(flashscore.iter_matches(HEADER + "~" + retired))[0]
+    assert row["score"].endswith("RET")
+
+
+def test_a_walkover_replaces_the_score_entirely():
+    walkover = RECORD.replace("AC÷3¬", "AC÷9¬")
+    row = list(flashscore.iter_matches(HEADER + "~" + walkover))[0]
+    assert row["score"] == "W/O"
+
+
+def test_the_season_is_the_year_the_match_was_played():
+    row = list(flashscore.iter_matches(HEADER + "~" + RECORD))[0]
+    assert row["season"] == 2026
+
+
+def test_draw_sizes_can_be_recovered_from_the_field():
+    """The feed never states a draw. Every player in it appears at least once,
+    so counting distinct winners and losers recovers the field size."""
+    matches = pd.DataFrame([
+        {"season": 2026, "tournament": "Rome", "winner": "A", "loser": "B"},
+        {"season": 2026, "tournament": "Rome", "winner": "A", "loser": "C"},
+        {"season": 2026, "tournament": "Rome", "winner": "D", "loser": "E"},
+    ])
+    sizes = flashscore.infer_draw_sizes(matches).set_index("tournament")
+    assert sizes.loc["Rome", "draw_size"] == 5
+
+
+# --- Sackmann archives -----------------------------------------------------
+
+def sackmann_rows():
+    return pd.DataFrame([
+        {"tourney_name": "Roland Garros", "tourney_id": "2025-520", "tourney_level": "G",
+         "draw_size": 128, "tourney_date": 20250525, "round": "F",
+         "winner_name": "Champion", "loser_name": "Finalist", "score": "6-3 6-4 6-4",
+         "best_of": 5},
+        {"tourney_name": "Rome", "tourney_id": "2025-416", "tourney_level": "M",
+         "draw_size": 96, "tourney_date": 20250507, "round": "R64",
+         "winner_name": "Seed", "loser_name": "Qualifier", "score": "6-4 6-4",
+         "best_of": 3},
+        {"tourney_name": "Phoenix", "tourney_id": "2025-C01", "tourney_level": "C",
+         "draw_size": 32, "tourney_date": 20250310, "round": "F",
+         "winner_name": "Journeyman", "loser_name": "Other", "score": "6-4 6-4",
+         "best_of": 3},
+    ])
+
+
+def test_the_level_column_gives_the_category():
+    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
+    by_event = parsed.set_index("tournament")["category"]
+    assert by_event["Roland Garros"] == "Grand Slam"
+    assert by_event["Rome"] == "Masters 1000"
+
+
+def test_challengers_are_excluded():
+    """Below-tour draws are not comparable and would let a player pad a season
+    on the second tier."""
+    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
+    assert "Phoenix" not in set(parsed["tournament"])
+
+
+def test_the_five_hundreds_arrive_marked_as_two_fifties():
+    """Sackmann's 'A' level covers both, so the calendar has to correct them --
+    this pins the behaviour so the gap is not mistaken for a bug."""
+    rows = sackmann_rows().assign(tourney_level="A", tourney_name="Basel")
+    parsed = sackmann._to_matches(rows, "ATP", 2025)
+    assert set(parsed["category"]) == {"250"}
+
+
+def test_rounds_and_scores_need_no_translation():
+    """Sackmann already uses the round labels and score format scoring wants."""
+    from whul.scoring.tennis import score_matches
+
+    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
+    scored = score_matches(parsed)
+    assert scored.set_index("tournament").loc["Roland Garros", "base_points"] == 700
+
+
+def test_tournaments_takes_the_largest_reported_draw():
+    """The column is per match and constant in practice; a stray row must not
+    shrink an event onto a smaller points table."""
+    rows = sackmann_rows().head(2)
+    rows.loc[1, "draw_size"] = 96
+    parsed = sackmann._to_matches(rows, "ATP", 2025)
+    parsed.loc[1, "draw_size"] = 56
+    parsed = pd.concat([parsed, parsed.iloc[[1]].assign(draw_size=96)], ignore_index=True)
+    events = sackmann.tournaments(parsed).set_index("tournament")
+    assert events.loc["Rome", "draw_size"] == 96
+
+
+# --- the tournament calendar -----------------------------------------------
+
+def test_the_same_event_under_different_names_gets_one_key():
+    assert calendar.normalize_name("Cincinnati Masters") == calendar.normalize_name("Cincinnati")
+    assert calendar.normalize_name("Italian Open") == calendar.normalize_name("Rome")
+
+
+def test_events_whose_names_share_no_words_are_aliased():
+    """Normalization cannot bridge 'Roland Garros' and 'French Open' -- they
+    have nothing in common -- so they are listed explicitly."""
+    assert calendar.normalize_name("Roland Garros") == calendar.normalize_name("French Open")
+
+
+def test_the_calendar_overrides_what_the_feed_guessed():
+    """This is the whole point: Flashscore's header says nothing about Rome
+    being a 1000, and the calendar does."""
+    table = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Rome",
+                           "category": "Masters 1000", "draw_size": 96}])
+    matches = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Rome",
+                             "category": "250", "draw_size": float("nan")}])
+    resolved = calendar.resolve(matches, table)
+    assert resolved.iloc[0]["category"] == "Masters 1000"
+    assert resolved.iloc[0]["draw_size"] == 96
+    assert resolved.iloc[0]["category_source"] == "calendar"
+
+
+def test_another_seasons_entry_is_better_than_none():
+    """An event's category rarely changes, so last year's answer beats falling
+    back to the feed's guess."""
+    table = pd.DataFrame([{"season": 2024, "tour": "ATP", "tournament": "Rome",
+                           "category": "Masters 1000", "draw_size": 96}])
+    matches = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Rome",
+                             "category": "250", "draw_size": float("nan")}])
+    resolved = calendar.resolve(matches, table)
+    assert resolved.iloc[0]["category"] == "Masters 1000"
+    assert resolved.iloc[0]["category_source"] == "calendar-other-season"
+
+
+def test_an_unknown_tournament_keeps_the_feeds_answer_and_is_reported():
+    table = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Rome",
+                           "category": "Masters 1000", "draw_size": 96}])
+    matches = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Basel",
+                             "category": "250", "draw_size": float("nan")}])
+    resolved = calendar.resolve(matches, table)
+    assert resolved.iloc[0]["category"] == "250"
+    gaps = calendar.unresolved(matches, table)
+    assert list(gaps["tournament"]) == ["Basel"]
+
+
+def test_an_empty_calendar_leaves_matches_untouched():
+    matches = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Rome",
+                             "category": "250", "draw_size": 96.0}])
+    resolved = calendar.resolve(matches, pd.DataFrame(columns=["season", "tour", "tournament", "category", "draw_size"]))
+    assert resolved.iloc[0]["category"] == "250"
+
+
+def test_validation_flags_a_calendar_that_is_still_a_raw_seed():
+    """Sackmann marks every 500 as a 250, so a calendar with no 500s in it has
+    not been corrected yet and will underpay a dozen events by half."""
+    seed = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Basel",
+                          "category": "250", "draw_size": 32}])
+    assert any("no 500s" in p for p in calendar.validate(seed))
+
+
+def test_validation_flags_missing_draw_sizes_and_duplicates():
+    bad = pd.DataFrame([
+        {"season": 2025, "tour": "ATP", "tournament": "Basel", "category": "500", "draw_size": None},
+        {"season": 2025, "tour": "ATP", "tournament": "Basel", "category": "500", "draw_size": 32},
+    ])
+    problems = " ".join(calendar.validate(bad))
+    assert "draw size" in problems
+    assert "duplicate" in problems
+
+
+def test_validation_flags_a_category_scoring_does_not_know():
+    bad = pd.DataFrame([{"season": 2025, "tour": "ATP", "tournament": "Basel",
+                         "category": "ATP 500", "draw_size": 32}])
+    assert any("unknown categories" in p for p in calendar.validate(bad))
+
+
+def test_a_seed_round_trips_from_sackmann_tournaments():
+    parsed = sackmann._to_matches(sackmann_rows(), "ATP", 2025)
+    seeded = calendar.from_sackmann(sackmann.tournaments(parsed))
+    assert set(seeded.columns) == set(calendar.COLUMNS)
+    assert seeded.set_index("tournament").loc["Rome", "draw_size"] == 96
