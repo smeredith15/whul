@@ -176,12 +176,23 @@ def load_nba_player_box(seasons: list[int], verbose: bool = True) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
+def default_probe_date(today: date | None = None) -> date:
+    """A date likely to have games: mid-January of the most recent season.
+
+    Yesterday is a poor default for basketball -- for much of the year it lands in
+    the offseason and returns zero events, which reads like a failure.
+    """
+    today = today or date.today()
+    candidate = date(today.year, 1, 15)
+    return candidate if candidate <= today else date(today.year - 1, 1, 15)
+
+
 def probe(league: str = "nba", day: date | None = None) -> dict:
     """Check reachability and schema without pulling a whole season.
 
     Returns a dict of stage -> outcome so a failure says which stage broke.
     """
-    day = day or (date.today() - timedelta(days=1))
+    day = day or default_probe_date()
     result: dict[str, object] = {"league": league, "date": day.isoformat()}
 
     try:

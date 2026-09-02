@@ -98,3 +98,10 @@ def test_season_dates_never_runs_past_today():
     for season in (2024, 2025, 2026, 2027, 2028):
         days = espn.season_dates(season)
         assert all(d <= date.today() for d in days), season
+
+
+def test_default_probe_date_lands_in_season():
+    """Yesterday is a poor default -- for much of the year it is the offseason."""
+    assert espn.default_probe_date(date(2026, 9, 2)) == date(2026, 1, 15)
+    assert espn.default_probe_date(date(2026, 1, 3)) == date(2025, 1, 15)
+    assert espn.default_probe_date(date(2026, 1, 15)) == date(2026, 1, 15)

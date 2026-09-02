@@ -7,6 +7,11 @@ scale where 100 is the 99th percentile of a frozen, draft-relevant benchmark poo
 See [`docs/PROJECT_PLAN.md`](docs/PROJECT_PLAN.md) for league rules, the scoring
 model, and the build plan. The original R analyses are preserved in `r-scripts/`.
 
+## Quickstart
+
+`docs/QUICKSTART.md` walks from a fresh terminal through running both league test
+suites, with expected output at each step.
+
 ## Setup
 
 ```bash
