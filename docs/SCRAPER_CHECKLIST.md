@@ -255,6 +255,24 @@ making the request and so cannot arrive absent or worded unexpectedly; the round
 name is used only to spot qualifying ties. The display name is also extracted
 from the right place now, so labels are informative again.
 
+**Two further bugs the corrected labels exposed:**
+
+- **Bare ordinal rounds were treated as qualifying.** The pattern matched
+  "1st round|2nd round|3rd round" to catch UEFA qualifiers — but those are the
+  FA Cup's *proper* round names, so a legitimate cup tie would have been dropped
+  entirely. ESPN happened to write "third round" in the probe; nothing
+  guaranteed it. UEFA always says "qualifying" or "play-off round", so matching
+  only those is both sufficient and far safer.
+- **MLS and NWSL postseasons scored as regular-season wins.** The R script's
+  `case_when` groups `Play-off|Playoff` with the Champions League at 5 points,
+  ahead of the cup line. "MLS Cup Playoffs" contains "Cup", so testing cups
+  first scored a postseason tie at 4. A `DOMESTIC_POSTSEASON` tier now sits in
+  the same position the R script puts it.
+
+All four probes classify correctly: UCL `champions_league (5)`, FA Cup
+`domestic_cup (4)`, EPL and MLS regular season `league (3)`, MLS Cup Playoffs
+`domestic_postseason (5)`.
+
 - **[C-9] answered:** league phase counts as competition proper; qualifying does
   not. **Byes score as though the team won the skipped round in a sweep** — this
   applies to every playoff competition, not just soccer, so it belongs in shared

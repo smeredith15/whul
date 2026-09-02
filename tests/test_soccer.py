@@ -279,3 +279,66 @@ def test_scoring_prefers_the_key_over_the_label():
     }])
     # Champions League win with a two-goal margin: 5 + 1
     assert score_team_matches(rows).iloc[0]["match_points"] == 6
+
+
+# --- round names, as the feeds actually write them --------------------------
+
+def test_ordinal_cup_rounds_are_the_competition_proper():
+    """The FA Cup's own rounds are called first, second and third round.
+
+    An earlier qualifying pattern matched bare ordinals to catch UEFA
+    qualifiers, and would have silently dropped legitimate cup ties. ESPN
+    happened to write "third round" in the probe, but nothing guarantees that.
+    """
+    for label in ("English FA Cup third round", "English FA Cup 3rd round",
+                  "English FA Cup 1st round", "English FA Cup 2nd round"):
+        result = classify_key_points_full("facup", label)
+        assert result.counts is True, label
+        assert result.win_points == 4, label
+
+
+def classify_key_points_full(key, label):
+    from whul.scoring.competition import classify_key
+
+    return classify_key(key, label)
+
+
+def test_uefa_qualifying_is_still_excluded():
+    """UEFA always names these "qualifying" or "play-off round", which is why
+    those two forms are sufficient and bare ordinals are not needed."""
+    for label in ("UEFA Champions League Third Qualifying Round",
+                  "UEFA Champions League Play-off Round",
+                  "FA Cup First Qualifying Round"):
+        assert classify_key_points_full("ucl", label).counts is False, label
+
+
+def test_the_knockout_playoff_survives_the_qualifying_filter():
+    result = classify_key_points_full("ucl", "UEFA Champions League Knockout Phase Play-off")
+    assert result.counts is True
+    assert result.win_points == 5
+
+
+def test_a_domestic_postseason_outranks_its_regular_season():
+    """The R script groups Play-off competitions with the Champions League at 5.
+    For MLS and NWSL that is the postseason."""
+    from whul.scoring.competition import Tier
+
+    postseason = classify_key_points_full("mls", "MLS Cup Playoffs")
+    regular = classify_key_points_full("mls", "MLS regular season")
+    assert postseason.tier is Tier.DOMESTIC_POSTSEASON
+    assert postseason.win_points == 5
+    assert regular.win_points == 3
+    assert classify_key_points_full("nwsl", "NWSL Playoffs").win_points == 5
+
+
+def test_european_competitions_are_not_relabelled_as_postseason():
+    """Only a league tier can be promoted; a UCL knockout tie stays UCL."""
+    from whul.scoring.competition import Tier
+
+    result = classify_key_points_full("ucl", "UEFA Champions League Knockout Phase Play-off")
+    assert result.tier is Tier.CHAMPIONS_LEAGUE
+
+
+def test_name_only_classification_also_finds_the_postseason():
+    """For sources that supply no key, such as the historical FBref exports."""
+    assert classify("MLS Cup Playoffs").win_points == 5

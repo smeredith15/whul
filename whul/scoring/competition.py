@@ -26,6 +26,7 @@ class Tier(str, Enum):
     """What a competition is worth, and whether it counts at all."""
 
     LEAGUE = "league"
+    DOMESTIC_POSTSEASON = "domestic_postseason"
     DOMESTIC_CUP = "domestic_cup"
     CHAMPIONS_LEAGUE = "champions_league"
     EUROPA = "europa"
@@ -37,6 +38,10 @@ class Tier(str, Enum):
 #: domestic cups sit together a rung below; the league is the baseline.
 WIN_POINTS: dict[Tier, int] = {
     Tier.CHAMPIONS_LEAGUE: 5,
+    # The R script groups Play-off competitions with the Champions League at 5.
+    # For MLS and NWSL that is the postseason, where a win is worth more than a
+    # regular-season one.
+    Tier.DOMESTIC_POSTSEASON: 5,
     Tier.EUROPA: 4,
     Tier.CONFERENCE: 4,
     Tier.DOMESTIC_CUP: 4,
@@ -46,11 +51,17 @@ WIN_POINTS: dict[Tier, int] = {
 
 #: Tested before anything else: a qualifying tie carries its competition's name,
 #: so "Champions League Qualifying" must not read as the Champions League.
-QUALIFYING_PATTERN = re.compile(
-    r"qualif|prelim|play-?off round|1st round|2nd round|3rd round|"
-    r"first qualifying|second qualifying|third qualifying",
-    re.IGNORECASE,
-)
+#:
+#: Deliberately *not* matching bare ordinal rounds. An earlier version included
+#: "1st round|2nd round|3rd round" to catch UEFA qualifiers, and would have
+#: dropped legitimate FA Cup ties -- that competition's proper rounds are named
+#: exactly that. UEFA always says "qualifying" or "play-off round", so those two
+#: forms are sufficient and far safer.
+QUALIFYING_PATTERN = re.compile(r"qualif|prelim|play-?off round", re.IGNORECASE)
+
+#: A domestic postseason -- "MLS Cup Playoffs" -- as distinct from UEFA's
+#: qualifying "play-off round", which the pattern above has already removed.
+POSTSEASON_PATTERN = re.compile(r"play-?offs?\b|postseason", re.IGNORECASE)
 
 #: The knockout play-off *within* the competition proper is not qualifying --
 #: it sits between the league phase and the round of 16.
@@ -58,8 +69,13 @@ KNOCKOUT_PLAYOFF_PATTERN = re.compile(
     r"knockout (phase )?play-?off|knockout round play-?off", re.IGNORECASE
 )
 
+#: Order matters and mirrors the R script's `case_when`, which tests
+#: "Champions League|Play-off|Playoff" before the cup line. "MLS Cup Playoffs"
+#: contains "Cup", so testing cups first would score a postseason tie as a cup
+#: tie -- 4 points instead of 5.
 TIER_PATTERNS: tuple[tuple[Tier, re.Pattern], ...] = (
     (Tier.CHAMPIONS_LEAGUE, re.compile(r"champions league|uefa champions|ucl", re.IGNORECASE)),
+    (Tier.DOMESTIC_POSTSEASON, POSTSEASON_PATTERN),
     (Tier.CONFERENCE, re.compile(r"conference league|uecl", re.IGNORECASE)),
     (Tier.EUROPA, re.compile(r"europa league|uefa europa|uel", re.IGNORECASE)),
     (
@@ -124,6 +140,12 @@ def classify_key(key: str | None, label: str | None = None) -> Classification:
     knockout_playoff = bool(KNOCKOUT_PLAYOFF_PATTERN.search(text))
     if QUALIFYING_PATTERN.search(text) and not knockout_playoff:
         return Classification(Tier.QUALIFYING, 0, False)
+
+    # A domestic postseason outranks its own regular season.
+    if tier is Tier.LEAGUE and POSTSEASON_PATTERN.search(text):
+        return Classification(
+            Tier.DOMESTIC_POSTSEASON, WIN_POINTS[Tier.DOMESTIC_POSTSEASON], True
+        )
     return Classification(tier, WIN_POINTS[tier], True, knockout_playoff)
 
 
