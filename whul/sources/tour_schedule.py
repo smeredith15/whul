@@ -278,12 +278,43 @@ def _first(record: dict, keys) -> str | None:
     return None
 
 
-def extract_from_json(html: str, tour: str, season: int) -> list[dict]:
-    """Tournaments from JSON embedded in the page.
+def records_from_object(obj, tour: str, season: int, strategy: str = "json") -> list[dict]:
+    """Tournaments anywhere inside a parsed JSON structure.
 
     A record counts as a tournament when it has a name and something that reads
     as a category. Requiring both keeps navigation entries and ad slots out.
+
+    Shared by the page-embedded blobs and the tour APIs: both nest their
+    payload unpredictably, and a record is recognisable wherever it sits.
     """
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for record in _walk(obj):
+        name = _first(record, NAME_KEYS)
+        if not name or len(name) > 80:
+            continue
+        category = classify_category(_first(record, CATEGORY_KEYS)) or classify_category(name)
+        if not category:
+            continue
+        draw = _first(record, DRAW_KEYS)
+        draw_size = (
+            int(draw)
+            if draw and str(draw).isdigit() and int(draw) in VALID_DRAW_SIZES
+            else None
+        )
+        key = f"{name}|{category}"
+        if key in seen or NON_TOURNAMENT_PATTERN.match(name):
+            continue
+        seen.add(key)
+        rows.append({
+            "season": season, "tour": tour.upper(), "tournament": name.strip(),
+            "category": category, "draw_size": draw_size, "strategy": strategy,
+        })
+    return rows
+
+
+def extract_from_json(html: str, tour: str, season: int) -> list[dict]:
+    """Tournaments from JSON embedded in the page."""
     rows: list[dict] = []
     seen: set[str] = set()
     for blob in _iter_json_blobs(html):
@@ -384,7 +415,92 @@ def extract_from_links(html: str, tour: str, season: int) -> list[dict]:
     return rows
 
 
-STRATEGIES = (extract_from_json, extract_from_dom, extract_from_links)
+#: The WTA page renders its tournament list client-side -- its markup has the
+#: containers and no rows -- so the list has to come from the API the page
+#: itself calls. The host was found by ``discover_endpoints``; the path and
+#: parameters below are the shapes worth trying against it.
+WTA_API = "https://api.wtatennis.com/tennis/tournaments/"
+API_PAGE_SIZE = 200
+API_MAX_PAGES = 10
+
+
+def wta_api_variants(season: int) -> list[dict]:
+    """Parameter shapes to try, most specific first."""
+    return [
+        {"page": 0, "pageSize": API_PAGE_SIZE, "year": season},
+        {"page": 0, "pageSize": API_PAGE_SIZE,
+         "from": f"{season}-01-01", "to": f"{season}-12-31"},
+        {"page": 0, "pageSize": API_PAGE_SIZE},
+        {},
+    ]
+
+
+def fetch_wta_api(season: int, url: str = WTA_API) -> list:
+    """Every page of the tournament list the WTA site itself reads.
+
+    A shape that answers 200 with no records is treated as suspect and the next
+    is tried -- an API that accepts a parameter without honouring it returns an
+    empty list, which would otherwise read as a season with no tournaments.
+    """
+    for params in wta_api_variants(season):
+        payloads: list = []
+        page = 0
+        while page < API_MAX_PAGES:
+            attempt = dict(params)
+            if "page" in params:
+                attempt["page"] = page
+            try:
+                response = requests.get(
+                    url, params=attempt, headers=HEADERS, timeout=TIMEOUT
+                )
+                response.raise_for_status()
+                body = response.json()
+            except (requests.RequestException, ValueError):
+                break
+            payloads.append(body)
+            # Stop when a page comes back smaller than asked for, or when the
+            # shape has no page parameter to advance.
+            if "page" not in params or _page_size(body) < API_PAGE_SIZE:
+                break
+            page += 1
+        if payloads and any(_page_size(b) for b in payloads):
+            return payloads
+    return []
+
+
+def _page_size(body) -> int:
+    """How many records a response carries, whatever it wraps them in."""
+    if isinstance(body, list):
+        return len(body)
+    if isinstance(body, dict):
+        for key in ("content", "results", "items", "data", "tournaments"):
+            value = body.get(key)
+            if isinstance(value, list):
+                return len(value)
+    return 0
+
+
+def extract_from_api(html: str, tour: str, season: int) -> list[dict]:
+    """Tournaments from the tour's own API, for a page that renders them.
+
+    Takes ``html`` only to match the other strategies' signature; it makes its
+    own request. Only the WTA has a known endpoint -- the ATP site answers 403
+    to a plain request, so its page cannot even be read to discover one.
+    """
+    if tour.upper() != "WTA":
+        return []
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for payload in fetch_wta_api(season):
+        for row in records_from_object(payload, tour, season, strategy="wta-api"):
+            if row["tournament"] in seen:
+                continue
+            seen.add(row["tournament"])
+            rows.append(row)
+    return rows
+
+
+STRATEGIES = (extract_from_api, extract_from_json, extract_from_dom, extract_from_links)
 
 
 def scrape(source: str, season: int | None = None, refresh: bool = False) -> pd.DataFrame:
@@ -600,6 +716,23 @@ def probe(source: str = "atp", season: int | None = None) -> dict:
                 f"and lxml; without them only the JSON strategy runs"
             )
         report["stages"]["extract"]["endpoints"] = discover_endpoints(html)
+        if tour == "WTA":
+            try:
+                payloads = fetch_wta_api(season)
+                report["stages"]["extract"]["api"] = {
+                    "url": WTA_API,
+                    "pages": len(payloads),
+                    "records": sum(_page_size(b) for b in payloads),
+                    "top_keys": sorted(payloads[0].keys())[:12]
+                    if payloads and isinstance(payloads[0], dict) else [],
+                    "note": "" if payloads else
+                            "the API returned nothing for any parameter shape -- "
+                            "the path may differ from /tennis/tournaments/",
+                }
+            except Exception as exc:  # noqa: BLE001
+                report["stages"]["extract"]["api"] = {
+                    "url": WTA_API, "error": f"{type(exc).__name__}: {exc}",
+                }
         report["stages"]["extract"]["note"] = (
             f"best strategy found {best} events, fewer than the "
             f"{MIN_PLAUSIBLE_EVENTS} a real season has. If the candidate "

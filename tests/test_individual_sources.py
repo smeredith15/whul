@@ -813,3 +813,71 @@ def test_data_attributes_on_the_container_are_reported():
 def test_a_page_with_nothing_to_find_reports_empty_rather_than_raising():
     found = schedule.discover_endpoints("<html><body>nothing here</body></html>")
     assert found == {"urls": [], "data_attributes": [], "preloads": []}
+
+
+# --- the WTA API -----------------------------------------------------------
+
+def test_records_are_recognized_wherever_the_api_nests_them():
+    """Both the page blobs and the API bury their payload at an unpredictable
+    depth, so a record is matched by shape rather than by path."""
+    payload = {"content": [
+        {"title": "Indian Wells", "level": "WTA 1000", "drawSize": 96},
+        {"title": "Rankings"},
+    ]}
+    rows = schedule.records_from_object(payload, "WTA", 2026, "wta-api")
+    assert len(rows) == 1
+    assert rows[0]["tournament"] == "Indian Wells"
+    assert rows[0]["category"] == "Masters 1000"
+    assert rows[0]["draw_size"] == 96
+    assert rows[0]["strategy"] == "wta-api"
+
+
+def test_a_record_count_is_read_through_any_envelope():
+    assert schedule._page_size([1, 2, 3]) == 3
+    assert schedule._page_size({"content": [1, 2]}) == 2
+    assert schedule._page_size({"results": [1]}) == 1
+    assert schedule._page_size({"unrelated": 1}) == 0
+
+
+def test_api_parameter_shapes_go_most_specific_first():
+    variants = schedule.wta_api_variants(2026)
+    assert variants[0]["year"] == 2026
+    assert any("from" in v for v in variants)
+    assert variants[-1] == {}, "a bare request is the last resort"
+
+
+def test_a_shape_that_returns_nothing_is_not_accepted(monkeypatch):
+    """An API that accepts a parameter without honouring it answers 200 with
+    an empty list, which would read as a season with no tournaments."""
+    calls = []
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._body
+
+    def fake_get(url, params=None, **kwargs):
+        calls.append(params)
+        # First shape honours nothing; second returns real records.
+        body = {"content": []} if "year" in (params or {}) else {"content": [
+            {"name": "Rome", "level": "WTA 1000", "drawSize": 96}
+        ]}
+        return Response(body)
+
+    monkeypatch.setattr(schedule.requests, "get", fake_get)
+    payloads = schedule.fetch_wta_api(2026)
+    assert schedule._page_size(payloads[0]) == 1
+    assert len(calls) > 1, "the empty shape should have been rejected and the next tried"
+
+
+def test_the_api_strategy_only_runs_for_the_wta():
+    """The ATP site answers 403 to a plain request, so its page cannot even be
+    read to discover an endpoint."""
+    assert schedule.extract_from_api("<html></html>", "ATP", 2026) == []
