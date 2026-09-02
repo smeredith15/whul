@@ -14,6 +14,7 @@ they only matter when an occupant stops accruing and sinks below the cut.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -48,8 +49,57 @@ def _starter_counts() -> dict[tuple[str, str], int]:
     return {(s.asset_type, s.category): s.starters for s in ALL_SLOTS}
 
 
+class ScoreIndex:
+    """Season-to-date scores, arranged for repeated point lookups.
+
+    The rollup asks "what had this asset scored by this date" once per slot per
+    occupancy per day. Answering that by filtering the frame each time scans
+    every row -- at 300 slots against a season's 400,000 rows that is a second
+    per day, and it grows as the season does, so a full backfill would take
+    minutes and keep getting slower.
+
+    Grouping once and bisecting instead makes each lookup logarithmic in one
+    asset's own series rather than linear in the whole league's.
+    """
+
+    __slots__ = ("_dates", "_scores")
+
+    def __init__(self, cumulative: pd.DataFrame):
+        self._dates: dict[str, list[date]] = {}
+        self._scores: dict[str, list[float]] = {}
+        if cumulative is None or cumulative.empty:
+            return
+        ordered = cumulative.sort_values(["asset_id", "date"])
+        for asset_id, group in ordered.groupby("asset_id", sort=False):
+            self._dates[asset_id] = group["date"].tolist()
+            self._scores[asset_id] = group["score"].astype(float).tolist()
+
+    @property
+    def is_empty(self) -> bool:
+        return not self._dates
+
+    def value_at(self, asset_id: str, day: date) -> float:
+        """The most recent score on or before ``day``, or 0 before the first.
+
+        Carrying the last value forward is deliberate: feeds do not report
+        every day, and a season-to-date figure stands until the next one
+        arrives. Reading a gap as zero would make every quiet day look like a
+        collapse and then a recovery.
+        """
+        dates = self._dates.get(asset_id)
+        if not dates:
+            return 0.0
+        position = bisect_right(dates, day)
+        return self._scores[asset_id][position - 1] if position else 0.0
+
+
+def as_index(cumulative: pd.DataFrame | ScoreIndex) -> ScoreIndex:
+    """Accept either a frame or an already-built index."""
+    return cumulative if isinstance(cumulative, ScoreIndex) else ScoreIndex(cumulative)
+
+
 def accrue(
-    cumulative: pd.DataFrame,
+    cumulative: pd.DataFrame | ScoreIndex,
     asset_id: str,
     start: date,
     end: date,
@@ -59,20 +109,19 @@ def accrue(
     ``cumulative`` holds season-to-date scores with columns ``asset_id``,
     ``date``, ``score``. Because normalization is linear in points, differencing
     the cumulative series is equivalent to summing daily deltas.
+
+    Pass a ``ScoreIndex`` when calling this repeatedly; building one per call
+    would put the cost back.
     """
-    rows = cumulative[cumulative["asset_id"] == asset_id]
-    if rows.empty:
-        return 0.0
-    rows = rows.sort_values("date")
-    at_end = rows.loc[rows["date"] <= end, "score"]
-    before = rows.loc[rows["date"] <= start - timedelta(days=1), "score"]
-    end_val = float(at_end.iloc[-1]) if not at_end.empty else 0.0
-    start_val = float(before.iloc[-1]) if not before.empty else 0.0
-    return end_val - start_val
+    index = as_index(cumulative)
+    return index.value_at(asset_id, end) - index.value_at(asset_id, start - timedelta(days=1))
 
 
-def slot_score(slot: RosterSlot, cumulative: pd.DataFrame, as_of: date) -> float:
+def slot_score(
+    slot: RosterSlot, cumulative: pd.DataFrame | ScoreIndex, as_of: date
+) -> float:
     """Total accrued in a slot through ``as_of``, across every occupant."""
+    cumulative = as_index(cumulative)
     total = 0.0
     for occ in slot.occupancies:
         if occ.start > as_of:
@@ -84,7 +133,7 @@ def slot_score(slot: RosterSlot, cumulative: pd.DataFrame, as_of: date) -> float
 
 def score_slots(
     slots: list[RosterSlot],
-    cumulative: pd.DataFrame,
+    cumulative: pd.DataFrame | ScoreIndex,
     as_of: date,
 ) -> pd.DataFrame:
     """Per-slot scores with the live best-ball selection marked.
@@ -93,6 +142,8 @@ def score_slots(
     it flips as scores move, with no manager action.
     """
     starters = _starter_counts()
+    # Built once for the whole day rather than per slot.
+    cumulative = as_index(cumulative)
     rows = [
         {
             "slot_id": s.slot_id,
@@ -124,7 +175,7 @@ def _current_asset(slot: RosterSlot, as_of: date) -> str | None:
 
 def standings(
     slots: list[RosterSlot],
-    cumulative: pd.DataFrame,
+    cumulative: pd.DataFrame | ScoreIndex,
     as_of: date,
 ) -> pd.DataFrame:
     """Manager totals: the sum of counting slot scores."""

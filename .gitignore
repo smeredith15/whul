@@ -5,3 +5,7 @@ __pycache__/
 *.egg-info/
 Master_Data/
 data/cache/
+
+# The local database, including any simulated league. Rebuild with
+# `python -m whul.cli simulate`.
+data/*.sqlite3

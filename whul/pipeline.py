@@ -25,7 +25,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from whul.bestball import score_slots, standings
+from whul.bestball import ScoreIndex, score_slots, standings
 from whul.config.league import SEASON
 from whul.scoring.base import resolve_num
 from whul.store import benchmarks as bm
@@ -110,12 +110,19 @@ def roll_up(
     season: str,
     as_of: date,
     check_overlaps: bool = True,
+    slots: list | None = None,
+    scores: ScoreIndex | None = None,
+    asset_count: int | None = None,
 ) -> RunReport:
     """Score every slot for one day and write the standings snapshot.
 
     The snapshot is stored rather than derived on request, so the progression
     graph shows what the standings actually said on each day -- including the
     days a since-corrected score was live.
+
+    ``slots`` and ``scores`` let a caller prepare both once and reuse them
+    across a run of days. A backfill does; a single nightly run does not
+    bother, since it pays the cost once either way.
     """
     report = RunReport(as_of=as_of)
 
@@ -128,7 +135,8 @@ def roll_up(
         return report
     report.benchmark_version = version.version
 
-    slots = rosters.load_slots(store, season)
+    if slots is None:
+        slots = rosters.load_slots(store, season)
     if not slots:
         report.warnings.append(f"no roster slots for {season}")
         return report
@@ -143,11 +151,18 @@ def roll_up(
                 f"{', '.join(clashes['slot_id'].head(5))}"
             )
 
-    cumulative = cumulative_scores(store, season, as_of)
-    if cumulative.empty:
+    if scores is None:
+        cumulative = cumulative_scores(store, season, as_of)
+        if cumulative.empty:
+            report.warnings.append(f"no scores recorded on or before {as_of}")
+            return report
+        asset_count = int(cumulative["asset_id"].nunique())
+        scores = ScoreIndex(cumulative)
+    elif scores.is_empty:
         report.warnings.append(f"no scores recorded on or before {as_of}")
         return report
-    report.scored_assets = int(cumulative["asset_id"].nunique())
+    report.scored_assets = asset_count or 0
+    cumulative = scores
 
     scored = score_slots(slots, cumulative, as_of)
     if not scored.empty:
@@ -225,9 +240,21 @@ def backfill(
         return []
 
     clashes = rosters.overlaps(store, season)
+
+    # Load the whole season's scores once and index them once. Re-querying and
+    # re-grouping per day made a backfill quadratic in season length: the frame
+    # grows every day and every day rescans it.
+    frame = cumulative_scores(store, season, days[-1])
+    scores = ScoreIndex(frame)
+    assets = int(frame["asset_id"].nunique()) if not frame.empty else 0
+    slots = rosters.load_slots(store, season)
+
     reports = []
     for day in days:
-        report = roll_up(store, season, day, check_overlaps=False)
+        report = roll_up(
+            store, season, day, check_overlaps=False,
+            slots=slots, scores=scores, asset_count=assets,
+        )
         if not clashes.empty and day == days[0]:
             report.warnings.append(
                 f"{len(clashes)} slot(s) with overlapping occupancy: "

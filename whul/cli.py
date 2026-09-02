@@ -512,6 +512,43 @@ def _print_stages(title: str, report: dict) -> int:
     return 0
 
 
+def cmd_simulate(args: argparse.Namespace) -> int:
+    """Build a placeholder league to develop the app against."""
+    from datetime import date as _date
+
+    from whul import simulate
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    if args.purge:
+        removed = simulate.purge(store)
+        print(f"\nPurged {simulate.SIM_SEASON}\n")
+        for table, count in removed.items():
+            if count:
+                print(f"  {table:<22} {count:,} rows")
+        return 0
+
+    end = _date.fromisoformat(args.end) if args.end else None
+    summary = simulate.generate(store, seed=args.seed, end=end, verbose=False)
+    print(f"\nSimulated league -- season {summary['season']}\n")
+    for key in ("managers", "slots", "assets", "days", "trades"):
+        print(f"  {key:<12} {summary[key]:,}")
+    print(f"  {'benchmarks':<12} {summary['benchmark_version']}")
+
+    from whul import pipeline
+
+    table = pipeline.progression(store, summary["season"])
+    if not table.empty:
+        latest = table[table["as_of"] == table["as_of"].max()]
+        print(f"\n  standings on {latest.iloc[0]['as_of']}\n")
+        for row in latest.itertuples():
+            print(f"    {row.rank}. {row.manager_id:<10} {row.total:>10,.2f}")
+    for warning in summary["warnings"]:
+        print(f"  ! {warning}")
+    print(f"\nWritten to {args.db}. Remove it with `simulate --purge`.")
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
     if args.league == "tennis":
@@ -830,6 +867,15 @@ def main(argv: list[str] | None = None) -> int:
     ncaa_api.add_argument("league", choices=sorted(NCAA_LEAGUES))
     ncaa_api.add_argument("--date", help="YYYY-MM-DD, in season for that sport")
     ncaa_api.set_defaults(func=cmd_probe_ncaa_api)
+
+    sim = sub.add_parser(
+        "simulate", help="build a placeholder league to develop the app against"
+    )
+    sim.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    sim.add_argument("--seed", type=int, default=2026, help="so runs are reproducible")
+    sim.add_argument("--end", help="YYYY-MM-DD to simulate through (default: today)")
+    sim.add_argument("--purge", action="store_true", help="delete the simulated league")
+    sim.set_defaults(func=cmd_simulate)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     # Cups and European competitions are probeable even though they are not
