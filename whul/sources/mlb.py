@@ -21,6 +21,7 @@ which stage fails.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -74,6 +75,20 @@ def _session() -> requests.Session:
     return session
 
 
+def _cache_path(cache_key: str, params: dict) -> Path:
+    """Cache file for a request.
+
+    The parameters are hashed into the name: changing them changes what comes
+    back, and a key that ignored them would keep serving the old response. That
+    is what kept a 145-row qualified-players-only reply alive after the request
+    was fixed to ask for the full pool.
+    """
+    digest = hashlib.sha1(
+        json.dumps(params, sort_keys=True, default=str).encode()
+    ).hexdigest()[:10]
+    return CACHE / f"{cache_key}.{digest}.json"
+
+
 def _get(url: str, params: dict, cache_key: str | None = None) -> dict | list:
     """Fetch, caching by key. The pause applies only to real requests.
 
@@ -81,7 +96,7 @@ def _get(url: str, params: dict, cache_key: str | None = None) -> dict | list:
     Stats API needs nothing special.
     """
     if cache_key:
-        cached = CACHE / f"{cache_key}.json"
+        cached = _cache_path(cache_key, params)
         if cached.exists():
             return json.loads(cached.read_text())
 
@@ -90,7 +105,7 @@ def _get(url: str, params: dict, cache_key: str | None = None) -> dict | list:
         response.raise_for_status()
         payload = response.json()
         if cache_key:
-            target = CACHE / f"{cache_key}.json"
+            target = _cache_path(cache_key, params)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(payload))
         time.sleep(REQUEST_PAUSE)
@@ -114,7 +129,7 @@ def _get(url: str, params: dict, cache_key: str | None = None) -> dict | list:
     payload = response.json()
 
     if cache_key:
-        cached = CACHE / f"{cache_key}.json"
+        cached = _cache_path(cache_key, params)
         cached.parent.mkdir(parents=True, exist_ok=True)
         cached.write_text(json.dumps(payload))
 
@@ -247,30 +262,125 @@ def _fangraphs(season: int, stats: str, qual: int) -> pd.DataFrame:
     return frame
 
 
-def load_batters(seasons: list[int]) -> pd.DataFrame:
-    return pd.concat(
-        [_fangraphs(y, "bat", BATTER_QUAL) for y in seasons], ignore_index=True
-    )
+def _merge_counting_and_advanced(season: int, group: str) -> pd.DataFrame:
+    """Counting stats joined to the fWAR components, from one host.
+
+    Both come from the MLB Stats API, which removes the FanGraphs dependency
+    entirely: FanGraphs blocks datacenter IPs, so it was never going to serve a
+    production scraper.
+    """
+    counting = load_stats_api_players(season, group)
+    saber = load_sabermetrics(season, group)
+    if counting.empty:
+        return counting
+
+    if not saber.empty:
+        if group == "hitting":
+            saber = derive_offense_defense(saber)
+            keep = ["player_id", "Off", "Def"]
+        else:
+            keep = ["player_id", "war"]
+        keep = [c for c in keep if c in saber.columns]
+        counting = counting.merge(saber[keep], on="player_id", how="left")
+
+    for column in ("Off", "Def", "war"):
+        if column in counting.columns:
+            counting[column] = pd.to_numeric(counting[column], errors="coerce").fillna(0.0)
+    return counting
 
 
-def load_pitchers(seasons: list[int]) -> pd.DataFrame:
-    return pd.concat(
-        [_fangraphs(y, "pit", PITCHER_QUAL) for y in seasons], ignore_index=True
-    )
+def load_batters(seasons: list[int], use_fangraphs: bool = False) -> pd.DataFrame:
+    """Batting lines with Offense and Defense attached.
+
+    ``use_fangraphs`` is retained for the case where its leaderboard becomes
+    reachable again; the default path needs only the Stats API.
+    """
+    if use_fangraphs:
+        return pd.concat([_fangraphs(y, "bat", BATTER_QUAL) for y in seasons], ignore_index=True)
+
+    frames = [_merge_counting_and_advanced(y, "hitting") for y in seasons]
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True)
+    return out.rename(columns={
+        "atBats": "AB", "hits": "H", "doubles": "2B", "triples": "3B",
+        "homeRuns": "HR", "baseOnBalls": "BB", "hitByPitch": "HBP",
+        "stolenBases": "SB", "caughtStealing": "CS", "gamesPlayed": "G",
+        "player": "PlayerName",
+    })
+
+
+def load_pitchers(seasons: list[int], use_fangraphs: bool = False) -> pd.DataFrame:
+    """Pitching lines with WAR attached, and innings converted from outs notation."""
+    if use_fangraphs:
+        return pd.concat([_fangraphs(y, "pit", PITCHER_QUAL) for y in seasons], ignore_index=True)
+
+    frames = [_merge_counting_and_advanced(y, "pitching") for y in seasons]
+    frames = [f for f in frames if not f.empty]
+    if not frames:
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True)
+    if "inningsPitched" in out.columns:
+        out["IP"] = out["inningsPitched"].map(innings_to_float)
+    return out.rename(columns={
+        "strikeOuts": "SO", "hits": "H", "baseOnBalls": "BB", "hitByPitch": "HBP",
+        "homeRuns": "HR", "saves": "SV", "holds": "HLD", "war": "WAR",
+        "gamesPlayed": "G", "player": "PlayerName",
+    })
 
 
 #: Fields the scoring needs from an advanced-metrics feed, and the FanGraphs
 #: column each would stand in for.
+#: The Stats API returns the full fWAR decomposition, so Offense and Defense are
+#: not approximated but *reconstructed*: FanGraphs defines Off as batting plus
+#: base running, and Def as fielding plus the positional adjustment.
+OFFENSE_COMPONENTS = ("batting", "baseRunning")
+DEFENSE_COMPONENTS = ("fielding", "positional")
+
 ADVANCED_EQUIVALENTS = {
+    "batting": "Off component",
+    "baseRunning": "Off component",
+    "fielding": "Def component",
+    "positional": "Def component",
     "war": "WAR (pitchers)",
     "wRaa": "Off (offensive runs above average)",
     "wRc": "Off (runs created)",
-    "battingRuns": "Off",
-    "baseRunningRuns": "Off",
-    "fieldingRuns": "Def",
-    "defensiveRuns": "Def",
-    "totalRuns": "Off + Def",
 }
+
+
+def derive_offense_defense(saber: pd.DataFrame) -> pd.DataFrame:
+    """Rebuild FanGraphs' Offense and Defense from their components.
+
+    Not a substitute metric -- the same quantity, summed from the same parts.
+    """
+    out = saber.copy()
+    for name, components in (("Off", OFFENSE_COMPONENTS), ("Def", DEFENSE_COMPONENTS)):
+        present = [c for c in components if c in out.columns]
+        if not present:
+            raise KeyError(
+                f"cannot rebuild {name}: none of {components} present; "
+                f"have {sorted(out.columns)[:20]}"
+            )
+        out[name] = sum(pd.to_numeric(out[c], errors="coerce").fillna(0.0) for c in present)
+    return out
+
+
+def innings_to_float(value) -> float:
+    """Convert baseball's innings notation: 200.1 means 200 and one third.
+
+    Read as a decimal it understates a third of an inning by a factor of three,
+    which at 7.4 points per inning is not a rounding error.
+    """
+    try:
+        text = str(value)
+        whole, _, outs = text.partition(".")
+        base = float(whole or 0)
+        return base + (float(outs[0]) / 3 if outs else 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:

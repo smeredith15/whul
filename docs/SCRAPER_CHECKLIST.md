@@ -49,86 +49,39 @@ over the pool. 2026 measured at 273 dates / 30,853 rows / 705 players.
 
 Nothing outstanding. The five-season backfill is the remaining step and is running.
 
-## 3. MLB — team scoring CONFIRMED; player scoring blocked on FanGraphs
+## 3. MLB — CONFIRMED, single source
 
 **MLB Stats API works**: 2,481 games for 2025 with the postseason correctly typed
-(R 2434, D 18, F 11, L 11, W 7) and all 30 teams. Team scoring and the contract
-engine are unblocked.
+(R 2434, D 18, F 11, L 11, W 7) and all 30 teams, plus 765 hitting and 873
+pitching advanced lines. Team scoring, the contract engine and player scoring are
+all served by this one host.
 
-**FanGraphs answers 403 to all four parameter shapes, and cookie warming did not
-clear it.** It blocks the target machine as well as the sandbox, which almost
-certainly means datacenter IPs generally — so a self-hosted fetch from the
-production server would be blocked too. Treat FanGraphs as unavailable for
-automated use.
+**FanGraphs is unavailable and no longer needed.** It answers 403 to every
+parameter shape, cookie warming did not clear it, and it blocks the target
+machine as well as the sandbox — so datacenter IPs generally, meaning a
+production scraper was never going to work.
 
-**Next lead: MLB's own sabermetrics.** The Stats API already serves the schedule
-successfully, and its `stats=sabermetrics` group carries run-value and WAR
-figures. If those arrive, substituting them is a far smaller decision than
-dropping the components — different models, so not numerically identical to
-FanGraphs, but the same quantities. `ADVANCED_EQUIVALENTS` records which field
-would stand in for which. The probe reports every field the endpoint returns.
+**The MLB Stats API supplies everything instead.** Its `sabermetrics` group
+returns the full fWAR decomposition — `batting`, `baseRunning`, `fielding`,
+`positional`, `replacement`, `war` — across 765 hitting and 873 pitching rows.
+FanGraphs defines `Off` as batting plus base running and `Def` as fielding plus
+the positional adjustment, so **those two columns are reconstructed exactly, not
+approximated**. Pitcher WAR arrives directly.
 
-Also fixed: the season-stats request now sends `playerPool=All`. The default
-returns qualified players only — the 145 rows in the probe — where the R script's
-thresholds (100 PA for batters, 30 IP for pitchers) admit several hundred.
+Scoring is therefore whole: `INCLUDE_ADVANCED_METRICS` stays on, no components
+are dropped, and one host serves the schedule, the counting stats and the
+advanced metrics.
 
-### What is at stake if FanGraphs stays unreachable
+Two traps caught on the way:
 
-Offense, Defense and WAR exist on no other free source. The MLB Stats API carries
-every counting stat (confirmed: 145 rows with all nine) but not those three.
-Their contribution, computed from the actual weights:
-
-| Profile | Counting | Advanced | Advanced share |
-|---|---:|---:|---:|
-| Elite slugger (Off 70, Def −5) | 1423.6 | 10.0 | 0.7% |
-| Elite all-round (Off 55, Def 15) | 1256.6 | 36.2 | 2.8% |
-| Average bat (Off 0, Def 0) | 674.7 | 0.0 | 0.0% |
-| Glove-first (Off −10, Def 20) | 526.9 | 27.5 | **5.0%** |
-| Ace (WAR 6.5) | 1198.6 | 32.5 | 2.6% |
-| Mid rotation (WAR 2.5) | 688.4 | 12.5 | 1.8% |
-
-Small in aggregate, but **not uniform**: worth most to glove-first players and
-least to sluggers, so dropping them compresses the gap between those profiles.
-That makes it a rules change, not a source swap.
-
-`INCLUDE_ADVANCED_METRICS` gates it so either decision is one line, and it is
-deliberately never flipped automatically — a silent fallback would produce
-plausible, wrong numbers. The diagnostics that NBA and NCAA taught me to build up front are in
-place from the start this time:
-
-- **Two feeds, reported separately.** MLB Stats API for schedules (a whole season
-  in one request), FanGraphs for leaderboards. A partial failure names which.
-- **Four FanGraphs parameter shapes**, tried most specific first, with a shape
-  that answers 200 and no rows treated as suspect rather than accepted — the same
-  trap college softball sprang, where an empty season looks exactly like a real
-  one with no error.
-- **A browser-like header set**, since FanGraphs rejects unadorned clients.
-- **Explicit scoring-column reporting**: the probe names any of `Off`, `Def`,
-  `WAR` and the counting stats that failed to arrive, rather than leaving them to
-  silently resolve as zero.
-- **A fallback availability check.** MLB Stats API carries every counting stat
-  but **not** Off, Def or WAR. If FanGraphs proves unreachable, substituting it
-  is a scoring decision — dropping three components — not a source swap, so the
-  probe reports whether the fallback exists without ever taking it automatically.
-
-- **[C-2] Season end date — answered: 7/13/27**, tracking the MLB All-Star Game
-  and shifting slightly each season. The drift is too small to re-base benchmarks
-  for, which is noted in the config.
-- **[C-3] Benchmark basis.** You offered two options and I have a recommendation:
-  **use full MLB seasons.** A July→July league year contains almost exactly one
-  full MLB season's worth of games, just split across two calendar seasons, so a
-  full-season p99 is measuring the right quantity. The July fencepost is then only
-  needed for the contract weighting at draft time, not for the scale.
-- **[C-4] Year-one truncation.** For MLB I recommend **proration by games played**,
-  not a bespoke window p99. The distinction is principled: proration is right when
-  the sport plays *continuously* through the window, so a shorter window is simply
-  fewer games at the same rate. It is wrong for golf, tennis and motorsport,
-  where an August→July window contains a different *proportion of offseason* than
-  a July→July one — which is why those get a bespoke window p99 instead. MLB is
-  firmly in the first category.
-  Rough figure: 8/21/26 captures the last ~20% of the 2026 season plus ~60% of
-  2027 through mid-July, so ~80% of a season, inflating by ~1.25. Playoffs
-  untouched, as you said.
+- **Innings are thirds, not decimals.** `200.1` means 200 and one third. Read as
+  a decimal it understates by a factor of three, and at 7.4 points per inning
+  that is worth about 1.7 points per pitcher — small individually, systematic
+  across the league.
+- **Cache keys ignored request parameters.** That is why `stats_api_hitting`
+  still reported 145 rows after the fix to request the full player pool: the
+  qualified-only response was still cached. Keys now hash the parameters, so
+  changing a request changes what is cached.
 
 ## 4. NHL — BUILT and CONFIRMED
 

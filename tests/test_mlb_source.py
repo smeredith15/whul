@@ -208,12 +208,14 @@ def test_sabermetrics_flattens_like_the_season_stats(monkeypatch, tmp_path):
     assert frame.iloc[0]["wRaa"] == 75.2
 
 
-def test_advanced_equivalents_name_what_each_field_would_replace():
-    """Adopting MLB's metrics is a scoring decision, so the mapping is explicit
-    rather than assumed."""
+def test_advanced_equivalents_name_what_each_field_contributes():
+    """The mapping is explicit rather than assumed, so a field renamed upstream
+    surfaces as a missing component instead of a silent zero."""
     assert mlb.ADVANCED_EQUIVALENTS["war"].startswith("WAR")
-    assert "Off" in mlb.ADVANCED_EQUIVALENTS["wRaa"]
-    assert "Def" in mlb.ADVANCED_EQUIVALENTS["fieldingRuns"]
+    assert "Off" in mlb.ADVANCED_EQUIVALENTS["batting"]
+    assert "Def" in mlb.ADVANCED_EQUIVALENTS["fielding"]
+    assert mlb.OFFENSE_COMPONENTS == ("batting", "baseRunning")
+    assert mlb.DEFENSE_COMPONENTS == ("fielding", "positional")
 
 
 def test_season_stats_request_all_players_not_just_qualifiers(monkeypatch):
@@ -227,3 +229,69 @@ def test_season_stats_request_all_players_not_just_qualifiers(monkeypatch):
     monkeypatch.setattr(mlb, "_get", fake_get)
     mlb.load_stats_api_players(2025, "hitting")
     assert captured["playerPool"] == "All"
+
+
+# --- rebuilding Offense and Defense -----------------------------------------
+
+def test_offense_and_defense_are_reconstructed_not_approximated():
+    """FanGraphs defines Off as batting + base running and Def as fielding +
+    positional, and the Stats API returns all four components."""
+    import pandas as pd
+
+    saber = pd.DataFrame([{"player_id": 1, "batting": 45.0, "baseRunning": 5.0,
+                           "fielding": 8.0, "positional": -3.0, "war": 6.0}])
+    out = mlb.derive_offense_defense(saber).iloc[0]
+    assert out["Off"] == pytest.approx(50.0)
+    assert out["Def"] == pytest.approx(5.0)
+
+
+def test_missing_components_raise_rather_than_scoring_zero():
+    import pandas as pd
+
+    with pytest.raises(KeyError, match="Def"):
+        mlb.derive_offense_defense(pd.DataFrame([{"batting": 10.0, "baseRunning": 1.0}]))
+
+
+def test_absent_component_values_are_treated_as_zero():
+    import pandas as pd
+
+    saber = pd.DataFrame([{"batting": 40.0, "baseRunning": None,
+                           "fielding": None, "positional": 2.0}])
+    out = mlb.derive_offense_defense(saber).iloc[0]
+    assert out["Off"] == pytest.approx(40.0)
+    assert out["Def"] == pytest.approx(2.0)
+
+
+# --- innings notation -------------------------------------------------------
+
+def test_innings_are_thirds_not_decimals():
+    """200.1 means 200 and one third. Read as a decimal it understates by a
+    factor of three, and at 7.4 points per inning that is not rounding."""
+    assert mlb.innings_to_float("200.1") == pytest.approx(200 + 1 / 3)
+    assert mlb.innings_to_float("200.2") == pytest.approx(200 + 2 / 3)
+    assert mlb.innings_to_float("200.0") == 200.0
+    assert mlb.innings_to_float("200") == 200.0
+
+
+def test_innings_tolerate_missing_values():
+    assert mlb.innings_to_float(None) == 0.0
+    assert mlb.innings_to_float("") == 0.0
+
+
+def test_a_third_of_an_inning_is_worth_more_than_two_points():
+    from whul.scoring.mlb import PITCHER_WEIGHTS
+
+    naive = 200.1
+    correct = mlb.innings_to_float("200.1")
+    assert (correct - naive) * PITCHER_WEIGHTS["ip"] > 1.7
+
+
+# --- cache invalidation -----------------------------------------------------
+
+def test_cache_key_reflects_the_parameters(tmp_path, monkeypatch):
+    """Changing a request must not keep serving the old response -- that is what
+    kept a qualified-players-only reply alive after the fix."""
+    monkeypatch.setattr(mlb, "CACHE", tmp_path)
+    a = mlb._cache_path("statsapi/hitting_2025", {"playerPool": "Qualified"})
+    b = mlb._cache_path("statsapi/hitting_2025", {"playerPool": "All"})
+    assert a != b
