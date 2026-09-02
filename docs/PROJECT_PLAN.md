@@ -189,39 +189,38 @@ The app computes the multiplier from an admin-entered expected-games count; the 
 reach only a minority of players, so including them would distort the distribution the scale is drawn
 from.
 
-**Postseason production counts as a bonus, not as raw counting stats.** A player who appears in the
-postseason is credited as though they played a fixed number of *extra games at their own rate*:
+**Postseason production counts as a bonus worth a flat 10% of a regular season**, the same share in
+every competition, paid at the player's postseason rate:
 
 ```
-per_game_rate = (regular_points + postseason_points) / games actually played
-bonus         = per_game_rate × scalar
-total         = regular_points + bonus
+scalar = bonus_share × regular_games        # bonus_share = 0.10
+bonus  = (postseason_points / postseason_games) × scalar
+total  = regular_points + bonus
 ```
 
-The raw postseason stats never enter the total directly — they only inform the rate. The scalar is
-`regular_games / max_postseason_games`:
+| Competition | Reg games | Scalar |
+|---|---:|---:|
+| NFL | 17 | 1.7× |
+| MLB | 162 | 16.2× |
+| NBA | 82 | 8.2× |
+| NHL | 84 | 8.4× |
+| Champions / Europa / Conference League | 38 | 3.8× |
 
-| Competition | Reg games | Max postseason | Scalar | Bonus as % of season |
-|---|---:|---:|---:|---:|
-| NFL | 17 | 4 | 4.25× | 25.0% |
-| MLB | 162 | 22 | 7.36× | 4.5% |
-| NBA | 82 | 28 | 2.93× | 3.6% |
-| NHL | 84 | 28 | 3.00× | 3.6% |
-| Champions / Europa League | 38 | 17 | 2.24× | 5.9% |
-| Europa Conference League | 38 | 21 | 1.81× | 4.8% |
+An NFL player with one playoff game has those points multiplied by 1.7; with two, their combined
+points by 1.7/2. A player who performs in the postseason at their regular-season rate earns exactly
+10% of that season — identically in every league. Outperforming that rate earns more, underperforming
+less. Raw postseason stats never enter the total directly; they only set the rate.
 
-The bonus is earned by **appearing** — one postseason game earns the same bonus as a full run — but
-its size scales with how well the player performed across the whole season. Note the NHL regular
-season expands to 84 games in 2026-27, and that the resulting bonus share varies by competition
-(NFL 25% against NBA 3.6%); `scalar` is overridable per league so this is tunable from the admin
+`bonus_share` is global and `scalar` is overridable per competition, both tunable from the admin
 dashboard without touching the formula.
 
-Club soccer's European competitions are referenced to a 38-game domestic league. Play-In games count
-as regular season, being an extension of it.
+**Excluded entirely** — counting for neither phase, so they neither pad the regular season nor earn a
+bonus: the **NBA Play-In**, and **European qualifying rounds**. Only the playoffs and European
+competition proper carry the bonus.
 
 **Not applied to teams.** Team scoring already prices the postseason explicitly and boundedly (NFL:
-playoff appearance 10, playoff wins 15; NBA: appearance 10, wins 3, series 5), and those terms sit in
-both the benchmark and live scoring consistently, with only ~30 teams per league so no small-sample
+playoff appearance 10, playoff wins 15; NBA: appearance 10, wins 3, series 5), those terms sit in both
+the benchmark and live scoring consistently, and with ~30 teams per league there is no small-sample
 distortion to correct.
 
 ### 2.6 Assets whose events cross a season boundary
@@ -420,7 +419,7 @@ Each increment ships end-to-end:
 | `whul/scoring/postseason.py` | Appearance bonus and regular/postseason phase split |
 | `whul/sources/nflverse.py` | nflverse release assets (free, no R dependency) |
 | `whul/sources/hoopr.py` | hoopR-data (historical only — see below) |
-| `whul/cli.py` | Per-league terminal harness |
+| `whul/cli.py` | Per-league terminal harness (`score`, `weekly`, `list`) |
 
 ### Resolved
 
@@ -438,8 +437,14 @@ Each increment ships end-to-end:
 - **Cross-pool soccer transfers** — see §2.7.
 - **Trades** — slot-based, reciprocal, explicit pairing. See §1.5.
 - **Data sources** — each verified independently as its league is built.
-- **Postseason weighting** — regular-season-only benchmarks plus an appearance bonus worth
-  `regular_games / max_postseason_games` extra games at the player's own rate. See §2.5.
+- **Postseason weighting** — regular-season-only benchmarks plus a bonus worth a flat 10% of a
+  regular season, equalized across leagues. See §2.5.
+
+### Verification
+
+`docs/TESTING_NFL.md` is a step-by-step guide for verifying a league's data
+acquisition from your own machine, with expected values at each step. One guide per
+league as each ships.
 
 ### Open
 
