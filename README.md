@@ -24,6 +24,18 @@ python3 -m venv .venv
 Tests marked `network` fetch live data from nflverse and assert against known
 2024 results.
 
+## Running a league from the terminal
+
+```bash
+.venv/bin/python -m whul.cli list
+.venv/bin/python -m whul.cli score nfl --season 2024
+.venv/bin/python -m whul.cli score nba --season 2023 --assets teams --normalize
+.venv/bin/python -m whul.cli score nfl --season 2024 --csv nfl_2024.csv
+```
+
+`--normalize` applies the 0-100 scale and prints the benchmark it used.
+`--managers` overrides the benchmark manager count (default 15).
+
 ## Layout
 
 | Path | Purpose |
@@ -33,3 +45,15 @@ Tests marked `network` fetch live data from nflverse and assert against known
 | `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
 | `whul/scoring/` | Per-league scoring formulas, ported from `r-scripts/` |
 | `whul/sources/` | Data adapters (free sources only) |
+| `whul/cli.py` | Per-league terminal harness |
+
+## Data source status
+
+| League | Source | Live? |
+|---|---|---|
+| NFL | nflverse release assets | yes |
+| NBA | hoopR-data | **no** — archived 2026-08-07, stops at season 2023 |
+
+hoopR-data being archived means NBA (and likely WNBA / NCAA, which use the sibling
+`wehoop` feeds) need a live source before the season can be scored daily. See
+`docs/PROJECT_PLAN.md` §7.
