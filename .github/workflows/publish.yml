@@ -63,9 +63,18 @@ jobs:
             git checkout origin/data -- data/whul.sqlite3 || true
           fi
           if [ ! -f data/whul.sqlite3 ]; then
-            echo "No database yet -- seeding a placeholder league."
-            python -m whul.cli simulate
+            echo "No database yet -- building one from the draft file."
+            python -m whul.cli import-rosters --season 2026-27 --write
+            # Placeholder scores over the real roster, until the season starts
+            # and real ones exist to score. Under their own season label, so
+            # nothing invented is ever written into 2026-27.
+            python -m whul.cli simulate --from-season 2026-27
           fi
+
+      - name: Refresh the rosters from the draft file
+        # Cheap and idempotent, and it means a re-uploaded spreadsheet reaches
+        # the site on the next run without anyone having to remember a step.
+        run: python -m whul.cli import-rosters --season 2026-27 --write
 
       - name: Roll up the standings
         run: |

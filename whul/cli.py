@@ -616,11 +616,13 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             return 0
         print(f"\nRebuilt {len(reports)} days\n  {reports[-1]}")
         warnings = {w for r in reports for w in r.warnings}
+        produced = any(r.managers for r in reports)
     else:
         day = _date.fromisoformat(args.date) if args.date else _date.today()
         report = pipeline.roll_up(store, args.season, day)
         print(f"\n{report}")
         warnings = set(report.warnings)
+        produced = bool(report.managers)
 
     stale = store.stale_sources(_date.today())
     if not stale.empty:
@@ -628,8 +630,11 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         for row in stale.itertuples():
             print(f"    {row.source}/{row.league}: last data {row.last_data_date}")
     print()
-    # A warning means the standings are wrong or missing, not merely noisy.
-    return 1 if warnings else 0
+    # Only a run that produced nothing is a failure. A warning about an
+    # overlapping slot or a stale feed is worth seeing, but publishing
+    # yesterday's standings beats publishing none: failing the nightly build
+    # over it would take the site down rather than let it go one day stale.
+    return 0 if produced else 1
 
 
 def cmd_site(args: argparse.Namespace) -> int:
