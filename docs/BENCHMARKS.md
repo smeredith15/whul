@@ -17,27 +17,19 @@ python -m whul.cli benchmarks <list|compute|coverage|compare|versions|freeze>
 
 **Run this where the feeds reach.** Most sources are refused by the cloud
 sandbox's network policy (a 403 on CONNECT), so NFL and tennis are the only two
-that can be computed there. Everything else has to run on your Mac or wherever
-the machine has open outbound HTTPS.
+that can be computed there. Everything else needs a machine with open outbound
+HTTPS.
 
-```bash
-git clone https://github.com/smeredith15/whul && cd whul
-python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest -q          # expect all green before trusting a number
-```
+If the terminal is not set up yet, [`docs/MAC_SETUP.md`](MAC_SETUP.md) walks
+through it from opening Terminal to a working database. It ends where this
+starts. In short, you need:
 
-**Tennis needs the snapshot.** `model_data_snapshot.rds` is the only surviving
-copy of the match history. Clone `tennis2026` next to this repo, or point at it:
-
-```bash
-git clone https://github.com/smeredith15/tennis2026 ../tennis2026
-# or, anywhere else:
-export WHUL_TENNIS2026=/path/to/tennis2026
-```
-
-**Have the draft database.** The benchmark set is checked against the roster
-before it can be frozen, so `data/whul.sqlite3` needs the imported draft in it.
+* the repo on branch `claude/fantasy-league-webapp-dp99e3`, with `.venv` built
+  and `pytest -q` green — do not compute against a broken checkout;
+* `tennis2026` cloned beside it, for `model_data_snapshot.rds` (the only
+  surviving copy of the match history), or `WHUL_TENNIS2026` pointing at it;
+* `data/whul.sqlite3` built with `import-rosters --write`, since the benchmark
+  set is checked against the roster before it can be frozen.
 
 ---
 

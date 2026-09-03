@@ -53,7 +53,8 @@ Two commands exist for checking a data source:
 
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) is the step-by-step procedure, in the
 order that fails cheapest — including which sources need a machine with open
-outbound HTTPS. In short:
+outbound HTTPS. [`docs/MAC_SETUP.md`](docs/MAC_SETUP.md) is the terminal setup
+that comes before it. In short:
 
 The benchmark is the number every score in its group is divided by, so it
 decides what 100 means. Getting it wrong produces no error — just a season of
@@ -99,6 +100,7 @@ Set `WHUL_TENNIS2026` if it is not a sibling of this repository.
 | `whul/normalize.py` | Buffer pool → frozen 99th-percentile benchmark → 0-100 scale |
 | `whul/benchmarks.py` | Compute, review and freeze a season's scale |
 | `docs/BENCHMARKS.md` | How to build and freeze one, step by step |
+| `docs/MAC_SETUP.md` | Terminal setup on macOS, from zero to a working database |
 | `whul/benchmark_sources.py` | Which loader and scorer each league's history comes from |
 | `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
 | `whul/scoring/` | Per-league scoring formulas, ported from `r-scripts/` |
