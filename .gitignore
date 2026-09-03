@@ -11,4 +11,11 @@ data/cache/
 data/*.sqlite3
 
 # The generated site is a build artifact; `python -m whul.cli site` rebuilds it.
-site/
+# Anchored with a leading slash: a bare `site/` matches at any depth, which
+# quietly excluded the whul/site/ package itself -- the code was never
+# committed, every local test passed against the working tree, and CI was the
+# first thing to notice.
+/site/
+
+# setuptools leaves this behind after a non-editable install.
+/build/

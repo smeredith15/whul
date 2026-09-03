@@ -1,3 +1,4 @@
+import pytest
 from whul.config.league import (
     ALL_SLOTS,
     BENCHMARK_MANAGER_COUNT,
@@ -129,3 +130,70 @@ def test_a_stray_top_level_directory_cannot_be_taken_for_a_package():
             f"{directory.name}/ looks like a package; either move it under "
             f"whul/ or exclude it from discovery in pyproject.toml"
         )
+
+
+def test_every_package_directory_has_an_init_file():
+    """Without one, `setuptools.packages.find` does not see the directory and
+    the module is missing from an installed copy -- while still importing fine
+    from the repo root, where Python treats it as a namespace package. That is
+    how whul.site reached CI and failed there having passed every local test."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent / "whul"
+    for directory in sorted(root.rglob("*")):
+        if not directory.is_dir() or directory.name == "__pycache__":
+            continue
+        if not any(directory.glob("*.py")):
+            continue
+        assert (directory / "__init__.py").exists(), (
+            f"{directory.relative_to(root.parent)} has modules but no "
+            f"__init__.py, so it will be missing from an installed copy"
+        )
+
+
+def test_every_subpackage_imports():
+    """A smoke test against the same failure from the other direction."""
+    import importlib
+
+    for module in (
+        "whul.config.league", "whul.normalize", "whul.bestball", "whul.pipeline",
+        "whul.simulate", "whul.roster_import", "whul.admin",
+        "whul.scoring.nfl", "whul.sources.espn",
+        "whul.site.build", "whul.site.charts", "whul.site.theme", "whul.site.images",
+        "whul.store.db", "whul.store.benchmarks", "whul.store.rosters",
+    ):
+        assert importlib.import_module(module) is not None, module
+
+
+def test_no_source_file_is_excluded_by_gitignore():
+    """The whole whul/site/ package was invisible to git for four commits: the
+    ignore rule `site/` has no leading slash, so it matched at any depth. Local
+    tests all passed against the working tree, and CI -- checking out what was
+    actually committed -- was the first thing to notice.
+
+    Skipped where git is unavailable; it is a repository check, not a code one.
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not available")
+
+    root = Path(__file__).resolve().parent.parent
+    sources = [
+        str(p.relative_to(root))
+        for p in (root / "whul").rglob("*")
+        if p.suffix in (".py", ".sql", ".csv") and "__pycache__" not in p.parts
+    ]
+    if not sources:
+        pytest.skip("no sources found")
+
+    ignored = subprocess.run(
+        ["git", "check-ignore", "--stdin"],
+        cwd=root, input="\n".join(sources), capture_output=True, text=True,
+    ).stdout.split()
+    assert not ignored, (
+        f"these source files are excluded by .gitignore and would be missing "
+        f"from a clean checkout: {ignored}"
+    )
