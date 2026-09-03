@@ -334,6 +334,12 @@ a process died, and means nothing has to stay awake. `.github/workflows/publish.
 pipeline on a cron, rebuilds the site and deploys it. The database lives on a `data` branch rather
 than in `main`, so a growing binary does not put an unreadable diff into every pull request.
 
+The admin tool is the one thing that cannot be a file. `python -m whul.cli admin` serves a page on
+`127.0.0.1` against the same database — loopback only, so write access to the league is never on the
+network and never on the same public page the league reads. It is standard-library only; a
+five-manager league does not justify a web framework, and a tool with no dependencies still runs in
+a year.
+
 The tradeoff is that standings refresh nightly rather than on demand. For a season-long best-ball
 league scored from daily cumulative feeds, the underlying data only moves daily anyway.
 
@@ -456,7 +462,8 @@ Each increment ships end-to-end:
 - [ ] Read-only manager auth — **not needed on a static site**; the pages are
       public or they are not published. Revisit only if the league wants privacy.
 
-### Phase 5 — Admin
+### Phase 5 — Admin *(local, not published)*
+- [x] Trades — `python -m whul.cli admin`, validated before anything is written
 - [ ] Full dashboard per §4.6
 
 ### Phase 6 — Deployment
