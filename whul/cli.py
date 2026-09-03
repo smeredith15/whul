@@ -549,6 +549,21 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_admin(args: argparse.Namespace) -> int:
+    """Serve the local admin page.
+
+    Local because the published site is files: files cannot accept a trade, and
+    the controls that change the league should not be on the same public page
+    the league reads.
+    """
+    from whul.admin import serve
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    serve(store, args.season, port=args.port, open_browser=not args.no_browser)
+    return 0
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     """Score every slot and write the standings snapshot -- the nightly job."""
     from datetime import date as _date
@@ -934,6 +949,13 @@ def main(argv: list[str] | None = None) -> int:
     sim.add_argument("--end", help="YYYY-MM-DD to simulate through (default: today)")
     sim.add_argument("--purge", action="store_true", help="delete the simulated league")
     sim.set_defaults(func=cmd_simulate)
+
+    admin = sub.add_parser("admin", help="local page for trades and corrections")
+    admin.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    admin.add_argument("--season", default="2026-27-SIM", help="season to administer")
+    admin.add_argument("--port", type=int, default=8787)
+    admin.add_argument("--no-browser", action="store_true", help="do not open a browser")
+    admin.set_defaults(func=cmd_admin)
 
     rollup = sub.add_parser("rollup", help="score slots and snapshot the standings")
     rollup.add_argument("--db", default="data/whul.sqlite3", help="database path")
