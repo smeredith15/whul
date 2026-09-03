@@ -1,8 +1,14 @@
 # Setting up the terminal on your Mac
 
-The benchmarks have to be computed on a machine with open outbound HTTPS. The
-CodeOSS cloud instance is not one — its network policy refuses almost every
-sports feed with a `403` — so this is the setup for the Mac.
+One of two places the benchmarks can be computed; the CodeOSS cloud instance is
+the other, and is usually easier because it is already set up and reachable from
+a browser on any device. Use this if you would rather the pulls run on hardware
+you own — a full benchmark run is an hour or two of downloading, and the Mac is
+always on.
+
+Either way it must be a machine with open outbound HTTPS and a real desktop
+Python. An Android phone is not one: `pandas`, `pyarrow` and `pyreadr` are
+compiled extensions with no Android builds.
 
 About 15 minutes, most of it waiting on downloads. You only do it once.
 

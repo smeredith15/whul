@@ -15,14 +15,32 @@ python -m whul.cli benchmarks <list|compute|coverage|compare|versions|freeze>
 
 ## Before you start
 
-**Run this where the feeds reach.** Most sources are refused by the cloud
-sandbox's network policy (a 403 on CONNECT), so NFL and tennis are the only two
-that can be computed there. Everything else needs a machine with open outbound
-HTTPS.
+### Where to run it
 
-If the terminal is not set up yet, [`docs/MAC_SETUP.md`](MAC_SETUP.md) walks
-through it from opening Terminal to a working database. It ends where this
-starts. In short, you need:
+**Any machine with open outbound HTTPS and a real Python.** Two work:
+
+* **The CodeOSS cloud instance.** The obvious choice — it is where every source
+  probe in this project was run and came back green, and it is reachable from a
+  browser on anything, phone included. Open a terminal in it
+  (**Terminal → New Terminal**, or `` Ctrl+` ``) and follow
+  [`QUICKSTART.md`](QUICKSTART.md) part A if the checkout is not set up.
+* **A Mac.** [`MAC_SETUP.md`](MAC_SETUP.md) walks through it from opening
+  Terminal to a working database.
+
+**Not Android.** `pandas`, `pyarrow` and `pyreadr` are compiled extensions and
+none of them ships an Android build — `pyreadr`, which reads the tennis
+history, publishes only macOS, Windows and manylinux wheels, and manylinux is
+not what Termux provides. A phone is a fine way to *drive* the cloud instance
+through a browser, but not to run this directly.
+
+**Not the Claude Code development sandbox.** Its network policy answers `403`
+to almost every sports host, so only NFL (a GitHub release) and tennis (a local
+file) can be computed there. That is a property of that sandbox alone, not of
+cloud machines generally.
+
+### What you need in place
+
+Whichever machine you use:
 
 * the repo on branch `claude/fantasy-league-webapp-dp99e3`, with `.venv` built
   and `pytest -q` green — do not compute against a broken checkout;
