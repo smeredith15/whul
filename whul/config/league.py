@@ -15,6 +15,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+#: The league's managers: id -> display name. The id is the initials and is
+#: what appears in URLs, filenames and badges, where a full name would not
+#: fit; the display name is used wherever there is room for it.
+MANAGERS: dict[str, str] = {
+    "TG": "Tyler",
+    "LS": "Luke",
+    "SS": "Shelby",
+    "JM": "Jake",
+    "SM": "Scott",
+}
+
+
+def manager_name(manager_id: str) -> str:
+    """A manager's display name, falling back to the id itself.
+
+    The fallback matters during a draft: a roster file can name someone the
+    league config has not been told about yet, and showing their id is better
+    than showing nothing or refusing to build the page.
+    """
+    return MANAGERS.get(manager_id, manager_id)
+
+
 LEAGUE_MANAGER_COUNT = 5
 BENCHMARK_MANAGER_COUNT = 15
 

@@ -92,8 +92,10 @@ def test_no_asset_is_drafted_twice(simulated):
     assert occupants["asset_id"].is_unique
 
 
-def test_every_manager_is_filled(simulated):
-    store, _ = simulated
+def test_every_manager_has_a_mostly_filled_roster(simulated):
+    """Round two of a draft: most slots taken, a handful still open. That is
+    the state the app is actually in, so it is the state to build against."""
+    store, summary = simulated
     filled = store.query(
         "SELECT s.manager_id, COUNT(*) AS n FROM roster_slots s "
         "JOIN slot_occupancy o ON o.slot_id = s.slot_id "
@@ -101,7 +103,16 @@ def test_every_manager_is_filled(simulated):
         (simulate.SIM_SEASON,),
     )
     assert set(filled["manager_id"]) == set(simulate.MANAGERS)
-    assert (filled["n"] >= 60).all()
+    assert (filled["n"] >= 45).all()
+    assert summary["empty_slots"] > 0, "the draft is deliberately unfinished"
+
+
+def test_the_managers_are_the_real_league():
+    """Only the assets are invented -- ids, colours and pages are already right
+    when the roster file lands."""
+    from whul.config.league import MANAGERS as REAL
+
+    assert set(simulate.MANAGERS) == set(REAL)
 
 
 def test_trades_happen_and_leave_no_overlap(simulated):

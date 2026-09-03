@@ -541,11 +541,45 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     if not table.empty:
         latest = table[table["as_of"] == table["as_of"].max()]
         print(f"\n  standings on {latest.iloc[0]['as_of']}\n")
+        from whul.config.league import manager_name
+
         for row in latest.itertuples():
-            print(f"    {row.rank}. {row.manager_id:<10} {row.total:>10,.2f}")
+            label = f"{manager_name(row.manager_id)} ({row.manager_id})"
+            print(f"    {row.rank}. {label:<18} {row.total:>10,.2f}")
     for warning in summary["warnings"]:
         print(f"  ! {warning}")
     print(f"\nWritten to {args.db}. Remove it with `simulate --purge`.")
+    return 0
+
+
+def cmd_import_rosters(args: argparse.Namespace) -> int:
+    """Read the draft spreadsheet. Reports the column mapping before writing."""
+    from pathlib import Path as _Path
+
+    from whul.roster_import import run
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    try:
+        report = run(
+            store, args.season,
+            path=_Path(args.path) if args.path else None,
+            sheet=args.sheet, dry_run=not args.write,
+        )
+    except (FileNotFoundError, ImportError) as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
+
+    print(f"\n{report}\n")
+    if report.problems:
+        print("Nothing was written. Fix the rows above, or rename the columns "
+              "so they are recognised.\n", file=sys.stderr)
+        return 1
+    if not args.write:
+        print("Looks right? Re-run with --write.\n")
+    else:
+        print("Next: freeze benchmarks, then "
+              "`python -m whul.cli rollup --backfill && python -m whul.cli site`\n")
     return 0
 
 
@@ -949,6 +983,17 @@ def main(argv: list[str] | None = None) -> int:
     sim.add_argument("--end", help="YYYY-MM-DD to simulate through (default: today)")
     sim.add_argument("--purge", action="store_true", help="delete the simulated league")
     sim.set_defaults(func=cmd_simulate)
+
+    imp = sub.add_parser("import-rosters", help="read the draft spreadsheet")
+    imp.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    imp.add_argument("--season", default="2026-27", help="season to import into")
+    imp.add_argument("--path", help="spreadsheet (default: Master_Drafted_Assets.xlsx)")
+    imp.add_argument("--sheet", default=0, help="sheet name or index")
+    imp.add_argument(
+        "--write", action="store_true",
+        help="actually write; without it the run only reports what it found",
+    )
+    imp.set_defaults(func=cmd_import_rosters)
 
     admin = sub.add_parser("admin", help="local page for trades and corrections")
     admin.add_argument("--db", default="data/whul.sqlite3", help="database path")

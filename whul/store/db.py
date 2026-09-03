@@ -148,8 +148,32 @@ class Store:
 
     # -- reading ----------------------------------------------------------
     def query(self, sql: str, params: Sequence = ()) -> pd.DataFrame:
-        """A query as a data frame, which is what the scoring code consumes."""
-        return pd.read_sql_query(sql, self.conn, params=tuple(params))
+        """A query as a data frame, which is what the scoring code consumes.
+
+        SQL NULL comes back as ``None``, not NaN. pandas substitutes NaN only
+        because of its own type system, and NaN in a text column has caused the
+        same bug four times in this codebase: NaN is *truthy*, so
+        ``if row.asset_id`` passes for a slot with nobody in it, and
+        ``str(x or "")`` yields the string ``"nan"``. Fixing it here rather
+        than at each call site is the only version of the fix that stays fixed.
+
+        Numeric columns keep NaN, where it means what it says: a number that is
+        not there is not the same as zero.
+        """
+        frame = pd.read_sql_query(sql, self.conn, params=tuple(params))
+        for column in frame.columns:
+            # Both dtypes, not just object: pandas 3 gives text columns the
+            # ``str`` dtype, whose missing value is still NaN and still truthy.
+            # Testing only for object silently skipped every text column on a
+            # modern pandas, which is how this survived a first attempt at the
+            # fix.
+            if pd.api.types.is_object_dtype(frame[column]) or pd.api.types.is_string_dtype(
+                frame[column]
+            ):
+                frame[column] = frame[column].astype(object).where(
+                    frame[column].notna(), None
+                )
+        return frame
 
     def scalar(self, sql: str, params: Sequence = ()):
         row = self.conn.execute(sql, tuple(params)).fetchone()

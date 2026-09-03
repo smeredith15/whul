@@ -29,7 +29,7 @@ def site(tmp_path_factory):
 def test_a_manager_keeps_one_colour_everywhere():
     """Colour follows the entity, never its rank -- a change in the standings
     must not repaint anything."""
-    managers = ["emery", "avery", "casey"]
+    managers = ["SS", "TG", "JM"]
     first = {m: theme.series_index(managers, m) for m in managers}
     reordered = {m: theme.series_index(list(reversed(managers)), m) for m in managers}
     assert first == reordered
@@ -137,7 +137,7 @@ def test_every_page_is_written(site):
     assert (out / "style.css").exists()
     assert (out / "app.js").exists()
     for manager in simulate.MANAGERS:
-        assert (out / "team" / f"{manager}.html").exists()
+        assert (out / "team" / f"{manager.lower()}.html").exists()
     assert result["pages"] == 2 + len(simulate.MANAGERS)
 
 
@@ -181,7 +181,7 @@ def test_both_charts_ship_a_table_view(site):
 
 def test_a_team_page_shows_the_normalized_score(site):
     out, _ = site
-    html = (out / "team" / "avery.html").read_text()
+    html = (out / "team" / "tg.html").read_text()
     assert "Normalized" in html
     assert "Slot score" not in html, "dropped: raw stats live in the profile window"
 
@@ -190,7 +190,7 @@ def test_a_benched_score_is_struck_through_not_hidden(site):
     """It is what the slot would be worth, and seeing it is how a manager knows
     how close the bench is to the cut."""
     out, _ = site
-    html = (out / "team" / "avery.html").read_text()
+    html = (out / "team" / "tg.html").read_text()
     assert "class='bench'" in html
     assert 'class="struck"' in html
 
@@ -221,7 +221,7 @@ def test_a_profile_carries_the_stats_behind_the_raw_score(site):
 
 def test_names_in_tables_open_their_profile(site):
     out, _ = site
-    for page in ("index.html", "team/avery.html"):
+    for page in ("index.html", "team/tg.html"):
         assert 'class="assetlink"' in (out / page).read_text()
 
 
@@ -271,7 +271,7 @@ def test_every_team_is_reachable_from_every_page(site):
     for page in out.rglob("*.html"):
         html = page.read_text()
         for manager in simulate.MANAGERS:
-            assert f"{manager}.html" in html, f"{manager} missing from {page.name}"
+            assert f"{manager.lower()}.html" in html, f"{manager} missing from {page.name}"
 
 
 def test_the_about_page_explains_how_a_score_is_reached(site):
@@ -295,3 +295,58 @@ def test_the_pages_are_self_contained(site):
         html = page.read_text()
         assert "http://" not in html
         assert "cdn" not in html.lower()
+
+
+# --- managers and empty slots ----------------------------------------------
+
+def test_pages_use_the_name_and_badges_use_the_initials(site):
+    """Names where there is room, initials where there is not."""
+    out, _ = site
+    html = (out / "index.html").read_text()
+    assert "Tyler" in html and "Shelby" in html
+    assert ">TG</span>" in html, "the badge keeps the id"
+
+
+def test_a_team_page_is_titled_with_the_managers_name(site):
+    out, _ = site
+    assert "<title>WHUL — Tyler</title>" in (out / "team" / "tg.html").read_text()
+
+
+def test_an_unknown_manager_falls_back_to_their_id():
+    """A roster file can name someone the config has not been told about; an id
+    is better than a blank or a refused build."""
+    from whul.config.league import manager_name
+
+    assert manager_name("TG") == "Tyler"
+    assert manager_name("ZZ") == "ZZ"
+
+
+def test_an_undrafted_slot_is_shown_not_skipped(site):
+    """It is a slot the manager still has to fill; hiding it would make a
+    roster with a hole look complete."""
+    out, _ = site
+    pages = [(out / "team" / f"{m.lower()}.html").read_text() for m in simulate.MANAGERS]
+    assert any("Undrafted" in page for page in pages)
+    assert any("Still to draft" in page for page in pages)
+
+
+def test_an_undrafted_slot_never_becomes_a_player_called_nan(site):
+    """SQL NULL reaches pandas as NaN, which is truthy -- so an empty slot used
+    to pass the "is there anybody here" test and render as 'nan'."""
+    out, _ = site
+    for page in out.rglob("*.html"):
+        assert ">nan<" not in page.read_text().lower(), page.name
+
+
+def test_the_standings_total_ignores_empty_slots(site):
+    """An empty slot scores nothing, and nothing is not a number to add.
+
+    Checked as a whole cell rather than a substring -- a surname like Brennan
+    contains the letters, and a test that fails on a real player is worse than
+    no test."""
+    out, _ = site
+    html = (out / "index.html").read_text()
+    assert ">nan<" not in html.lower()
+    assert ">NaN<" not in html
+    for row in re.findall(r"<td class='num'>([^<]*)</td>", html):
+        assert row.strip().lower() != "nan"

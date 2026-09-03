@@ -24,6 +24,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from whul.config.league import ALL_SLOTS, SEASON, active_slots
+from whul.config.league import MANAGERS as LEAGUE_MANAGERS
 from whul.pipeline import backfill, write_daily_scores
 from whul.store import benchmarks as bm
 from whul.store import rosters
@@ -33,7 +34,17 @@ from whul.store.db import Store, _now
 SIM_SEASON = f"{SEASON.label}-SIM"
 SIM_PREFIX = "sim-"
 
-MANAGERS = ("avery", "blake", "casey", "devon", "emery")
+#: The real league. Only the assets are invented -- using the actual managers
+#: means their pages, colours and ids are already right when the roster file
+#: lands, and the banner still says the scores are placeholders.
+MANAGERS = tuple(LEAGUE_MANAGERS)
+
+#: How often a category is left one short. A partly-drafted league is the state
+#: the app is actually in right now, so the simulation should be in it too --
+#: an empty slot that only appears in production is an empty slot nobody tested.
+#: Expressed per category rather than as a share of all slots, because most
+#: categories hold one to four slots and a percentage of four rounds to four.
+SHORT_CATEGORY_ODDS = 0.22
 
 #: Enough surnames to fill every category without repeating inside one.
 _SURNAMES = (
@@ -209,6 +220,22 @@ def _draft(
     return picks
 
 
+def _undraft(rng: random.Random, picks: dict) -> int:
+    """Leave some slots empty, as a draft in progress does.
+
+    Removed from the end of each category's list so the slots that stay filled
+    are contiguous, which is what a snake draft actually produces -- a manager
+    fills their first NFL slot before their fourth.
+    """
+    emptied = 0
+    for groups in picks.values():
+        for key, pool in groups.items():
+            if len(pool) > 1 and rng.random() < SHORT_CATEGORY_ODDS:
+                groups[key] = pool[:-1]
+                emptied += 1
+    return emptied
+
+
 def _score_curve(
     rng: random.Random,
     ceiling: float,
@@ -276,13 +303,14 @@ def generate(
     store.insert_frame("assets", assets, keys=("asset_id",))
 
     for manager in MANAGERS:
-        rosters.add_manager(store, manager, manager.title())
+        rosters.add_manager(store, manager, LEAGUE_MANAGERS[manager])
         rosters.create_slots(store, manager, SIM_SEASON)
 
     slots_by_manager = {
         m: rosters.load_slots(store, SIM_SEASON, m) for m in MANAGERS
     }
     picks = _draft(rng, assets)
+    empty = _undraft(rng, picks)
     for manager, slots in slots_by_manager.items():
         remaining = {k: list(v) for k, v in picks[manager].items()}
         for slot in slots:
@@ -339,6 +367,7 @@ def generate(
     summary = {
         "season": SIM_SEASON,
         "managers": len(MANAGERS),
+        "empty_slots": empty,
         "assets": len(assets),
         "slots": sum(len(s) for s in slots_by_manager.values()),
         "days": len(days),
@@ -350,7 +379,7 @@ def generate(
         print(
             f"simulated {summary['season']}: {summary['managers']} managers, "
             f"{summary['slots']} slots, {summary['assets']} assets, "
-            f"{summary['days']} days, {trades} trades",
+            f"{summary['days']} days, {trades} trades, {empty} slots still empty",
             flush=True,
         )
     return summary
