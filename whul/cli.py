@@ -37,6 +37,11 @@ def _nfl(season: int, assets: str) -> pd.DataFrame:
 #: Fantasy category -> ESPN league key, for the results-only NCAA leagues.
 #: Probeable but not scored in their own right: a club's cup and European
 #: matches are gathered into its league total rather than standing alone.
+#: What a bare ``--into`` means: whichever version for this season is still
+#: being built. Not a valid version id, so it cannot collide with one.
+LATEST_DRAFT = "\0latest"
+
+
 PROBE_ONLY_COMPETITIONS = (
     "ucl", "uel", "uecl", "facup", "efl_cup",
     "copadelrey", "dfbpokal", "coppaitalia", "coupedefrance",
@@ -746,8 +751,20 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
 
     store = _benchmark_store(args)
     if args.into:
+        target = args.into
+        if target == LATEST_DRAFT:
+            draft = store_benchmarks.latest_draft(store, args.season)
+            if draft is None:
+                print(
+                    f"\nNo unfrozen version for {args.season} to add to. Drop --into "
+                    f"to start one.\n",
+                    file=sys.stderr,
+                )
+                return 1
+            target = draft.version
+            print(f"\n  adding to the version still being built: {target}")
         try:
-            version = benchmarks.extend(store, runs, args.into, notes=args.notes)
+            version = benchmarks.extend(store, runs, target, notes=args.notes)
         except (ValueError, store_benchmarks.FrozenBenchmarkError) as exc:
             print(f"\n{exc}\n", file=sys.stderr)
             return 1
@@ -1306,10 +1323,12 @@ def main(argv: list[str] | None = None) -> int:
         "--save", action="store_true", help="store the result as an unfrozen version",
     )
     bench_compute.add_argument(
-        "--into", metavar="VERSION",
+        "--into", metavar="VERSION", nargs="?", const=LATEST_DRAFT,
         help="add to this unfrozen version instead of starting a new one, so a "
              "run split across sittings builds one scale rather than several "
-             "with different holes",
+             "with different holes. Bare --into means the season's newest "
+             "unfrozen version, so the id does not have to be carried between "
+             "commands",
     )
     bench_compute.add_argument("--compare", help="version to diff the new one against")
     bench_compute.add_argument("--csv", help="also write the benchmarks to this file")

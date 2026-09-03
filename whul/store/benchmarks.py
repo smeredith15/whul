@@ -189,6 +189,23 @@ def get_version(store: Store, version: str) -> BenchmarkVersion | None:
 SIMULATED_SUFFIX = "-SIM"
 
 
+def latest_draft(store: Store, season: str) -> BenchmarkVersion | None:
+    """The newest unfrozen version for a season -- the one still being built.
+
+    A twenty-league run happens over several sittings, and having to carry the
+    version id between them is the part that goes wrong: an unset shell variable
+    turns into an argument error at best and a second half-built version at
+    worst. Frozen versions are excluded because adding to one is refused
+    anyway.
+    """
+    row = store.conn.execute(
+        "SELECT * FROM benchmark_versions WHERE season = ? AND frozen_at IS NULL "
+        "ORDER BY computed_at DESC, rowid DESC LIMIT 1",
+        (season,),
+    ).fetchone()
+    return _to_version(row) if row else None
+
+
 def active_version(store: Store, season: str) -> BenchmarkVersion | None:
     """The frozen version a season's scores are measured against.
 

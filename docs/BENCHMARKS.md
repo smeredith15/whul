@@ -110,25 +110,35 @@ Read the output before moving on. Three things are worth stopping for:
 
 ## Step 4 — add the rest to the *same* version
 
-Use `--into <version>` so a run split across sittings builds one scale rather
-than several with different holes in them.
+Use `--into` so a run split across sittings builds one scale rather than several
+with different holes in them. Bare, it means the season's newest unfrozen
+version — the one step 3 started — so there is no id to carry between commands:
 
 ```bash
-V=2026-27-20260903-185127     # whatever step 3 printed
-
-.venv/bin/python -m whul.cli benchmarks compute pga motorsports --save --into $V
-.venv/bin/python -m whul.cli benchmarks compute nhl nhl-teams --save --into $V
-.venv/bin/python -m whul.cli benchmarks compute mlb mlb-teams --save --into $V
+.venv/bin/python -m whul.cli benchmarks compute pga motorsports --save --into
+.venv/bin/python -m whul.cli benchmarks compute nhl nhl-teams --save --into
+.venv/bin/python -m whul.cli benchmarks compute mlb mlb-teams --save --into
 .venv/bin/python -m whul.cli benchmarks compute epl laliga seriea \
-    bundesliga ligue1 mls nwsl --save --into $V
+    bundesliga ligue1 mls nwsl --save --into
 .venv/bin/python -m whul.cli benchmarks compute ncaaf ncaam ncaaw \
-    ncaabaseball ncaasoftball --save --into $V
-.venv/bin/python -m whul.cli benchmarks compute nba nba-teams --save --into $V
+    ncaabaseball ncaasoftball --save --into
 ```
 
-NBA last: ESPN is queried one date at a time, so five seasons of box scores is
-by far the longest pull here. Everything else is already banked by the time it
-starts.
+Each prints which version it added to. Pass the id explicitly
+(`--into 2026-27-20260903-203037`) when more than one draft version exists and
+you mean a particular one.
+
+**The NBA is the long one.** ESPN is queried a date at a time, so five seasons of
+box scores is thousands of requests — an hour or more, and a dropped connection
+would lose it. Run it detached:
+
+```bash
+nohup .venv/bin/python -m whul.cli benchmarks compute nba nba-teams \
+    --save --into > ~/nba-benchmarks.log 2>&1 &
+tail -f ~/nba-benchmarks.log
+```
+
+NBA last so everything else is already banked by the time it starts.
 
 Re-running a league you already added replaces its groups rather than
 duplicating them, so a league you want to redo is just the same command again.
@@ -138,7 +148,8 @@ duplicating them, so a league you want to redo is just the same command again.
 ## Step 5 — check the version against the roster
 
 ```bash
-.venv/bin/python -m whul.cli benchmarks coverage $V
+.venv/bin/python -m whul.cli benchmarks versions        # the id, if you lost it
+.venv/bin/python -m whul.cli benchmarks coverage <version>
 ```
 
 Every rostered league, and whether this version can score it. A missing one is
@@ -157,7 +168,7 @@ a script.
 ## Step 6 — freeze
 
 ```bash
-.venv/bin/python -m whul.cli benchmarks freeze $V
+.venv/bin/python -m whul.cli benchmarks freeze <version>
 ```
 
 This is the step that makes the version the scale. It **refuses** while a
@@ -178,7 +189,7 @@ which leaves both on the record and makes the change explainable rather than
 invisible:
 
 ```bash
-.venv/bin/python -m whul.cli benchmarks compare $OLD $NEW
+.venv/bin/python -m whul.cli benchmarks compare <old> <new>
 ```
 
 Every score in a group moves by that group's percentage, which is what that

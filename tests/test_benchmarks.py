@@ -638,3 +638,47 @@ def test_adding_to_a_frozen_version_is_refused_by_the_command(tmp_path, monkeypa
 def test_tennis_draws_from_the_windows_the_league_signed_off_on():
     windows, _ = benchmarks.windows_for("Tennis", count=5)
     assert [w.label for w in windows] == ["2022-23", "2023-24", "2024-25", "2025-26"]
+
+
+def test_a_bare_into_adds_to_the_version_still_being_built(tmp_path, monkeypatch, capsys):
+    # Carrying the version id between commands is the part that goes wrong: an
+    # unset shell variable turns `--into $V` into an argument error, and every
+    # league in that batch is lost.
+    patched_source(monkeypatch)
+    db = tmp_path / "w.sqlite3"
+    run_cli("compute", "nfl", "--latest", "2025", "--save", "--db", str(db))
+    capsys.readouterr()
+
+    assert run_cli(
+        "compute", "nfl", "--latest", "2024", "--save", "--into", "--db", str(db)
+    ) == 0
+    assert "still being built" in capsys.readouterr().out
+    assert len(open_store(str(db)).query("SELECT * FROM benchmark_versions")) == 1
+
+
+def test_a_bare_into_with_nothing_to_add_to_says_so(tmp_path, monkeypatch, capsys):
+    patched_source(monkeypatch)
+    db = tmp_path / "w.sqlite3"
+
+    assert run_cli(
+        "compute", "nfl", "--latest", "2025", "--save", "--into", "--db", str(db)
+    ) == 1
+    assert "Drop --into to start one" in capsys.readouterr().err
+
+
+def test_a_bare_into_ignores_a_frozen_version(tmp_path, monkeypatch, capsys):
+    # A frozen version cannot be added to, so resolving "latest" to one would
+    # only produce a refusal a step later.
+    patched_source(monkeypatch)
+    db = tmp_path / "w.sqlite3"
+    run_cli("compute", "nfl", "--latest", "2025", "--save", "--db", str(db))
+    frozen = open_store(str(db)).query(
+        "SELECT version FROM benchmark_versions"
+    ).loc[0, "version"]
+    run_cli("freeze", frozen, "--force", "--db", str(db))
+    capsys.readouterr()
+
+    assert run_cli(
+        "compute", "nfl", "--latest", "2024", "--save", "--into", "--db", str(db)
+    ) == 1
+    assert "Drop --into to start one" in capsys.readouterr().err
