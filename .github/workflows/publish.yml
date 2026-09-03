@@ -1,0 +1,112 @@
+# Nightly: refresh the league, rebuild the site, publish it.
+#
+# The whole app is a batch job and a folder of HTML, so this is the entire
+# deployment: no server to keep alive, no bill, nothing to patch. GitHub runs
+# the pipeline once a day and Pages serves the result.
+#
+# The database is the one piece of state, and it lives on a `data` branch
+# rather than in `main` -- committing a growing binary to the working branch
+# would put a diff nobody can read into every pull request. The branch is
+# restored before the run and pushed after it, so the season accumulates.
+#
+# UNVERIFIED: written where GitHub Actions cannot be exercised. The first run
+# is the test. If the data branch does not exist yet the restore step is
+# skipped and the run starts a fresh database, which is the correct behaviour
+# for the first night.
+
+name: Publish standings
+
+on:
+  schedule:
+    # 09:00 UTC -- after North American games have finished and been posted,
+    # and before anyone in the league is awake to look.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to publish"
+        default: "2026-27-SIM"
+      backfill:
+        description: "Rebuild every day from the season start"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # to push the database back to the data branch
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false   # never interrupt a run mid-write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SEASON: ${{ inputs.season || '2026-27-SIM' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Restore the database
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth 1
+            git checkout origin/data -- data/whul.sqlite3 || true
+          fi
+          if [ ! -f data/whul.sqlite3 ]; then
+            echo "No database yet -- building one from the draft file."
+            python -m whul.cli import-rosters --season 2026-27 --write
+            # Placeholder scores over the real roster, until the season starts
+            # and real ones exist to score. Under their own season label, so
+            # nothing invented is ever written into 2026-27.
+            python -m whul.cli simulate --from-season 2026-27
+          fi
+
+      - name: Refresh the rosters from the draft file
+        # Cheap and idempotent, and it means a re-uploaded spreadsheet reaches
+        # the site on the next run without anyone having to remember a step.
+        run: python -m whul.cli import-rosters --season 2026-27 --write
+
+      - name: Roll up the standings
+        run: |
+          if [ "${{ inputs.backfill }}" = "true" ]; then
+            python -m whul.cli rollup --season "$SEASON" --backfill
+          else
+            python -m whul.cli rollup --season "$SEASON"
+          fi
+
+      - name: Build the site
+        run: python -m whul.cli site --season "$SEASON"
+
+      - name: Save the database
+        run: |
+          git config user.name "whul-bot"
+          git config user.email "whul-bot@users.noreply.github.com"
+          git checkout --orphan data-tmp
+          git rm -rq --cached . || true
+          git add -f data/whul.sqlite3
+          git commit -qm "Database after $(date -u +%Y-%m-%d)"
+          git push -f origin data-tmp:data
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
