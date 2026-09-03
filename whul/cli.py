@@ -595,8 +595,11 @@ def cmd_site(args: argparse.Namespace) -> int:
         return 1
 
     print(f"\nBuilt {result['pages']} pages in {result['out']}/\n")
-    for key in ("season", "as_of", "managers", "days"):
+    for key in ("season", "as_of", "managers", "days", "profiles"):
         print(f"  {key:<10} {result[key]}")
+    photos = result.get("photos", {})
+    supplied = ", ".join(f"{k} {v}" for k, v in photos.items() if v)
+    print(f"  {'images':<10} {supplied or 'none yet — monograms in use'}")
     if result["simulated"]:
         print("\n  Simulated data -- every page says so.")
     print(f"\nOpen {result['out']}/index.html, or serve it with:")

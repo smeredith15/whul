@@ -1,12 +1,14 @@
 """The generated site."""
 
+import json
+import re
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 from whul import simulate
-from whul.site import charts, theme
+from whul.site import charts, images, theme
 from whul.site.build import build
 from whul.store import open_store
 
@@ -82,16 +84,43 @@ def test_a_chart_with_no_data_says_so_rather_than_drawing_an_empty_frame():
     assert "Nothing scored" in charts.contribution_chart([], [], {})
 
 
+SLOT_ROWS = [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")]
+SLOT_VALUES = {
+    ("Avery", "NFL 1"): (100.0, "a1", "P. Vance"),
+    ("Avery", "NFL 2"): (60.0, "a2", "R. Lockwood"),
+}
+
+
 def test_bars_are_capped_and_rounded_at_the_data_end():
-    svg = charts.contribution_chart(["NFL"], [("Avery", 1)], {("Avery", "NFL"): 100.0})
-    assert f'height="{charts.BAR_MAX_THICKNESS}"' in svg
-    assert charts.BAR_MAX_THICKNESS <= 24
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert f'height="{charts.SLOT_BAR_THICKNESS}"' in svg
+    assert charts.SLOT_BAR_THICKNESS <= 24
     assert 'rx="4' in svg
 
 
 def test_every_bar_carries_a_native_title_for_keyboard_and_screen_readers():
-    svg = charts.contribution_chart(["NFL"], [("Avery", 1)], {("Avery", "NFL"): 100.0})
-    assert "<title>Avery — NFL: 100</title>" in svg
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert "<title>Avery — NFL 1: P. Vance 100</title>" in svg
+
+
+def test_every_bar_is_one_slot_so_any_two_are_comparable():
+    """A category with four slots used to dwarf one with a single slot simply
+    by having more of them; now every bar is one normalized score."""
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert svg.count('class="bar"') == 2
+
+
+def test_a_bar_knows_which_asset_it_stands_for():
+    """So clicking it can open that player's profile."""
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert 'data-asset="a1"' in svg
+
+
+def test_a_category_is_written_once_per_run_of_its_slots():
+    """Four rows of the same word is four lines of noise."""
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert svg.count(">NFL<") == 1
+    assert ">#1<" in svg and ">#2<" in svg
 
 
 def test_a_legend_is_present_for_more_than_one_series():
@@ -119,6 +148,23 @@ def test_simulated_data_is_labelled_on_every_page(site):
         assert "Simulated data" in page.read_text(), page.name
 
 
+def test_the_standings_show_a_best_performer_not_a_slot_count(site):
+    """A count of counting slots is the same number for everyone; the best
+    performer is the thing worth looking at."""
+    out, _ = site
+    html = (out / "index.html").read_text()
+    assert "Best performer" in html
+    assert "Counting slots" not in html
+
+
+def test_the_headline_tiles_say_something_that_changes(site):
+    """The ceiling was a constant nobody approaches."""
+    out, _ = site
+    html = (out / "index.html").read_text()
+    assert "Biggest riser this week" in html
+    assert "Ceiling" not in html
+
+
 def test_the_standings_table_is_the_default_view(site):
     """Not a tab or a toggle: the light-mode palette's contrast warning makes
     a readable table mandatory, and it is also just the thing people want."""
@@ -133,18 +179,91 @@ def test_both_charts_ship_a_table_view(site):
     assert html.count("Show as a table") == 2
 
 
-def test_a_team_page_shows_raw_and_normalized_side_by_side(site):
-    """What the league asked for: raw stats and normalized scores per slot."""
+def test_a_team_page_shows_the_normalized_score(site):
     out, _ = site
     html = (out / "team" / "avery.html").read_text()
-    assert "Raw" in html and "Normalized" in html and "Slot score" in html
+    assert "Normalized" in html
+    assert "Slot score" not in html, "dropped: raw stats live in the profile window"
 
 
-def test_a_team_page_marks_the_bench(site):
-    """Best ball selects on its own, so which slots are counting is the whole
-    story of a roster."""
+def test_a_benched_score_is_struck_through_not_hidden(site):
+    """It is what the slot would be worth, and seeing it is how a manager knows
+    how close the bench is to the cut."""
     out, _ = site
-    assert "class='bench'" in (out / "team" / "avery.html").read_text()
+    html = (out / "team" / "avery.html").read_text()
+    assert "class='bench'" in html
+    assert 'class="struck"' in html
+
+
+# --- the profile window ----------------------------------------------------
+
+def test_every_rostered_asset_ships_its_profile_with_the_page(site):
+    """A static site has nothing to fetch from, so a profile has to already be
+    there when it is clicked."""
+    out, result = site
+    html = (out / "index.html").read_text()
+    assert 'id="assetdata"' in html
+    assert '<dialog class="profile"' in html
+    assert result["profiles"] > 100
+
+
+def test_a_profile_carries_the_stats_behind_the_raw_score(site):
+    out, _ = site
+    payload = json.loads(
+        re.search(r'id="assetdata">(.*?)</script>',
+                  (out / "index.html").read_text(), re.S).group(1)
+    )
+    profile = next(p for p in payload.values() if p["stats"])
+    assert profile["raw"] != "—"
+    assert profile["scaled"] != "—"
+    assert len(profile["stats"]) >= 3
+
+
+def test_names_in_tables_open_their_profile(site):
+    out, _ = site
+    for page in ("index.html", "team/avery.html"):
+        assert 'class="assetlink"' in (out / page).read_text()
+
+
+# --- images ----------------------------------------------------------------
+
+def test_a_missing_photo_falls_back_to_a_monogram(site):
+    """Not a placeholder to be replaced later: a page with three photos and
+    forty-five monograms should still look deliberate."""
+    out, _ = site
+    html = (out / "index.html").read_text()
+    assert 'class="avatar mono"' in html
+
+
+def test_a_monogram_uses_initials():
+    assert images._initials("L. Delgado") == "LD"
+    assert images._initials("Oakhurst Rovers") == "OR"
+    assert images._initials("avery") == "AV"
+    assert images._initials("") == "?"
+
+
+def test_a_supplied_photo_is_used_and_published(tmp_path):
+    source = tmp_path / "img"
+    (source / "asset").mkdir(parents=True)
+    (source / "asset" / "sim-x.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert images.find("asset", "sim-x", source) is not None
+    html = images.avatar("asset", "sim-x", "X Y", source=source)
+    assert "<img" in html and "sim-x.png" in html
+
+    out = tmp_path / "site"
+    out.mkdir()
+    counts = images.copy_all(out, source)
+    assert counts["asset"] == 1
+    assert (out / "img" / "asset" / "sim-x.png").exists()
+
+
+def test_photo_lookup_is_by_the_id_the_store_uses(tmp_path):
+    """Adding a photo should be dropping in a file -- no manifest to update."""
+    source = tmp_path / "img"
+    (source / "manager").mkdir(parents=True)
+    (source / "manager" / "avery.webp").write_bytes(b"RIFF")
+    assert images.find("manager", "avery", source).name == "avery.webp"
+    assert images.find("manager", "blake", source) is None
 
 
 def test_every_team_is_reachable_from_every_page(site):

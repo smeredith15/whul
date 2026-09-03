@@ -448,8 +448,11 @@ Each increment ships end-to-end:
 - [x] Standings table — the default view, not a tab
 - [x] Contribution bar graph (§4.2) — grouped horizontal bars by roster category
 - [x] Progression line graph — hover crosshair, direct end labels, table view
-- [x] My Team / all-teams browser — raw and normalized per slot, bench marked
-- [ ] Asset detail with score history
+- [x] My Team / all-teams browser — normalized per slot, benched slots struck through
+- [x] Asset profile window — photo, badge, the stat lines behind the raw score; opens
+      from a bar or a name
+- [x] Profile photos — drop files in `assets/img/`, monogram fallback until then
+- [ ] Asset score history (a sparkline in the profile window)
 - [ ] Read-only manager auth — **not needed on a static site**; the pages are
       public or they are not published. Revisit only if the league wants privacy.
 

@@ -87,6 +87,57 @@ _ACTIVE_MONTHS = {
     "Motorsports": (2, 11),
 }
 
+#: Plausible stat lines per category, as (label, share of the raw score,
+#: unit). The profile window shows what a raw score was built from, so the
+#: simulation has to build one from something rather than inventing a total.
+_STAT_LINES = {
+    "NFL": (("Passing yards", 0.42, 1.0), ("Passing TDs", 0.30, 0.06),
+            ("Rushing yards", 0.18, 0.55), ("Receptions", 0.10, 0.11)),
+    "NBA": (("Points", 0.46, 0.9), ("Rebounds", 0.22, 0.35),
+            ("Assists", 0.20, 0.30), ("Steals + blocks", 0.12, 0.10)),
+    "MLB": (("Total bases", 0.40, 0.7), ("RBI", 0.24, 0.28),
+            ("Runs", 0.22, 0.27), ("Stolen bases", 0.14, 0.07)),
+    "NHL": (("Goals", 0.38, 0.10), ("Assists", 0.32, 0.13),
+            ("Shots", 0.20, 0.55), ("Plus/minus", 0.10, 0.06)),
+    "PGA": (("Top-10 finishes", 0.45, 0.02), ("Events played", 0.30, 0.05),
+            ("Wins", 0.25, 0.006)),
+    "Tennis": (("Match wins", 0.50, 0.05), ("Straight-set wins", 0.30, 0.03),
+               ("Titles", 0.20, 0.004)),
+    "Motorsports": (("Top-5 finishes", 0.44, 0.03), ("Laps led", 0.32, 1.4),
+                    ("Wins", 0.24, 0.008)),
+}
+_TEAM_STAT_LINES = (
+    ("Wins", 0.46, 0.09), ("Big wins", 0.24, 0.04),
+    ("Shutouts", 0.16, 0.02), ("Point differential", 0.14, 0.5),
+)
+_SOCCER_STAT_LINES = (
+    ("Appearances", 0.34, 0.09), ("Goals", 0.30, 0.05),
+    ("Assists", 0.22, 0.04), ("Clean sheets", 0.14, 0.03),
+)
+
+
+def _stat_lines(category: str, asset_type: str) -> tuple:
+    if asset_type == "Team":
+        return _TEAM_STAT_LINES
+    if "Soccer" in category:
+        return _SOCCER_STAT_LINES
+    return _STAT_LINES.get(category, _TEAM_STAT_LINES)
+
+
+def build_stats(
+    asset_id: str, category: str, asset_type: str, raw_points: float
+) -> dict:
+    """A stat line that adds up to the raw score.
+
+    The profile window's job is showing how a raw score was arrived at, so the
+    components have to reconcile to it rather than being decorative.
+    """
+    stats = {}
+    for label, share, unit in _stat_lines(category, asset_type):
+        stats[label] = round(raw_points * share * unit, 1)
+    return stats
+
+
 #: A manager's overall form, so the standings separate instead of converging.
 #: Spread deliberately narrow: a runaway leader makes the chart as
 #: uninformative as five identical lines.
@@ -258,6 +309,7 @@ def generate(
         if row.asset_id in drafted
     }
     version = _freeze_benchmarks(store, assets)
+    lookup = assets.set_index("asset_id")
     for index, day in enumerate(days):
         frame = pd.DataFrame({
             "asset_id": list(curves),
@@ -265,6 +317,19 @@ def generate(
             "scaled_score": [c[index] for c in curves.values()],
         })
         write_daily_scores(store, frame, SIM_SEASON, day, version)
+
+    # Raw stats for the final day only. The profile window reads the latest,
+    # and writing a full season of them would multiply the database for
+    # placeholder data nobody will look back through.
+    final = days[-1]
+    by_league: dict[str, list[dict]] = {}
+    for asset_id, curve in curves.items():
+        row = lookup.loc[asset_id]
+        stats = build_stats(asset_id, row["league"], row["asset_type"], curve[-1] * 4)
+        by_league.setdefault(row["league"], []).append({"asset_id": asset_id, **stats})
+    for league, rows in by_league.items():
+        store.record_stats(rows, source="simulate", season=SIM_SEASON,
+                           as_of=final, league=league)
 
     trades = _make_trades(store, rng, slots_by_manager, days)
     reports = backfill(
