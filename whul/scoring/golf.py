@@ -86,6 +86,10 @@ def score_events(results: pd.DataFrame) -> pd.DataFrame:
         {True: MAJOR_MULTIPLIER, False: 1.0}
     )
     work["made_cut"] = work["position"] <= CUT_POSITION
+    # Named here rather than only on the season totals, so the window-based
+    # benchmark reads the same league and role the season view does.
+    work["league"] = "PGA"
+    work["role"] = "Golfer"
     return work.reset_index(drop=True)
 
 

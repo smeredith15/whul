@@ -148,6 +148,11 @@ def get_version(store: Store, version: str) -> BenchmarkVersion | None:
     return _to_version(row) if row else None
 
 
+#: The simulator writes under the real season's label with this appended, so a
+#: placeholder run cannot be mistaken for the season itself.
+SIMULATED_SUFFIX = "-SIM"
+
+
 def active_version(store: Store, season: str) -> BenchmarkVersion | None:
     """The frozen version a season's scores are measured against.
 
@@ -155,15 +160,26 @@ def active_version(store: Store, season: str) -> BenchmarkVersion | None:
     is legitimate -- a mid-season correction is exactly that -- and the rows in
     ``daily_scores`` each name the version they used, so the older scores stay
     explainable.
+
+    A simulated season falls back to the real one's scale. The simulator exists
+    to show what the standings will look like, which it can only do if its
+    scores are on the same scale the season itself will use; freezing a second,
+    identical version under the ``-SIM`` label would just be a copy that can
+    drift.
     """
-    row = store.conn.execute(
-        # rowid breaks a tie deterministically by insertion order, so even
-        # two versions frozen in the same millisecond resolve the same way on
-        # every read rather than by whatever the engine returns first.
-        "SELECT * FROM benchmark_versions WHERE season = ? AND frozen_at IS NOT NULL "
-        "ORDER BY frozen_at DESC, rowid DESC LIMIT 1",
-        (season,),
-    ).fetchone()
+    def frozen(label: str):
+        return store.conn.execute(
+            # rowid breaks a tie deterministically by insertion order, so even
+            # two versions frozen in the same millisecond resolve the same way on
+            # every read rather than by whatever the engine returns first.
+            "SELECT * FROM benchmark_versions WHERE season = ? AND frozen_at IS NOT NULL "
+            "ORDER BY frozen_at DESC, rowid DESC LIMIT 1",
+            (label,),
+        ).fetchone()
+
+    row = frozen(season)
+    if row is None and season.endswith(SIMULATED_SUFFIX):
+        row = frozen(season[: -len(SIMULATED_SUFFIX)])
     return _to_version(row) if row else None
 
 

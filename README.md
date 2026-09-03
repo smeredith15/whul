@@ -49,12 +49,50 @@ Two commands exist for checking a data source:
 .venv/bin/python -m whul.cli validate nfl --seasons 2020-2024 --target 2024
 ```
 
+## Freezing the benchmarks
+
+The benchmark is the number every score in its group is divided by, so it
+decides what 100 means. Getting it wrong produces no error — just a season of
+plausible, wrong standings. Computing, reviewing and adopting one are therefore
+three separate steps:
+
+```bash
+.venv/bin/python -m whul.cli benchmarks list                    # what can be computed
+.venv/bin/python -m whul.cli benchmarks compute nfl tennis      # pull, score, print
+.venv/bin/python -m whul.cli benchmarks compute --save          # every league, stored unfrozen
+.venv/bin/python -m whul.cli benchmarks coverage <version>      # what the roster needs
+.venv/bin/python -m whul.cli benchmarks compare <old> <new>     # how far scores would move
+.venv/bin/python -m whul.cli benchmarks freeze <version>        # adopt it
+```
+
+Five seasons by default, counting back from the last completed one. COVID
+seasons are excluded — and reaching past one lengthens the reach rather than
+shrinking the pool, so the NBA draws on 2019 and 2022-25.
+
+Tennis, golf and motorsport are pooled differently: they run continuously, so
+their benchmark is drawn over the league year's own August-to-July window
+shifted back whole years, not over calendar seasons (§2.3). A window is judged
+by the year it *ends* in, and one the source cannot cover to its end date is
+dropped rather than pooled — a half-covered window looks like a full one with
+quiet athletes in it. Tennis starts at the 2021-22 window, the first one that
+holds no rearranged calendar.
+
+`freeze` refuses while a rostered asset has no benchmark, since that manager
+would otherwise score nothing without an error; `--force` overrides it. Nothing
+is measured against a version until it is frozen, and a frozen version is never
+edited — superseding it means a new version, which leaves both on the record.
+
+Tennis history comes from `model_data_snapshot.rds` in a `tennis2026` checkout.
+Set `WHUL_TENNIS2026` if it is not a sibling of this repository.
+
 ## Layout
 
 | Path | Purpose |
 |---|---|
 | `whul/config/league.py` | Roster template, slot caps, season window, pool rates |
 | `whul/normalize.py` | Buffer pool → frozen 99th-percentile benchmark → 0-100 scale |
+| `whul/benchmarks.py` | Compute, review and freeze a season's scale |
+| `whul/benchmark_sources.py` | Which loader and scorer each league's history comes from |
 | `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
 | `whul/scoring/` | Per-league scoring formulas, ported from `r-scripts/` |
 | `whul/sources/` | Data adapters (free sources only) |

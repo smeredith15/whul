@@ -21,16 +21,50 @@ noticed and added deliberately rather than scored by accident.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pandas as pd
 
 from whul.scoring.tennis import F, QF, R16, R32, R64, R128, RR, SF
 
-#: Where the snapshot and its player mapping live by default.
-DEFAULT_ROOT = Path("../tennis2026/backend/data/betting")
+#: Where the snapshot and its player mapping live inside ``tennis2026``.
+BETTING_DIR = Path("backend/data/betting")
 SNAPSHOT_NAME = "model_data_snapshot.rds"
 MAPPING_NAME = "player_mapping_table.csv"
+
+#: Places a ``tennis2026`` checkout tends to be, tried in order. The snapshot
+#: is the only surviving copy of the tennis history, so it is worth finding
+#: wherever it happens to sit rather than insisting on one layout: a dev box, a
+#: CI checkout and a cloud workspace all put a sibling repository somewhere
+#: different. ``WHUL_TENNIS2026`` wins over all of them.
+CHECKOUT_CANDIDATES = (
+    Path("../tennis2026"),
+    Path("../smeredith15/tennis2026"),
+    Path("~/tennis2026"),
+)
+
+
+def default_root(root: Path | None = None) -> Path:
+    """The betting directory to read from.
+
+    Returns the first candidate that actually holds the snapshot, so a missing
+    file reports the place it was looked for rather than a path nobody chose.
+    """
+    if root is not None:
+        return Path(root)
+    env = os.environ.get("WHUL_TENNIS2026")
+    candidates = [Path(env)] if env else []
+    candidates += list(CHECKOUT_CANDIDATES)
+    dirs = [Path(c).expanduser() / BETTING_DIR for c in candidates]
+    for directory in dirs:
+        if (directory / SNAPSHOT_NAME).exists():
+            return directory
+    return dirs[0]
+
+
+#: Kept as the documented default for callers that only want the usual layout.
+DEFAULT_ROOT = CHECKOUT_CANDIDATES[0] / BETTING_DIR
 #: A small supplement in the same schema, one directory up. It adds spelling
 #: variants for ids the main table already carries, so it is read second and
 #: never displaces a name the main table gave.
@@ -42,13 +76,13 @@ MAIN_DRAW_ROUNDS = (R128, R64, R32, R16, QF, SF, F, RR)
 
 
 def default_paths(root: Path | None = None) -> tuple[Path, Path]:
-    base = root or DEFAULT_ROOT
+    base = default_root(root)
     return base / SNAPSHOT_NAME, base / MAPPING_NAME
 
 
 def mapping_paths(root: Path | None = None) -> list[Path]:
     """Every player key file, main table first."""
-    base = root or DEFAULT_ROOT
+    base = default_root(root)
     return [base / MAPPING_NAME, (base / EXTRA_MAPPING).resolve()]
 
 

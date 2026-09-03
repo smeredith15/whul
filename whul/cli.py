@@ -21,6 +21,7 @@ import sys
 
 import pandas as pd
 
+from whul.benchmarks import DEFAULT_SEASONS
 from whul.normalize import apply_benchmarks, compute_benchmarks
 
 
@@ -667,6 +668,234 @@ def cmd_site(args: argparse.Namespace) -> int:
     return 0
 
 
+def _benchmark_store(args: argparse.Namespace):
+    from whul.store import open_store
+
+    return open_store(args.db)
+
+
+def cmd_benchmarks_list(_: argparse.Namespace) -> int:
+    """What can be benchmarked, in the order a full run would do it."""
+    from whul.benchmark_sources import resolve
+
+    print(f"\n  {'key':<14}{'league':<20}{'assets':<9}{'pooled':<8}{'status':<12}notes")
+    for source in resolve(None):
+        print(
+            f"  {source.key:<14}{source.league:<20}{source.asset_type.lower() + 's':<9}"
+            f"{'window' if source.windowed else 'season':<8}"
+            f"{source.reliability:<12}{source.note}"
+        )
+    print("\n  Cheap and verified first, so a failure late in the list still")
+    print("  leaves a reviewable set of the leagues that did work.")
+    print("  `window` means the pool is drawn over the season's own Aug-Jul")
+    print("  window rather than calendar seasons -- see PROJECT_PLAN 2.3.\n")
+    return 0
+
+
+def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
+    """Pull, score and take the percentile. Writes nothing unless --save."""
+    from whul import benchmarks
+    from whul.benchmark_sources import resolve
+    from whul.store import benchmarks as store_benchmarks
+
+    try:
+        sources = resolve(args.leagues)
+    except KeyError as exc:
+        print(f"\n{exc.args[0]}\n", file=sys.stderr)
+        return 2
+
+    print(f"\nComputing benchmarks from {args.seasons} seasons per league.\n")
+    runs = []
+    for source in sources:
+        load, score = source.build()
+        if source.windowed:
+            # A continuously running sport is benchmarked over the league
+            # year's own window, so --latest (a calendar year) does not apply.
+            run = benchmarks.compute_windowed(
+                source.league, load, score, seasons=args.seasons,
+            )
+        else:
+            run = benchmarks.compute(
+                source.league, load, score,
+                asset_type=source.asset_type,
+                seasons=args.seasons,
+                latest=args.latest,
+                scale_for=source.scale_for,
+            )
+        runs.append(run)
+        print(f"\n{run}")
+
+    ok = [r for r in runs if r.benchmarks is not None and not r.benchmarks.empty]
+    failed = [r for r in runs if r not in ok]
+    print(f"\n{len(ok)} of {len(runs)} computed.")
+    for run in failed:
+        print(f"  FAILED {run.league} {run.asset_type.lower()}s: {'; '.join(run.problems)}")
+
+    if args.csv and ok:
+        frame = pd.concat(
+            [r.benchmarks.assign(league=r.league, seasons_used=len(r.used)) for r in ok],
+            ignore_index=True,
+        )
+        frame.to_csv(args.csv, index=False)
+        print(f"\n  wrote {args.csv}")
+
+    if not args.save:
+        print("\nNothing written. Re-run with --save to store this as a version,")
+        print("then `benchmarks freeze <version>` to score against it.\n")
+        return 0 if ok else 1
+
+    store = _benchmark_store(args)
+    version = benchmarks.save(store, runs, args.season, notes=args.notes)
+    if version is None:
+        print("\nNothing to save.\n", file=sys.stderr)
+        return 1
+    print(f"\n  saved version {version} (unfrozen)")
+
+    previous = args.compare
+    if previous:
+        diff = store_benchmarks.compare(store, previous, version)
+        print(f"\n  against {previous}:")
+        _print_benchmark_diff(diff)
+
+    print(f"\n  Review it, then: python -m whul.cli benchmarks freeze {version}\n")
+    return 0
+
+
+def _print_benchmark_diff(diff) -> None:
+    if diff.empty:
+        print("    (nothing in common)")
+        return
+    print(f"    {'group':<24}{'before':>11}{'after':>11}{'change':>9}")
+    for row in diff.itertuples():
+        before = f"{row.before:,.1f}" if pd.notna(row.before) else "--"
+        after = f"{row.after:,.1f}" if pd.notna(row.after) else "--"
+        change = f"{row.change_pct:+.1f}%" if pd.notna(row.change_pct) else "new"
+        print(f"    {row.norm_key:<24}{before:>11}{after:>11}{change:>9}")
+    moved = diff["change_pct"].abs()
+    if moved.notna().any():
+        print(
+            f"\n    Every score in a group moves by that group's percentage. "
+            f"Largest: {moved.max():.1f}%."
+        )
+
+
+def cmd_benchmarks_versions(args: argparse.Namespace) -> int:
+    store = _benchmark_store(args)
+    rows = store.query(
+        "SELECT version, season, quantile, managers, computed_at, frozen_at, notes "
+        "FROM benchmark_versions ORDER BY computed_at DESC"
+    )
+    if rows.empty:
+        print("\nNo benchmark versions yet. Start with `benchmarks compute`.\n")
+        return 0
+    print(f"\n  {'version':<26}{'season':<12}{'state':<10}{'notes'}")
+    for row in rows.itertuples():
+        state = "FROZEN" if row.frozen_at else "draft"
+        print(f"  {row.version:<26}{row.season:<12}{state:<10}{row.notes or ''}")
+    print()
+    return 0
+
+
+def cmd_benchmarks_compare(args: argparse.Namespace) -> int:
+    from whul.store import benchmarks as store_benchmarks
+
+    store = _benchmark_store(args)
+    for version in (args.left, args.right):
+        if store_benchmarks.get_version(store, version) is None:
+            print(f"\nNo benchmark version {version!r}.\n", file=sys.stderr)
+            return 1
+    print(f"\n  {args.left} -> {args.right}\n")
+    _print_benchmark_diff(store_benchmarks.compare(store, args.left, args.right))
+    print()
+    return 0
+
+
+def cmd_benchmarks_coverage(args: argparse.Namespace) -> int:
+    """Which rostered assets a version can score -- checked before freezing."""
+    from whul import benchmarks
+
+    store = _benchmark_store(args)
+    rows = benchmarks.coverage(store, args.version, args.season)
+    if rows.empty:
+        print(f"\nNothing rostered in {args.season}, so nothing to cover.\n")
+        return 0
+    from whul.benchmark_sources import SOURCES
+
+    # A missing benchmark has two very different causes, and the fix differs:
+    # a league nobody has computed yet is one command away, while a league with
+    # no registered source at all needs a scraper written first.
+    registered = {(src.league, src.asset_type): src.key for src in SOURCES.values()}
+
+    missing = rows[~rows["covered"]]
+    print(f"\n  {'league':<22}{'type':<8}{'assets':>7}  {'benchmark groups'}")
+    for row in rows.itertuples():
+        if row.covered:
+            state = row.groups
+        elif (row.norm_league, row.asset_type) in registered:
+            state = f"MISSING -- run `benchmarks compute {registered[(row.norm_league, row.asset_type)]}`"
+        else:
+            state = "MISSING -- no source registered for it yet"
+        print(f"  {row.league:<22}{row.asset_type.lower():<8}{row.assets:>7}  {state}")
+
+    if missing.empty:
+        print(f"\n  Every rostered asset in {args.season} has a benchmark.\n")
+        return 0
+
+    unsourced = [
+        r for r in missing.itertuples()
+        if (r.norm_league, r.asset_type) not in registered
+    ]
+    print(
+        f"\n  {int(missing['assets'].sum())} rostered asset(s) across "
+        f"{len(missing)} league/type pair(s) would score nothing."
+    )
+    if unsourced:
+        pairs = ", ".join(f"{r.league} {r.asset_type.lower()}s" for r in unsourced)
+        print(f"  Of those, no data source exists yet for: {pairs}.")
+    print()
+    return 1
+
+
+def cmd_benchmarks_freeze(args: argparse.Namespace) -> int:
+    """Adopt a version. After this, changing it means a new version."""
+    from whul import benchmarks
+    from whul.store import benchmarks as store_benchmarks
+
+    store = _benchmark_store(args)
+    version = store_benchmarks.get_version(store, args.version)
+    if version is None:
+        print(f"\nNo benchmark version {args.version!r}.\n", file=sys.stderr)
+        return 1
+    if version.is_frozen:
+        print(f"\n{args.version} was already frozen at {version.frozen_at}.\n")
+        return 0
+
+    holes = benchmarks.coverage(store, args.version, version.season)
+    if not holes.empty:
+        missing = holes[~holes["covered"]]
+        if not missing.empty and not args.force:
+            print(
+                f"\n{int(missing['assets'].sum())} rostered asset(s) have no benchmark "
+                f"in this version:\n", file=sys.stderr,
+            )
+            for row in missing.itertuples():
+                print(
+                    f"  {row.league} {row.asset_type.lower()}s ({row.assets})",
+                    file=sys.stderr,
+                )
+            print(
+                "\nFreezing anyway would let those managers score nothing without "
+                "an error. Compute the missing leagues, or pass --force.\n",
+                file=sys.stderr,
+            )
+            return 1
+
+    frozen = store_benchmarks.freeze(store, args.version, notes=args.notes)
+    print(f"\n  froze {frozen.version} for {frozen.season} at {frozen.frozen_at}")
+    print("  Scores are now measured against it. Run `rollup --backfill` to restate.\n")
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
     if args.league == "tennis":
@@ -1032,6 +1261,62 @@ def main(argv: list[str] | None = None) -> int:
     site.add_argument("--season", default="2026-27-SIM", help="season to publish")
     site.add_argument("--out", default="site", help="output directory")
     site.set_defaults(func=cmd_site)
+
+    bench = sub.add_parser("benchmarks", help="compute, review and freeze the 0-100 scale")
+    bench_sub = bench.add_subparsers(dest="benchmarks_command", required=True)
+
+    def _with_db(parser):
+        parser.add_argument("--db", default="data/whul.sqlite3", help="database path")
+        return parser
+
+    bench_sub.add_parser("list", help="what can be benchmarked").set_defaults(
+        func=cmd_benchmarks_list
+    )
+
+    bench_compute = _with_db(bench_sub.add_parser("compute", help="pull, score, take the percentile"))
+    bench_compute.add_argument(
+        "leagues", nargs="*", metavar="league",
+        help="keys from `benchmarks list` (default: all of them)",
+    )
+    bench_compute.add_argument(
+        "--seasons", type=int, default=DEFAULT_SEASONS,
+        help=f"how many usable seasons to draw from (default: {DEFAULT_SEASONS})",
+    )
+    bench_compute.add_argument(
+        "--latest", type=int,
+        help="most recent season to include (default: last completed); ignored "
+             "for the window-pooled sports, whose windows come from the season dates",
+    )
+    bench_compute.add_argument("--season", default="2026-27", help="season the version is for")
+    bench_compute.add_argument(
+        "--save", action="store_true", help="store the result as an unfrozen version",
+    )
+    bench_compute.add_argument("--compare", help="version to diff the new one against")
+    bench_compute.add_argument("--csv", help="also write the benchmarks to this file")
+    bench_compute.add_argument("--notes", default="", help="why this version exists")
+    bench_compute.set_defaults(func=cmd_benchmarks_compute)
+
+    _with_db(bench_sub.add_parser("versions", help="every version and its state")).set_defaults(
+        func=cmd_benchmarks_versions
+    )
+
+    bench_compare = _with_db(bench_sub.add_parser("compare", help="what adopting one would change"))
+    bench_compare.add_argument("left")
+    bench_compare.add_argument("right")
+    bench_compare.set_defaults(func=cmd_benchmarks_compare)
+
+    bench_cover = _with_db(bench_sub.add_parser("coverage", help="rostered assets a version can score"))
+    bench_cover.add_argument("version")
+    bench_cover.add_argument("--season", default="2026-27", help="season whose roster to check")
+    bench_cover.set_defaults(func=cmd_benchmarks_coverage)
+
+    bench_freeze = _with_db(bench_sub.add_parser("freeze", help="adopt a version as the scale"))
+    bench_freeze.add_argument("version")
+    bench_freeze.add_argument("--notes", default="", help="why this version was adopted")
+    bench_freeze.add_argument(
+        "--force", action="store_true", help="freeze despite rostered assets with no benchmark",
+    )
+    bench_freeze.set_defaults(func=cmd_benchmarks_freeze)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     # Cups and European competitions are probeable even though they are not

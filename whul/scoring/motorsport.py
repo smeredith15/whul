@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from whul.config.league import norm_league
 from whul.scoring.base import resolve_num, resolve_str
 
 # --- NASCAR ---------------------------------------------------------------
@@ -56,14 +57,20 @@ def f1_points(finish: float | None, sprint: bool = False, fastest_lap: bool = Fa
     return points
 
 
-def score_nascar(results: pd.DataFrame, min_races: int = NASCAR_MIN_RACES) -> pd.DataFrame:
-    """Season totals per NASCAR driver."""
+def nascar_events(results: pd.DataFrame) -> pd.DataFrame:
+    """One dated, scored row per race start.
+
+    The season view aggregates this. Keeping the per-race rows is what lets the
+    benchmark be drawn over the league year's own August-to-July window: a
+    calendar year and a league year contain different races, and a series that
+    runs from February to November cannot be split by scaling.
+    """
     if results is None or results.empty:
         return pd.DataFrame()
 
     work = pd.DataFrame(
         {
-            "driver": resolve_str(results, ["driver", "driver_name", "racer"], required=True),
+            "player": resolve_str(results, ["driver", "driver_name", "racer"], required=True),
             "season": resolve_num(results, ["season", "year", "season_year"], required=True).astype(int),
             "finish": resolve_num(results, ["finish", "fin", "position", "pos"]),
             "date": resolve_str(results, ["date", "race_date"]),
@@ -73,23 +80,34 @@ def score_nascar(results: pd.DataFrame, min_races: int = NASCAR_MIN_RACES) -> pd
     if work.empty:
         return pd.DataFrame()
 
-    work["race_points"] = work["finish"].map(nascar_points)
-    totals = work.groupby(["season", "driver"], as_index=False).agg(
-        races_started=("race_points", "size"),
+    work["event_points"] = work["finish"].map(nascar_points)
+    work["league"] = "NASCAR"
+    work["role"] = "Driver"
+    return work.reset_index(drop=True)
+
+
+def score_nascar(results: pd.DataFrame, min_races: int = NASCAR_MIN_RACES) -> pd.DataFrame:
+    """Season totals per NASCAR driver."""
+    work = nascar_events(results)
+    if work.empty:
+        return pd.DataFrame()
+
+    totals = work.groupby(["season", "player"], as_index=False).agg(
+        races_started=("event_points", "size"),
         wins=("finish", lambda s: int((s == 1).sum())),
         top_tens=("finish", lambda s: int((s <= 10).sum())),
-        total_points=("race_points", "sum"),
+        total_points=("event_points", "sum"),
     )
     totals = totals[totals["races_started"] >= min_races]
     totals["league"] = "NASCAR"
     totals["role"] = "Driver"
-    return totals.rename(columns={"driver": "player"}).sort_values(
+    return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)
 
 
-def score_f1(results: pd.DataFrame) -> pd.DataFrame:
-    """Season totals per Formula 1 driver.
+def f1_events(results: pd.DataFrame) -> pd.DataFrame:
+    """One dated, scored row per race entry.
 
     Uses the feed's own points where present -- the standings endpoint reports
     them directly, and they already account for regulation changes -- and falls
@@ -108,12 +126,22 @@ def score_f1(results: pd.DataFrame) -> pd.DataFrame:
     )
     reported = resolve_num(results, ["points"], default=float("nan")).reindex(work.index)
     computed = work["finish"].map(lambda f: f1_points(f))
-    work["race_points"] = reported.fillna(computed)
+    work["event_points"] = reported.fillna(computed)
+    work["league"] = "F1"
+    work["role"] = "Driver"
+    return work.reset_index(drop=True)
+
+
+def score_f1(results: pd.DataFrame) -> pd.DataFrame:
+    """Season totals per Formula 1 driver."""
+    work = f1_events(results)
+    if work.empty:
+        return pd.DataFrame()
 
     totals = work.groupby(["season", "player"], as_index=False).agg(
-        races_started=("race_points", "size"),
+        races_started=("event_points", "size"),
         wins=("finish", lambda s: int((s == 1).sum())),
-        total_points=("race_points", "sum"),
+        total_points=("event_points", "sum"),
     )
     totals["league"] = "F1"
     totals["role"] = "Driver"
@@ -129,5 +157,18 @@ def score_players(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     out = pd.concat(frames, ignore_index=True)
     # The normalization group is the shared pool, not the individual series.
-    out["norm_league"] = "Motorsports"
+    out["norm_league"] = norm_league("NASCAR")
+    return out
+
+
+def race_events(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:
+    """Every dated race result from both series, in one frame."""
+    frames = [
+        f for f in (nascar_events(nascar), f1_events(f1))
+        if f is not None and not f.empty
+    ]
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    out["norm_league"] = norm_league("NASCAR")
     return out

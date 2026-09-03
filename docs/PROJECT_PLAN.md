@@ -447,7 +447,12 @@ Each increment ships end-to-end:
 ### Phase 3 — Scoring pipeline
 - [x] Store: schema, ingest, staleness detection (SQLite now, portable SQL for Postgres later)
 - [x] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
-- [x] Window-based benchmarking for individual sports (§2.3)
+- [x] Window-based benchmarking for individual sports (§2.3) — tennis, PGA and motorsport pool by
+      the season's own Aug-Jul window; a window the source cannot cover to its end is dropped
+- [x] `whul.cli benchmarks` — compute / coverage / compare / freeze, five usable seasons back,
+      COVID years excluded by lengthening the reach. Computing and adopting are separate acts, and
+      `freeze` refuses while a rostered asset has no benchmark. **NFL and tennis computed for real**;
+      every other league is proxy-blocked from the dev sandbox and must be run where the feeds reach
 - [x] Bisection weighting — MLB 0.75/1.181, WNBA 0.80/1.2255, NWSL 0.95/1.3294; MLS deliberately
       unbisected (drafting for 2027). See `whul/scoring/bisection.py`
 - [x] Proration engine (§2.4) — admin-entered expected games, counting stats only
