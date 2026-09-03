@@ -425,9 +425,10 @@ before sending the offer sheet — replacing the R script's interactive console 
 - [x] Import drafted rosters from `Master_Drafted_Assets.xlsx` — `python -m whul.cli
       import-rosters` resolves the columns however the sheet words them and reports the mapping;
       `--write` commits. A partly-finished draft imports fine: a blank cell is an open slot.
-      **Untested against the real file, which is not in the repo yet.**
-- [x] Placeholder league — `python -m whul.cli simulate` under season `2026-27-SIM`, with the real
-      managers and ~20 slots left undrafted so empty slots are exercised
+      **Verified on the real file**: 205 picks, 5 managers, 205 distinct assets, 95 slots still open.
+- [x] Placeholder league — `simulate --from-season 2026-27` mirrors the real roster and invents
+      only the scores, under season `2026-27-SIM`. Without `--from-season` it invents the players
+      too, which is what to do before there is a draft file.
 - [ ] Asset identity layer (canonical IDs + alias table) — name matching across feeds will be a
       recurring chore and needs to be designed in, not bolted on
 

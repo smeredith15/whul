@@ -529,7 +529,10 @@ def cmd_simulate(args: argparse.Namespace) -> int:
         return 0
 
     end = _date.fromisoformat(args.end) if args.end else None
-    summary = simulate.generate(store, seed=args.seed, end=end, verbose=False)
+    summary = simulate.generate(
+        store, seed=args.seed, end=end, verbose=False,
+        from_season=getattr(args, "from_season", None),
+    )
     print(f"\nSimulated league -- season {summary['season']}\n")
     for key in ("managers", "slots", "assets", "days", "trades"):
         print(f"  {key:<12} {summary[key]:,}")
@@ -650,7 +653,10 @@ def cmd_site(args: argparse.Namespace) -> int:
     supplied = ", ".join(f"{k} {v}" for k, v in photos.items() if v)
     print(f"  {'images':<10} {supplied or 'none yet — monograms in use'}")
     if result["simulated"]:
-        print("\n  Simulated data -- every page says so.")
+        what = {"scores_only": "scores only; rosters are real",
+                "everything": "rosters and scores"}.get(
+            result["simulated"], str(result["simulated"]))
+        print(f"\n  Simulated: {what} -- every page says so.")
     print(f"\nOpen {result['out']}/index.html, or serve it with:")
     print(f"  python -m http.server -d {result['out']} 8000")
     return 0
@@ -982,6 +988,10 @@ def main(argv: list[str] | None = None) -> int:
     sim.add_argument("--seed", type=int, default=2026, help="so runs are reproducible")
     sim.add_argument("--end", help="YYYY-MM-DD to simulate through (default: today)")
     sim.add_argument("--purge", action="store_true", help="delete the simulated league")
+    sim.add_argument(
+        "--from-season",
+        help="mirror this season's real rosters and invent only the scores",
+    )
     sim.set_defaults(func=cmd_simulate)
 
     imp = sub.add_parser("import-rosters", help="read the draft spreadsheet")

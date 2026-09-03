@@ -273,14 +273,71 @@ def _score_curve(
     return series
 
 
+def mirror_roster(store: Store, source_season: str) -> int:
+    """Copy a real roster into the simulated season.
+
+    Once the draft file exists, inventing players is the wrong placeholder: the
+    real rosters with placeholder *scores* is a far better rehearsal, and it
+    means the photographs, the names and the categories on screen are the ones
+    that will be there in October. Only the numbers are made up -- which is
+    what the banner says, and why the scores stay under their own season label
+    rather than being written into the real one.
+    """
+    slots = store.query(
+        "SELECT slot_id, manager_id, category, asset_type, slot_index "
+        "FROM roster_slots WHERE season = ?",
+        (source_season,),
+    )
+    if slots.empty:
+        return 0
+
+    store.upsert(
+        "roster_slots",
+        [
+            {
+                "slot_id": f"{r.slot_id}:sim", "manager_id": r.manager_id,
+                "season": SIM_SEASON, "category": r.category,
+                "asset_type": r.asset_type, "slot_index": r.slot_index,
+            }
+            for r in slots.itertuples()
+        ],
+        keys=("slot_id",),
+    )
+    occupancy = store.query(
+        "SELECT o.slot_id, o.asset_id, o.start_date, o.end_date, o.cost, o.note "
+        "FROM slot_occupancy o JOIN roster_slots s ON s.slot_id = o.slot_id "
+        "WHERE s.season = ?",
+        (source_season,),
+    )
+    store.upsert(
+        "slot_occupancy",
+        [
+            {
+                "slot_id": f"{r.slot_id}:sim", "asset_id": r.asset_id,
+                "start_date": r.start_date, "end_date": r.end_date,
+                "cost": r.cost, "note": r.note,
+            }
+            for r in occupancy.itertuples()
+        ],
+        keys=("slot_id", "start_date"),
+    )
+    return len(occupancy)
+
+
 def generate(
     store: Store,
     seed: int = 2026,
     start: date | None = None,
     end: date | None = None,
     verbose: bool = True,
+    from_season: str | None = None,
 ) -> dict:
-    """Build the whole simulated league and roll up its standings."""
+    """Build the simulated league and roll up its standings.
+
+    With ``from_season``, the rosters are copied from a real season and only
+    the scores are invented. Without it, the assets are invented too -- which
+    is what to do before there is a draft file to read.
+    """
     rng = random.Random(seed)
     start = start or SEASON.start
     end = min(end or date.today(), SEASON.end)
@@ -291,41 +348,90 @@ def generate(
     store.upsert(
         "admin_overrides",
         [{
-            "scope": "simulation", "key": "source", "value": "whul.simulate",
+            "scope": "simulation",
+            # What is invented, so the site's banner can say so accurately.
+            # Once the roster is real, calling the players placeholders is a
+            # lie on every page -- and a banner nobody can trust is worse than
+            # no banner.
+            "key": "scores_only" if from_season else "everything",
+            "value": "whul.simulate",
             "season": SIM_SEASON, "set_by": "simulate", "set_at": _now(),
-            "note": "Invented assets and rosters. Safe to delete; the real "
-                    "season is a different label.",
+            "note": (
+                f"Placeholder scores over the real {from_season} roster."
+                if from_season else
+                "Invented assets and rosters."
+            ) + " Safe to delete; the real season is a different label.",
         }],
         keys=("scope", "key", "season"),
     )
+    store.conn.execute(
+        "DELETE FROM admin_overrides WHERE scope = 'simulation' AND season = ? "
+        "AND key != ?",
+        (SIM_SEASON, "scores_only" if from_season else "everything"),
+    )
+    store.conn.commit()
 
-    assets = build_assets(rng)
-    store.insert_frame("assets", assets, keys=("asset_id",))
+    if from_season:
+        mirrored = mirror_roster(store, from_season)
+        if not mirrored:
+            raise ValueError(
+                f"no roster in {from_season}. Import one first, or drop "
+                f"--from-season to invent placeholder players too."
+            )
+        assets = store.query(
+            "SELECT asset_id, asset_type, display_name, league, role, norm_key "
+            "FROM assets"
+        )
+        slots_by_manager = {
+            m: rosters.load_slots(store, SIM_SEASON, m)
+            for m in sorted({s.manager for s in rosters.load_slots(store, SIM_SEASON)})
+        }
+        picks = {
+            manager: {}
+            for manager in slots_by_manager
+        }
+        for manager, slots in slots_by_manager.items():
+            for slot in slots:
+                if slot.occupancies:
+                    key = (slot.asset_type, slot.category)
+                    picks[manager].setdefault(key, []).append(
+                        slot.occupancies[0].asset_id
+                    )
+        empty = sum(
+            1 for slots in slots_by_manager.values()
+            for s in slots if not s.occupancies
+        )
+    else:
+        assets = build_assets(rng)
+        store.insert_frame("assets", assets, keys=("asset_id",))
 
-    for manager in MANAGERS:
-        rosters.add_manager(store, manager, LEAGUE_MANAGERS[manager])
-        rosters.create_slots(store, manager, SIM_SEASON)
+        for manager in MANAGERS:
+            rosters.add_manager(store, manager, LEAGUE_MANAGERS[manager])
+            rosters.create_slots(store, manager, SIM_SEASON)
 
-    slots_by_manager = {
-        m: rosters.load_slots(store, SIM_SEASON, m) for m in MANAGERS
-    }
-    picks = _draft(rng, assets)
-    empty = _undraft(rng, picks)
-    for manager, slots in slots_by_manager.items():
-        remaining = {k: list(v) for k, v in picks[manager].items()}
-        for slot in slots:
-            pool = remaining.get((slot.asset_type, slot.category))
-            if pool:
-                rosters.assign(store, slot.slot_id, pool.pop(0), start)
+        slots_by_manager = {
+            m: rosters.load_slots(store, SIM_SEASON, m) for m in MANAGERS
+        }
+        picks = _draft(rng, assets)
+        empty = _undraft(rng, picks)
+        for manager, slots in slots_by_manager.items():
+            remaining = {k: list(v) for k, v in picks[manager].items()}
+            for slot in slots:
+                pool = remaining.get((slot.asset_type, slot.category))
+                if pool:
+                    rosters.assign(store, slot.slot_id, pool.pop(0), start)
 
     # Daily scores for every drafted asset, plus the spares so a trade has
     # somewhere to come from.
     drafted = {a for chosen in picks.values() for pool in chosen.values() for a in pool}
     # Whose asset it is decides its form, so the managers' totals separate.
+    # Keyed off whoever is actually in this league, not the configured five: a
+    # mirrored roster may hold a subset, and a partly-imported draft certainly
+    # does.
     owner_strength = {
         asset: _MANAGER_STRENGTH[index % len(_MANAGER_STRENGTH)]
-        for index, manager in enumerate(MANAGERS)
-        for pool in picks[manager].values()
+        for index, (manager, groups) in enumerate(sorted(picks.items()))
+        for pool in groups.values()
         for asset in pool
     }
     curves = {
@@ -359,7 +465,9 @@ def generate(
         store.record_stats(rows, source="simulate", season=SIM_SEASON,
                            as_of=final, league=league)
 
-    trades = _make_trades(store, rng, slots_by_manager, days)
+    # Real rosters are not ours to rearrange: a made-up trade between two
+    # managers' actual players would look like something that happened.
+    trades = 0 if from_season else _make_trades(store, rng, slots_by_manager, days)
     reports = backfill(
         store, SIM_SEASON, start=start, end=end, today=end, verbose=False
     )

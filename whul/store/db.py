@@ -68,6 +68,7 @@ def apply_schema(conn: sqlite3.Connection) -> int:
     startup and is how a new table reaches an existing database.
     """
     conn.executescript(SCHEMA_PATH.read_text())
+    _add_missing_columns(conn)
     current = conn.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
     if current is None or current["v"] is None:
         conn.execute(
@@ -81,6 +82,24 @@ def apply_schema(conn: sqlite3.Connection) -> int:
         )
     conn.commit()
     return SCHEMA_VERSION
+
+
+#: Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS does
+#: nothing to a table that already exists, so a new column needs its own step
+#: or an existing database silently stays one version behind.
+ADDED_COLUMNS = (
+    ("slot_occupancy", "cost", "REAL"),
+)
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> list[str]:
+    added = []
+    for table, column, kind in ADDED_COLUMNS:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            added.append(f"{table}.{column}")
+    return added
 
 
 @dataclass

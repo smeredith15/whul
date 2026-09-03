@@ -193,3 +193,77 @@ def test_a_different_seed_gives_a_different_league():
         series = pipeline.progression(store, simulate.SIM_SEASON)
         stores.append(series[series["as_of"] == series["as_of"].max()]["total"].tolist())
     assert stores[0] != stores[1]
+
+
+# --- mirroring a real roster -----------------------------------------------
+
+def test_a_real_roster_can_be_mirrored_with_placeholder_scores(tmp_path):
+    """Once the draft file exists, inventing players is the wrong placeholder:
+    the real rosters with invented scores is a better rehearsal, and what is on
+    screen is what will be there in October."""
+    import pandas as pd
+
+    from whul.roster_import import run as import_run
+
+    path = tmp_path / "draft.csv"
+    pd.DataFrame([
+        {"Manager": "TG", "Category": "NFL", "Asset_Type": "Player",
+         "Name": "Lamar Jackson", "League": "NFL", "Winning_Bid": 40},
+        {"Manager": "LS", "Category": "NFL", "Asset_Type": "Player",
+         "Name": "Bijan Robinson", "League": "NFL", "Winning_Bid": 30},
+    ]).to_csv(path, index=False)
+
+    store = open_store(":memory:")
+    import_run(store, "2026-27", path=path, dry_run=False)
+    summary = simulate.generate(
+        store, seed=1, end=date(2026, 9, 30), verbose=False, from_season="2026-27"
+    )
+    assert summary["assets"] == 2
+    names = set(store.query("SELECT display_name FROM assets")["display_name"])
+    assert names == {"Lamar Jackson", "Bijan Robinson"}
+
+
+def test_mirroring_does_not_invent_trades(tmp_path):
+    """A made-up trade between two managers' actual players would look like
+    something that happened."""
+    import pandas as pd
+
+    from whul.roster_import import run as import_run
+
+    path = tmp_path / "draft.csv"
+    pd.DataFrame([
+        {"Manager": m, "Category": "NFL", "Asset_Type": "Player",
+         "Name": f"Player {m}", "League": "NFL", "Winning_Bid": 10}
+        for m in ("TG", "LS", "SS", "JM", "SM")
+    ]).to_csv(path, index=False)
+
+    store = open_store(":memory:")
+    import_run(store, "2026-27", path=path, dry_run=False)
+    summary = simulate.generate(
+        store, seed=1, end=date(2027, 1, 31), verbose=False, from_season="2026-27"
+    )
+    assert summary["trades"] == 0
+
+
+def test_mirroring_an_empty_season_says_what_to_do():
+    store = open_store(":memory:")
+    with pytest.raises(ValueError, match="Import one first"):
+        simulate.generate(store, from_season="nothing-here", verbose=False)
+
+
+def test_the_simulated_season_records_that_only_scores_are_invented(tmp_path):
+    import pandas as pd
+
+    from whul.roster_import import run as import_run
+
+    path = tmp_path / "draft.csv"
+    pd.DataFrame([{"Manager": "TG", "Category": "NFL", "Asset_Type": "Player",
+                   "Name": "X", "League": "NFL", "Winning_Bid": 1}]).to_csv(path, index=False)
+    store = open_store(":memory:")
+    import_run(store, "2026-27", path=path, dry_run=False)
+    simulate.generate(store, seed=1, end=date(2026, 9, 30), verbose=False,
+                      from_season="2026-27")
+    assert store.scalar(
+        "SELECT key FROM admin_overrides WHERE scope = 'simulation' AND season = ?",
+        (simulate.SIM_SEASON,),
+    ) == "scores_only"

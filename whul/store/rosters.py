@@ -47,6 +47,7 @@ def assign(
     start: date | str,
     end: date | str | None = None,
     note: str = "",
+    cost: float | None = None,
 ) -> None:
     """Put an asset in a slot from ``start``.
 
@@ -59,7 +60,7 @@ def assign(
         [{
             "slot_id": slot_id, "asset_id": asset_id,
             "start_date": _as_text(start), "end_date": _as_text(end) if end else None,
-            "note": note,
+            "cost": cost, "note": note,
         }],
         keys=("slot_id", "start_date"),
     )

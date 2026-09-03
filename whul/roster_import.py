@@ -34,12 +34,17 @@ DEFAULT_PATH = Path("Master_Drafted_Assets.xlsx")
 #: Column names to look for, most explicit first.
 COLUMNS = {
     "manager": ("manager", "manager_id", "owner", "team", "gm", "initials"),
-    "category": ("category", "slot", "league", "pool", "group", "position_group"),
+    "category": ("category", "roster_category", "slot", "pool", "group", "position_group"),
     "asset_type": ("asset_type", "type", "kind", "player_or_team"),
     "asset": ("asset", "player", "name", "player_name", "team_name", "selection"),
     "asset_id": ("asset_id", "id", "feed_id", "espn_id", "external_id"),
     "slot_index": ("slot_index", "slot_no", "slot", "index", "pick_in_slot"),
     "role": ("role", "position", "pos"),
+    # The competition the asset actually plays in, which is not the roster
+    # category: a Bundesliga player fills a "Club Soccer Other" slot, and the
+    # scoring needs the former while the roster needs the latter.
+    "league": ("league", "competition", "comp"),
+    "cost": ("winning_bid", "bid", "cost", "price", "salary", "amount"),
 }
 
 #: What counts as "no pick yet" in a spreadsheet cell.
@@ -80,7 +85,13 @@ class ImportReport:
 
 
 def _find_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
-    """The first candidate present, matched loosely on the header's wording."""
+    """The first candidate present, matched on whole words in the header.
+
+    Word boundaries, not substrings. A bare ``endswith`` matched "Winning_Bid"
+    against the candidate "id" and bound every asset's identity to its auction
+    price -- which the dry run showed as 61 distinct assets out of 205 picks,
+    because bids collide and names do not.
+    """
     normalized = {
         str(c).strip().lower().replace(" ", "_").replace("-", "_"): c
         for c in frame.columns
@@ -88,12 +99,23 @@ def _find_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None
     for candidate in candidates:
         if candidate in normalized:
             return normalized[candidate]
-    # A header like "Manager Name" should still match "manager".
+    # A header like "Manager Name" or "Player ID" should still match, but only
+    # where the candidate is one of the header's own words.
     for candidate in candidates:
         for key, original in normalized.items():
-            if key.startswith(candidate) or key.endswith(candidate):
+            if candidate in key.split("_"):
                 return original
     return None
+
+
+def _number(value) -> float | None:
+    """A numeric cell, or None. A blank price is unknown, not zero."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean(value) -> str:
@@ -185,14 +207,17 @@ def plan(frame: pd.DataFrame, path: str = "") -> tuple[list[dict], ImportReport]
 
         report.filled += 1
         report.managers[manager] = report.managers.get(manager, 0) + 1
+        league = _clean(row.get(columns.get("league"), "")) or category
         picks.append({
             "manager": manager,
             "category": category,
+            "league": league,
             "asset_type": asset_type,
             "slot_index": index,
-            "asset_id": asset_id or _asset_id(category, asset_type, asset),
+            "asset_id": asset_id or _asset_id(league, asset_type, asset),
             "display_name": asset or asset_id,
             "role": _clean(row.get(columns.get("role"), "")),
+            "cost": _number(row.get(columns.get("cost"))),
         })
 
     # Slots the sheet never mentioned are open too, not missing.
@@ -232,8 +257,8 @@ def apply(
         [
             {
                 "asset_id": p["asset_id"], "asset_type": p["asset_type"],
-                "display_name": p["display_name"], "league": p["category"],
-                "role": p["role"], "norm_key": p["category"],
+                "display_name": p["display_name"], "league": p["league"],
+                "role": p["role"], "norm_key": p["league"],
                 "active": 1, "created_at": _now(),
             }
             for p in {p["asset_id"]: p for p in picks}.values()
@@ -255,7 +280,10 @@ def apply(
             (pick["manager"], pick["asset_type"], pick["category"], pick["slot_index"])
         )
         if slot_id:
-            rosters.assign(store, slot_id, pick["asset_id"], start, note="draft")
+            rosters.assign(
+                store, slot_id, pick["asset_id"], start,
+                note="draft", cost=pick.get("cost"),
+            )
             written += 1
     return written
 

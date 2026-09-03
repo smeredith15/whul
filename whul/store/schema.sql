@@ -169,6 +169,10 @@ CREATE TABLE IF NOT EXISTS slot_occupancy (
     asset_id    TEXT NOT NULL REFERENCES assets (asset_id),
     start_date  TEXT NOT NULL,
     end_date    TEXT,
+    -- What the manager paid at auction. On the occupancy rather than the asset
+    -- because it is a price for an acquisition: a player traded on is worth
+    -- what the next manager gave up, not what the first one bid.
+    cost        REAL,
     note        TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (slot_id, start_date)
 );

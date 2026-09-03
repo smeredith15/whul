@@ -148,6 +148,15 @@ def test_simulated_data_is_labelled_on_every_page(site):
         assert "Simulated data" in page.read_text(), page.name
 
 
+def test_the_banner_says_what_is_actually_invented(tmp_path):
+    """Once the rosters are real, calling the players placeholders is false on
+    every page -- and a banner nobody can trust is worse than no banner."""
+    from whul.site.build import BANNERS
+
+    assert "rosters and players are invented" in BANNERS["everything"]
+    assert "rosters, players and prices are real" in BANNERS["scores_only"]
+
+
 def test_the_standings_show_a_best_performer_not_a_slot_count(site):
     """A count of counting slots is the same number for everyone; the best
     performer is the thing worth looking at."""
@@ -299,12 +308,26 @@ def test_the_pages_are_self_contained(site):
 
 # --- managers and empty slots ----------------------------------------------
 
-def test_pages_use_the_name_and_badges_use_the_initials(site):
-    """Names where there is room, initials where there is not."""
+def test_pages_use_the_name_where_there_is_room(site):
     out, _ = site
     html = (out / "index.html").read_text()
     assert "Tyler" in html and "Shelby" in html
-    assert ">TG</span>" in html, "the badge keeps the id"
+
+
+def test_a_badge_without_a_photo_shows_the_id_not_the_name(tmp_path):
+    """A manager's id already is their initials, so deriving them from the
+    display name would turn TG into T."""
+    badge = images.avatar(
+        "manager", "TG", "Tyler", slot=1, initials="TG", source=tmp_path
+    )
+    assert ">TG<" in badge
+
+
+def test_a_supplied_manager_photo_replaces_the_badge(site):
+    """The league has now supplied all five."""
+    out, result = site
+    assert result["photos"]["manager"] == 5
+    assert 'img/manager/' in (out / "index.html").read_text()
 
 
 def test_a_team_page_is_titled_with_the_managers_name(site):
