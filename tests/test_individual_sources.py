@@ -812,7 +812,9 @@ def test_data_attributes_on_the_container_are_reported():
 
 def test_a_page_with_nothing_to_find_reports_empty_rather_than_raising():
     found = schedule.discover_endpoints("<html><body>nothing here</body></html>")
-    assert found == {"urls": [], "data_attributes": [], "preloads": []}
+    assert found == {
+        "urls": [], "data_attributes": [], "preloads": [], "problem": ""
+    }
 
 
 # --- the WTA API -----------------------------------------------------------
@@ -950,3 +952,35 @@ def test_prose_cannot_classify_a_tournament():
     event does not make every record a Masters."""
     record = {"title": "X", "blurb": "the 1000-point event returns this year"}
     assert schedule._category_from_any_field(record) is None
+
+
+def test_a_missing_parser_is_reported_rather_than_read_as_an_empty_page():
+    """Without bs4 the endpoint scan still runs, but its silence has to be
+    explained: an empty data_attributes list otherwise reads as "the page has no
+    data attributes", which sends the diagnosis after the markup when the
+    environment is what is wrong."""
+    import builtins
+
+    from whul.sources import tour_schedule
+
+    real_import = builtins.__import__
+
+    def no_bs4(name, *args, **kwargs):
+        if name == "bs4":
+            raise ImportError("No module named 'bs4'")
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = no_bs4
+    try:
+        found = tour_schedule.discover_endpoints(JS_RENDERED_PAGE)
+    finally:
+        builtins.__import__ = real_import
+
+    assert "beautifulsoup4" in found["problem"]
+    assert found["urls"], "the regex scan does not need a parser and should still run"
+
+
+def test_a_page_that_parsed_reports_no_problem():
+    from whul.sources import tour_schedule
+
+    assert tour_schedule.discover_endpoints(JS_RENDERED_PAGE)["problem"] == ""

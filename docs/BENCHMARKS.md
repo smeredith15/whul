@@ -43,7 +43,9 @@ cloud machines generally.
 Whichever machine you use:
 
 * the repo on branch `claude/fantasy-league-webapp-dp99e3`, with `.venv` built
-  and `pytest -q` green — do not compute against a broken checkout;
+  and `pytest -q` green — do not compute against a broken checkout. If pytest
+  stops saying dependencies are missing, the checkout is fine and the
+  environment is stale; run the reinstall command it prints;
 * `tennis2026` cloned beside it, for `model_data_snapshot.rds` (the only
   surviving copy of the match history), or `WHUL_TENNIS2026` pointing at it;
 * `data/whul.sqlite3` built with `import-rosters --write`, since the benchmark
