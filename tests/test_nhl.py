@@ -182,11 +182,15 @@ def test_exclusions_explain_themselves():
     assert "COVID" in notes[0]
 
 
-def test_leagues_without_irregular_seasons_exclude_nothing():
-    from whul.scoring.schedule import describe_exclusions, irregular_seasons
+def test_a_league_with_no_entry_excludes_nothing():
+    # Named leagues keep acquiring exclusions as their COVID years get worked
+    # out, so this pins the mechanism rather than whichever league is currently
+    # clean: an unknown league filters nothing and explains nothing.
+    from whul.scoring.schedule import describe_exclusions, irregular_seasons, usable_seasons
 
-    assert irregular_seasons("PGA") == set()
-    assert describe_exclusions("PGA", [2020, 2021]) == []
+    assert irregular_seasons("Kabaddi") == set()
+    assert describe_exclusions("Kabaddi", [2020, 2021]) == []
+    assert usable_seasons("Kabaddi", [2020, 2021]) == [2020, 2021]
 
 
 def test_the_nfls_only_exclusion_is_a_length_change_not_covid():

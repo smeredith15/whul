@@ -86,6 +86,19 @@ IRREGULAR_SEASONS: tuple[IrregularSeason, ...] = (
     IrregularSeason("WTA", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
     IrregularSeason("Tennis", 2021, 0, 0, "calendar still rearranged after COVID"),
     IrregularSeason("Tennis", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
+    # Golf and motorsport are excluded by calendar for the same reason, and
+    # named by the year each league year *ends* in, which is how a window is
+    # judged. The 2019-20 window lost the months the tours were shut down; the
+    # 2020-21 window is distorted by what was pushed into it -- for golf, the
+    # November 2020 Masters and the April 2021 Masters fall in the same window.
+    IrregularSeason("PGA", 2021, 0, 0, "COVID: two Masters in the same league year"),
+    IrregularSeason("PGA", 2020, 0, 0, "COVID: tour suspended, The Open cancelled"),
+    IrregularSeason("Motorsports", 2021, 0, 0, "COVID: the shortened 2020 season falls in this window"),
+    IrregularSeason("Motorsports", 2020, 0, 0, "COVID: seasons suspended and rescheduled"),
+    IrregularSeason("NASCAR", 2021, 0, 0, "COVID: the rescheduled 2020 season falls in this window"),
+    IrregularSeason("NASCAR", 2020, 0, 0, "COVID: season paused in March, schedule compressed"),
+    IrregularSeason("F1", 2021, 0, 0, "COVID: the 17-race 2020 season falls in this window"),
+    IrregularSeason("F1", 2020, 0, 0, "COVID: 17 races, season started in July"),
 )
 
 #: The earliest season a league's benchmark pool may draw from. Tennis starts

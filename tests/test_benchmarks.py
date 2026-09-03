@@ -474,3 +474,42 @@ def test_the_team_sports_are_not_benchmarked_by_window():
     # one season across two pools.
     assert SOURCES["nfl"].windowed is False
     assert SOURCES["nba"].windowed is False
+
+
+def test_an_incomplete_window_is_replaced_by_reaching_one_further_back():
+    # PGA has no floor, so a window the source cannot cover is made up rather
+    # than shrinking the pool -- and the extra years are pulled only then.
+    pulls = []
+    base_load, events = fake_events(52, through="2026-02-23")
+
+    def load(years):
+        pulls.append(years)
+        return base_load(years)
+
+    run = benchmarks.compute_windowed("PGA", load, events, verbose=False)
+
+    assert len(run.used) == benchmarks.DEFAULT_SEASONS
+    assert "2025-26" not in run.used
+    assert len(pulls) == 2 and pulls[1] and max(pulls[1]) < min(pulls[0])
+    assert not any("complete windows" in p for p in run.problems)
+
+
+def test_a_complete_source_is_pulled_once():
+    pulls = []
+    base_load, events = fake_events(52)
+
+    def load(years):
+        pulls.append(years)
+        return base_load(years)
+
+    benchmarks.compute_windowed("PGA", load, events, verbose=False)
+    assert len(pulls) == 1
+
+
+def test_golf_and_motorsport_exclude_their_covid_windows():
+    """Both were shut down in 2020 and distorted by what got pushed into the
+    league year after it -- golf played two Masters inside one Aug-Jul window."""
+    for league in ("PGA", "Motorsports"):
+        labels = [w.label for w in benchmarks.windows_for(league, count=7)[0]]
+        assert "2019-20" not in labels
+        assert "2020-21" not in labels

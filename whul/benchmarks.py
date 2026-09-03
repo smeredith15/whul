@@ -123,19 +123,13 @@ def seasons_for(league: str, count: int = DEFAULT_SEASONS, latest: int | None = 
     return wanted, notes
 
 
-def windows_for(
-    league: str, count: int = DEFAULT_SEASONS, spares: int = 0
-) -> tuple[list, list[str]]:
+def windows_for(league: str, count: int = DEFAULT_SEASONS) -> tuple[list, list[str]]:
     """The league-year windows to draw from, and notes on what was left out.
 
     Golf, tennis and motorsport run continuously, so their benchmark is drawn
     over the season's own August-to-July window shifted back whole years rather
     than over calendar seasons (see PROJECT_PLAN 2.3). This picks which of those
     shifted windows may be used.
-
-    ``spares`` asks for extra candidates beyond ``count``, so a window the
-    source turns out not to cover yet can be dropped without shortening the
-    pool; the shortfall note still counts against ``count``.
 
     A window is judged by the calendar year it *ends* in, which is the year the
     sport itself calls that season: the 2020-21 window holds the February 2021
@@ -147,12 +141,12 @@ def windows_for(
 
     # Ask for more than needed: excluded years must lengthen the reach rather
     # than shorten the pool, exactly as they do for a calendar season.
-    candidates = window.season_windows(count + spares + 8)
+    candidates = window.season_windows(count + 8)
     live_from = SEASON.start
 
     usable, skipped = [], []
     for candidate in reversed(candidates):
-        if len(usable) == count + spares:
+        if len(usable) == count:
             break
         # The live season cannot benchmark itself: no data at or after the
         # season start may enter the scale it is measured against.
@@ -174,9 +168,9 @@ def windows_for(
     return usable, notes
 
 
-#: Windows requested beyond the ones needed, so a window the source cannot
-#: cover yet can be dropped without shortening the pool.
-WINDOW_SPARES = 2
+def _window_years(windows) -> list[int]:
+    """Every calendar year a set of windows touches -- the unit sources load in."""
+    return sorted({y for w in windows for y in (w.start.year, w.end.year)})
 
 
 def compute_windowed(
@@ -195,39 +189,40 @@ def compute_windowed(
     that matches the season being scored instead of a calendar year that does
     not.
 
-    A window the source cannot cover to its end is dropped. This is the failure
-    that would otherwise go unnoticed: a half-covered window looks like a full
-    one with quiet athletes in it, and pools a year of half-sized totals into a
-    percentile that then reads as the whole field having got worse.
+    A window the source cannot cover to its end is dropped, and one more window
+    is fetched to replace it. This is the failure that would otherwise go
+    unnoticed: a half-covered window looks like a full one with quiet athletes
+    in it, and pools a year of half-sized totals into a percentile that then
+    reads as the whole field having got worse.
     """
     from whul.scoring import window
 
-    candidates, excluded = windows_for(league, seasons, spares=WINDOW_SPARES)
+    windows, excluded = windows_for(league, seasons)
     run = BenchmarkRun(
         league=league, asset_type="Player",
-        requested=[w.label for w in candidates], excluded=excluded, windowed=True,
+        requested=[w.label for w in windows], excluded=excluded, windowed=True,
     )
-    if not candidates:
+    if not windows:
         run.problems.append(f"no usable league-year windows for {league}")
         return run
 
-    # Load by calendar year, since that is the unit every source is queried in;
-    # the windows then cut across those years and drop what falls outside.
-    years = sorted({y for w in candidates for y in (w.start.year, w.end.year)})
-    if verbose:
-        print(f"  pulling {league} {years[0]}-{years[-1]}...", flush=True)
-    try:
+    def pull(years: list[int]):
+        if verbose:
+            print(f"  pulling {league} {years[0]}-{years[-1]}...", flush=True)
         raw = load(years)
+        if raw is None or raw.empty:
+            return None
+        scored = events(raw)
+        return None if scored is None or scored.empty else scored
+
+    fetched = _window_years(windows)
+    try:
+        scored = pull(fetched)
     except Exception as exc:  # noqa: BLE001 -- reported, so one league cannot stop the rest
         run.problems.append(f"could not load: {type(exc).__name__}: {exc}")
         return run
-    if raw is None or raw.empty:
-        run.problems.append("the source returned no rows")
-        return run
-
-    scored = events(raw)
-    if scored is None or scored.empty:
-        run.problems.append("scoring produced no rows")
+    if scored is None:
+        run.problems.append("the source returned no scoreable rows")
         return run
 
     covered = pd.to_datetime(scored["date"], errors="coerce").max()
@@ -236,19 +231,35 @@ def compute_windowed(
         return run
     covered = covered.date()
 
-    complete = [w for w in candidates if w.end <= covered]
-    short = [w for w in candidates if w.end > covered]
-    windows = complete[-seasons:]
+    short = [w for w in windows if w.end > covered]
+    if short:
+        # Reach one window further back per incomplete one, and pull only the
+        # years that adds. Fetching those up front would cost every run several
+        # extra years of a per-date feed to cover a case that usually does not
+        # arise.
+        for dropped in short:
+            run.excluded.append(
+                f"{dropped.label} dropped: the source covers only to {covered}, "
+                f"short of the window's {dropped.end}"
+            )
+        windows, excluded = windows_for(league, seasons + len(short))
+        run.excluded += [n for n in excluded if n not in run.excluded]
+        extra = [y for y in _window_years(windows) if y not in fetched]
+        if extra:
+            try:
+                more = pull(extra)
+            except Exception as exc:  # noqa: BLE001
+                more = None
+                run.problems.append(f"could not load {extra}: {type(exc).__name__}: {exc}")
+            if more is not None:
+                scored = pd.concat([scored, more], ignore_index=True)
+
+    windows = [w for w in windows if w.end <= covered][-seasons:]
     if not windows:
         run.problems.append(
             f"the source covers only to {covered}; no window ends before that"
         )
         return run
-    for dropped in short:
-        run.excluded.append(
-            f"{dropped.label} dropped: the source covers only to {covered}, "
-            f"short of the window's {dropped.end}"
-        )
     if len(windows) < seasons:
         run.problems.append(
             f"{len(windows)} complete windows, not {seasons}; the pool is smaller "

@@ -73,9 +73,11 @@ Tennis, golf and motorsport are pooled differently: they run continuously, so
 their benchmark is drawn over the league year's own August-to-July window
 shifted back whole years, not over calendar seasons (§2.3). A window is judged
 by the year it *ends* in, and one the source cannot cover to its end date is
-dropped rather than pooled — a half-covered window looks like a full one with
-quiet athletes in it. Tennis starts at the 2021-22 window, the first one that
-holds no rearranged calendar.
+dropped and replaced by reaching one further back — a half-covered window looks
+like a full one with quiet athletes in it. Tennis starts at the 2021-22 window,
+the first one that holds no rearranged calendar; golf and motorsport skip
+2019-20 and 2020-21, which lost the shutdown months and then absorbed what was
+pushed into them (two Masters fall in the same golf league year).
 
 `freeze` refuses while a rostered asset has no benchmark, since that manager
 would otherwise score nothing without an error; `--force` overrides it. Nothing
