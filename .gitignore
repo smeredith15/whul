@@ -9,3 +9,6 @@ data/cache/
 # The local database, including any simulated league. Rebuild with
 # `python -m whul.cli simulate`.
 data/*.sqlite3
+
+# The generated site is a build artifact; `python -m whul.cli site` rebuilds it.
+site/

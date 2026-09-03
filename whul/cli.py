@@ -549,6 +549,61 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rollup(args: argparse.Namespace) -> int:
+    """Score every slot and write the standings snapshot -- the nightly job."""
+    from datetime import date as _date
+
+    from whul import pipeline
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    if args.backfill:
+        reports = pipeline.backfill(store, args.season, verbose=False)
+        if not reports:
+            print("\nNothing to roll up: the season has not started.\n")
+            return 0
+        print(f"\nRebuilt {len(reports)} days\n  {reports[-1]}")
+        warnings = {w for r in reports for w in r.warnings}
+    else:
+        day = _date.fromisoformat(args.date) if args.date else _date.today()
+        report = pipeline.roll_up(store, args.season, day)
+        print(f"\n{report}")
+        warnings = set(report.warnings)
+
+    stale = store.stale_sources(_date.today())
+    if not stale.empty:
+        print("\n  Sources that have stopped updating:")
+        for row in stale.itertuples():
+            print(f"    {row.source}/{row.league}: last data {row.last_data_date}")
+    print()
+    # A warning means the standings are wrong or missing, not merely noisy.
+    return 1 if warnings else 0
+
+
+def cmd_site(args: argparse.Namespace) -> int:
+    """Generate the static site from whatever the store holds."""
+    from pathlib import Path as _Path
+
+    from whul.site.build import build
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    try:
+        result = build(store, args.season, _Path(args.out))
+    except ValueError as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
+
+    print(f"\nBuilt {result['pages']} pages in {result['out']}/\n")
+    for key in ("season", "as_of", "managers", "days"):
+        print(f"  {key:<10} {result[key]}")
+    if result["simulated"]:
+        print("\n  Simulated data -- every page says so.")
+    print(f"\nOpen {result['out']}/index.html, or serve it with:")
+    print(f"  python -m http.server -d {result['out']} 8000")
+    return 0
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
     if args.league == "tennis":
@@ -876,6 +931,22 @@ def main(argv: list[str] | None = None) -> int:
     sim.add_argument("--end", help="YYYY-MM-DD to simulate through (default: today)")
     sim.add_argument("--purge", action="store_true", help="delete the simulated league")
     sim.set_defaults(func=cmd_simulate)
+
+    rollup = sub.add_parser("rollup", help="score slots and snapshot the standings")
+    rollup.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    rollup.add_argument("--season", default="2026-27-SIM", help="season to roll up")
+    rollup.add_argument("--date", help="YYYY-MM-DD (default: today)")
+    rollup.add_argument(
+        "--backfill", action="store_true",
+        help="rebuild every day from the season start, after a formula change",
+    )
+    rollup.set_defaults(func=cmd_rollup)
+
+    site = sub.add_parser("site", help="generate the static site")
+    site.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    site.add_argument("--season", default="2026-27-SIM", help="season to publish")
+    site.add_argument("--out", default="site", help="output directory")
+    site.set_defaults(func=cmd_site)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     # Cups and European competitions are probeable even though they are not

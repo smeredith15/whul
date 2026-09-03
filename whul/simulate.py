@@ -64,6 +64,45 @@ DEFAULT_CEILING = 90
 #: How many trades to make, and the window they fall in.
 TRADE_COUNT = 6
 
+#: Roughly when each category actually plays, as inclusive month numbers with
+#: wraparound. Without this every asset accrues evenly all year, the managers'
+#: totals converge on identical straight lines, and the progression chart shows
+#: nothing -- which is exactly what the first build of it did. Real seasons
+#: start and stop, so the line should step.
+_ACTIVE_MONTHS = {
+    "NFL": (9, 1),
+    "NCAAF": (9, 1),
+    "NBA": (10, 4),
+    "NHL": (10, 4),
+    "NCAAM": (11, 3),
+    "NCAAW": (11, 3),
+    "MLB": (4, 10),
+    "NCAA Baseball": (2, 6),
+    "NCAA Softball": (2, 6),
+    "Club Soccer Top 3": (8, 5),
+    "Club Soccer Other": (3, 11),
+    "Intl Soccer": (9, 6),
+    "PGA": (1, 12),
+    "Tennis": (1, 12),
+    "Motorsports": (2, 11),
+}
+
+#: A manager's overall form, so the standings separate instead of converging.
+#: Spread deliberately narrow: a runaway leader makes the chart as
+#: uninformative as five identical lines.
+_MANAGER_STRENGTH = (1.00, 0.97, 1.03, 0.99, 1.01)
+
+
+def _in_season(category: str, day: date) -> bool:
+    """Whether a category is playing on a given day."""
+    window = _ACTIVE_MONTHS.get(category)
+    if window is None:
+        return True
+    first, last = window
+    if first <= last:
+        return first <= day.month <= last
+    return day.month >= first or day.month <= last  # wraps the new year
+
 
 def _asset_name(rng: random.Random, asset_type: str, index: int) -> str:
     if asset_type == "Team":
@@ -120,18 +159,34 @@ def _draft(
 
 
 def _score_curve(
-    rng: random.Random, ceiling: float, days: list[date]
+    rng: random.Random,
+    ceiling: float,
+    days: list[date],
+    category: str,
+    strength: float = 1.0,
 ) -> list[float]:
     """A season-to-date series that rises and never falls.
 
     Cumulative scores only go up, so the series is built from non-negative
-    daily gains. Gains are uneven -- a burst then a quiet fortnight -- because
-    a smooth line would hide exactly the behaviour the progression graph is
-    meant to show.
+    daily gains. Two things shape them:
+
+    * **Nothing accrues out of season.** An NFL player earns between September
+      and January and is flat either side, which is what puts steps in a
+      manager's total rather than a straight line.
+    * **Gains are uneven in season.** A burst then a quiet fortnight, because a
+      smooth ramp hides exactly the behaviour the progression chart exists to
+      show.
     """
-    final = ceiling * rng.uniform(0.25, 1.05)
-    weights = [max(0.0, rng.gauss(1.0, 0.9)) for _ in days]
-    total = sum(weights) or 1.0
+    final = ceiling * rng.uniform(0.25, 1.05) * strength
+    weights = [
+        max(0.0, rng.gauss(1.0, 0.9)) if _in_season(category, day) else 0.0
+        for day in days
+    ]
+    total = sum(weights)
+    if total <= 0:
+        # A category with no in-season day in this window still needs a series,
+        # or its slot would read as a hole rather than as an offseason.
+        return [0.0] * len(days)
     running = 0.0
     series = []
     for weight in weights:
@@ -187,8 +242,18 @@ def generate(
     # Daily scores for every drafted asset, plus the spares so a trade has
     # somewhere to come from.
     drafted = {a for chosen in picks.values() for pool in chosen.values() for a in pool}
+    # Whose asset it is decides its form, so the managers' totals separate.
+    owner_strength = {
+        asset: _MANAGER_STRENGTH[index % len(_MANAGER_STRENGTH)]
+        for index, manager in enumerate(MANAGERS)
+        for pool in picks[manager].values()
+        for asset in pool
+    }
     curves = {
-        row.asset_id: _score_curve(rng, _CEILING.get(row.league, DEFAULT_CEILING), days)
+        row.asset_id: _score_curve(
+            rng, _CEILING.get(row.league, DEFAULT_CEILING), days,
+            row.league, owner_strength.get(row.asset_id, 1.0),
+        )
         for row in assets.itertuples()
         if row.asset_id in drafted
     }

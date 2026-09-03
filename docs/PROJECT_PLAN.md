@@ -323,6 +323,26 @@ than daily deltas: that is what most feeds serve, differencing consecutive snaps
 deltas exactly, and rebuilding a cumulative total from deltas would compound any day the scraper
 missed.
 
+### 3.2 The app is a static site
+
+The league updates once a day and is read by five people. There is no login, no user input, and
+nothing interactive but the admin tools — so there is nothing for a server to do. The nightly job
+runs the pipeline, writes a folder of HTML, and GitHub Pages serves it.
+
+That makes hosting free and permanent, removes the class of failure where the site is down because
+a process died, and means nothing has to stay awake. `.github/workflows/publish.yml` runs the
+pipeline on a cron, rebuilds the site and deploys it. The database lives on a `data` branch rather
+than in `main`, so a growing binary does not put an unreadable diff into every pull request.
+
+The tradeoff is that standings refresh nightly rather than on demand. For a season-long best-ball
+league scored from daily cumulative feeds, the underlying data only moves daily anyway.
+
+Charts are hand-written inline SVG — no framework, no CDN, works offline and prints. The palette is
+the validated categorical set; five managers were checked with the colourblind validator in both
+modes before anything was drawn (worst adjacent CVD ΔE 9.1 light / 8.4 dark). Light mode raises a
+contrast warning on three of the five hues, so every series is directly labelled and each chart
+ships a table view — the standings table is the page's default, not an alternative to it.
+
 Design commitments:
 
 - **`raw_stats` is append-only and dated.** Everything downstream is derived, so a formula fix is a
@@ -424,13 +444,14 @@ Each increment ships end-to-end:
 - [x] Owner-stint accrual + best-ball rollup — wired to the store, trades reciprocal
 - [x] Nightly standings snapshot + retroactive backfill to season start
 
-### Phase 4 — Web app
-- [ ] Standings table
-- [ ] Contribution bar graph (§4.2)
-- [ ] Progression line graph
-- [ ] My Team / all-teams browser
+### Phase 4 — Web app *(static site, see §3.2)*
+- [x] Standings table — the default view, not a tab
+- [x] Contribution bar graph (§4.2) — grouped horizontal bars by roster category
+- [x] Progression line graph — hover crosshair, direct end labels, table view
+- [x] My Team / all-teams browser — raw and normalized per slot, bench marked
 - [ ] Asset detail with score history
-- [ ] Read-only manager auth
+- [ ] Read-only manager auth — **not needed on a static site**; the pages are
+      public or they are not published. Revisit only if the league wants privacy.
 
 ### Phase 5 — Admin
 - [ ] Full dashboard per §4.6
