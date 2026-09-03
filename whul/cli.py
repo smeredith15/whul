@@ -745,11 +745,23 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
         return 0 if ok else 1
 
     store = _benchmark_store(args)
-    version = benchmarks.save(store, runs, args.season, notes=args.notes)
-    if version is None:
-        print("\nNothing to save.\n", file=sys.stderr)
-        return 1
-    print(f"\n  saved version {version} (unfrozen)")
+    if args.into:
+        try:
+            version = benchmarks.extend(store, runs, args.into, notes=args.notes)
+        except (ValueError, store_benchmarks.FrozenBenchmarkError) as exc:
+            print(f"\n{exc}\n", file=sys.stderr)
+            return 1
+        if version is None:
+            print("\nNothing to add.\n", file=sys.stderr)
+            return 1
+        groups = len(store_benchmarks.load(store, version))
+        print(f"\n  added to version {version}, now {groups} groups (still unfrozen)")
+    else:
+        version = benchmarks.save(store, runs, args.season, notes=args.notes)
+        if version is None:
+            print("\nNothing to save.\n", file=sys.stderr)
+            return 1
+        print(f"\n  saved version {version} (unfrozen)")
 
     previous = args.compare
     if previous:
@@ -757,7 +769,9 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
         print(f"\n  against {previous}:")
         _print_benchmark_diff(diff)
 
-    print(f"\n  Review it, then: python -m whul.cli benchmarks freeze {version}\n")
+    print(f"\n  Check what it still needs: benchmarks coverage {version}")
+    print(f"  Add another league to it:  benchmarks compute <league> --save --into {version}")
+    print(f"  Adopt it:                  benchmarks freeze {version}\n")
     return 0
 
 
@@ -1290,6 +1304,12 @@ def main(argv: list[str] | None = None) -> int:
     bench_compute.add_argument("--season", default="2026-27", help="season the version is for")
     bench_compute.add_argument(
         "--save", action="store_true", help="store the result as an unfrozen version",
+    )
+    bench_compute.add_argument(
+        "--into", metavar="VERSION",
+        help="add to this unfrozen version instead of starting a new one, so a "
+             "run split across sittings builds one scale rather than several "
+             "with different holes",
     )
     bench_compute.add_argument("--compare", help="version to diff the new one against")
     bench_compute.add_argument("--csv", help="also write the benchmarks to this file")

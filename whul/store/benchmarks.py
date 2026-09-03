@@ -120,6 +120,42 @@ def save(
     return version
 
 
+def extend(
+    store: Store, version: str, benchmarks: pd.DataFrame, notes: str = ""
+) -> BenchmarkVersion:
+    """Add or replace groups in an existing unfrozen version.
+
+    Twenty leagues cannot always be pulled in one sitting -- a feed goes down, a
+    laptop sleeps -- and a second ``save`` would make a second version with a
+    different set of holes in it. Extending keeps one version growing until it
+    covers the roster and can be frozen.
+
+    Refuses on a frozen version. Once standings are measured against a set,
+    adding a group to it would restate scores that were already published;
+    superseding it means a new version, which leaves both on the record.
+    """
+    existing = get_version(store, version)
+    if existing is None:
+        raise ValueError(f"no benchmark version {version!r}")
+    if existing.is_frozen:
+        raise FrozenBenchmarkError(
+            f"{version} was frozen at {existing.frozen_at}; standings are measured "
+            f"against it. Compute a new version instead of adding to this one."
+        )
+    if benchmarks is None or benchmarks.empty:
+        raise ValueError("refusing to extend with an empty benchmark set")
+
+    rows = benchmarks.assign(version=version)
+    store.insert_frame("benchmarks", rows, keys=("version", "asset_type", "norm_key"))
+    if notes:
+        with store.transaction() as conn:
+            conn.execute(
+                "UPDATE benchmark_versions SET notes = ? WHERE version = ?",
+                (notes, version),
+            )
+    return get_version(store, version)
+
+
 def freeze(store: Store, version: str, notes: str = "") -> BenchmarkVersion:
     """Adopt a version as the one standings are scored against.
 

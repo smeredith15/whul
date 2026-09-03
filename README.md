@@ -51,6 +51,10 @@ Two commands exist for checking a data source:
 
 ## Freezing the benchmarks
 
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) is the step-by-step procedure, in the
+order that fails cheapest — including which sources need a machine with open
+outbound HTTPS. In short:
+
 The benchmark is the number every score in its group is divided by, so it
 decides what 100 means. Getting it wrong produces no error — just a season of
 plausible, wrong standings. Computing, reviewing and adopting one are therefore
@@ -74,10 +78,10 @@ their benchmark is drawn over the league year's own August-to-July window
 shifted back whole years, not over calendar seasons (§2.3). A window is judged
 by the year it *ends* in, and one the source cannot cover to its end date is
 dropped and replaced by reaching one further back — a half-covered window looks
-like a full one with quiet athletes in it. Tennis starts at the 2021-22 window,
-the first one that holds no rearranged calendar; golf and motorsport skip
-2019-20 and 2020-21, which lost the shutdown months and then absorbed what was
-pushed into them (two Masters fall in the same golf league year).
+like a full one with quiet athletes in it. Tennis starts at 2022-23; golf and
+motorsport skip 2019-20 and 2020-21, which lost the shutdown months and then
+absorbed what was pushed into them (two Masters fall in the same golf league
+year).
 
 `freeze` refuses while a rostered asset has no benchmark, since that manager
 would otherwise score nothing without an error; `--force` overrides it. Nothing
@@ -94,6 +98,7 @@ Set `WHUL_TENNIS2026` if it is not a sibling of this repository.
 | `whul/config/league.py` | Roster template, slot caps, season window, pool rates |
 | `whul/normalize.py` | Buffer pool → frozen 99th-percentile benchmark → 0-100 scale |
 | `whul/benchmarks.py` | Compute, review and freeze a season's scale |
+| `docs/BENCHMARKS.md` | How to build and freeze one, step by step |
 | `whul/benchmark_sources.py` | Which loader and scorer each league's history comes from |
 | `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
 | `whul/scoring/` | Per-league scoring formulas, ported from `r-scripts/` |

@@ -215,11 +215,14 @@ def compute_windowed(
         scored = events(raw)
         return None if scored is None or scored.empty else scored
 
+    def problem(exc: Exception, doing: str) -> None:
+        run.problems.append(f"could not {doing}: {type(exc).__name__}: {exc}")
+
     fetched = _window_years(windows)
     try:
         scored = pull(fetched)
     except Exception as exc:  # noqa: BLE001 -- reported, so one league cannot stop the rest
-        run.problems.append(f"could not load: {type(exc).__name__}: {exc}")
+        problem(exc, "load")
         return run
     if scored is None:
         run.problems.append("the source returned no scoreable rows")
@@ -237,20 +240,22 @@ def compute_windowed(
         # years that adds. Fetching those up front would cost every run several
         # extra years of a per-date feed to cover a case that usually does not
         # arise.
-        for dropped in short:
-            run.excluded.append(
-                f"{dropped.label} dropped: the source covers only to {covered}, "
-                f"short of the window's {dropped.end}"
-            )
         windows, excluded = windows_for(league, seasons + len(short))
-        run.excluded += [n for n in excluded if n not in run.excluded]
+        # The second selection's notes supersede the first's rather than
+        # joining them: both count a shortfall against a different target, and
+        # two contradictory counts is worse than either alone.
+        run.excluded = excluded + [
+            f"{dropped.label} dropped: the source covers only to {covered}, "
+            f"short of the window's {dropped.end}"
+            for dropped in short
+        ]
         extra = [y for y in _window_years(windows) if y not in fetched]
         if extra:
             try:
                 more = pull(extra)
             except Exception as exc:  # noqa: BLE001
                 more = None
-                run.problems.append(f"could not load {extra}: {type(exc).__name__}: {exc}")
+                problem(exc, f"load {extra[0]}-{extra[-1]}")
             if more is not None:
                 scored = pd.concat([scored, more], ignore_index=True)
 
@@ -331,7 +336,11 @@ def compute(
         run.problems.append("the source returned no rows")
         return run
 
-    scored = score(raw)
+    try:
+        scored = score(raw)
+    except Exception as exc:  # noqa: BLE001 -- a bad row must not lose the pull
+        run.problems.append(f"could not score: {type(exc).__name__}: {exc}")
+        return run
     if scored is None or scored.empty:
         run.problems.append("scoring produced no rows")
         return run
@@ -366,6 +375,43 @@ def compute(
     return run
 
 
+def combine(runs: list[BenchmarkRun]) -> pd.DataFrame | None:
+    """Every successful run's benchmarks as one frame, or None if there are none."""
+    frames = [
+        r.benchmarks for r in runs
+        if r.benchmarks is not None and not r.benchmarks.empty
+    ]
+    if not frames:
+        return None
+    return pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=["asset_type", "norm_key"], keep="last"
+    )
+
+
+def describe(runs: list[BenchmarkRun]) -> str:
+    """A one-line summary of what a set of runs covered, for a version's notes.
+
+    Each run keeps its own span rather than merging into one range: a windowed
+    sport's labels are league years ("2022-23") and a team sport's are calendar
+    seasons, and a single merged range would read as neither.
+    """
+    kept = [r for r in runs if r.benchmarks is not None and not r.benchmarks.empty]
+    parts = []
+    for run in sorted(kept, key=lambda r: (r.league, r.asset_type)):
+        span = [str(s) for s in run.used]
+        if not span:
+            covered = "?"
+        elif len(span) == 1:
+            covered = span[0]
+        else:
+            # A hyphen already separates the halves of a league-year label, so
+            # joining two of them with another one reads as a single range.
+            joiner = " to " if any("-" in label for label in span) else "-"
+            covered = f"{span[0]}{joiner}{span[-1]}"
+        parts.append(f"{run.league} {run.asset_type.lower()}s {covered}")
+    return ", ".join(parts)
+
+
 def save(
     store: Store,
     runs: list[BenchmarkRun],
@@ -377,25 +423,33 @@ def save(
 
     One version across all leagues, not one per league: the scale is a single
     artifact that the standings point at, and a half-league version would be
-    a scale with holes in it.
+    a scale with holes in it. Where twenty leagues cannot be pulled in one
+    sitting, ``extend`` adds to a version already started rather than making a
+    second one with a different set of holes.
     """
-    frames = [
-        r.benchmarks for r in runs
-        if r.benchmarks is not None and not r.benchmarks.empty
-    ]
-    if not frames:
+    combined = combine(runs)
+    if combined is None:
         return None
-    combined = pd.concat(frames, ignore_index=True).drop_duplicates(
-        subset=["asset_type", "norm_key"], keep="last"
-    )
-    kept = [r for r in runs if r.benchmarks is not None and not r.benchmarks.empty]
-    leagues = ", ".join(sorted({f"{r.league} {r.asset_type.lower()}s" for r in kept}))
-    span = sorted({s for r in kept for s in r.used})
-    seasons = f"{span[0]}-{span[-1]}" if span else "no seasons"
     return store_benchmarks.save(
-        store, combined, season, version=version,
-        notes=notes or f"{leagues}; {seasons}",
+        store, combined, season, version=version, notes=notes or describe(runs),
     )
+
+
+def extend(
+    store: Store, runs: list[BenchmarkRun], version: str, notes: str = ""
+) -> str | None:
+    """Add every successful run's groups to an existing unfrozen version."""
+    combined = combine(runs)
+    if combined is None:
+        return None
+    existing = store_benchmarks.get_version(store, version)
+    grew = (
+        f"{existing.notes}; {describe(runs)}"
+        if existing and existing.notes
+        else describe(runs)
+    )
+    store_benchmarks.extend(store, version, combined, notes=notes or grew)
+    return version
 
 
 def coverage(store: Store, version: str, season: str) -> pd.DataFrame:

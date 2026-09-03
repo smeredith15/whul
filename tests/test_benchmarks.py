@@ -62,10 +62,10 @@ def test_a_covid_season_lengthens_the_reach_rather_than_shrinking_the_pool():
     assert any("2021 excluded" in n for n in notes)
 
 
-def test_tennis_stops_at_2022_and_says_it_returned_fewer_seasons():
+def test_tennis_stops_at_its_floor_and_says_it_returned_fewer_seasons():
     seasons, notes = benchmarks.seasons_for("Tennis", latest=2025)
-    assert seasons == [2022, 2023, 2024, 2025]
-    assert any("only 4 of 5" in n and "2022" in n for n in notes)
+    assert seasons == [2023, 2024, 2025]
+    assert any("only 3 of 5" in n and "2023" in n for n in notes)
 
 
 def test_a_calendar_exclusion_does_not_report_zero_of_zero_games():
@@ -411,12 +411,13 @@ def fake_events(per_year: int, points=lambda i: float(i), through: str = "2026-1
 
 
 def test_windows_are_judged_by_the_year_they_end_in():
-    # The 2020-21 window holds the February 2021 Australian Open and the July
-    # 2021 Olympics -- the rearrangement tennis excludes. The 2021-22 window
-    # holds only the September-2021-onward tour, so it is usable.
-    windows, _ = benchmarks.windows_for("Tennis")
-    labels = [w.label for w in windows]
-    assert labels == ["2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]
+    # Golf's 2020-21 league year holds the November 2020 Masters and the April
+    # 2021 one, so it is the window the exclusion has to catch -- naming the
+    # calendar year 2021 must drop that window, not the 2021-22 one, which is
+    # played on a normal schedule and is kept.
+    labels = [w.label for w in benchmarks.windows_for("PGA")[0]]
+    assert "2020-21" not in labels
+    assert labels[0] == "2021-22"
 
 
 def test_the_live_season_cannot_benchmark_itself():
@@ -426,15 +427,13 @@ def test_the_live_season_cannot_benchmark_itself():
     assert all(w.end < SEASON.start for w in windows)
 
 
-def test_a_covid_window_is_skipped_when_the_reach_gets_that_far_back():
-    # Five usable windows exist without reaching a COVID one, so asking for
-    # more is what makes the exclusion visible -- and it must not silently
-    # return a rearranged year to make the count up.
+def test_a_covid_window_is_never_returned_to_make_the_count_up():
+    # Tennis can reach only four windows before its floor. Asking for more must
+    # report the shortfall rather than quietly handing back a rearranged year.
     windows, notes = benchmarks.windows_for("Tennis", count=7)
     labels = [w.label for w in windows]
-    assert "2020-21" not in labels and "2019-20" not in labels
-    assert any("2021 excluded" in n for n in notes)
-    assert any("only 5 of 7" in n for n in notes)
+    assert "2020-21" not in labels and "2021-22" not in labels
+    assert any("only 4 of 7" in n for n in notes)
 
 
 def test_a_windowed_pool_totals_over_the_window_not_the_calendar_year():
@@ -442,7 +441,7 @@ def test_a_windowed_pool_totals_over_the_window_not_the_calendar_year():
     run = benchmarks.compute_windowed("Tennis", load, events, verbose=False)
 
     assert run.windowed is True
-    assert run.used == ["2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]
+    assert run.used == ["2022-23", "2023-24", "2024-25", "2025-26"]
     assert list(run.benchmarks["norm_key"]) == ["Tennis"]
 
 
@@ -458,7 +457,7 @@ def test_a_window_the_source_cannot_cover_is_dropped_and_said_so():
 
 
 def test_a_source_covering_no_complete_window_fails_rather_than_guesses():
-    load, events = fake_events(52, through="2021-08-30")
+    load, events = fake_events(52, through="2022-09-30")
     run = benchmarks.compute_windowed("Tennis", load, events, verbose=False)
 
     assert run.benchmarks is None
@@ -513,3 +512,129 @@ def test_golf_and_motorsport_exclude_their_covid_windows():
         labels = [w.label for w in benchmarks.windows_for(league, count=7)[0]]
         assert "2019-20" not in labels
         assert "2020-21" not in labels
+
+
+# --- building one version across several sittings ------------------------
+
+def test_extending_grows_one_version_rather_than_making_a_second(store):
+    first = benchmarks.save(
+        store,
+        [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False)],
+        "2026-27",
+    )
+    benchmarks.extend(
+        store,
+        [benchmarks.compute(
+            "NHL", *fake_league(400, league="NHL", role=""), latest=2025, verbose=False
+        )],
+        first,
+    )
+
+    assert len(store.query("SELECT * FROM benchmark_versions")) == 1
+    assert set(bm.load(store, first)["norm_key"]) == {"NFL_QB", "NHL"}
+
+
+def test_extending_records_what_each_sitting_added(store):
+    version = benchmarks.save(
+        store,
+        [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False)],
+        "2026-27",
+    )
+    benchmarks.extend(
+        store,
+        [benchmarks.compute(
+            "NHL", *fake_league(400, league="NHL", role=""), latest=2025, verbose=False
+        )],
+        version,
+    )
+    notes = bm.get_version(store, version).notes
+    assert "NFL players" in notes and "NHL players" in notes
+
+
+def test_a_frozen_version_refuses_to_be_extended(store):
+    version = benchmarks.save(
+        store,
+        [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False)],
+        "2026-27",
+    )
+    bm.freeze(store, version)
+
+    # Adding a group would restate scores already published against this scale.
+    with pytest.raises(bm.FrozenBenchmarkError):
+        benchmarks.extend(
+            store,
+            [benchmarks.compute(
+                "NHL", *fake_league(400, league="NHL", role=""), latest=2025, verbose=False
+            )],
+            version,
+        )
+
+
+def test_extending_replaces_a_group_rather_than_duplicating_it(store):
+    version = benchmarks.save(
+        store,
+        [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False)],
+        "2026-27",
+    )
+    redone = benchmarks.compute(
+        "NFL", *fake_league(400, role="QB"), latest=2024, seasons=3, verbose=False
+    )
+    benchmarks.extend(store, [redone], version)
+
+    rows = bm.load(store, version)
+    assert list(rows["norm_key"]) == ["NFL_QB"]
+    assert rows.loc[0, "seasons"] == "2022,2023,2024"
+
+
+def test_the_notes_keep_each_span_in_its_own_units():
+    # A windowed sport's labels are league years and a team sport's are calendar
+    # seasons; one merged range would read as neither.
+    frame = pd.DataFrame({"norm_key": ["x"], "benchmark": [1.0], "pool_size": [99]})
+    line = benchmarks.describe([
+        benchmarks.BenchmarkRun("NFL", "Player", used=[2021, 2025], benchmarks=frame),
+        benchmarks.BenchmarkRun(
+            "Tennis", "Player", used=["2022-23", "2024-25"],
+            benchmarks=frame, windowed=True,
+        ),
+    ])
+    assert "NFL players 2021-2025" in line
+    assert "Tennis players 2022-23 to 2024-25" in line
+
+
+def test_compute_can_add_to_an_existing_version(tmp_path, monkeypatch, capsys):
+    patched_source(monkeypatch)
+    db = tmp_path / "w.sqlite3"
+    run_cli("compute", "nfl", "--latest", "2025", "--save", "--db", str(db))
+    version = open_store(str(db)).query(
+        "SELECT version FROM benchmark_versions"
+    ).loc[0, "version"]
+    capsys.readouterr()
+
+    assert run_cli(
+        "compute", "nfl", "--latest", "2024", "--save", "--into", version, "--db", str(db)
+    ) == 0
+    assert "added to version" in capsys.readouterr().out
+    assert len(open_store(str(db)).query("SELECT * FROM benchmark_versions")) == 1
+
+
+def test_adding_to_a_frozen_version_is_refused_by_the_command(tmp_path, monkeypatch, capsys):
+    patched_source(monkeypatch)
+    db = tmp_path / "w.sqlite3"
+    run_cli("compute", "nfl", "--latest", "2025", "--save", "--db", str(db))
+    version = open_store(str(db)).query(
+        "SELECT version FROM benchmark_versions"
+    ).loc[0, "version"]
+    run_cli("freeze", version, "--force", "--db", str(db))
+    capsys.readouterr()
+
+    assert run_cli(
+        "compute", "nfl", "--latest", "2024", "--save", "--into", version, "--db", str(db)
+    ) == 1
+    assert "frozen" in capsys.readouterr().err
+
+
+# --- the tennis floor ----------------------------------------------------
+
+def test_tennis_draws_from_the_windows_the_league_signed_off_on():
+    windows, _ = benchmarks.windows_for("Tennis", count=5)
+    assert [w.label for w in windows] == ["2022-23", "2023-24", "2024-25", "2025-26"]

@@ -101,11 +101,15 @@ IRREGULAR_SEASONS: tuple[IrregularSeason, ...] = (
     IrregularSeason("F1", 2020, 0, 0, "COVID: 17 races, season started in July"),
 )
 
-#: The earliest season a league's benchmark pool may draw from. Tennis starts
-#: at 2022 because everything before it is either COVID-affected or played on a
-#: calendar the window-based benchmark cannot compare against.
+#: The earliest season a league's benchmark pool may draw from, named by the
+#: year the league year *ends* in. Tennis starts at 2023 -- the 2022-23 window
+#: -- because everything before it is either COVID-affected or played on a
+#: calendar the window-based benchmark cannot compare against. The 2021-22
+#: window is excluded too: it opens six weeks after the Tokyo Olympics that the
+#: rearranged 2021 calendar displaced into July, and the tour it inherits is
+#: still settling back into its normal shape.
 EARLIEST_SEASON: dict[str, int] = {
-    "ATP": 2022, "WTA": 2022, "Tennis": 2022,
+    "ATP": 2023, "WTA": 2023, "Tennis": 2023,
 }
 
 
