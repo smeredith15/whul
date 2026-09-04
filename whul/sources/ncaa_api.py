@@ -132,6 +132,35 @@ def _is_final(state) -> bool:
     return any(text.startswith(prefix) for prefix in FINAL_STATES)
 
 
+#: Where the payload puts the game's own date, and how it spells it. A request
+#: for one date can answer with a week's slate, so the requested date is not the
+#: date the game was played -- stamping it on the row loses the real one, which
+#: is what the live start-date filter reads and what tells a January bowl from a
+#: November Saturday.
+DATE_KEYS = ("startDate", "gameDate", "date", "startDateTime")
+DATE_FORMATS = ("%m-%d-%Y", "%Y-%m-%d", "%m/%d/%Y")
+
+
+def _game_day(inner: dict, fallback: date) -> date:
+    """The date the game was played, falling back to the date requested."""
+    from datetime import datetime
+
+    for key in DATE_KEYS:
+        text = str(inner.get(key) or "").strip()[:10]
+        if not text:
+            continue
+        for shape in DATE_FORMATS:
+            try:
+                return datetime.strptime(text, shape).date()
+            except ValueError:
+                continue
+    epoch = inner.get("startTimeEpoch")
+    try:
+        return datetime.fromtimestamp(int(epoch)).date()
+    except (TypeError, ValueError):
+        return fallback
+
+
 def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
     """Flatten one date's games into rows matching the ESPN adapter's shape.
 
@@ -146,7 +175,6 @@ def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
     """
     from whul.sources.espn import season_label
 
-    season = season_label(league, day)
     rows: list[dict] = []
     for game in payload.get("games", []):
         inner = game.get("game", game)
@@ -159,11 +187,12 @@ def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
             except (TypeError, ValueError):
                 return None
 
+        played = _game_day(inner, day)
         rows.append(
             {
-                "season": season,
+                "season": season_label(league, played),
                 "game_id": inner.get("gameID") or inner.get("url", ""),
-                "game_date": day.isoformat(),
+                "game_date": played.isoformat(),
                 "season_type": 2,
                 "completed": _is_final(inner.get("gameState", "")),
                 "home_team": _team_name(home),

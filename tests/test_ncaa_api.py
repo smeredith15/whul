@@ -361,3 +361,46 @@ def test_a_full_season_is_not_flagged(capsys):
     ]
     ncaa_api._report_coverage(pd.DataFrame(games), "ncaaf")
     assert "thin" not in capsys.readouterr().out
+
+
+def test_a_game_carries_the_date_it_was_played_not_the_date_requested():
+    """One request can answer with a whole week's slate. Stamping the requested
+    date on every row loses the real one -- which is what the live start-date
+    filter reads, and what tells a January bowl from a November Saturday."""
+    payload = {"games": [{"game": {
+        "gameID": "1", "startDate": "01-09-2027",
+        "home": {"names": {"short": "Ohio State"}, "score": "34",
+                 "conferences": [{"conferenceName": "Big Ten"}]},
+        "away": {"names": {"short": "Texas"}, "score": "21",
+                 "conferences": [{"conferenceName": "SEC"}]},
+        "gameState": "final",
+    }}]}
+    rows = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2027, 1, 5))
+    assert rows[0]["game_date"] == "2027-01-09"
+    # January belongs to the season that opened the previous August.
+    assert rows[0]["season"] == 2026
+
+
+def test_the_requested_date_is_used_when_the_payload_has_none():
+    payload = {"games": [{"game": {
+        "gameID": "1",
+        "home": {"names": {"short": "A"}, "score": "1", "conferences": []},
+        "away": {"names": {"short": "B"}, "score": "0", "conferences": []},
+        "gameState": "final",
+    }}]}
+    rows = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2024, 11, 9))
+    assert rows[0]["game_date"] == "2024-11-09"
+
+
+def test_an_epoch_timestamp_is_read_when_no_date_string_is_given():
+    import time as _time
+
+    stamp = int(_time.mktime(date(2024, 11, 9).timetuple()))
+    payload = {"games": [{"game": {
+        "gameID": "1", "startTimeEpoch": str(stamp),
+        "home": {"names": {"short": "A"}, "score": "1", "conferences": []},
+        "away": {"names": {"short": "B"}, "score": "0", "conferences": []},
+        "gameState": "final",
+    }}]}
+    rows = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2024, 12, 25))
+    assert rows[0]["game_date"] == "2024-11-09"
