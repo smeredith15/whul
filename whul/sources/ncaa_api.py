@@ -28,6 +28,22 @@ import requests
 
 BASE = "https://ncaa-api.henrygd.me"
 
+#: Sports this scoreboard addresses by *week* rather than by date. The NCAA's
+#: own football URL is /scoreboard/football/fbs/{year}/{week}/all-conf, and this
+#: API passes the path through: a request for .../2024/11/09/all-conf is read as
+#: week 11 of 2024, with the "09" discarded. Walking 184 dates of a season
+#: therefore asks for only the six distinct month-numbers those dates contain --
+#: weeks 8 to 12 and 1 -- and returns about six weeks of a fifteen-week season,
+#: which is how ~800 games a season came back as ~420 with nothing reporting a
+#: failure. Basketball and the diamond sports are addressed by date.
+WEEK_INDEXED = {"ncaaf"}
+
+#: Weeks to ask for. Walked in full rather than stopped at the first empty one:
+#: seasons differ in how many weeks they ran, and the bowls and playoff sit at
+#: the top of the range, so any guess at an end cuts the postseason off some
+#: seasons and not others. An empty week costs one request.
+FOOTBALL_WEEKS = range(1, 21)
+
 #: Statuses worth waiting out rather than treating as "no games that day".
 RETRY_STATUSES = (429, 500, 502, 503, 504)
 RETRY_BACKOFF = 2.0
@@ -87,6 +103,19 @@ def scoreboard(league: str, day: date) -> dict:
     sport, division = SPORT_PATHS[league]
     path = f"/scoreboard/{sport}/{division}/{day.year}/{day.month:02d}/{day.day:02d}/all-conf"
     return _get(path, cache_key=f"{league}/{day.isoformat()}")
+
+
+def scoreboard_week(league: str, season: int, week: int) -> dict:
+    """One week of a week-indexed sport.
+
+    The NCAA's football scoreboard is addressed by week, not by date, and this
+    API passes the path straight through. A request for .../2024/11/09/all-conf
+    is read as *week 11* of 2024 with the "09" discarded, which is why every
+    date in November came back with the same 53 games.
+    """
+    sport, division = SPORT_PATHS[league]
+    path = f"/scoreboard/{sport}/{division}/{season}/{week:02d}/all-conf"
+    return _get(path, cache_key=f"{league}/{season}-week{week:02d}")
 
 
 #: The API exposes several name forms and does not populate all of them; the
@@ -220,7 +249,50 @@ def season_days(league: str, seasons: list[int]) -> list[date]:
 def load_team_results(
     league: str, seasons: list[int], verbose: bool = True
 ) -> pd.DataFrame:
-    """Completed results for whole seasons, one request per date."""
+    """Completed results for whole seasons."""
+    if league in WEEK_INDEXED:
+        return _load_by_week(league, seasons, verbose)
+    return _load_by_date(league, seasons, verbose)
+
+
+def _load_by_week(
+    league: str, seasons: list[int], verbose: bool = True
+) -> pd.DataFrame:
+    """A week-indexed sport, one request per week.
+
+    Seventeen requests a season rather than a hundred and eighty-four, and --
+    the point of the change -- seventeen *different* weeks rather than the six
+    that a walk of dates collapses onto.
+
+    The week range is walked in full and a week with nothing in it is simply
+    empty: the seasons differ in how many weeks they ran, and the postseason
+    lives at the top of the range, so guessing an end would cut bowls off some
+    seasons and not others.
+    """
+    rows: list[dict] = []
+    failures: dict[str, int] = {}
+    for season in seasons:
+        found = 0
+        for week in FOOTBALL_WEEKS:
+            try:
+                payload = _with_retry(lambda: scoreboard_week(league, season, week))
+            except Exception as exc:  # noqa: BLE001 -- one week must not lose the season
+                failures[_failure_label(exc)] = failures.get(_failure_label(exc), 0) + 1
+                continue
+            week_rows = parse_scoreboard(payload, league, date(season, 8, 1))
+            found += len(week_rows)
+            rows.extend(week_rows)
+        if verbose:
+            print(f"    {season}: {found:,} game rows over "
+                  f"{len(FOOTBALL_WEEKS)} weeks", flush=True)
+
+    return _finish(rows, league, failures, len(seasons) * len(FOOTBALL_WEEKS), verbose)
+
+
+def _load_by_date(
+    league: str, seasons: list[int], verbose: bool = True
+) -> pd.DataFrame:
+    """A date-indexed sport, one request per date."""
     days = season_days(league, seasons)
     if verbose:
         print(f"  {league}: walking {len(days)} dates ...", flush=True)
@@ -229,32 +301,46 @@ def load_team_results(
     failures: dict[str, int] = {}
     for index, day in enumerate(days):
         try:
-            rows.extend(parse_scoreboard(_scoreboard_with_retry(league, day), league, day))
+            payload = _with_retry(lambda: scoreboard(league, day))
         except Exception as exc:  # noqa: BLE001 -- one date must not lose the season
             # Counted, never swallowed. This API is rate limited, and a date that
             # 429s is a Saturday of missing games -- which is not an error
             # anywhere downstream, just a season in which nobody played much.
-            label = type(exc).__name__
-            if isinstance(exc, requests.HTTPError) and exc.response is not None:
-                label = f"HTTP {exc.response.status_code}"
-            failures[label] = failures.get(label, 0) + 1
+            failures[_failure_label(exc)] = failures.get(_failure_label(exc), 0) + 1
+            continue
+        rows.extend(parse_scoreboard(payload, league, day))
         if verbose and index and index % 50 == 0:
             print(f"    {index}/{len(days)} dates, {len(rows):,} games", flush=True)
 
+    return _finish(rows, league, failures, len(days), verbose)
+
+
+def _failure_label(exc: Exception) -> str:
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return f"HTTP {exc.response.status_code}"
+    return type(exc).__name__
+
+
+def _finish(
+    rows: list[dict], league: str, failures: dict[str, int],
+    attempted: int, verbose: bool,
+) -> pd.DataFrame:
+    """Report what could not be fetched, then dedupe and describe what could."""
     if failures:
         detail = ", ".join(f"{n} x {why}" for why, n in sorted(failures.items()))
         message = (
-            f"{league}: {sum(failures.values())} of {len(days)} dates could not be "
-            f"fetched ({detail})"
+            f"{league}: {sum(failures.values())} of {attempted} requests could not "
+            f"be fetched ({detail})"
         )
         if verbose:
             print(f"  ! {message}", flush=True)
-        if sum(failures.values()) > len(days) * FAILED_DATE_LIMIT:
+        if sum(failures.values()) > attempted * FAILED_DATE_LIMIT:
             raise IncompleteSeason(
-                message + ". Every missing date is missing games, and a benchmark "
-                "drawn from a partial season sets the bar too low for every team "
-                "in it. Re-run once the API stops refusing -- successful dates "
-                "are cached, so a re-run only fetches what is still missing."
+                message + ". Every missing request is missing games, and a "
+                "benchmark drawn from a partial season sets the bar too low for "
+                "every team in it. Re-run once the API stops refusing -- "
+                "successful requests are cached, so a re-run only fetches what "
+                "is still missing."
             )
 
     frame = pd.DataFrame(rows)
@@ -267,15 +353,15 @@ def load_team_results(
     return frame
 
 
-def _scoreboard_with_retry(league: str, day: date, attempts: int = 3) -> dict:
-    """One date, retrying the errors that go away on their own.
+def _with_retry(call, attempts: int = 3):
+    """Retry the errors that go away on their own.
 
     A rate limit is a wait, not an answer. Without this the walk treats it as a
-    date with no games.
+    request with no games.
     """
     for attempt in range(attempts):
         try:
-            return scoreboard(league, day)
+            return call()
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else 0
             if status not in RETRY_STATUSES or attempt == attempts - 1:
@@ -303,9 +389,10 @@ def _report_coverage(frame: pd.DataFrame, league: str) -> None:
         flag = ""
         if expected and per_team < expected * THIN_SEASON_LIMIT:
             flag = f"  <-- thin; a full season is about {expected} per team"
+        dates = games["game_date"].nunique() if "game_date" in games else 0
         print(
             f"    {season}: {len(games):,} games, {len(teams)} teams, "
-            f"{per_team:.1f} per team{flag}",
+            f"{per_team:.1f} per team, {dates} distinct game dates{flag}",
             flush=True,
         )
 

@@ -144,7 +144,7 @@ def test_a_game_returned_on_several_dates_counts_once(monkeypatch, capsys):
     monkeypatch.setattr(ncaa_api, "scoreboard", lambda l, d: {})
     monkeypatch.setattr(ncaa_api, "parse_scoreboard", lambda b, l, d: [dict(game)])
 
-    frame = ncaa_api.load_team_results("ncaaf", [2024], verbose=True)
+    frame = ncaa_api.load_team_results("ncaam", [2024], verbose=True)
     assert len(frame) == 1
     assert "6 duplicate game rows dropped" in capsys.readouterr().out
 
@@ -166,7 +166,7 @@ def test_two_different_games_both_survive(monkeypatch):
     monkeypatch.setattr(ncaa_api, "season_days", lambda l, s: [date(2024, 9, 7), date(2024, 9, 14)])
     monkeypatch.setattr(ncaa_api, "scoreboard", lambda l, d: {})
     monkeypatch.setattr(ncaa_api, "parse_scoreboard", rows)
-    assert len(ncaa_api.load_team_results("ncaaf", [2024], verbose=False)) == 2
+    assert len(ncaa_api.load_team_results("ncaam", [2024], verbose=False)) == 2
 
 
 def test_a_game_with_no_id_falls_back_to_what_identifies_it(monkeypatch):
@@ -184,7 +184,7 @@ def test_a_game_with_no_id_falls_back_to_what_identifies_it(monkeypatch):
     monkeypatch.setattr(ncaa_api, "season_days", lambda l, s: [date(2024, 9, d) for d in (7, 8)])
     monkeypatch.setattr(ncaa_api, "scoreboard", lambda l, d: {})
     monkeypatch.setattr(ncaa_api, "parse_scoreboard", lambda b, l, d: [dict(game)])
-    assert len(ncaa_api.load_team_results("ncaaf", [2024], verbose=False)) == 1
+    assert len(ncaa_api.load_team_results("ncaam", [2024], verbose=False)) == 1
 
 
 def test_a_season_that_crosses_new_year_is_not_cut_in_half():
@@ -298,7 +298,7 @@ def test_a_date_that_fails_is_counted_not_swallowed(monkeypatch, capsys):
 
     monkeypatch.setattr(ncaa_api, "scoreboard", refuse)
     with pytest.raises(ncaa_api.IncompleteSeason, match="HTTP 429"):
-        ncaa_api.load_team_results("ncaaf", [2024])
+        ncaa_api.load_team_results("ncaam", [2024])
 
 
 def test_a_rate_limit_is_waited_out_before_it_is_counted(monkeypatch):
@@ -317,7 +317,7 @@ def test_a_rate_limit_is_waited_out_before_it_is_counted(monkeypatch):
         return {"games": []}
 
     monkeypatch.setattr(ncaa_api, "scoreboard", flaky)
-    assert ncaa_api._scoreboard_with_retry("ncaaf", date(2024, 11, 9)) == {"games": []}
+    assert ncaa_api._with_retry(lambda: ncaa_api.scoreboard("ncaaf", date(2024, 11, 9))) == {"games": []}
     assert len(calls) == 3
 
 
@@ -336,7 +336,7 @@ def test_a_404_is_not_retried(monkeypatch):
 
     monkeypatch.setattr(ncaa_api, "scoreboard", missing)
     with pytest.raises(requests.HTTPError):
-        ncaa_api._scoreboard_with_retry("ncaaf", date(2024, 11, 9))
+        ncaa_api._with_retry(lambda: ncaa_api.scoreboard("ncaaf", date(2024, 11, 9)))
     assert len(calls) == 1
 
 
@@ -404,3 +404,71 @@ def test_an_epoch_timestamp_is_read_when_no_date_string_is_given():
     }}]}
     rows = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2024, 12, 25))
     assert rows[0]["game_date"] == "2024-11-09"
+
+
+# --- football is addressed by week, not by date ------------------------------
+
+def test_football_asks_for_a_week_not_a_date():
+    """The NCAA's own football URL is /{year}/{week}/all-conf, and this API
+    passes the path through. A request for .../2024/11/09/all-conf is read as
+    week 11 of 2024 with the "09" discarded -- which is why every date in
+    November returned the same 53 games."""
+    seen = {}
+    original = ncaa_api._get
+    try:
+        ncaa_api._get = lambda path, cache_key=None: seen.setdefault("path", path) and {}
+        ncaa_api.scoreboard_week("ncaaf", 2024, 3)
+    finally:
+        ncaa_api._get = original
+    assert seen["path"] == "/scoreboard/football/fbs/2024/03/all-conf"
+
+
+def test_a_week_walk_asks_for_every_week_once(monkeypatch):
+    """Walking dates asks for the six month-numbers a season contains and gets
+    six weeks of a fifteen-week season. Walking weeks asks for each of them."""
+    asked = []
+
+    def fake(league, season, week):
+        asked.append((season, week))
+        return {}
+
+    monkeypatch.setattr(ncaa_api, "scoreboard_week", fake)
+    monkeypatch.setattr(ncaa_api, "parse_scoreboard", lambda p, l, d: [])
+    ncaa_api.load_team_results("ncaaf", [2024, 2025], verbose=False)
+
+    assert asked == [(s, w) for s in (2024, 2025) for w in ncaa_api.FOOTBALL_WEEKS]
+    assert len(asked) == 2 * len(ncaa_api.FOOTBALL_WEEKS)
+
+
+def test_the_week_range_reaches_the_postseason():
+    """Bowls and the playoff sit at the top of the range, and seasons differ in
+    how many weeks they ran, so the walk cannot stop at the first empty week
+    without cutting the postseason off some seasons and not others."""
+    assert max(ncaa_api.FOOTBALL_WEEKS) >= 17
+    assert min(ncaa_api.FOOTBALL_WEEKS) == 1
+
+
+def test_a_week_walk_takes_its_dates_from_the_games(monkeypatch):
+    """A week request carries no date, so every row's date and season have to
+    come out of the payload. Without that the whole season would be stamped
+    with whatever placeholder the request used."""
+    payload = {"games": [{"game": {
+        "gameID": "1", "startDate": "01/09/2025", "gameState": "final",
+        "home": {"names": {"short": "Ohio State"}, "score": "34",
+                 "conferences": [{"conferenceName": "Big Ten"}]},
+        "away": {"names": {"short": "Texas"}, "score": "21",
+                 "conferences": [{"conferenceName": "SEC"}]},
+    }}]}
+    monkeypatch.setattr(ncaa_api, "scoreboard_week",
+                        lambda l, s, w: payload if w == 17 else {})
+    frame = ncaa_api.load_team_results("ncaaf", [2024], verbose=False)
+    assert frame.loc[0, "game_date"] == "2025-01-09"
+    assert frame.loc[0, "season"] == 2024
+
+
+def test_basketball_is_still_walked_by_date(monkeypatch):
+    """Only football is week-indexed. Sending basketball down the week path
+    would ask for twenty weeks of a season played over four months."""
+    assert "ncaam" not in ncaa_api.WEEK_INDEXED
+    assert "ncaaw" not in ncaa_api.WEEK_INDEXED
+    assert "ncaaf" in ncaa_api.WEEK_INDEXED
