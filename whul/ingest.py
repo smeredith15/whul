@@ -91,6 +91,7 @@ def ingest(
         scored, assets, source.asset_type,
         aliases=resolver.load_aliases(store, source.key),
         league=source.league,
+        many_per_asset=getattr(source, "post_normalize", None) is not None,
     )
     report.resolution = resolution
     report.matched = len(resolution.matched)
@@ -127,6 +128,13 @@ def ingest(
     placed = placed[placed["scaled_score"].notna()]
     if placed.empty:
         return report
+
+    # A scorer that emits several rows per asset folds them here, after each has
+    # been scaled by its own benchmark. Recording them unfolded would give a
+    # two-way player two rows in one slot and double-count him.
+    fold = getattr(source, "post_normalize", None)
+    if fold is not None:
+        placed = fold(placed)
 
     report.scored = write_daily_scores(
         store, placed, season, as_of, version.version

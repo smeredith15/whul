@@ -312,3 +312,68 @@ def test_a_source_that_is_not_roster_scoped_is_called_the_old_way(store):
     source = FakeSource(build=build, live=build)
     ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
     assert calls == [[2026]]
+
+
+def test_a_two_way_player_is_folded_rather_than_dropped(store):
+    """MLB scores a player once as a batter and once as a pitcher, because the
+    two are normalized against different benchmarks and only comparable
+    afterwards. Two rows there are the design, not a collision -- and treated as
+    one, Ohtani is held back as ambiguous and scores nothing at all, which is
+    the single outcome the two-way rule exists to prevent."""
+    rostered(store, "Shohei Ohtani")
+    version = bm.save(
+        store,
+        pd.DataFrame([
+            {"asset_type": "Player", "norm_key": "NFL_QB", "benchmark": 100.0,
+             "pool_size": 300, "seasons": "2021,2025"},
+        ]),
+        "2026-27",
+    )
+    bm.freeze(store, version)
+
+    folds = []
+
+    def fold(placed):
+        folds.append(len(placed))
+        best = placed.sort_values("scaled_score", ascending=False).head(1).copy()
+        best["scaled_score"] = placed["scaled_score"].max() + placed["scaled_score"].min() / 2
+        return best
+
+    source = source_over(
+        [{"player": "Shohei Ohtani", "league": "NFL", "role": "QB",
+          "total_points": 200.0},
+         {"player": "Shohei Ohtani", "league": "NFL", "role": "QB",
+          "total_points": 60.0}],
+    )
+    source.post_normalize = fold
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+
+    assert report.matched == 1, "one player, not an ambiguity"
+    assert not report.resolution.ambiguous
+    assert folds == [2], "both role rows reach the fold, already scaled"
+    assert report.scored == 1, "and leave it as one row in one slot"
+    scores = store.query("SELECT scaled_score FROM daily_scores")
+    assert scores.loc[0, "scaled_score"] == pytest.approx(230.0)
+
+
+def test_a_source_with_no_fold_still_refuses_to_guess(store):
+    """The permission is granted by the fold, not assumed. A feed with two
+    genuinely different people of one name must still be held back."""
+    rostered(store, "Josh Allen")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Josh Allen", "league": "NFL", "role": "QB", "total_points": 200.0},
+        {"player": "Josh Allen", "league": "NFL", "role": "QB", "total_points": 90.0},
+    ])
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert report.resolution.ambiguous == [("Josh Allen", "NFL", 2)]
+    assert report.scored == 0
+
+
+def test_the_mlb_source_declares_the_fold():
+    from whul.benchmark_sources import SOURCES
+
+    assert SOURCES["mlb"].post_normalize is not None
+    assert SOURCES["nfl"].post_normalize is None

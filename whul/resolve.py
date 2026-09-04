@@ -217,11 +217,19 @@ def resolve(
     asset_type: str,
     aliases: dict[str, str] | None = None,
     league: str = "",
+    many_per_asset: bool = False,
 ) -> tuple[pd.DataFrame, Resolution]:
     """Attach ``asset_id`` to the scored rows a roster actually holds.
 
     Returns only the matched rows: a feed carries every professional in the
     league, and the standings care about two hundred of them.
+
+    ``many_per_asset`` is for a scorer that emits several rows for one person on
+    purpose. MLB scores a player once as a batter and once as a pitcher, because
+    the two are normalized against different benchmarks and only comparable
+    afterwards; two rows there are the design, not a collision. Without this,
+    Ohtani matches twice, is held back as ambiguous, and scores nothing at all --
+    which is the one outcome the two-way rule exists to prevent.
     """
     report = Resolution(league=league or "", asset_type=asset_type)
     name_col, also = _name_columns(scored, asset_type)
@@ -336,8 +344,9 @@ def resolve(
             )
             continue
         hits = agreed
-        if len(hits) == 1:
-            picked[hits[0]] = asset.asset_id
+        if len(hits) == 1 or (hits and many_per_asset):
+            for hit in hits:
+                picked[hit] = asset.asset_id
             report.matched.append(Match(
                 asset.asset_id, asset.display_name, asset.league,
                 feed.iloc[hits[0]][name_col], "name",

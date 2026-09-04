@@ -56,6 +56,14 @@ class Source:
     #: history comes from. Tennis history is a static snapshot and the live feed
     #: is a rolling fortnight; neither can do the other's job.
     live: Callable[[], tuple[Callable, Callable]] | None = None
+    #: Run over the scored, normalized rows before they are recorded, for a
+    #: scorer that emits several rows per asset on purpose. MLB scores a player
+    #: once as a batter and once as a pitcher -- the two are normalized against
+    #: different benchmarks and only comparable afterwards -- and this folds
+    #: them into the one row the standings hold. Its presence is also what tells
+    #: the resolver that two rows for one name are the design rather than a
+    #: collision.
+    post_normalize: Callable | None = None
     #: True for the sports that run continuously, whose benchmark is drawn over
     #: the league year's own August-to-July window rather than over calendar
     #: seasons (PROJECT_PLAN 2.3). Their ``build`` returns an event-level scorer
@@ -107,6 +115,18 @@ def _mlb_players():
         return mlb.score_players(raw[raw["_phase"] == "bat"], raw[raw["_phase"] == "pit"])
 
     return load, score
+
+
+def _mlb_two_way(scored):
+    """Fold a two-way player's batting and pitching rows into one.
+
+    Only after normalization: raw batting and pitching points are not
+    comparable, so the primary role is whichever scored higher on the 0-100
+    scale and the secondary contributes half.
+    """
+    from whul.scoring import mlb
+
+    return mlb.combine_two_way(scored)
 
 
 def _mlb_teams():
@@ -390,7 +410,9 @@ SOURCES: dict[str, Source] = _register(
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified"),
     Source("mlb", "MLB", "Player", _mlb_players,
-           note="FanGraphs leaderboards; season aggregates, no phase split"),
+           post_normalize=_mlb_two_way,
+           note="FanGraphs leaderboards; one row per player-role, folded after "
+                "normalization by the two-way rule"),
     Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
            note="a live contract year is scored on the half already played"),
     Source("nba", "NBA", "Player", _nba_players,
