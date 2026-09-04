@@ -63,6 +63,13 @@ class SeasonWindow:
 
 #: The end date tracks the MLB All-Star Game and so shifts a little each year.
 #: The drift is small enough that benchmarks do not need re-basing for it.
+#: WHUL is the Wolf Hill Uber League. The full name goes in the header, where
+#: there is room for it; the initials are for the places where there is not --
+#: a browser tab, a narrow phone -- which is the rule the managers already
+#: follow, Tyler in the standings and TG on a badge.
+LEAGUE_NAME = "Wolf Hill Uber League"
+LEAGUE_ABBR = "WHUL"
+
 SEASON = SeasonWindow(
     label="2026-27",
     start=date(2026, 8, 21),

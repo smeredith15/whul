@@ -493,3 +493,82 @@ def test_the_note_cannot_fail_the_build(monkeypatch):
         version = "v1"
 
     assert site_build._uncovered(None, "2026-27", Version()) == []
+
+
+# --- a category reads as a block ---------------------------------------------
+
+def test_a_managers_slots_in_a_category_sit_together():
+    """NFL 1 and NFL 2 adjacent in that manager's colour, then the next
+    manager's two. Ordered the other way -- every manager's first slot, then
+    every manager's second -- a category cannot be read as a block, because
+    each manager's holding is split across the width of the chart."""
+    import re
+
+    from whul.site import charts
+
+    values = {
+        ("Avery", "NFL 1"): (100.0, "a1", "P. Vance"),
+        ("Avery", "NFL 2"): (80.0, "a2", "R. Ellis"),
+        ("Blake", "NFL 1"): (90.0, "b1", "K. Shaw"),
+        ("Blake", "NFL 2"): (70.0, "b2", "T. Moss"),
+    }
+    rows = [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")]
+    svg = charts.contribution_chart(rows, [("Avery", 1), ("Blake", 2)], values,
+                                    depth={"NFL": 2})
+
+    order = re.findall(r'data-manager="([^"]+)" data-category="([^"]+)"', svg)
+    assert order == [
+        ("Avery", "NFL 1"), ("Avery", "NFL 2"),
+        ("Blake", "NFL 1"), ("Blake", "NFL 2"),
+    ]
+
+
+def test_a_managers_slots_share_one_colour():
+    from whul.site import charts
+
+    values = {("Avery", "NFL 1"): (100.0, "a1", "x"),
+              ("Avery", "NFL 2"): (80.0, "a2", "y")}
+    svg = charts.contribution_chart(
+        [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")],
+        [("Avery", 1)], values, depth={"NFL": 2})
+    assert svg.count("var(--series-1)") == 2
+
+
+def test_the_rank_is_labelled_so_a_bar_says_which_slot_it_is():
+    """Colour says whose the bar is; without this nothing says whether it is
+    their best holding in the category or their fourth."""
+    from whul.site import charts
+
+    values = {("Avery", "NFL 1"): (100.0, "a1", "x"),
+              ("Avery", "NFL 2"): (80.0, "a2", "y")}
+    svg = charts.contribution_chart(
+        [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")],
+        [("Avery", 1)], values, depth={"NFL": 2})
+    assert ">#1<" in svg and ">#2<" in svg
+
+
+def test_a_single_slot_category_is_not_labelled_with_a_rank():
+    """"#1" under a category with one slot is a column of ones."""
+    from whul.site import charts
+
+    svg = charts.contribution_chart(
+        [("PGA", "PGA 1", "#1")], [("Avery", 1)],
+        {("Avery", "PGA 1"): (50.0, "p1", "x")}, depth={"PGA": 1})
+    assert ">#1<" not in svg
+
+
+def test_a_benched_slot_strikes_the_score_and_not_the_name():
+    """The player is not crossed out, their contribution is -- and a struck
+    name reads like a player who has been dropped rather than one whose week
+    was someone else's."""
+    from whul.site.build import _asset_button
+
+    assert "struck" not in _asset_button("a1", "P. Vance", counts=False)
+
+
+def test_the_header_carries_the_leagues_full_name():
+    """"WHUL" is unreadable to anyone outside the league."""
+    from whul.config.league import LEAGUE_ABBR, LEAGUE_NAME
+
+    assert LEAGUE_NAME == "Wolf Hill Uber League"
+    assert LEAGUE_ABBR == "WHUL"

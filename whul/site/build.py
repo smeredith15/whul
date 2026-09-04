@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from whul.config.league import ALL_SLOTS, SEASON, active_slots, manager_name
+from whul.config.league import (
+    ALL_SLOTS, LEAGUE_ABBR, LEAGUE_NAME, SEASON, active_slots, manager_name,
+)
 from whul.site import charts, images, theme
 from whul.store import benchmarks as bm
 from whul.store.db import Store
@@ -82,7 +84,10 @@ def _page(title: str, body: str, active: str, managers: list[str],
 <body>
 <div class="wrap">
 <header class="masthead">
-  <h1><a href="{up}index.html" style="text-decoration:none">WHUL</a></h1>
+  <h1><a href="{up}index.html" style="text-decoration:none">
+    <span class="full">{escape(LEAGUE_NAME)}</span>
+    <span class="short">{escape(LEAGUE_ABBR)}</span>
+  </a></h1>
   <span class="stamp">{escape(stamp)}</span>
   <nav>{links}{teams}</nav>
 </header>
@@ -155,10 +160,14 @@ def asset_profiles(
 
 
 def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0) -> str:
-    """A name that opens its profile. Struck through when the slot is benched."""
+    """A name that opens its profile.
+
+    ``counts`` dims the row but does not strike the name. A benched slot's
+    *score* is what is set aside; the player is not crossed out, their
+    contribution is -- and a struck name reads like a player who has been
+    dropped rather than one whose week was someone else's.
+    """
     inner = escape(name)
-    if not counts:
-        inner = f'<span class="struck">{inner}</span>'
     return (
         f'<button class="assetlink" data-asset="{escape(asset_id or "")}" '
         f'type="button"><span class="who">'
@@ -446,7 +455,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         [str(d)] + [f"{s.values[days.index(d)]:,.1f}" for s in series] for d in sampled
     ]
 
-    slot_rows, values, _ = _slot_rows(bars, managers)
+    slot_rows, values, slot_depth = _slot_rows(bars, managers)
     # Name each bar's asset, so the tooltip and the table both read as people.
     for key, (score, asset_id, _) in list(values.items()):
         profile = profiles.get(asset_id)
@@ -478,17 +487,18 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 
 <div class="card">
   <h2>Every counting slot</h2>
-  <p class="sub">One row per slot, ranked within its category, so every bar is a
-    single normalized score and any two are directly comparable. Click a bar for
-    the player behind it.</p>
+  <p class="sub">One row per category. Each manager's slots sit together in
+    their own colour, ranked best first, so a category reads as a block. Every
+    bar is a single normalized score, so any two are directly comparable. Click
+    a bar for the player behind it.</p>
   {charts.legend(slotted)}
-  {charts.contribution_chart(slot_rows, slotted, values)}
+  {charts.contribution_chart(slot_rows, slotted, values, depth=slot_depth)}
   {_table_view("Show as a table", ["Slot"] + [m for m, _ in slotted], bar_rows)}
 </div>
 {_profile_payload(profiles)}
 """
     (out / "index.html").write_text(
-        _page("WHUL — Standings", body, "Standings", managers,
+        _page(f"{LEAGUE_ABBR} — Standings", body, "Standings", managers,
               stamp=stamp, simulated=simulated)
     )
 
@@ -577,7 +587,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
     <div class="note">{"every slot filled" if not empty_slots else "slots with nobody in them"}</div></div>
 </div>"""
     (out / "team" / f"{_slug(manager)}.html").write_text(
-        _page(f"WHUL — {manager_name(manager)}", head + "".join(sections) +
+        _page(f"{LEAGUE_ABBR} — {manager_name(manager)}", head + "".join(sections) +
               _profile_payload(profiles), manager,
               managers, depth=1, stamp=stamp, simulated=simulated)
     )
@@ -651,7 +661,7 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=()) -> None
 </div>
 """
     (out / "about.html").write_text(
-        _page("WHUL — How scoring works", body, "How scoring works", managers,
+        _page(f"{LEAGUE_ABBR} — How scoring works", body, "How scoring works", managers,
               stamp=stamp, simulated=simulated)
     )
 

@@ -187,6 +187,15 @@ details.tableview[open] summary { margin-bottom: 8px; }
   text-transform: uppercase; letter-spacing: 0.05em; margin-left: 6px;
   font-style: normal;
 }
+/* The masthead carries the league's full name, and falls back to its initials
+   where there is not room for it -- a narrow phone, mostly. Both are in the
+   markup so the swap needs no script. */
+.masthead h1 .short { display: none; }
+@media (max-width: 640px) {
+  .masthead h1 .full { display: none; }
+  .masthead h1 .short { display: inline; }
+}
+
 .struck { text-decoration: line-through; text-decoration-thickness: 1.5px;
           color: var(--text-secondary); }
 

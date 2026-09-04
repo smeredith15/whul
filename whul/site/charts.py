@@ -195,32 +195,55 @@ SLOT_ROW_PAD = 9
 
 
 def contribution_chart(
-    rows: list[tuple[str, str]],
+    rows: list[tuple[str, str, str]],
     managers: list[tuple[str, int]],
     values: dict[tuple[str, str], tuple[float, str, str]],
     width: int = 1000,
     chart_id: str = "contribution",
+    depth: dict[str, int] | None = None,
 ) -> str:
-    """One row per roster slot, one bar per manager.
+    """One row per category, one run of bars per manager within it.
 
     Every bar is a single slot's normalized score, so every bar on the chart is
     on the same 0-100 scale and any two are directly comparable -- a category
     with four slots no longer dwarfs one with a single slot simply by having
-    more of them. Rows are a category and a rank within it, and each manager's
-    slots are ranked by their own score, so row "NFL 1" compares five managers'
-    best NFL player rather than five arbitrary ones.
+    more of them.
 
-    ``rows`` is ``(category, key, label)`` -- the key is fully qualified so two
-    categories cannot collide, the label is what the row shows. ``values`` maps
-    ``(manager, key)`` to ``(score, asset_id, asset name)``, the last two so a
-    bar can open the profile it stands for.
+    Bars are ordered ``(manager, rank)``: a manager's two NFL teams sit side by
+    side in that manager's colour, then the next manager's two. Ordered the
+    other way -- every manager's first slot, then every manager's second -- a
+    category cannot be read as a block, because each manager's holding is split
+    across the width of the chart.
+
+    ``rows`` is ``(category, key, label)``; with ``depth`` given, one row per
+    category carrying all of its ranks. ``values`` maps ``(manager, key)`` to
+    ``(score, asset_id, asset name)``, the last two so a bar can open the
+    profile it stands for.
     """
     if not rows or not managers:
         return '<p class="sub">Nothing scored yet.</p>'
 
+    # One row per category now, not one per slot: the ranks live inside it.
+    # Where no depth is given it is read off the rows themselves, which already
+    # carry one entry per rank -- inferring 1 would silently draw a manager's
+    # best slot and drop the rest.
+    categories: list[str] = []
+    counted: dict[str, int] = {}
+    for category, _, _ in rows:
+        if category not in categories:
+            categories.append(category)
+        counted[category] = counted.get(category, 0) + 1
+    depth = depth or counted
+    per_row = {c: max(depth.get(c, counted.get(c, 1)), 1) for c in categories}
+
     pad_left, pad_right, pad_top = 150, 56, 8
-    row_h = len(managers) * (SLOT_BAR_THICKNESS + BAR_GAP) + SLOT_ROW_PAD
-    height = pad_top + row_h * len(rows) + 28
+    def _row_height(category: str) -> float:
+        bars = len(managers) * per_row[category]
+        return bars * (SLOT_BAR_THICKNESS + BAR_GAP) + SLOT_ROW_PAD
+
+    heights = {c: _row_height(c) for c in categories}
+    plot_h = sum(heights.values())
+    height = pad_top + plot_h + 28
     plot_w = width - pad_left - pad_right
     top = _nice_ceiling(max((v[0] for v in values.values()), default=1))
 
@@ -235,7 +258,7 @@ def contribution_chart(
         gx = pad_left + plot_w * step / GRID_STEPS
         parts.append(
             f'<line x1="{gx:.1f}" y1="{pad_top}" x2="{gx:.1f}" '
-            f'y2="{pad_top + row_h * len(rows):.1f}" '
+            f'y2="{pad_top + plot_h:.1f}" '
             f'stroke="var(--grid)" stroke-width="1"/>'
         )
         parts.append(
@@ -243,44 +266,50 @@ def contribution_chart(
             f'font-size="11" fill="var(--muted)">{_fmt(value)}</text>'
         )
 
-    previous_category = None
-    for row, (category, key, label) in enumerate(rows):
-        base_y = pad_top + row * row_h + 4
-        # The category is written once per run of its slots; repeating it on
-        # every row would be four lines of the same word.
-        if category != previous_category:
-            parts.append(
-                f'<text x="{pad_left - 10}" y="{base_y + 10:.1f}" text-anchor="end" '
-                f'font-size="12" fill="var(--text-primary)" font-weight="600">'
-                f'{escape(category)}</text>'
-            )
-            previous_category = category
-            parts.append(
-                f'<line x1="{pad_left - 4}" y1="{base_y - 3:.1f}" '
-                f'x2="{width - pad_right}" y2="{base_y - 3:.1f}" '
-                f'stroke="var(--grid)" stroke-width="1"/>'
-            )
+    offset = pad_top
+    for category in categories:
+        base_y = offset + 4
         parts.append(
-            f'<text x="{pad_left - 10}" y="{base_y + row_h / 2 + 4:.1f}" '
-            f'text-anchor="end" font-size="10" fill="var(--muted)">{escape(label)}</text>'
+            f'<text x="{pad_left - 10}" y="{base_y + 10:.1f}" text-anchor="end" '
+            f'font-size="12" fill="var(--text-primary)" font-weight="600">'
+            f'{escape(category)}</text>'
         )
-        for index, (manager, slot) in enumerate(managers):
-            score, asset_id, asset_name = values.get((manager, key), (0.0, "", ""))
-            bar_y = base_y + index * (SLOT_BAR_THICKNESS + BAR_GAP) + 2
-            bar_w = max(plot_w * score / top, 0.0)
-            radius = min(BAR_RADIUS, bar_w / 2) if bar_w else 0
-            parts.append(
-                f'<rect class="bar" x="{pad_left}" y="{bar_y:.1f}" '
-                f'width="{bar_w:.1f}" height="{SLOT_BAR_THICKNESS}" rx="{radius:.1f}" '
-                f'fill="var(--series-{slot})" '
-                # The title and the tooltip carry the fully qualified key, not
-                # the short row label: "#2" means nothing read on its own, and
-                # a screen reader gets no help from the visual grouping.
-                f'data-manager="{escape(manager)}" data-category="{escape(key)}" '
-                f'data-asset="{escape(asset_id)}" '
-                f'data-value="{score:.1f}"><title>{escape(manager)} — '
-                f'{escape(key)}: {escape(asset_name)} {_fmt(score)}</title></rect>'
-            )
+        parts.append(
+            f'<line x1="{pad_left - 4}" y1="{base_y - 3:.1f}" '
+            f'x2="{width - pad_right}" y2="{base_y - 3:.1f}" '
+            f'stroke="var(--grid)" stroke-width="1"/>'
+        )
+        index = 0
+        for manager, slot in managers:
+            for rank in range(1, per_row[category] + 1):
+                key = f"{category} {rank}"
+                score, asset_id, asset_name = values.get((manager, key), (0.0, "", ""))
+                bar_y = base_y + index * (SLOT_BAR_THICKNESS + BAR_GAP) + 2
+                index += 1
+                # Which of the manager's slots this is. Colour says whose the
+                # bar is; without this nothing says whether it is their best
+                # holding in the category or their fourth.
+                if per_row[category] > 1:
+                    parts.append(
+                        f'<text x="{pad_left - 10}" '
+                        f'y="{bar_y + SLOT_BAR_THICKNESS - 3:.1f}" text-anchor="end" '
+                        f'font-size="10" fill="var(--muted)">#{rank}</text>'
+                    )
+                bar_w = max(plot_w * score / top, 0.0)
+                radius = min(BAR_RADIUS, bar_w / 2) if bar_w else 0
+                parts.append(
+                    f'<rect class="bar" x="{pad_left}" y="{bar_y:.1f}" '
+                    f'width="{bar_w:.1f}" height="{SLOT_BAR_THICKNESS}" '
+                    f'rx="{radius:.1f}" fill="var(--series-{slot})" '
+                    # The title carries the fully qualified key: "#2" means
+                    # nothing read on its own, and a screen reader gets no help
+                    # from the visual grouping.
+                    f'data-manager="{escape(manager)}" data-category="{escape(key)}" '
+                    f'data-asset="{escape(asset_id)}" '
+                    f'data-value="{score:.1f}"><title>{escape(manager)} — '
+                    f'{escape(key)}: {escape(asset_name)} {_fmt(score)}</title></rect>'
+                )
+        offset += heights[category]
     parts.append("</svg>")
     return '<div class="chart">' + "".join(parts) + "</div>"
 
