@@ -333,3 +333,108 @@ def test_probe_folds_two_way_players_after_normalizing(monkeypatch):
     assert "is_two_way" in combined.columns
     assert int(combined["is_two_way"].sum()) == 1
     assert len(combined) == len(roles) - 1, "the two-way player's rows collapse to one"
+
+
+# --- counting only what the league year covers -------------------------------
+
+def test_mlb_starts_when_the_earliest_other_league_does():
+    """Baseball is mid-season when the league year opens and its feed reports
+    season totals, so without a start date a manager is credited with a player's
+    April. There is no baseball event to anchor on the way there is a matchday
+    or a green flag, so it takes the earliest date any other league starts."""
+    from whul.config.league import LEAGUE_START, season_start
+
+    others = [d for league, d in LEAGUE_START.items() if league != "MLB"]
+    assert season_start("MLB") == min(others)
+
+
+def test_a_date_range_asks_the_api_for_one():
+    from datetime import date
+    from unittest import mock
+
+    from whul.sources import mlb
+
+    seen = {}
+
+    def capture(url, params, cache_key=None):
+        seen.update(params)
+        return {"stats": []}
+
+    with mock.patch.object(mlb, "_get", capture):
+        mlb.load_stats_api_players(2026, "hitting", since=date(2026, 8, 15),
+                                   until=date(2026, 9, 4))
+    assert seen["stats"] == "byDateRange"
+    assert seen["startDate"] == "2026-08-15"
+    assert seen["endDate"] == "2026-09-04"
+
+
+def test_without_a_range_the_whole_season_is_asked_for():
+    from unittest import mock
+
+    from whul.sources import mlb
+
+    seen = {}
+    with mock.patch.object(mlb, "_get",
+                           lambda u, p, cache_key=None: seen.update(p) or {"stats": []}):
+        mlb.load_stats_api_players(2026, "hitting")
+    assert seen["stats"] == "season"
+    assert "startDate" not in seen
+
+
+def test_a_range_the_api_ignored_is_refused():
+    """The Stats API ignores parameters it does not recognise rather than
+    rejecting them, so an unsupported range comes back as a full season of
+    perfectly valid-looking numbers -- the player exists, the lines parse, the
+    totals are real, they are simply four months too generous. Nothing
+    downstream could tell."""
+    from datetime import date
+
+    import pandas as pd
+    import pytest
+
+    from whul.sources import mlb
+
+    whole = pd.DataFrame({"season": [2026] * 3, "gamesPlayed": [140, 150, 130]})
+    with pytest.raises(RuntimeError, match="byDateRange is not being applied"):
+        mlb._check_range_applied(whole.copy(), whole, "hitting", date(2026, 8, 15))
+
+
+def test_a_range_that_was_applied_passes():
+    from datetime import date
+
+    import pandas as pd
+
+    from whul.sources import mlb
+
+    whole = pd.DataFrame({"season": [2026] * 3, "gamesPlayed": [140, 150, 130]})
+    ranged = pd.DataFrame({"season": [2026] * 3, "gamesPlayed": [18, 19, 17]})
+    mlb._check_range_applied(ranged, whole, "hitting", date(2026, 8, 15))
+
+
+def test_the_advanced_figures_cover_the_same_span(monkeypatch):
+    """WAR is itself a season total. A whole season of it added to six weeks of
+    hits would weight one player's WAR as heavily as another's whole summer."""
+    from datetime import date
+
+    import pandas as pd
+
+    from whul.sources import mlb
+
+    asked = []
+    monkeypatch.setattr(mlb, "load_players_since",
+                        lambda s, g, since, until=None: pd.DataFrame(
+                            {"player_id": [1], "season": [s], "gamesPlayed": [20]}))
+
+    def saber(season, group="hitting", since=None, until=None):
+        asked.append(since)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(mlb, "load_sabermetrics", saber)
+    mlb._merge_counting_and_advanced(2026, "hitting", date(2026, 8, 15))
+    assert asked == [date(2026, 8, 15)]
+
+
+def test_the_mlb_source_has_a_live_builder_distinct_from_its_history():
+    from whul.benchmark_sources import SOURCES
+
+    assert SOURCES["mlb"].live is not None

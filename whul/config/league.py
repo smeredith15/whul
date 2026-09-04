@@ -96,6 +96,13 @@ LEAGUE_START: dict[str, date] = {
     # weekend is the 22nd, not the 27th. Starting on the 27th would discard
     # real Week 1 results from the games played that first weekend.
     "NCAAF": date(2026, 8, 22),
+    # Baseball is mid-season when the league year opens and its feed reports
+    # season totals, so without a start date a manager is credited with a
+    # player's April. There is no baseball event to anchor on the way there is a
+    # matchday or a green flag, so it takes the earliest date any other league
+    # starts on -- La Liga's -- which is the earliest a WHUL result exists at
+    # all.
+    "MLB": date(2026, 8, 15),
 }
 
 

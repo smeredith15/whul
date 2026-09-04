@@ -129,6 +129,30 @@ def _mlb_two_way(scored):
     return mlb.combine_two_way(scored)
 
 
+def _mlb_players_live():
+    """The season since the league year opened, not the whole season.
+
+    The benchmark is drawn from whole seasons and the live figures were whole
+    seasons too, which looked consistent and was not: four months of every
+    player's total were earned before anyone drafted him.
+    """
+    from whul.config.league import season_start
+    from whul.scoring import mlb
+    from whul.sources import mlb as source
+
+    def load(seasons):
+        since = season_start("MLB")
+        batters = source.load_batters(seasons, since=since).assign(_phase="bat")
+        pitchers = source.load_pitchers(seasons, since=since).assign(_phase="pit")
+        frames = [f for f in (batters, pitchers) if not f.empty]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def score(raw):
+        return mlb.score_players(raw[raw["_phase"] == "bat"], raw[raw["_phase"] == "pit"])
+
+    return load, score
+
+
 def _mlb_teams():
     from whul.scoring import mlb
     from whul.sources import mlb as source
@@ -409,7 +433,7 @@ SOURCES: dict[str, Source] = _register(
     Source("nfl", "NFL", "Player", _nfl_players, reliability="verified",
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified"),
-    Source("mlb", "MLB", "Player", _mlb_players,
+    Source("mlb", "MLB", "Player", _mlb_players, live=_mlb_players_live,
            post_normalize=_mlb_two_way,
            note="FanGraphs leaderboards; one row per player-role, folded after "
                 "normalization by the two-way rule"),
