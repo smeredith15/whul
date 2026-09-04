@@ -7,6 +7,8 @@ broken before (a value nested one level deeper than the code looked).
 
 import json
 import pathlib
+from datetime import date as _date
+from datetime import timedelta
 
 import pandas as pd
 import pytest
@@ -107,6 +109,67 @@ def test_golf_results_flow_into_scoring(monkeypatch):
     assert scored.set_index("player").loc["Winner", "total_points"] == 500 * golf.MAJOR_MULTIPLIER
     # The missed cut has no position, so it never reaches the totals.
     assert "Missed" not in set(scored["player"])
+
+
+# --- knowing an event is over --------------------------------------------
+
+def test_every_way_espn_says_finished_is_read():
+    """It reports completion inconsistently across sports and seasons. Reading
+    only the boolean dropped half of the 2022 PGA season."""
+    today = _date(2026, 9, 4)
+    for status in (
+        {"type": {"completed": True}},
+        {"type": {"state": "post"}},
+        {"type": {"name": "STATUS_FINAL"}},
+        {"type": {"name": "STATUS_PLAY_COMPLETE"}},
+    ):
+        assert espn_ind._is_final({"status": status, "date": "2026-09-03"}, today)
+
+
+def test_a_status_nested_under_the_competition_still_counts():
+    today = _date(2026, 9, 4)
+    event = {"date": "2026-09-03", "competitions": [{"status": {"type": {"state": "post"}}}]}
+    assert espn_ind._is_final(event, today)
+
+
+def test_an_event_a_week_past_is_over_whatever_the_payload_says():
+    # Dropping it would lower every athlete's total by what they earned there,
+    # with nothing anywhere reporting a gap.
+    today = _date(2026, 9, 4)
+    assert espn_ind._is_final({"date": "2026-08-01", "status": {}}, today)
+
+
+def test_an_event_still_being_played_is_not_final():
+    today = _date(2026, 9, 4)
+    assert not espn_ind._is_final({"date": "2026-09-03", "status": {}}, today)
+    assert not espn_ind._is_final(
+        {"date": "2026-09-03", "status": {"type": {"state": "in"}}}, today
+    )
+
+
+def test_an_elapsed_season_missing_its_events_is_refused(monkeypatch):
+    """The failure the unserved check misses: ESPN serves these events, it just
+    never marks them done, and the season quietly understates everyone in it."""
+    old = [{"id": str(i), "date": "2022-06-01T00:00Z", "status": {}} for i in range(50)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: old)
+    # Nothing reads as finished, and the season ended years ago.
+    monkeypatch.setattr(espn_ind, "_is_final", lambda e, today=None: e["id"] in "0123456789")
+
+    with pytest.raises(RuntimeError) as caught:
+        espn_ind.load_results("pga", [2022], verbose=False)
+    assert "understate" in str(caught.value)
+
+
+def test_a_season_still_being_played_is_not_judged(monkeypatch):
+    soon = (_date.today() + timedelta(days=30)).isoformat()
+    events = [{"id": str(i), "date": f"{soon}T00:00Z", "status": {}} for i in range(50)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+    monkeypatch.setattr(espn_ind, "_is_final", lambda e, today=None: e["id"] == "0")
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+
+    # Part-finished is what a live season looks like; refusing it would refuse
+    # every in-progress league.
+    espn_ind.load_results("pga", [_date.today().year], verbose=False)
 
 
 def _finished(event_id: str, name: str = "Some Open", day: str = "2026-04-12T18:00Z"):

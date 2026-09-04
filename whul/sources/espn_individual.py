@@ -21,7 +21,7 @@ actually contained.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -167,9 +167,56 @@ def event_summary(league: str, event_id: str) -> dict:
     return best
 
 
-def _is_final(event: dict) -> bool:
-    status = event.get("status") or {}
-    return bool((status.get("type") or {}).get("completed"))
+#: Status names ESPN uses for an event that has finished. It reports completion
+#: inconsistently across sports and across seasons -- sometimes a ``completed``
+#: boolean, sometimes only a state or a name -- and reading one of them alone
+#: dropped half of the 2022 PGA season.
+FINAL_STATUS_NAMES = (
+    "STATUS_FINAL", "STATUS_COMPLETE", "STATUS_PLAY_COMPLETE", "STATUS_FINAL_OT",
+)
+
+#: How long after an event ESPN is given to mark it finished before its date is
+#: taken as the answer. A tournament runs four days and a race meeting three, so
+#: a week clears the event itself with room to spare.
+SETTLED_AFTER_DAYS = 7
+
+
+def _statuses(event: dict) -> list[dict]:
+    """Every place this payload might keep the event's status."""
+    found = [event.get("status") or {}]
+    for competition in event.get("competitions") or []:
+        if isinstance(competition, dict) and competition.get("status"):
+            found.append(competition["status"])
+    return found
+
+
+def _is_final(event: dict, today: date | None = None) -> bool:
+    """Whether an event has finished, by any of the ways ESPN says so.
+
+    Falls back to the calendar. An event whose date is more than a week past is
+    over whatever the payload says, and treating it as unfinished is the
+    expensive mistake: the event is dropped, every athlete's season total falls
+    by what they earned in it, and nothing anywhere reports a gap -- the numbers
+    are simply smaller. A cancelled event survives this only to be dropped by
+    the scorer, which finds no finishing positions in it.
+    """
+    for status in _statuses(event):
+        kind = status.get("type") or {}
+        if kind.get("completed"):
+            return True
+        if str(kind.get("state", "")).lower() == "post":
+            return True
+        if str(kind.get("name", "")).upper() in FINAL_STATUS_NAMES:
+            return True
+
+    stamp = _event_date(event)
+    if not stamp:
+        return False
+    try:
+        played = date.fromisoformat(stamp)
+    except ValueError:
+        return False
+    return (today or date.today()) - played > timedelta(days=SETTLED_AFTER_DAYS)
 
 
 def _competitors(payload: dict) -> list[dict]:
@@ -253,6 +300,7 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
                 f"{league} {season}: {len(finished)} completed of {len(events)} events",
                 flush=True,
             )
+        _check_season_ran_out(league, season, events, finished)
         unserved: list[str] = []
         for event in finished:
             event_id = str(event.get("id") or "")
@@ -289,6 +337,43 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
                 )
         _report_unserved(league, season, unserved, len(finished), verbose)
     return pd.DataFrame(rows)
+
+
+#: How much of an elapsed season may be missing before it is not worth having.
+#: Well below this and the season understates every athlete in it, invisibly:
+#: the totals are simply lower, with nothing to say a tournament is absent.
+FINISHED_LIMIT = 0.85
+
+
+def _check_season_ran_out(
+    league: str, season: int, events: list[dict], finished: list[dict],
+    today: date | None = None,
+) -> None:
+    """Refuse an elapsed season that lost too many of its events.
+
+    A season still being played is legitimately part-finished, so only a season
+    whose last listed event is well past is judged. This is the failure the
+    unserved-event check does not catch: those events ESPN refuses to serve,
+    while these it simply never marks as done.
+    """
+    if not events:
+        return
+    today = today or date.today()
+    last = max((_event_date(e) for e in events), default="")
+    try:
+        ended = date.fromisoformat(last) if last else None
+    except ValueError:
+        ended = None
+    if ended is None or today - ended <= timedelta(days=SETTLED_AFTER_DAYS):
+        return
+    if len(finished) >= len(events) * FINISHED_LIMIT:
+        return
+    raise RuntimeError(
+        f"{league} {season}: only {len(finished)} of {len(events)} listed events "
+        f"came back finished, and the season ended on {last}. Below "
+        f"{FINISHED_LIMIT:.0%} the totals understate every athlete in it rather "
+        f"than miss an event, so the season is refused instead of scored."
+    )
 
 
 #: How much of a season may go unserved before the season is not worth having.
