@@ -91,10 +91,15 @@ class ProrationRule:
 #: however well he played, and every baseball pick would sit below every other
 #: league's for a structural reason nobody could see in the standings.
 #:
-#: Teams are deliberately absent. Their contract year is bisected at the
-#: All-Star break and ``whul.scoring.bisection`` already inflates the second
-#: stretch so the two reconcile to one full season; prorating them as well
-#: would apply the same correction twice.
+#: Teams take the same rule, because the same start date cuts their schedule to
+#: the same window -- otherwise a manager's baseball teams and his baseball
+#: players sit on two different scales. Only the components that grow with games
+#: played are lifted; a division title and a playoff run happen once however
+#: long the window is, which is why the caller names its columns.
+#:
+#: ``whul.scoring.bisection`` still governs the *historical* team path, where a
+#: whole season really is being split into its post- and pre-break shares. A
+#: live window is not a whole season to split.
 BUILT_IN_RULES: tuple[ProrationRule, ...] = (
     ProrationRule(
         league="MLB", season="2026-27", actual_games=133, expected_games=162,
