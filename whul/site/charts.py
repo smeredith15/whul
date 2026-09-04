@@ -412,14 +412,33 @@ SCRIPT = """\
     var stats = (a.stats || []).map(function (row) {
       return '<tr><td>' + row[0] + '</td><td class="num">' + row[1] + '</td></tr>';
     }).join('');
+    // Every finish, newest first. A total says how much; this says what
+    // happened, which is what a profile is opened for.
+    var finishes = (a.finishes || []).map(function (f) {
+      return '<tr><td>' + f.label + '</td>' +
+             '<td class="when">' + (f.date || '') + '</td>' +
+             '<td class="num">' + f.points.toLocaleString() + '</td></tr>';
+    }).join('');
+    // A prorated or schedule-scaled figure looks like an ordinary one, and a
+    // manager checking it against a box score would find it does not
+    // reconcile. Saying so is cheaper than being asked.
+    var notes = (a.notes || []).map(function (n) {
+      return '<p class="note">' + n + '</p>';
+    }).join('');
     dialog.innerHTML =
       '<button class="close" aria-label="Close">&times;</button>' +
       '<div class="head">' + a.avatar +
         '<div><div class="nm">' + a.name + (a.badge || '') + '</div>' +
         '<div class="meta">' + a.meta + '</div></div></div>' +
-      (stats ? '<div class="body"><table><tbody>' + stats + '</tbody></table></div>'
+      (finishes
+        ? '<div class="body"><h3>Finishes</h3><table class="finishes"><tbody>' +
+          finishes + '</tbody></table></div>'
+        : '') +
+      (stats ? '<div class="body">' + (finishes ? '<h3>Season totals</h3>' : '') +
+               '<table><tbody>' + stats + '</tbody></table></div>'
              : '<div class="body"><p class="sub">No stat lines recorded for this ' +
                'day yet.</p></div>') +
+      (notes ? '<div class="body">' + notes + '</div>' : '') +
       '<div class="scoreline">' +
         '<div><div class="label">Raw score</div><div class="value">' + a.raw + '</div></div>' +
         '<div><div class="label">Normalized</div><div class="value">' + a.scaled + '</div></div>' +

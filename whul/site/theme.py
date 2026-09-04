@@ -196,6 +196,14 @@ details.tableview[open] summary { margin-bottom: 8px; }
   .masthead h1 .short { display: inline; }
 }
 
+.profile h3 { font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.4rem; }
+.profile table.finishes td.when { color: var(--muted); font-size: 0.78rem;
+  white-space: nowrap; padding-left: 0.5rem; }
+/* A note explaining why a figure is not simply what the feed reported. */
+.profile .note { margin: 0 0 0.4rem; font-size: 0.8rem; color: var(--muted);
+  line-height: 1.45; }
+
 .struck { text-decoration: line-through; text-decoration-thickness: 1.5px;
           color: var(--text-secondary); }
 

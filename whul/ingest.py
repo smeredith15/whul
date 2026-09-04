@@ -222,5 +222,29 @@ def _pull(
             continue
         current = window.season_windows(0, start=season_start(name))[-1]
         totals = window.window_totals(rows, [current])
-        frames.append(totals.assign(season=current.label))
+        frames.append(_with_finishes(totals.assign(season=current.label), rows, current))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _with_finishes(totals: pd.DataFrame, events: pd.DataFrame, current) -> pd.DataFrame:
+    """Carry each athlete's actual finishes alongside their total.
+
+    The window machinery sums these rows and drops the detail, which is the
+    right answer for a benchmark and the wrong one for a profile: a total says
+    how much, and "Winston Salem 250 F" says what happened. Attached here
+    rather than recomputed later because this is the only place both the events
+    and the window they belong to are in hand.
+    """
+    from whul.scoring import finishes as finish_summary
+    from whul.scoring.window import assign_windows
+
+    if totals.empty or events is None or events.empty:
+        return totals
+    inside = assign_windows(events, [current])
+    records = finish_summary.summarize(inside)
+    if not records:
+        return totals
+    id_col = "player" if "player" in totals.columns else totals.columns[0]
+    out = totals.copy()
+    out["finishes"] = [records.get(str(name), []) for name in out[id_col]]
+    return out

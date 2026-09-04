@@ -572,3 +572,74 @@ def test_the_header_carries_the_leagues_full_name():
 
     assert LEAGUE_NAME == "Wolf Hill Uber League"
     assert LEAGUE_ABBR == "WHUL"
+
+
+# --- what the profile window says --------------------------------------------
+
+def test_a_stat_is_labelled_in_words():
+    """`games_played` reads as debug output."""
+    from whul.site.build import _label_for
+
+    assert _label_for("games_played") == "Games played"
+    assert _label_for("reg_big_wins") == "Big wins"
+    assert _label_for("point_diff") == "Point differential"
+    # An unmapped column still reads as English rather than as a column name.
+    assert _label_for("some_new_thing") == "Some new thing"
+
+
+def test_every_figure_behind_the_score_is_shown():
+    """The window used to carry five columns because that is what the aggregate
+    kept. What it should carry is everything that went into the raw score."""
+    from whul.site.build import _stat_lines
+
+    row = {
+        "asset_id": "a1", "league": "NFL", "season": "2026-27", "source": "nfl",
+        "total_points": 210.0, "reg_wins": 11, "reg_big_wins": 4,
+        "div_wins": 5, "point_diff": 88.0, "playoff_wins": 2,
+    }
+    labels = dict(_stat_lines(row))
+    assert "Regular-season wins" in labels and labels["Regular-season wins"] == "11"
+    assert "Point differential" in labels
+    assert "Playoff wins" in labels
+    # Identity columns are not statistics.
+    assert "Asset id" not in labels and "League" not in labels
+
+
+def test_a_prorated_score_says_so():
+    """A prorated figure looks like an ordinary one, and a manager checking it
+    against a box score would find it does not reconcile."""
+    from whul.site.build import _scaling_notes
+
+    notes = _scaling_notes({"proration_factor": 1.218})
+    assert len(notes) == 1
+    assert "1.218" in notes[0]
+    assert "One-off achievements are not scaled" in notes[0]
+
+
+def test_an_unscaled_score_says_nothing():
+    """A note printed when nothing was scaled teaches everyone to ignore it."""
+    from whul.site.build import _scaling_notes
+
+    assert _scaling_notes({"proration_factor": 1.0}) == []
+    assert _scaling_notes({"total_points": 5.0}) == []
+
+
+def test_a_schedule_scaled_benchmark_says_so():
+    from whul.site.build import _scaling_notes
+
+    notes = _scaling_notes({"schedule_factor": 1.024})
+    assert notes and "1.024" in notes[0]
+
+
+def test_the_finish_list_survives_the_round_trip_through_the_database():
+    """The stats payload is stored as JSON, so a list comes back as a string."""
+    import json
+
+    from whul.site.build import _finish_list
+
+    finishes = [{"label": "ATP Winston Salem 250 F", "points": 150.0,
+                 "date": "2026-08-22"}]
+    assert _finish_list({"finishes": finishes}) == finishes
+    assert _finish_list({"finishes": json.dumps(finishes)}) == finishes
+    assert _finish_list({}) == []
+    assert _finish_list({"finishes": "not json"}) == []

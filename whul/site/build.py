@@ -124,15 +124,14 @@ def asset_profiles(
     stats = store.read_stats(season, as_of)
 
     lines: dict[str, list[tuple[str, str]]] = {}
+    finishes: dict[str, list[dict]] = {}
+    notes: dict[str, list[str]] = {}
     if not stats.empty:
-        skip = {"asset_id", "league", "season", "as_of", "source", "phase", "fetched_at"}
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
-            lines[asset_id] = [
-                (label, f"{value:,.1f}" if isinstance(value, float) else str(value))
-                for label, value in row.items()
-                if label not in skip and value == value and value is not None
-            ]
+            finishes[asset_id] = _finish_list(row)
+            notes[asset_id] = _scaling_notes(row)
+            lines[asset_id] = _stat_lines(row)
 
     out: dict[str, dict] = {}
     for asset_id in sorted(wanted):
@@ -155,7 +154,105 @@ def asset_profiles(
             "scaled": f"{float(scores.loc[asset_id, 'scaled_score']):,.1f}"
                       if asset_id in scores.index else "—",
             "stats": lines.get(asset_id, []),
+            "finishes": finishes.get(asset_id, []),
+            "notes": notes.get(asset_id, []),
         }
+    return out
+
+
+#: Columns that identify the row rather than describe the performance, and the
+#: two that the window already reports on their own.
+STAT_SKIP = {
+    "asset_id", "league", "season", "as_of", "source", "phase", "fetched_at",
+    "player", "team", "team_name", "display_name", "athlete", "driver",
+    "finishes", "norm_key", "asset_type", "role_count", "contract_year",
+    "proration_factor", "schedule_factor", "scaled_score",
+}
+
+#: Raw column names read as debug output. These are what they mean.
+STAT_LABELS = {
+    "total_points": "Total points", "role_points": "Points in this role",
+    "events": "Events", "matches": "Matches", "matches_played": "Matches played",
+    "games_played": "Games played", "wins": "Wins", "reg_wins": "Regular-season wins",
+    "big_wins": "Big wins", "reg_big_wins": "Big wins", "conf_wins": "Conference wins",
+    "div_wins": "Division wins", "point_diff": "Point differential",
+    "run_diff": "Run differential", "shutouts": "Shutouts",
+    "reg_shutouts": "Shutouts", "playoff_app": "Playoff appearance",
+    "playoff_appearance": "Playoff appearance", "playoff_wins": "Playoff wins",
+    "playoff_game_wins": "Playoff wins", "conf_title_win": "Conference title",
+    "pts_reg_champ": "Regular-season title", "div_champ": "Division title",
+    "mm_appearance": "NCAA tournament", "mm_wins": "NCAA tournament wins",
+    "conf_tourney_wins": "Conference tournament wins",
+    "conf_tourney_champ": "Conference tournament title",
+    "bye_points": "Bye credit", "appearance_points": "Appearances",
+    "goal_points": "Goals", "assists": "Assists", "goals": "Goals",
+    "yellow": "Yellow cards", "red": "Red cards", "minutes": "Minutes",
+    "starts": "Starts", "races_started": "Races started", "top_tens": "Top tens",
+    "made_cut": "Cuts made", "primary_score": "Primary role",
+    "secondary_score": "Secondary role", "secondary_role": "Secondary role",
+    "is_two_way": "Two-way player",
+    "pts_reg_wins": "Regular-season wins", "pts_big_wins": "Big wins",
+    "pts_shutouts": "Shutouts", "pts_run_diff": "Run differential",
+    "pts_div_champ": "Division title", "pts_playoff": "Postseason",
+    "year_n_points": "This season's share", "year_n1_points": "Next season's share",
+}
+
+
+def _label_for(column: str) -> str:
+    """A stat's name in words. `games_played` reads as debug output."""
+    return STAT_LABELS.get(column, column.replace("_", " ").capitalize())
+
+
+def _stat_lines(row: dict) -> list[tuple[str, str]]:
+    """Every figure that went into the raw score, labelled."""
+    out = []
+    for column, value in row.items():
+        if column in STAT_SKIP or value is None or value != value:
+            continue
+        if isinstance(value, (list, dict)):
+            continue
+        if isinstance(value, bool):
+            text = "yes" if value else "no"
+        elif isinstance(value, float):
+            text = f"{value:,.1f}"
+        else:
+            text = str(value)
+        out.append((_label_for(column), text))
+    return out
+
+
+def _finish_list(row: dict) -> list[dict]:
+    """The athlete's actual finishes, newest first, where the sport has them."""
+    value = row.get("finishes")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    return value if isinstance(value, list) else []
+
+
+def _scaling_notes(row: dict) -> list[str]:
+    """Why a figure here is not simply what the feed reported.
+
+    A score that has been prorated or schedule-scaled looks like an ordinary
+    one, and a manager checking the arithmetic against a box score would find
+    it does not reconcile. Saying so is cheaper than being asked.
+    """
+    out = []
+    factor = row.get("proration_factor")
+    if isinstance(factor, (int, float)) and factor and factor == factor and factor != 1.0:
+        out.append(
+            f"Counting production is scaled by \u00d7{factor:.3f}, because this "
+            f"league year covers a shorter window than the seasons the benchmark "
+            f"was drawn from. One-off achievements are not scaled."
+        )
+    factor = row.get("schedule_factor")
+    if isinstance(factor, (int, float)) and factor and factor == factor and factor != 1.0:
+        out.append(
+            f"The benchmark for this league is lifted by \u00d7{factor:.3f} to "
+            f"match a longer schedule than its history was played over."
+        )
     return out
 
 
