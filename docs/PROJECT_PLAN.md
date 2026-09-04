@@ -466,6 +466,8 @@ Each increment ships end-to-end:
 - [x] Nightly standings snapshot + retroactive backfill to season start
 
 ### Phase 4 — Web app *(static site, see §3.2)*
+Presentation changes collected from use are in [`SITE_TODO.md`](SITE_TODO.md).
+
 - [x] Standings table — the default view, not a tab
 - [x] Contribution bar graph (§4.2) — grouped horizontal bars by roster category
 - [x] Progression line graph — hover crosshair, direct end labels, table view
