@@ -340,6 +340,30 @@ def test_a_404_is_not_retried(monkeypatch):
     assert len(calls) == 1
 
 
+def test_a_division_that_is_a_minority_of_who_appears_still_reads_as_full():
+    """D1 men's basketball is 364 of the 763 teams that appear in its results.
+    A division under half of who shows up puts the median among the visitors,
+    where it reads 4 games a team off a pull that is complete -- the same pull
+    that reads 29 for women's basketball, which is 55%. The 75th percentile is
+    inside the division for every one of these."""
+    import pandas as pd
+
+    games = [
+        {"season": 2024, "game_date": f"2024-11-{d:02d}",
+         "home_team": f"D1-{i}", "away_team": f"D1-{(i + d) % 40}"}
+        for i in range(40) for d in range(1, 29)
+    ] + [
+        # More one-game visitors than there are division teams.
+        {"season": 2024, "game_date": "2024-11-01",
+         "home_team": f"D1-{i % 40}", "away_team": f"visitor-{i}"}
+        for i in range(45)
+    ]
+    frame = pd.DataFrame(games)
+    counts = pd.concat([frame["home_team"], frame["away_team"]]).value_counts()
+    assert counts.median() < 10, "the median really does land among the visitors"
+    assert counts.quantile(0.75) >= 28
+
+
 def test_a_divisions_one_game_visitors_do_not_read_as_a_thin_season(capsys):
     """A division's scoreboard carries its opponents too: about a hundred FCS
     teams appear in FBS results having played the single game that put them

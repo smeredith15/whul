@@ -385,20 +385,24 @@ def _report_coverage(frame: pd.DataFrame, league: str) -> None:
     for season, games in frame.groupby("season"):
         counts = pd.concat([games["home_team"], games["away_team"]]).value_counts()
         counts = counts[counts.index.astype(str) != ""]
-        # The median, not the mean. A division's scoreboard carries its
-        # opponents too -- about a hundred FCS teams appear in FBS results
-        # having played the single game that put them there -- and averaged in,
-        # they drag a complete season of 13.8 games a team down to 8.3, which
-        # reads as a pull that lost a third of its games. The median ignores
-        # them, because they are a minority of one-game visitors.
-        middle = float(counts.median()) if len(counts) else 0.0
+        # The 75th percentile, because neither the mean nor the median
+        # survives contact with this data. A division's scoreboard carries its
+        # opponents too, and they play one or two games each: averaged in they
+        # drag a complete men's season of 33 games a team down to 16, and the
+        # median only works while the division is more than half of who
+        # appears. D1 men's basketball is 364 of the 763 teams that show up --
+        # 48% -- so its median lands among the visitors and reads 4 where
+        # women's basketball, at 55%, reads 29 off an identical pull. The
+        # division is the top 48-57% of any of these, so the 75th percentile is
+        # inside it every time, and a genuinely half-empty pull still fails it.
+        busy = float(counts.quantile(0.75)) if len(counts) else 0.0
         flag = ""
-        if expected and middle < expected * THIN_SEASON_LIMIT:
+        if expected and busy < expected * THIN_SEASON_LIMIT:
             flag = f"  <-- thin; a full season is about {expected} per team"
         dates = games["game_date"].nunique() if "game_date" in games else 0
         print(
             f"    {season}: {len(games):,} games, {len(counts)} teams, "
-            f"{middle:.0f} games per team (median), "
+            f"{busy:.0f} games per team (75th pct), "
             f"{dates} distinct game dates{flag}",
             flush=True,
         )
