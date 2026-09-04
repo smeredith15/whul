@@ -38,8 +38,11 @@ batch into pga motorsports
 batch into nhl nhl-teams
 batch into mlb mlb-teams
 
-# Club soccer players: one FBref request per season covers the five European
-# leagues, and MLS one more. Six benchmarks out of about a dozen requests.
+# Club soccer players. FBref answers 403 from behind Cloudflare, so this batch
+# is expected to fail until `scripts/probe-soccer-players.py` says which source
+# to build against instead. It is left in deliberately: a batch that fails costs
+# that batch and nothing else, and the version records the hole rather than
+# hiding it.
 batch into soccer-players
 
 # Date-walked. The European competitions are shared between the leagues and

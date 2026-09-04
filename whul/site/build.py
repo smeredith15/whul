@@ -267,7 +267,8 @@ def build(
     for manager in managers:
         _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     simulated, deep_profiles)
-    _write_about(out, managers, stamp, simulated, version)
+    _write_about(out, managers, stamp, simulated, version,
+                 _uncovered(store, season, version))
 
     return {
         "out": str(out),
@@ -582,7 +583,32 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
     )
 
 
-def _write_about(out, managers, stamp, simulated, version) -> None:
+def _uncovered(store, season: str, version) -> list[tuple[str, str, int]]:
+    """Rostered league/type pairs the active benchmark cannot score.
+
+    A standing built while a league has no benchmark is not wrong, but it is
+    partial, and it looks exactly like a complete one: the managers holding
+    those picks are simply lower. Saying so on the page is the difference
+    between a season in progress and a season being misreported.
+    """
+    from whul import benchmarks as benchmark_method
+
+    if version is None:
+        return []
+    try:
+        table = benchmark_method.coverage(store, version.version, season)
+    except Exception:  # noqa: BLE001 -- a note on a page must never fail a build
+        return []
+    if table.empty or "covered" not in table.columns:
+        return []
+    missing = table[~table["covered"].astype(bool)]
+    return [
+        (str(row.league), str(row.asset_type), int(row.assets))
+        for row in missing.itertuples()
+    ]
+
+
+def _write_about(out, managers, stamp, simulated, version, uncovered=()) -> None:
     groups = "".join(
         f"<tr><td>{escape(g.asset_type)}</td><td>{escape(g.category)}</td>"
         f"<td class='num'>{g.cap}</td><td class='num'>{g.starters}</td></tr>"
@@ -621,9 +647,28 @@ def _write_about(out, managers, stamp, simulated, version) -> None:
     silently rewrite themselves.</p>
   <p>Active version: <code>{escape(version.version) if version else 'none'}</code>
     {f'— frozen {escape(version.frozen_at)}' if version and version.frozen_at else ''}</p>
+  {_uncovered_note(uncovered)}
 </div>
 """
     (out / "about.html").write_text(
         _page("WHUL — How scoring works", body, "How scoring works", managers,
               stamp=stamp, simulated=simulated)
     )
+
+
+def _uncovered_note(uncovered) -> str:
+    """The part of the roster today's standings cannot yet speak for."""
+    if not uncovered:
+        return ""
+    rows = "".join(
+        f"<tr><td>{escape(league)}</td><td>{escape(kind.lower())}s</td>"
+        f"<td class='num'>{count}</td></tr>"
+        for league, kind, count in uncovered
+    )
+    total = sum(count for _, _, count in uncovered)
+    return f"""
+  <p class="sub">Not yet scored: {total} rostered pick(s) in leagues this
+    version has no benchmark for. They score nothing until one is computed, so
+    the managers holding them are shown lower than they will finish.</p>
+  <table><thead><tr><th>League</th><th>Type</th>
+    <th class='num'>Picks</th></tr></thead><tbody>{rows}</tbody></table>"""
