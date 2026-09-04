@@ -165,16 +165,48 @@ def _nhl_teams():
     return load, lambda regular: nhl.score_teams(regular, held["playoffs"])
 
 
+def _ncaa_score(category: str):
+    from whul.scoring.ncaa import SCORERS
+
+    def score(raw):
+        # Whatever the feed returned is the division: the NCAA API states it in
+        # the URL and ESPN is asked for it by group, so there is nothing here to
+        # filter out that the request did not already exclude.
+        eligible = set(raw["home_team"]) | set(raw["away_team"])
+        return SCORERS[category](raw, eligible)
+
+    return score
+
+
 def _ncaa(key: str, category: str):
     def build():
-        from whul.scoring.ncaa import SCORERS
         from whul.sources import ncaa_api
 
-        def score(raw):
-            eligible = set(raw["home_team"]) | set(raw["away_team"])
-            return SCORERS[category](raw, eligible)
+        return (
+            lambda seasons: ncaa_api.load_team_results(key, seasons),
+            _ncaa_score(category),
+        )
 
-        return lambda seasons: ncaa_api.load_team_results(key, seasons), score
+    return build
+
+
+def _ncaa_live(key: str, category: str):
+    """Results from ESPN for the season being played.
+
+    The NCAA API is the historical source because it states the division in the
+    URL, which ESPN cannot do -- but for the current season it serves fixtures
+    without results: every 2026 game comes back `completed: false` with no
+    score, while 2024 comes back final. ESPN has the results, and its group
+    filter is close enough for a live pull, where the only teams that matter
+    are the eight on a roster.
+    """
+    def build():
+        from whul.sources import espn
+
+        return (
+            lambda seasons: espn.load_team_results(key, seasons),
+            _ncaa_score(category),
+        )
 
     return build
 
@@ -336,7 +368,7 @@ SOURCES: dict[str, Source] = _register(
            note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
         Source(key, category, "Team", _ncaa(key, category),
-               seasons_for=_espn_seasons(key))
+               live=_ncaa_live(key, category), seasons_for=_espn_seasons(key))
         for key, category in NCAA_CATEGORIES.items()
     ],
     *[

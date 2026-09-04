@@ -219,3 +219,48 @@ def test_a_season_inside_one_calendar_year_is_unchanged():
     }}]}
     rows = ncaa_api.parse_scoreboard(payload, "ncaabaseball", date(2025, 4, 12))
     assert rows[0]["season"] == 2025
+
+
+def test_the_live_ncaa_source_reads_espn_not_the_ncaa_api():
+    """The NCAA API states the division in its URL, which is why it is the
+    historical source -- but for the current season it serves fixtures without
+    results: 2026 games come back not completed with no score, while 2024 comes
+    back final. ESPN has the results."""
+    import pandas as pd
+
+    from whul.benchmark_sources import SOURCES
+
+    for key in ("ncaaf", "ncaam", "ncaaw", "ncaabaseball", "ncaasoftball"):
+        assert SOURCES[key].live is not None, key
+
+    _, score = SOURCES["ncaaf"].live()
+    games = pd.DataFrame([{
+        "season": 2027, "game_id": str(i), "game_date": "2026-08-30",
+        "season_type": 2, "completed": True,
+        "home_team": "Alabama", "away_team": f"Opponent {i}",
+        "home_conference": "SEC", "away_conference": "SEC",
+        "home_score": 38.0, "away_score": 14.0, "notes": "",
+    } for i in range(4)])
+
+    scored = score(games)
+    assert scored.set_index("team").loc["Alabama", "wins"] == 4
+    assert set(scored["league"]) == {"NCAAF"}
+
+
+def test_both_ncaa_sources_score_the_same_rows_the_same_way():
+    import pandas as pd
+
+    from whul.benchmark_sources import SOURCES
+
+    games = pd.DataFrame([{
+        "season": 2025, "game_id": str(i), "game_date": "2024-11-09",
+        "season_type": 2, "completed": True,
+        "home_team": "Alabama", "away_team": f"Opponent {i}",
+        "home_conference": "SEC", "away_conference": "SEC",
+        "home_score": 31.0, "away_score": 17.0, "notes": "",
+    } for i in range(6)])
+
+    _, historical = SOURCES["ncaaf"].build()
+    _, live = SOURCES["ncaaf"].live()
+    # One scorer, two feeds: a season must not be worth more from one of them.
+    assert historical(games).equals(live(games))
