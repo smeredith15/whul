@@ -66,6 +66,21 @@ the single best season. Intl Soccer stays one normalization group.
 
 ---
 
+## The pool is an open question too
+
+Recorded 2026-09-04: *"This will definitely involve re-benchmarking
+international soccer, the question is how. In terms of what tournaments get
+what points, and in terms of what is our pool."*
+
+Not splitting by federation is settled — those pools would be far too small.
+What is not settled is what the pool *is*. The buffer-pool machinery assumes a
+league of comparable competitors playing comparable seasons, and international
+soccer has neither: a team's opportunities depend on which year of the cycle it
+is, and on whether it qualified at all. Whether the pool is every national
+team, or the teams that entered a tournament that year, or something scaled by
+opportunity, is part of the same decision as the points table and should be
+made with it.
+
 ## Still to decide
 
 Each federation's ladder, one at a time, with the admin. The rungs and the
