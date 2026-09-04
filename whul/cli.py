@@ -679,6 +679,68 @@ def _benchmark_store(args: argparse.Namespace):
     return open_store(args.db)
 
 
+def cmd_feed_names(args: argparse.Namespace) -> int:
+    """What a live feed is calling things right now.
+
+    A rostered asset that matches nothing is either absent from the feed or
+    spelled differently in it, and those need opposite fixes. Only the feed can
+    say which.
+    """
+    from datetime import date as _date
+
+    from whul import ingest as ingest_module
+    from whul import resolve as resolver
+    from whul.benchmark_sources import resolve as resolve_sources
+    from whul.store import open_store
+
+    try:
+        source = resolve_sources([args.league])[0]
+    except KeyError as exc:
+        print(f"\n{exc.args[0]}\n", file=sys.stderr)
+        return 2
+
+    as_of = _date.fromisoformat(args.date) if args.date else _date.today()
+    try:
+        scored = ingest_module._pull(source, as_of, verbose=True)
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic reports, it does not raise
+        print(f"\n  could not pull: {type(exc).__name__}: {exc}\n", file=sys.stderr)
+        return 1
+    if scored is None or scored.empty:
+        print(
+            f"\n  {source.league}: the feed returned nothing at all for this "
+            f"season, so no name could match. That is a source problem, not a "
+            f"spelling one.\n"
+        )
+        return 1
+
+    column, _ = resolver._name_columns(scored, source.asset_type)
+    names = sorted({str(n) for n in scored[column] if str(n).strip()})
+    print(f"\n  {source.league}: {len(scored)} rows, {len(names)} distinct names\n")
+
+    store = open_store(args.db)
+    rostered = resolver.rostered_assets(store, args.season, source.asset_type)
+    wanted = set(ingest_module._leagues_of(source))
+    mine = rostered[rostered["league"].isin(wanted)]
+
+    shape = resolver.normalize_team if source.asset_type == "Team" else resolver.normalize_name
+    keyed = {shape(n): n for n in names}
+    for asset in mine.itertuples():
+        key = shape(asset.display_name)
+        mark = "ok  " if key in keyed else "MISS"
+        near = [n for n in names if key.split()[-1] in shape(n).split()] if mark == "MISS" else []
+        note = f"   feed has: {', '.join(near[:3])}" if near else ""
+        print(f"  {mark}  {asset.display_name}{note}")
+
+    if args.all:
+        print("\n  every name the feed carries:")
+        for name in names:
+            print(f"    {name}")
+    else:
+        print(f"\n  {len(names)} names in the feed; --all to list them.")
+    print()
+    return 0
+
+
 def cmd_alias(args: argparse.Namespace) -> int:
     """Link a feed's name to a rostered asset, by hand.
 
@@ -1447,6 +1509,16 @@ def main(argv: list[str] | None = None) -> int:
     site.add_argument("--season", default="2026-27-SIM", help="season to publish")
     site.add_argument("--out", default="site", help="output directory")
     site.set_defaults(func=cmd_site)
+
+    names = sub.add_parser(
+        "feed-names", help="what a live feed calls things, against your roster"
+    )
+    names.add_argument("league", help="a key from `benchmarks list`")
+    names.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    names.add_argument("--season", default="2026-27", help="season whose roster to check")
+    names.add_argument("--date", help="YYYY-MM-DD to pull as (default: today)")
+    names.add_argument("--all", action="store_true", help="list every name the feed carries")
+    names.set_defaults(func=cmd_feed_names)
 
     alias = sub.add_parser(
         "alias", help="link a feed's name to a rostered asset the resolver would not guess"

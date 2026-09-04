@@ -225,3 +225,45 @@ def test_results_before_a_leagues_start_date_are_dropped(store):
     rostered(store, "Arsenal", league="Premier League", asset_type="Team")
     report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
     assert report.pulled == 1
+
+
+def test_the_feed_name_report_separates_absent_from_misspelled(tmp_path, capsys):
+    """A rostered asset that matches nothing is either absent from the feed or
+    spelled differently in it, and those need opposite fixes."""
+    from unittest import mock
+
+    from whul import ingest as ingest_module
+    from whul.cli import main
+    from whul.store import open_store
+
+    db = tmp_path / "w.sqlite3"
+    store = open_store(str(db))
+    rostered(store, "Carlos Alcaraz", "Iga Swiatek", league="Tennis")
+    store.conn.commit()
+
+    feed = pd.DataFrame([
+        {"player": "Alcaraz C.", "league": "ATP", "total_points": 900.0},
+        {"player": "Iga Swiatek", "league": "WTA", "total_points": 800.0},
+    ])
+    with mock.patch.object(ingest_module, "_pull", return_value=feed):
+        assert main(["feed-names", "tennis", "--db", str(db), "--season", "2026-27"]) == 0
+
+    out = capsys.readouterr().out
+    assert "ok    Iga Swiatek" in out
+    assert "MISS  Carlos Alcaraz" in out and "Alcaraz C." in out
+
+
+def test_an_empty_feed_is_called_a_source_problem(tmp_path, capsys):
+    from unittest import mock
+
+    from whul import ingest as ingest_module
+    from whul.cli import main
+    from whul.store import open_store
+
+    db = tmp_path / "w.sqlite3"
+    store = open_store(str(db))
+    rostered(store, "Carlos Alcaraz", league="Tennis")
+    store.conn.commit()
+    with mock.patch.object(ingest_module, "_pull", return_value=pd.DataFrame()):
+        assert main(["feed-names", "tennis", "--db", str(db), "--season", "2026-27"]) == 1
+    assert "not a spelling one" in capsys.readouterr().out

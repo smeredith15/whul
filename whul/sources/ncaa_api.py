@@ -104,7 +104,16 @@ def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
 
     Keeping the column names identical means the same scoring modules work
     against either source.
+
+    The season is the one the date belongs to, not the calendar year it falls
+    in. College football and basketball cross new year, so labelling by the
+    calendar year cuts every season in half: a thirteen-win football season
+    becomes eleven wins in one season and two bowl games in the next, and the
+    benchmark is then drawn from half-seasons that no team ever played.
     """
+    from whul.sources.espn import season_label
+
+    season = season_label(league, day)
     rows: list[dict] = []
     for game in payload.get("games", []):
         inner = game.get("game", game)
@@ -119,7 +128,7 @@ def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
 
         rows.append(
             {
-                "season": day.year,
+                "season": season,
                 "game_id": inner.get("gameID") or inner.get("url", ""),
                 "game_date": day.isoformat(),
                 "season_type": 2,

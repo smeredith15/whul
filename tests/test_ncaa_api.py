@@ -184,3 +184,38 @@ def test_a_game_with_no_id_falls_back_to_what_identifies_it(monkeypatch):
     monkeypatch.setattr(ncaa_api, "scoreboard", lambda l, d: {})
     monkeypatch.setattr(ncaa_api, "parse_scoreboard", lambda b, l, d: [dict(game)])
     assert len(ncaa_api.load_team_results("ncaaf", [2024], verbose=False)) == 1
+
+
+def test_a_season_that_crosses_new_year_is_not_cut_in_half():
+    """College football runs August to January. Labelled by the calendar year,
+    a thirteen-win season becomes eleven wins in one season and two bowl games
+    in the next, and the benchmark is drawn from half-seasons nobody played."""
+    from datetime import date
+
+    from whul.sources import ncaa_api
+
+    payload = {"games": [{"game": {
+        "gameID": "1",
+        "home": {"names": {"short": "Alabama"}, "score": "38", "conferences": []},
+        "away": {"names": {"short": "Georgia"}, "score": "14", "conferences": []},
+        "gameState": "final",
+    }}]}
+
+    autumn = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2024, 11, 9))
+    bowls = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2025, 1, 9))
+    assert autumn[0]["season"] == bowls[0]["season"] == 2025
+
+
+def test_a_season_inside_one_calendar_year_is_unchanged():
+    from datetime import date
+
+    from whul.sources import ncaa_api
+
+    payload = {"games": [{"game": {
+        "gameID": "1",
+        "home": {"names": {"short": "LSU"}, "score": "7", "conferences": []},
+        "away": {"names": {"short": "Texas"}, "score": "3", "conferences": []},
+        "gameState": "final",
+    }}]}
+    rows = ncaa_api.parse_scoreboard(payload, "ncaabaseball", date(2025, 4, 12))
+    assert rows[0]["season"] == 2025
