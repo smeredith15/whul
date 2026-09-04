@@ -213,3 +213,50 @@ def test_the_live_mlb_source_prorates_and_the_historical_one_does_not():
 
     # A league with no rule passes through untouched.
     assert _prorated(scored.copy(), "NFL").loc[0, "total_points"] == 400.0
+
+
+def test_mlb_teams_are_prorated_from_the_same_date_as_the_players():
+    """Both are cut to the league year's window by the same start date, so both
+    are lifted to a full season by the same factor. Otherwise a manager's
+    baseball teams and his baseball players sit on two different scales."""
+    import pandas as pd
+
+    from whul.benchmark_sources import _prorated
+    from whul.scoring.mlb import WINDOW_COUNTING
+    from whul.scoring.proration import built_in_rule
+
+    rule = built_in_rule("MLB", "2026-27")
+    window = pd.DataFrame({
+        "season": [2026], "team": ["NYY"],
+        "pts_reg_wins": [80.0], "pts_big_wins": [10.0],
+        "pts_shutouts": [6.0], "pts_run_diff": [4.0],
+        "pts_div_champ": [5.0], "pts_playoff": [9.0],
+        "total_points": [114.0],
+    })
+    out = _prorated(window, "MLB", columns=list(WINDOW_COUNTING)).iloc[0]
+
+    assert out["pts_reg_wins"] == pytest.approx(80.0 * rule.factor)
+    # A title and a playoff run happen once however long the window is.
+    assert out["pts_div_champ"] == 5.0
+    assert out["pts_playoff"] == 9.0
+    expected = (80 + 10 + 6 + 4) * rule.factor + 5 + 9
+    assert out["total_points"] == pytest.approx(expected)
+
+
+def test_a_teams_one_off_achievements_are_not_multiplied():
+    """Doubling a division title because the window was short would be absurd,
+    and it is the difference between prorating and simply scaling everything."""
+    import pandas as pd
+
+    from whul.benchmark_sources import _prorated
+    from whul.scoring.mlb import WINDOW_COUNTING
+
+    window = pd.DataFrame({
+        "season": [2026], "team": ["NYY"],
+        "pts_reg_wins": [0.0], "pts_big_wins": [0.0],
+        "pts_shutouts": [0.0], "pts_run_diff": [0.0],
+        "pts_div_champ": [5.0], "pts_playoff": [9.0],
+        "total_points": [14.0],
+    })
+    out = _prorated(window, "MLB", columns=list(WINDOW_COUNTING)).iloc[0]
+    assert out["total_points"] == pytest.approx(14.0)

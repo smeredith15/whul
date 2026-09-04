@@ -155,7 +155,7 @@ def _mlb_players_live():
     return load, score
 
 
-def _prorated(scored, league: str):
+def _prorated(scored, league: str, columns: list[str] | None = None):
     """Lift a shortened league year's counting production to a full season.
 
     The benchmark is drawn from whole seasons; this league year covers about
@@ -175,9 +175,11 @@ def _prorated(scored, league: str):
     rule = proration.built_in_rule(league, SEASON.label)
     if rule is None or scored is None or scored.empty:
         return scored
-    # Player scoring is counting production end to end -- there is no title or
-    # playoff run in it to hold still -- so the whole role total scales.
-    return proration.prorate(scored, rule, columns=["role_points"])
+    # Players are counting production end to end, so the whole role total
+    # scales. Teams are not: a division title and a playoff run happen once
+    # however long the window is, so only the components that grow with games
+    # played are named here and the rest are rebuilt around them.
+    return proration.prorate(scored, rule, columns=columns or ["role_points"])
 
 
 def _mlb_teams():
@@ -203,10 +205,13 @@ def _mlb_teams_live():
     from whul.scoring import mlb
     from whul.sources import mlb as source
 
-    return (
-        lambda seasons: source.load_schedule(seasons),
-        lambda raw: mlb.score_teams(raw, partial=True),
-    )
+    def score(raw):
+        return _prorated(
+            mlb.score_teams(raw, partial=True), "MLB",
+            columns=list(mlb.WINDOW_COUNTING),
+        )
+
+    return lambda seasons: source.load_schedule(seasons), score
 
 
 def _nba_players():

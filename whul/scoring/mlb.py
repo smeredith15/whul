@@ -313,6 +313,47 @@ def summarize_teams(schedule: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
+def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
+    """Points for the games in front of us, as components a prorater can scale.
+
+    The historical path splits a whole season into its post- and pre-break
+    shares. A live pull is not a whole season to split: it has already been cut
+    to the league year's own window by the start date, so multiplying by
+    ``SHARE_POST_ASB`` on top of that shortens it twice -- the first time by
+    the calendar, the second by arithmetic that no longer describes it.
+
+    So the window is scored at face value, and split into components rather
+    than a single number, because the two kinds do not scale alike: wins, big
+    wins, shutouts and run differential grow with games played, while a
+    division title and a playoff run happen once however long the window is.
+    ``whul.scoring.proration`` lifts the first four to a full season and leaves
+    the rest where they are.
+    """
+    out = pd.DataFrame({
+        "season": summary["season"],
+        "team": summary["team"],
+        "reg_wins": summary["reg_wins"],
+        "pts_reg_wins": summary["reg_wins"] * BASE_REG_WIN,
+        "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN,
+        "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT,
+        "pts_run_diff": summary["run_diff"] * PTS_RUN_DIFF,
+        "pts_div_champ": summary["is_division_champ"] * PTS_DIV_CHAMP,
+        "pts_playoff": (
+            summary["playoff_game_wins"] * BASE_PLAYOFF_WIN + _series_points(summary)
+        ),
+    })
+    out["total_points"] = out[[c for c in out.columns if c.startswith("pts_")]].sum(axis=1)
+    out["league"] = "MLB"
+    return out.sort_values(
+        ["season", "total_points"], ascending=[True, False]
+    ).reset_index(drop=True)
+
+
+#: Window components that grow with games played, and so scale to a full
+#: season. The others -- a division title, a playoff run -- happen once.
+WINDOW_COUNTING = ("pts_reg_wins", "pts_big_wins", "pts_shutouts", "pts_run_diff")
+
+
 def _series_points(summary: pd.DataFrame) -> pd.Series:
     return (
         summary["series_wc_or_bye"] * PTS_SERIES["wc"]
@@ -373,11 +414,10 @@ def score_teams(schedule: pd.DataFrame, partial: bool = False) -> pd.DataFrame:
         ),
     })
 
-    # Left, not outer: an outer join would also raise the contract year *before*
-    # the earliest season loaded, whose first half nobody has played either, and
-    # a team would appear twice under two different years.
-    how = "left" if partial else "inner"
-    out = year_n.merge(year_n1, on=["contract_year", "team"], how=how)
+    if partial:
+        return _window_points(summary)
+
+    out = year_n.merge(year_n1, on=["contract_year", "team"], how="inner")
     out["year_n1_points"] = out["year_n1_points"].fillna(0.0)
     out["total_points"] = out["year_n_points"] + out["year_n1_points"]
     out["season"] = out["contract_year"]
