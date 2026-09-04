@@ -128,9 +128,10 @@ class Resolution:
     #: Roster name, league, and the feed name it nearly matched. Held back
     #: rather than linked, because the suffix is the whole difference.
     suffix_mismatch: list[tuple[str, str, str]] = field(default_factory=list)
-    #: Roster name and the longer feed name it was linked to. Reported because
-    #: it was inferred rather than read.
+    #: Roster name and the feed name it was linked to by something other than
+    #: an exact match. Reported because it was inferred rather than read.
     extra_names: list[tuple[str, str]] = field(default_factory=list)
+    reordered: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def rostered(self) -> int:
@@ -155,6 +156,11 @@ class Resolution:
             lines.append(
                 f"  {name} matched {feed_name} on the names they share -- the "
                 f"feed carries one this roster does not"
+            )
+        for name, feed_name in self.reordered:
+            lines.append(
+                f"  {name} matched {feed_name} -- the same words, written the "
+                f"other way round"
             )
         for name, league, feed_name in self.suffix_mismatch:
             lines.append(
@@ -247,6 +253,10 @@ def resolve(
     # Portuguese players routinely appear under both surnames in one feed and
     # one in another -- Flashscore lists "Carlos Alcaraz Garfia".
     by_prefix: dict[tuple[str, str], set[int]] = {}
+    # And by their words in any order: Flashscore writes some players
+    # surname-first ("Fils Arthur") and others given-name-first, in the same
+    # response.
+    by_words: dict[tuple[str, str], set[int]] = {}
     for column in (name_col, *also):
         for position, name in enumerate(feed[column]):
             base, suffix = key_of(name)
@@ -258,6 +268,10 @@ def resolve(
                 for take in range(2, len(words)):
                     by_prefix.setdefault(
                         (league_of, " ".join(words[:take])), set()
+                    ).add(position)
+                if len(words) > 1:
+                    by_words.setdefault(
+                        (league_of, " ".join(sorted(words))), set()
                     ).add(position)
             if str(name) in aliases:
                 by_alias.setdefault(aliases[str(name)], []).append(position)
@@ -299,6 +313,20 @@ def resolve(
                 hits = extended
                 report.extra_names.append(
                     (asset.display_name, str(feed.iloc[extended[0]][name_col]))
+                )
+
+        if not hits and len(key.split()) >= 2:
+            # The same words in another order. Two people whose names are each
+            # other's reverse is not a case that arises; a feed that reverses
+            # them is one that does.
+            anagram = " ".join(sorted(key.split()))
+            swapped = sorted({i for c in wanted for i in by_words.get((c, anagram), set())})
+            if not swapped and not feed["_league"].isin(wanted).any():
+                swapped = sorted(by_words.get(("", anagram), set()))
+            if len(swapped) == 1:
+                hits = swapped
+                report.reordered.append(
+                    (asset.display_name, str(feed.iloc[swapped[0]][name_col]))
                 )
 
         agreed = [i for i in hits if suffixes.get(i, "") == suffix]

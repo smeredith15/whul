@@ -830,7 +830,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         for name, league in r.resolution.unmatched
     ]
     inferred = [
-        pair for r in reports if r.resolution for pair in r.resolution.extra_names
+        pair for r in reports if r.resolution
+        for pair in (*r.resolution.extra_names, *r.resolution.reordered)
     ]
     print(f"{recorded} raw rows recorded, {scored} scored.")
     if inferred:
