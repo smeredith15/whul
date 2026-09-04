@@ -679,6 +679,55 @@ def _benchmark_store(args: argparse.Namespace):
     return open_store(args.db)
 
 
+def cmd_ingest(args: argparse.Namespace) -> int:
+    """Pull today's results for the live leagues and record them."""
+    from datetime import date as _date
+
+    from whul import ingest as ingest_module
+    from whul.benchmark_sources import resolve
+    from whul.store import open_store
+
+    try:
+        sources = resolve(args.leagues)
+    except KeyError as exc:
+        print(f"\n{exc.args[0]}\n", file=sys.stderr)
+        return 2
+
+    store = open_store(args.db)
+    as_of = _date.fromisoformat(args.date) if args.date else _date.today()
+    print(f"\nIngesting {args.season} as of {as_of}.\n")
+
+    reports = []
+    for source in sources:
+        report = ingest_module.ingest(store, source, args.season, as_of)
+        reports.append(report)
+        # A skipped league is noise when every league is being tried; a league
+        # that actually did something, or failed at something, is not.
+        if report.pulled or report.problems != ["nothing rostered in this league; skipped"]:
+            print(f"{report}\n")
+
+    scored = sum(r.scored for r in reports)
+    recorded = sum(r.recorded for r in reports)
+    unmatched = [
+        (name, league) for r in reports if r.resolution
+        for name, league in r.resolution.unmatched
+    ]
+    print(f"{recorded} raw rows recorded, {scored} scored.")
+    if unmatched:
+        print(
+            f"\n  {len(unmatched)} rostered asset(s) matched no feed row and will "
+            f"score nothing until they do:"
+        )
+        for name, league in unmatched[:20]:
+            print(f"    {name} ({league})")
+        if len(unmatched) > 20:
+            print(f"    ... and {len(unmatched) - 20} more")
+        print("\n  A name the feed spells differently is fixable in the alias table;")
+        print("  a player who has not appeared yet will match itself once they do.")
+    print()
+    return 0 if scored or recorded else 1
+
+
 def cmd_benchmarks_list(_: argparse.Namespace) -> int:
     """What can be benchmarked, in the order a full run would do it."""
     from whul.benchmark_sources import resolve
@@ -1300,6 +1349,16 @@ def main(argv: list[str] | None = None) -> int:
     site.add_argument("--season", default="2026-27-SIM", help="season to publish")
     site.add_argument("--out", default="site", help="output directory")
     site.set_defaults(func=cmd_site)
+
+    ingest = sub.add_parser("ingest", help="pull today's results and record them")
+    ingest.add_argument(
+        "leagues", nargs="*", metavar="league",
+        help="keys from `benchmarks list` (default: all of them)",
+    )
+    ingest.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    ingest.add_argument("--season", default="2026-27", help="season to record into")
+    ingest.add_argument("--date", help="YYYY-MM-DD to record as (default: today)")
+    ingest.set_defaults(func=cmd_ingest)
 
     bench = sub.add_parser("benchmarks", help="compute, review and freeze the 0-100 scale")
     bench_sub = bench.add_subparsers(dest="benchmarks_command", required=True)

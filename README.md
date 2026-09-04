@@ -108,6 +108,8 @@ Set `WHUL_TENNIS2026` if it is not a sibling of this repository.
 | `docs/BENCHMARKS.md` | How to build and freeze one, step by step |
 | `docs/MAC_SETUP.md` | Terminal setup on macOS, from zero to a working database |
 | `whul/benchmark_sources.py` | Which loader and scorer each league's history comes from |
+| `whul/resolve.py` | Matching a feed's name to the asset a manager drafted |
+| `whul/ingest.py` | Pull a live league, match it to the roster, record it |
 | `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
 | `whul/scoring/` | Per-league scoring formulas, ported from `r-scripts/` |
 | `whul/sources/` | Data adapters (free sources only) |

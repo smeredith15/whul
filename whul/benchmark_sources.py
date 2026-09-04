@@ -42,6 +42,10 @@ class Source:
     #: ``league``. A tennis pull scores ATP and WTA in one pass and each is
     #: normalized against itself, so one source yields two groups.
     produces: tuple[str, ...] = ()
+    #: Where the *current* season comes from, when that is not where the
+    #: history comes from. Tennis history is a static snapshot and the live feed
+    #: is a rolling fortnight; neither can do the other's job.
+    live: Callable[[], tuple[Callable, Callable]] | None = None
     #: True for the sports that run continuously, whose benchmark is drawn over
     #: the league year's own August-to-July window rather than over calendar
     #: seasons (PROJECT_PLAN 2.3). Their ``build`` returns an event-level scorer
@@ -197,6 +201,19 @@ def _motorsports_players():
     return load, lambda nascar: motorsport.race_events(nascar, held["f1"])
 
 
+def _tennis_live():
+    """The live tennis feed, which reaches back about a fortnight.
+
+    That window is the reason the nightly run matters more here than anywhere
+    else: results older than it are not fetchable, so a week not captured is a
+    week lost until the snapshot is refreshed.
+    """
+    from whul.scoring import tennis
+    from whul.sources import flashscore
+
+    return lambda _years: flashscore.load_matches(), tennis.match_events
+
+
 def _tennis_players():
     """History comes from the snapshot; the live feed reaches back a fortnight.
 
@@ -244,8 +261,8 @@ SOURCES: dict[str, Source] = _register(
     Source("motorsports", "Motorsports", "Player", _motorsports_players, windowed=True,
            produces=("F1", "NASCAR"),
            note="one pull, two benchmarks -- each series against itself"),
-    Source("tennis", "Tennis", "Player", _tennis_players, windowed=True,
-           produces=("ATP", "WTA"),
+    Source("tennis", "Tennis", "Player", _tennis_players, live=_tennis_live,
+           windowed=True, produces=("ATP", "WTA"),
            note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
         Source(key, category, "Team", _ncaa(key, category))

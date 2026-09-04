@@ -180,9 +180,17 @@ want the rest of the standings live in the meantime.
 After freezing:
 
 ```bash
+.venv/bin/python -m whul.cli ingest --season 2026-27
 .venv/bin/python -m whul.cli rollup --backfill --season 2026-27
 .venv/bin/python -m whul.cli site --season 2026-27
 ```
+
+`ingest` pulls each live league, matches its rows to the rostered assets, and
+records them. It always writes the raw figures, benchmark or not: a scale can
+be computed next week, but a feed that only serves a rolling window forgets the
+start of the season if nobody writes it down. Every run names the rostered
+assets it could not match, because an unmatched asset scores nothing and the
+standings say nothing about it.
 
 A frozen version is never edited. Superseding it means computing a new one,
 which leaves both on the record and makes the change explainable rather than
