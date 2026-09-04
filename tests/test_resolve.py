@@ -257,3 +257,51 @@ def test_a_club_has_no_suffix_to_disagree_about():
     assets = roster(("Arsenal", "Premier League", "Team"))
     matched, report = resolve.resolve(scored, assets, "Team")
     assert len(matched) == 1 and report.suffix_mismatch == []
+
+
+# --- a feed that carries more of a name than the roster does ---------------
+
+def test_an_extra_surname_still_matches():
+    """Flashscore lists Carlos Alcaraz as "Carlos Alcaraz Garfia". Spanish and
+    Portuguese players routinely appear under both surnames in one feed and one
+    in another."""
+    scored = feed(("Carlos Alcaraz Garfia", "ATP"))
+    assets = roster(("Carlos Alcaraz", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert list(matched["asset_id"]) == ["a0"]
+    assert report.extra_names == [("Carlos Alcaraz", "Carlos Alcaraz Garfia")]
+    assert "the names they share" in str(report)
+
+
+def test_two_longer_names_are_a_guess_between_two_people():
+    scored = feed(("Carlos Alcaraz Garfia", "ATP"), ("Carlos Alcaraz Fernandez", "ATP"))
+    assets = roster(("Carlos Alcaraz", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert matched.empty
+    assert report.unmatched == [("Carlos Alcaraz", "Tennis")]
+
+
+def test_an_exact_match_is_never_displaced_by_a_longer_one():
+    scored = feed(("Carlos Alcaraz", "ATP"), ("Carlos Alcaraz Garfia", "ATP"))
+    assets = roster(("Carlos Alcaraz", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert list(matched["player"]) == ["Carlos Alcaraz"]
+    assert report.extra_names == []
+
+
+def test_a_shorter_roster_name_does_not_match_a_different_person():
+    # One shared word is not a name. Only a full leading run of them counts.
+    scored = feed(("Ben Sheltonberg", "ATP"))
+    assets = roster(("Ben Shelton", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+    assert matched.empty and report.unmatched
+
+
+def test_a_single_word_roster_name_never_extends():
+    scored = feed(("Ronaldo de Assis", "Premier League"), asset_type="Team")
+    assets = roster(("Ronaldo", "Premier League", "Team"))
+    matched, _ = resolve.resolve(scored, assets, "Team")
+    assert matched.empty, "one word is too little to infer a person from"

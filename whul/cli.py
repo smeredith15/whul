@@ -829,7 +829,15 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         (name, league) for r in reports if r.resolution
         for name, league in r.resolution.unmatched
     ]
+    inferred = [
+        pair for r in reports if r.resolution for pair in r.resolution.extra_names
+    ]
     print(f"{recorded} raw rows recorded, {scored} scored.")
+    if inferred:
+        # Inferred, not read: worth a glance the first time each one appears.
+        print(f"\n  {len(inferred)} matched on a partial name:")
+        for name, feed_name in inferred:
+            print(f"    {name} -> {feed_name}")
     if unmatched:
         print(
             f"\n  {len(unmatched)} rostered asset(s) matched no feed row and will "

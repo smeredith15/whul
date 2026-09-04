@@ -128,6 +128,9 @@ class Resolution:
     #: Roster name, league, and the feed name it nearly matched. Held back
     #: rather than linked, because the suffix is the whole difference.
     suffix_mismatch: list[tuple[str, str, str]] = field(default_factory=list)
+    #: Roster name and the longer feed name it was linked to. Reported because
+    #: it was inferred rather than read.
+    extra_names: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def rostered(self) -> int:
@@ -147,6 +150,11 @@ class Resolution:
             lines.append(
                 f"  {name} ({league}) matches {count} feed rows -- left unlinked "
                 f"rather than guessed"
+            )
+        for name, feed_name in self.extra_names:
+            lines.append(
+                f"  {name} matched {feed_name} on the names they share -- the "
+                f"feed carries one this roster does not"
             )
         for name, league, feed_name in self.suffix_mismatch:
             lines.append(
@@ -234,14 +242,23 @@ def resolve(
     # that calls a team "SEA" in one column and "Seattle Seahawks" in another
     # is the common case, and a roster may use either.
     suffixes: dict[int, str] = {}
+    # Feed names indexed by their leading words as well as in full, so a name
+    # carrying a surname the roster does not can still be found. Spanish and
+    # Portuguese players routinely appear under both surnames in one feed and
+    # one in another -- Flashscore lists "Carlos Alcaraz Garfia".
+    by_prefix: dict[tuple[str, str], set[int]] = {}
     for column in (name_col, *also):
         for position, name in enumerate(feed[column]):
             base, suffix = key_of(name)
             if base:
-                by_key.setdefault(
-                    (feed["_league"].iat[position], base), set()
-                ).add(position)
+                league_of = feed["_league"].iat[position]
+                by_key.setdefault((league_of, base), set()).add(position)
                 suffixes.setdefault(position, suffix)
+                words = base.split()
+                for take in range(2, len(words)):
+                    by_prefix.setdefault(
+                        (league_of, " ".join(words[:take])), set()
+                    ).add(position)
             if str(name) in aliases:
                 by_alias.setdefault(aliases[str(name)], []).append(position)
 
@@ -271,6 +288,19 @@ def resolve(
         # A near-match on the base alone is reported rather than linked: it is
         # as likely to be someone's father as a feed dropping a "Jr.", and an
         # alias settles it in one command.
+        if not hits and len(key.split()) >= 2:
+            # Only when nothing matched outright, and only when exactly one
+            # feed name extends this one: a unique longer name is an extra
+            # surname, while two of them is a guess between two people.
+            extended = sorted({i for c in wanted for i in by_prefix.get((c, key), set())})
+            if not extended and not feed["_league"].isin(wanted).any():
+                extended = sorted(by_prefix.get(("", key), set()))
+            if len(extended) == 1:
+                hits = extended
+                report.extra_names.append(
+                    (asset.display_name, str(feed.iloc[extended[0]][name_col]))
+                )
+
         agreed = [i for i in hits if suffixes.get(i, "") == suffix]
         if hits and not agreed:
             report.suffix_mismatch.append(
