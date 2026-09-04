@@ -220,17 +220,20 @@ or series each plays. Those categories therefore count as covered only when
 *every* competition they admit has a benchmark — an ATP benchmark alone would
 leave every WTA pick among the twelve unscored.
 
-One consequence worth knowing: the buffer pool is still sized from the roster
-category, so each tour is truncated to the depth the whole category allows
-rather than to its share of it. Tennis has three slots per manager, and both
-ATP and WTA draw a pool of 68 per window rather than roughly 34 each. That
-makes both benchmarks lower — a deeper pool reaches further down the field —
-and so makes tennis scores run slightly high against the sports whose category
-is one league. On the 2022-25 windows it is worth about 1.5% on the ATP
-benchmark and 3.4% on the WTA one. Halving the rates in
-`whul/config/league.py` is the fix if that matters; leaving them is defensible
-if you read the pool as "who is plausibly draftable" rather than "how many get
-drafted".
+The buffer pool is still sized from the roster category, so each tour draws the
+depth the whole category allows rather than a share of it: tennis has three
+slots per manager, and ATP and WTA each draw 68 per window rather than roughly
+34 apiece. **That is deliberate.** The pool answers "who could plausibly be
+drafted", not "how many were", and any of the top ~45 ATP players could
+plausibly fill a tennis slot — the slots are not rationed by tour. `Target_N`
+is the exact rostered need and the ×1.5 buffer is precisely the reach-and-bench
+expansion on top of it, so splitting the rate between the tours would count the
+same slot twice.
+
+The cost of that choice is small and known: measured over the 2022-25 windows,
+a per-tour pool sits about 1.5% below a half-sized one on ATP and 3.4% on WTA,
+which is how much tennis scores run high against a sport whose category is a
+single league.
 
 ### Which seasons
 
