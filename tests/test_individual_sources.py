@@ -109,6 +109,67 @@ def test_golf_results_flow_into_scoring(monkeypatch):
     assert "Missed" not in set(scored["player"])
 
 
+def _finished(event_id: str, name: str = "Some Open", day: str = "2026-04-12T18:00Z"):
+    return {"id": event_id, "name": name, "date": day,
+            "status": {"type": {"completed": True}}}
+
+
+def _field(*names):
+    return {"competitions": [{"competitors": [
+        {"athlete": {"displayName": n}, "status": {"position": {"displayName": str(i + 1)}}}
+        for i, n in enumerate(names)
+    ]}]}
+
+
+def test_one_unservable_event_does_not_lose_the_season(monkeypatch, capsys):
+    """ESPN serves no result for a few old events. Losing one of a season's
+    fifty is a rounding error; it used to end the pull and lose five seasons."""
+    events = [_finished(str(i)) for i in range(20)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+
+    def summary(league, event_id):
+        if event_id == "7":
+            raise espn_ind.EventUnavailable("no endpoint served pga event 7")
+        return _field("Winner", "Runner Up")
+
+    monkeypatch.setattr(espn_ind, "event_summary", summary)
+
+    raw = espn_ind.load_results("pga", [2026], verbose=True)
+    assert set(raw["event_id"]) == {str(i) for i in range(20)} - {"7"}
+    # Skipped quietly is how a benchmark ends up drawn from less than it says.
+    assert "skipped 1 event" in capsys.readouterr().out
+
+
+def test_a_season_mostly_unserved_is_refused_rather_than_understated(monkeypatch):
+    """Missing a tenth of a season lowers every athlete's total in it, and does
+    so invisibly -- the numbers are simply smaller."""
+    events = [_finished(str(i)) for i in range(20)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+
+    def summary(league, event_id):
+        if int(event_id) < 5:
+            raise espn_ind.EventUnavailable("nothing here")
+        return _field("Winner")
+
+    monkeypatch.setattr(espn_ind, "event_summary", summary)
+
+    with pytest.raises(RuntimeError) as caught:
+        espn_ind.load_results("pga", [2026], verbose=False)
+    assert "5 of 20" in str(caught.value)
+
+
+def test_an_event_whose_field_is_inline_never_asks_for_a_summary(monkeypatch):
+    inline = _finished("401")
+    inline["competitions"] = _field("Winner")["competitions"]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: [inline])
+
+    def refuse(league, event_id):
+        raise AssertionError("the season scoreboard already carried the field")
+
+    monkeypatch.setattr(espn_ind, "event_summary", refuse)
+    assert list(espn_ind.load_results("pga", [2026], verbose=False)["player"]) == ["Winner"]
+
+
 # --- Jolpica / Ergast ------------------------------------------------------
 
 def test_races_and_totals_are_read_from_the_ergast_envelope():

@@ -98,6 +98,15 @@ def season_events(league: str, season: int) -> list[dict]:
     return best.get("events", [])
 
 
+class EventUnavailable(RuntimeError):
+    """No endpoint served this event's field.
+
+    Its own class so a caller can tell "ESPN has nothing for this one event"
+    from a network fault or a schema change, and skip the event rather than
+    abandoning the season.
+    """
+
+
 #: Endpoints that serve one event's field, most specific first. ``summary`` is
 #: what the team sports use, but golf answers 404 to it and serves the field at
 #: ``leaderboard`` instead; racing has answered 502 to ``summary`` for a
@@ -148,9 +157,10 @@ def event_summary(league: str, event_id: str) -> dict:
             best = payload
 
     if best is None:
-        raise last if last else RuntimeError(
-            f"no event endpoint served {league} event {event_id}"
-        )
+        tried = ", ".join(EVENT_ENDPOINTS.get(league, DEFAULT_EVENT_ENDPOINTS))
+        raise EventUnavailable(
+            f"no endpoint served {league} event {event_id} (tried {tried})"
+        ) from last
 
     cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_text(json.dumps(best))
@@ -243,6 +253,7 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
                 f"{league} {season}: {len(finished)} completed of {len(events)} events",
                 flush=True,
             )
+        unserved: list[str] = []
         for event in finished:
             event_id = str(event.get("id") or "")
             if not event_id:
@@ -252,7 +263,15 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
             # for the season instead of fifty.
             field = _competitors(event)
             if not field:
-                field = _competitors(event_summary(league, event_id))
+                try:
+                    field = _competitors(event_summary(league, event_id))
+                except EventUnavailable:
+                    # ESPN serves no result for a few old events -- an
+                    # abandoned tournament, a renumbered id. Losing one of a
+                    # season's fifty is a rounding error; letting it end the
+                    # pull loses five seasons, which is what it used to do.
+                    unserved.append(f"{_event_name(event)} ({event_id})")
+                    continue
             for entry in field:
                 name = _athlete_name(entry)
                 if not name:
@@ -268,7 +287,36 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
                         "position": _position(entry),
                     }
                 )
+        _report_unserved(league, season, unserved, len(finished), verbose)
     return pd.DataFrame(rows)
+
+
+#: How much of a season may go unserved before the season is not worth having.
+#: A benchmark drawn from a season missing a tenth of its events understates
+#: every athlete in it, and does so invisibly -- the totals are simply lower.
+UNSERVED_LIMIT = 0.10
+
+
+def _report_unserved(
+    league: str, season: int, unserved: list[str], finished: int, verbose: bool
+) -> None:
+    """Say what was skipped, and refuse a season with too little of it left."""
+    if not unserved:
+        return
+    listed = ", ".join(unserved[:5]) + (" ..." if len(unserved) > 5 else "")
+    if finished and len(unserved) > finished * UNSERVED_LIMIT:
+        raise RuntimeError(
+            f"{league} {season}: ESPN served no result for {len(unserved)} of "
+            f"{finished} completed events ({listed}). That is more than "
+            f"{UNSERVED_LIMIT:.0%} of the season, so the totals would understate "
+            f"every athlete in it rather than miss an event."
+        )
+    if verbose:
+        print(
+            f"{league} {season}: skipped {len(unserved)} event(s) ESPN served no "
+            f"result for: {listed}",
+            flush=True,
+        )
 
 
 def daily_update_cost(league: str, season: int | None = None) -> float:
