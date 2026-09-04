@@ -1,5 +1,8 @@
 # Site changes to make
 
+*Scoring changes live elsewhere: [`INTL_SOCCER.md`](INTL_SOCCER.md) holds the
+international soccer tournament ladder.*
+
 Collected 2026-09-04, to be worked through once the benchmarks are frozen and
 the standings are real. Nothing here changes a number; it is all how the
 numbers are presented.

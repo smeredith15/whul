@@ -438,6 +438,10 @@ before sending the offer sheet — replacing the R script's interactive console 
       match → record. Raw figures are written whether or not a benchmark exists, because a rolling
       feed's earlier weeks cannot be fetched back.
 
+Intl Soccer needs a scoring design before it needs an adapter — the tournament
+ladder, and what makes two federations' tournaments equivalent. See
+[`INTL_SOCCER.md`](INTL_SOCCER.md).
+
 ### Phase 2 — Per-league increments *(one league at a time, per your preference)*
 For each league, in order: **NFL ✅ → NBA ✅ → MLB → NHL → Club Soccer → NCAA (F/M/W/Baseball/Softball) →
 Intl Soccer → PGA → Tennis → Motorsports → (Olympics, WNBA deferred)**
