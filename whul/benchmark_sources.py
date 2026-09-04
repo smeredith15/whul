@@ -129,6 +129,59 @@ def _mlb_two_way(scored):
     return mlb.combine_two_way(scored)
 
 
+def _mlb_players_live():
+    """The season since the league year opened, not the whole season.
+
+    The benchmark is drawn from whole seasons and the live figures were whole
+    seasons too, which looked consistent and was not: four months of every
+    player's total were earned before anyone drafted him.
+    """
+    from whul.config.league import season_start
+    from whul.scoring import mlb
+    from whul.sources import mlb as source
+
+    def load(seasons):
+        since = season_start("MLB")
+        batters = source.load_batters(seasons, since=since).assign(_phase="bat")
+        pitchers = source.load_pitchers(seasons, since=since).assign(_phase="pit")
+        frames = [f for f in (batters, pitchers) if not f.empty]
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def score(raw):
+        scored = mlb.score_players(
+            raw[raw["_phase"] == "bat"], raw[raw["_phase"] == "pit"])
+        return _prorated(scored, "MLB")
+
+    return load, score
+
+
+def _prorated(scored, league: str, columns: list[str] | None = None):
+    """Lift a shortened league year's counting production to a full season.
+
+    The benchmark is drawn from whole seasons; this league year covers about
+    133 games of 162. Without this a player measured against that bar finishes
+    around 80 of a possible 100 however well he plays, and every baseball pick
+    sits below every other league's for a structural reason nobody could see in
+    the standings.
+
+    The benchmark itself is left alone deliberately. It is frozen, the
+    standings point at it, and correcting a one-season window by editing the
+    scale would mean a new version and a re-scored season for something that is
+    not a property of the scale at all.
+    """
+    from whul.config.league import SEASON
+    from whul.scoring import proration
+
+    rule = proration.built_in_rule(league, SEASON.label)
+    if rule is None or scored is None or scored.empty:
+        return scored
+    # Players are counting production end to end, so the whole role total
+    # scales. Teams are not: a division title and a playoff run happen once
+    # however long the window is, so only the components that grow with games
+    # played are named here and the rest are rebuilt around them.
+    return proration.prorate(scored, rule, columns=columns or ["role_points"])
+
+
 def _mlb_teams():
     from whul.scoring import mlb
     from whul.sources import mlb as source
@@ -152,10 +205,13 @@ def _mlb_teams_live():
     from whul.scoring import mlb
     from whul.sources import mlb as source
 
-    return (
-        lambda seasons: source.load_schedule(seasons),
-        lambda raw: mlb.score_teams(raw, partial=True),
-    )
+    def score(raw):
+        return _prorated(
+            mlb.score_teams(raw, partial=True), "MLB",
+            columns=list(mlb.WINDOW_COUNTING),
+        )
+
+    return lambda seasons: source.load_schedule(seasons), score
 
 
 def _nba_players():
@@ -409,7 +465,7 @@ SOURCES: dict[str, Source] = _register(
     Source("nfl", "NFL", "Player", _nfl_players, reliability="verified",
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified"),
-    Source("mlb", "MLB", "Player", _mlb_players,
+    Source("mlb", "MLB", "Player", _mlb_players, live=_mlb_players_live,
            post_normalize=_mlb_two_way,
            note="FanGraphs leaderboards; one row per player-role, folded after "
                 "normalization by the two-way rule"),

@@ -63,6 +63,13 @@ class SeasonWindow:
 
 #: The end date tracks the MLB All-Star Game and so shifts a little each year.
 #: The drift is small enough that benchmarks do not need re-basing for it.
+#: WHUL is the Wolf Hill Uber League. The full name goes in the header, where
+#: there is room for it; the initials are for the places where there is not --
+#: a browser tab, a narrow phone -- which is the rule the managers already
+#: follow, Tyler in the standings and TG on a badge.
+LEAGUE_NAME = "Wolf Hill Uber League"
+LEAGUE_ABBR = "WHUL"
+
 SEASON = SeasonWindow(
     label="2026-27",
     start=date(2026, 8, 21),
@@ -96,6 +103,13 @@ LEAGUE_START: dict[str, date] = {
     # weekend is the 22nd, not the 27th. Starting on the 27th would discard
     # real Week 1 results from the games played that first weekend.
     "NCAAF": date(2026, 8, 22),
+    # Baseball is mid-season when the league year opens and its feed reports
+    # season totals, so without a start date a manager is credited with a
+    # player's April. There is no baseball event to anchor on the way there is a
+    # matchday or a green flag, so it takes the earliest date any other league
+    # starts on -- La Liga's -- which is the earliest a WHUL result exists at
+    # all.
+    "MLB": date(2026, 8, 15),
 }
 
 

@@ -323,17 +323,33 @@ def test_dropping_advanced_terms_hurts_defenders_most():
     assert share(slugger) < 0.02
 
 
-def test_a_contract_year_in_progress_scores_the_half_that_has_been_played():
-    """The 2026-27 contract year is post-break 2026 plus pre-break 2027. Joined
-    the way a benchmark joins them, every team drops out because nobody has
-    played 2027 -- and the league reports no results yet, in September."""
-    from whul.scoring.mlb import score_teams
+def test_a_live_window_is_scored_at_face_value():
+    """The historical path splits a whole season into post- and pre-break
+    shares. A live pull is not a whole season to split -- the start date has
+    already cut it to the league year's window -- so multiplying by
+    SHARE_POST_ASB on top of that shortens it twice: once by the calendar, once
+    by arithmetic that no longer describes it."""
+    from whul.scoring.mlb import BASE_REG_WIN, score_teams
 
     schedule = pd.DataFrame([game("NYY", "BOS", 5, 1, season=2026)] * 20)
     assert score_teams(schedule).empty, "a benchmark needs both halves"
 
-    live = score_teams(schedule, partial=True)
-    assert not live.empty
-    assert (live["year_n1_points"] == 0).all(), "the second half has not happened"
-    assert (live["total_points"] == live["year_n_points"]).all()
-    assert set(live["season"]) == {2026}, "only the year that has started"
+    live = score_teams(schedule, partial=True).set_index("team")
+    assert set(live.index) == {"NYY", "BOS"}
+    assert live.loc["NYY", "pts_reg_wins"] == pytest.approx(20 * BASE_REG_WIN)
+    assert live.loc["NYY", "total_points"] >= live.loc["NYY", "pts_reg_wins"]
+
+
+def test_the_window_separates_what_grows_from_what_happens_once():
+    """Wins, big wins, shutouts and run differential grow with games played; a
+    division title and a playoff run happen once however long the window is.
+    Proration has to be able to tell them apart."""
+    from whul.scoring.mlb import WINDOW_COUNTING, score_teams
+
+    live = score_teams(pd.DataFrame([game("NYY", "BOS", 5, 1, season=2026)] * 20),
+                       partial=True)
+    for column in WINDOW_COUNTING:
+        assert column in live.columns, column
+    assert "pts_div_champ" in live.columns
+    assert "pts_playoff" in live.columns
+    assert "pts_div_champ" not in WINDOW_COUNTING

@@ -392,6 +392,9 @@ def match_events(matches: pd.DataFrame, losses: bool = False) -> pd.DataFrame:
             "date": scored["date"],
             "season": scored["season"],
             "tournament": scored["tournament"],
+            # The tier, so a profile can say "Winston Salem 250" rather than
+            # leaving a reader to know which tournaments are which.
+            "category": scored["category"] if "category" in scored else "",
             "round": scored["round"],
             "result": result,
             "event_points": points,

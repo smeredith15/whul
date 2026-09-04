@@ -187,6 +187,43 @@ details.tableview[open] summary { margin-bottom: 8px; }
   text-transform: uppercase; letter-spacing: 0.05em; margin-left: 6px;
   font-style: normal;
 }
+/* The masthead carries the league's full name, and falls back to its initials
+   where there is not room for it -- a narrow phone, mostly. Both are in the
+   markup so the swap needs no script. */
+.masthead h1 .short { display: none; }
+@media (max-width: 640px) {
+  .masthead h1 .full { display: none; }
+  .masthead h1 .short { display: inline; }
+}
+
+/* A collapsible league section. Twenty leagues open at once is a page that is
+   long before it is informative. */
+.leaguebox { border-top: 1px solid var(--grid); }
+.leaguebox > summary { cursor: pointer; padding: 0.5rem 0; display: flex;
+  align-items: baseline; gap: 0.6rem; font-weight: 600; }
+.leaguebox > summary .count { font-weight: 400; font-size: 0.78rem;
+  color: var(--muted); }
+.leaguebox > summary::marker { color: var(--muted); }
+
+/* A filtered-out manager. Dimmed rather than removed, so the axis does not
+   move and the remaining bars stay where the reader left them. */
+.legend.filterable .legenditem { background: none; border: 0; padding: 0;
+  font: inherit; color: inherit; cursor: pointer; display: inline-flex;
+  align-items: center; gap: 0.35rem; }
+.legend.filterable .legenditem.off { opacity: 0.4;
+  text-decoration: line-through; }
+.ghosted { opacity: 0.12; }
+.legend.filterable .legenditem:focus-visible { outline: 2px solid var(--accent);
+  outline-offset: 2px; }
+
+.profile h3 { font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.4rem; }
+.profile table.finishes td.when { color: var(--muted); font-size: 0.78rem;
+  white-space: nowrap; padding-left: 0.5rem; }
+/* A note explaining why a figure is not simply what the feed reported. */
+.profile .note { margin: 0 0 0.4rem; font-size: 0.8rem; color: var(--muted);
+  line-height: 1.45; }
+
 .struck { text-decoration: line-through; text-decoration-thickness: 1.5px;
           color: var(--text-secondary); }
 

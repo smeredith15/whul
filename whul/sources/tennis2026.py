@@ -17,6 +17,7 @@ read as a main-draw bye and pay for a round nobody played.
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -53,6 +54,23 @@ CATEGORIES = {
     "International": INTERNATIONAL,
 }
 
+def _category_key(text) -> str:
+    """A spelling-independent key for a tournament category.
+
+    SQLAlchemy's ``Enum`` persists the member *name*, so the app's database
+    holds ``ATP_MASTERS_1000`` where its Python code reads
+    ``"ATP Masters 1000"``, and a row written another way can hold either. Upper
+    case with the punctuation flattened is the one form both reduce to.
+    """
+    text = str(text)
+    # A repr like "TournamentCategory.GRAND_SLAM" keeps only the member.
+    text = text.rsplit(".", 1)[-1]
+    return re.sub(r"[^A-Z0-9]+", " ", text.upper()).strip()
+
+
+#: Both spellings, reduced to one key each.
+CATEGORY_LOOKUP = {_category_key(name): tier for name, tier in CATEGORIES.items()}
+
 #: Main-draw rounds only. Qualifying is dropped in the query itself.
 MAIN_DRAW = ("RR", "R128", "R64", "R32", "R16", "QF", "SF", "F")
 
@@ -84,6 +102,17 @@ QUERY = """
 # turns each win into the beaten player's appearance as well.
 
 
+#: Where a copy carried over from the machine running the app tends to be put.
+#: The app's own checkout is not on every machine that scores tennis, so a copy
+#: dropped in this project's data directory is the ordinary case, not the
+#: exception -- and looking for it here is the difference between working and
+#: needing an environment variable nobody remembers to set.
+LOCAL_COPIES = (
+    Path("data") / "tennis2026-whul.db",
+    Path("data") / DB_NAME,
+)
+
+
 def candidate_paths(path: Path | None = None) -> list[Path]:
     """Everywhere the app's database might be, in the order worth trying."""
     if path is not None:
@@ -93,7 +122,7 @@ def candidate_paths(path: Path | None = None) -> list[Path]:
         return [Path(env)]
     roots = [Path(os.environ["WHUL_TENNIS2026"])] if os.environ.get("WHUL_TENNIS2026") \
         else list(CHECKOUT_CANDIDATES)
-    return [
+    return list(LOCAL_COPIES) + [
         Path(root).expanduser() / location
         for root in roots for location in DB_LOCATIONS
     ]
@@ -151,12 +180,13 @@ def _shape(frame: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
     out["date"] = out["date"].dt.date.astype(str)
 
     # The app stores the enum's name in some columns and its value in others,
-    # depending on how the row was written; both spellings resolve here rather
-    # than leaving an unmapped category to be scored as nothing.
+    # depending on how the row was written; both reduce to one key here rather
+    # than leaving an unmapped category to be scored as nothing. Title-casing
+    # the name was not enough: it turns ATP_MASTERS_1000 into "Atp Masters
+    # 1000", so every ATP and WTA event was dropped and only the Grand Slams
+    # and the Internationals came through.
     spelled = out["category"].astype(str)
-    out["category"] = spelled.map(CATEGORIES).fillna(
-        spelled.str.replace("_", " ").str.title().map(CATEGORIES)
-    )
+    out["category"] = spelled.map(lambda c: CATEGORY_LOOKUP.get(_category_key(c)))
     unknown = sorted(set(spelled[out["category"].isna()]))
     out = out[out["category"].notna()]
     if unknown and verbose:

@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from whul.config.league import ALL_SLOTS, SEASON, active_slots, manager_name
+from whul.config.league import (
+    ALL_SLOTS, LEAGUE_ABBR, LEAGUE_NAME, SEASON, active_slots, manager_name,
+)
 from whul.site import charts, images, theme
 from whul.store import benchmarks as bm
 from whul.store.db import Store
@@ -82,7 +84,10 @@ def _page(title: str, body: str, active: str, managers: list[str],
 <body>
 <div class="wrap">
 <header class="masthead">
-  <h1><a href="{up}index.html" style="text-decoration:none">WHUL</a></h1>
+  <h1><a href="{up}index.html" style="text-decoration:none">
+    <span class="full">{escape(LEAGUE_NAME)}</span>
+    <span class="short">{escape(LEAGUE_ABBR)}</span>
+  </a></h1>
   <span class="stamp">{escape(stamp)}</span>
   <nav>{links}{teams}</nav>
 </header>
@@ -119,15 +124,14 @@ def asset_profiles(
     stats = store.read_stats(season, as_of)
 
     lines: dict[str, list[tuple[str, str]]] = {}
+    finishes: dict[str, list[dict]] = {}
+    notes: dict[str, list[str]] = {}
     if not stats.empty:
-        skip = {"asset_id", "league", "season", "as_of", "source", "phase", "fetched_at"}
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
-            lines[asset_id] = [
-                (label, f"{value:,.1f}" if isinstance(value, float) else str(value))
-                for label, value in row.items()
-                if label not in skip and value == value and value is not None
-            ]
+            finishes[asset_id] = _finish_list(row)
+            notes[asset_id] = _scaling_notes(row)
+            lines[asset_id] = _stat_lines(row)
 
     out: dict[str, dict] = {}
     for asset_id in sorted(wanted):
@@ -150,15 +154,117 @@ def asset_profiles(
             "scaled": f"{float(scores.loc[asset_id, 'scaled_score']):,.1f}"
                       if asset_id in scores.index else "—",
             "stats": lines.get(asset_id, []),
+            "finishes": finishes.get(asset_id, []),
+            "notes": notes.get(asset_id, []),
         }
     return out
 
 
+#: Columns that identify the row rather than describe the performance, and the
+#: two that the window already reports on their own.
+STAT_SKIP = {
+    "asset_id", "league", "season", "as_of", "source", "phase", "fetched_at",
+    "player", "team", "team_name", "display_name", "athlete", "driver",
+    "finishes", "norm_key", "asset_type", "role_count", "contract_year",
+    "proration_factor", "schedule_factor", "scaled_score",
+}
+
+#: Raw column names read as debug output. These are what they mean.
+STAT_LABELS = {
+    "total_points": "Total points", "role_points": "Points in this role",
+    "events": "Events", "matches": "Matches", "matches_played": "Matches played",
+    "games_played": "Games played", "wins": "Wins", "reg_wins": "Regular-season wins",
+    "big_wins": "Big wins", "reg_big_wins": "Big wins", "conf_wins": "Conference wins",
+    "div_wins": "Division wins", "point_diff": "Point differential",
+    "run_diff": "Run differential", "shutouts": "Shutouts",
+    "reg_shutouts": "Shutouts", "playoff_app": "Playoff appearance",
+    "playoff_appearance": "Playoff appearance", "playoff_wins": "Playoff wins",
+    "playoff_game_wins": "Playoff wins", "conf_title_win": "Conference title",
+    "pts_reg_champ": "Regular-season title", "div_champ": "Division title",
+    "mm_appearance": "NCAA tournament", "mm_wins": "NCAA tournament wins",
+    "conf_tourney_wins": "Conference tournament wins",
+    "conf_tourney_champ": "Conference tournament title",
+    "bye_points": "Bye credit", "appearance_points": "Appearances",
+    "goal_points": "Goals", "assists": "Assists", "goals": "Goals",
+    "yellow": "Yellow cards", "red": "Red cards", "minutes": "Minutes",
+    "starts": "Starts", "races_started": "Races started", "top_tens": "Top tens",
+    "made_cut": "Cuts made", "primary_score": "Primary role",
+    "secondary_score": "Secondary role", "secondary_role": "Secondary role",
+    "is_two_way": "Two-way player",
+    "pts_reg_wins": "Regular-season wins", "pts_big_wins": "Big wins",
+    "pts_shutouts": "Shutouts", "pts_run_diff": "Run differential",
+    "pts_div_champ": "Division title", "pts_playoff": "Postseason",
+    "year_n_points": "This season's share", "year_n1_points": "Next season's share",
+}
+
+
+def _label_for(column: str) -> str:
+    """A stat's name in words. `games_played` reads as debug output."""
+    return STAT_LABELS.get(column, column.replace("_", " ").capitalize())
+
+
+def _stat_lines(row: dict) -> list[tuple[str, str]]:
+    """Every figure that went into the raw score, labelled."""
+    out = []
+    for column, value in row.items():
+        if column in STAT_SKIP or value is None or value != value:
+            continue
+        if isinstance(value, (list, dict)):
+            continue
+        if isinstance(value, bool):
+            text = "yes" if value else "no"
+        elif isinstance(value, float):
+            text = f"{value:,.1f}"
+        else:
+            text = str(value)
+        out.append((_label_for(column), text))
+    return out
+
+
+def _finish_list(row: dict) -> list[dict]:
+    """The athlete's actual finishes, newest first, where the sport has them."""
+    value = row.get("finishes")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    return value if isinstance(value, list) else []
+
+
+def _scaling_notes(row: dict) -> list[str]:
+    """Why a figure here is not simply what the feed reported.
+
+    A score that has been prorated or schedule-scaled looks like an ordinary
+    one, and a manager checking the arithmetic against a box score would find
+    it does not reconcile. Saying so is cheaper than being asked.
+    """
+    out = []
+    factor = row.get("proration_factor")
+    if isinstance(factor, (int, float)) and factor and factor == factor and factor != 1.0:
+        out.append(
+            f"Counting production is scaled by \u00d7{factor:.3f}, because this "
+            f"league year covers a shorter window than the seasons the benchmark "
+            f"was drawn from. One-off achievements are not scaled."
+        )
+    factor = row.get("schedule_factor")
+    if isinstance(factor, (int, float)) and factor and factor == factor and factor != 1.0:
+        out.append(
+            f"The benchmark for this league is lifted by \u00d7{factor:.3f} to "
+            f"match a longer schedule than its history was played over."
+        )
+    return out
+
+
 def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0) -> str:
-    """A name that opens its profile. Struck through when the slot is benched."""
+    """A name that opens its profile.
+
+    ``counts`` dims the row but does not strike the name. A benched slot's
+    *score* is what is set aside; the player is not crossed out, their
+    contribution is -- and a struck name reads like a player who has been
+    dropped rather than one whose week was someone else's.
+    """
     inner = escape(name)
-    if not counts:
-        inner = f'<span class="struck">{inner}</span>'
     return (
         f'<button class="assetlink" data-asset="{escape(asset_id or "")}" '
         f'type="button"><span class="who">'
@@ -197,8 +303,17 @@ def _standings_table(table: pd.DataFrame, mvps: dict[str, str], managers: list[s
     )
 
 
-def _table_view(summary: str, header: list[str], rows: list[list[str]]) -> str:
-    """A chart's values as a table -- the readable-without-hover fallback."""
+def _table_view(
+    summary: str, header: list[str], rows: list[list[str]],
+    columns: list[str] | None = None,
+) -> str:
+    """A chart's values as a table -- the readable-without-hover fallback.
+
+    ``columns`` names the per-manager columns in order, so hiding a manager in
+    the key hides them here too: a reader filtering the chart means the table
+    as well, and a table still listing someone the chart has dropped is the
+    kind of half-applied filter that gets read as a bug.
+    """
     head = "".join(
         f"<th class='num'>{escape(h)}</th>" if i else f"<th>{escape(h)}</th>"
         for i, h in enumerate(header)
@@ -210,9 +325,13 @@ def _table_view(summary: str, header: list[str], rows: list[list[str]]) -> str:
         ) + "</tr>"
         for row in rows
     )
+    named = (
+        f' data-columns="{escape(json.dumps(columns))}"' if columns else ""
+    )
     return (
         f"<details class='tableview'><summary>{escape(summary)}</summary>"
-        f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></details>"
+        f"<table{named}><thead><tr>{head}</tr></thead>"
+        f"<tbody>{body}</tbody></table></details>"
     )
 
 
@@ -446,7 +565,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         [str(d)] + [f"{s.values[days.index(d)]:,.1f}" for s in series] for d in sampled
     ]
 
-    slot_rows, values, _ = _slot_rows(bars, managers)
+    slot_rows, values, slot_depth = _slot_rows(bars, managers)
     # Name each bar's asset, so the tooltip and the table both read as people.
     for key, (score, asset_id, _) in list(values.items()):
         profile = profiles.get(asset_id)
@@ -471,24 +590,28 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 <div class="card">
   <h2>Progression</h2>
   <p class="sub">Total score by day. Hover for every manager on a given date.</p>
-  {charts.legend(slotted)}
+  {charts.legend(slotted, filterable=True)}
   {charts.progression_chart(days, series)}
-  {_table_view("Show as a table", ["Date"] + [s.name for s in series], progression_rows)}
+  {_table_view("Show as a table", ["Date"] + [s.name for s in series],
+               progression_rows, columns=[s.name for s in series])}
 </div>
 
 <div class="card">
   <h2>Every counting slot</h2>
-  <p class="sub">One row per slot, ranked within its category, so every bar is a
-    single normalized score and any two are directly comparable. Click a bar for
-    the player behind it.</p>
-  {charts.legend(slotted)}
-  {charts.contribution_chart(slot_rows, slotted, values)}
-  {_table_view("Show as a table", ["Slot"] + [m for m, _ in slotted], bar_rows)}
+  <p class="sub">One section per league, each collapsible. A manager's slots sit
+    together in their own colour, ranked best first, so a category reads as a
+    block. Every bar is a single normalized score, so any two are directly
+    comparable. Click a manager in the key to hide them; click a bar for the
+    player behind it.</p>
+  {charts.legend(slotted, filterable=True)}
+  {charts.slot_sections(slot_rows, slotted, values, depth=slot_depth)}
+  {_table_view("Show as a table", ["Slot"] + [m for m, _ in slotted], bar_rows,
+               columns=[m for m, _ in slotted])}
 </div>
 {_profile_payload(profiles)}
 """
     (out / "index.html").write_text(
-        _page("WHUL — Standings", body, "Standings", managers,
+        _page(f"{LEAGUE_ABBR} — Standings", body, "Standings", managers,
               stamp=stamp, simulated=simulated)
     )
 
@@ -577,7 +700,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
     <div class="note">{"every slot filled" if not empty_slots else "slots with nobody in them"}</div></div>
 </div>"""
     (out / "team" / f"{_slug(manager)}.html").write_text(
-        _page(f"WHUL — {manager_name(manager)}", head + "".join(sections) +
+        _page(f"{LEAGUE_ABBR} — {manager_name(manager)}", head + "".join(sections) +
               _profile_payload(profiles), manager,
               managers, depth=1, stamp=stamp, simulated=simulated)
     )
@@ -651,7 +774,7 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=()) -> None
 </div>
 """
     (out / "about.html").write_text(
-        _page("WHUL — How scoring works", body, "How scoring works", managers,
+        _page(f"{LEAGUE_ABBR} — How scoring works", body, "How scoring works", managers,
               stamp=stamp, simulated=simulated)
     )
 

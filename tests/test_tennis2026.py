@@ -9,6 +9,7 @@ import sqlite3
 from datetime import date
 
 import pytest
+from pathlib import Path
 
 from whul.scoring import tennis
 from whul.sources import tennis2026
@@ -157,3 +158,69 @@ def test_the_probe_reports_the_span_it_holds(database):
 def test_the_probe_reports_a_missing_file_rather_than_raising(tmp_path):
     report = tennis2026.probe(tmp_path / "nope.db")
     assert report["exists"] is False and "error" in report
+
+
+# --- the app's two spellings of one category ---------------------------------
+
+def test_both_spellings_of_a_category_resolve():
+    """SQLAlchemy's Enum persists the member *name*, so the app's database holds
+    ATP_MASTERS_1000 where its own Python reads "ATP Masters 1000", and a row
+    written another way can hold either."""
+    from whul.sources.tennis2026 import CATEGORY_LOOKUP, _category_key
+
+    for spelling in ("ATP_MASTERS_1000", "ATP Masters 1000", "WTA_1000",
+                     "TournamentCategory.ATP_MASTERS_1000"):
+        from whul.scoring.tennis import MASTERS_1000
+        assert CATEGORY_LOOKUP[_category_key(spelling)] == MASTERS_1000, spelling
+
+
+def test_every_category_the_app_defines_is_mapped():
+    """The app's enum is the whole vocabulary. One member unmapped is a tier of
+    tournaments dropped -- reported, but dropped."""
+    from whul.sources.tennis2026 import CATEGORY_LOOKUP, _category_key
+
+    app_members = (
+        "GRAND_SLAM", "ATP_MASTERS_1000", "ATP_500", "ATP_250", "ATP_FINALS",
+        "WTA_1000", "WTA_500", "WTA_250", "WTA_FINALS", "INTERNATIONAL",
+    )
+    unmapped = [m for m in app_members if _category_key(m) not in CATEGORY_LOOKUP]
+    assert not unmapped, f"these tiers would be dropped entirely: {unmapped}"
+
+
+def test_title_casing_a_member_name_is_not_enough():
+    """The reason the previous fallback failed: .title() lowercases ATP, so
+    every ATP and WTA event was dropped and only the Grand Slams and the
+    Internationals came through -- most of the tour, silently absent from a
+    benchmark that would then be drawn from four majors a year."""
+    from whul.sources.tennis2026 import CATEGORIES
+
+    assert "ATP_MASTERS_1000".replace("_", " ").title() not in CATEGORIES
+    assert "Atp Masters 1000" not in CATEGORIES
+
+
+def test_a_copy_in_the_project_data_directory_is_found(tmp_path, monkeypatch):
+    """The app's checkout is not on every machine that scores tennis, so a copy
+    carried over and dropped in data/ is the ordinary case. Requiring an
+    environment variable for it means the nightly run works only when someone
+    remembered to export one."""
+    from whul.sources import tennis2026
+
+    monkeypatch.delenv("WHUL_TENNIS2026_DB", raising=False)
+    monkeypatch.delenv("WHUL_TENNIS2026", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    copy = tmp_path / "data" / "tennis2026-whul.db"
+    copy.touch()
+
+    assert tennis2026.default_path() == Path("data/tennis2026-whul.db")
+
+
+def test_an_explicit_path_still_wins(tmp_path, monkeypatch):
+    from whul.sources import tennis2026
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "tennis2026-whul.db").touch()
+    monkeypatch.setenv("WHUL_TENNIS2026_DB", "/somewhere/else.db")
+
+    assert tennis2026.default_path() == Path("/somewhere/else.db")

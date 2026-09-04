@@ -18,12 +18,22 @@ cd "$(dirname "$0")/.." || exit 1
 PY=.venv/bin/python
 SEASON=2026-27
 
+# An existing unfrozen version to add to, so leagues already computed are not
+# computed again. Without one the first batch starts a new version.
+#
+#   ./scripts/overnight-benchmarks.sh 2026-27-20260904-141859
+#
+INTO=${1:-}
+
 batch () {
     local mode=$1; shift
     printf '\n\n========== %s ==========\n' "$*"
     date -u +'started %Y-%m-%d %H:%M:%SZ'
-    if [ "$mode" = "new" ]; then
+    if [ "$mode" = "new" ] && [ -z "$INTO" ]; then
         "$PY" -m whul.cli benchmarks compute "$@" --season "$SEASON" --save
+    elif [ -n "$INTO" ]; then
+        "$PY" -m whul.cli benchmarks compute "$@" --season "$SEASON" --save \
+            --into "$INTO"
     else
         "$PY" -m whul.cli benchmarks compute "$@" --season "$SEASON" --save --into
     fi
@@ -49,13 +59,17 @@ batch into soccer-players
 # cached under their own name, so the first soccer batch pays for the rest.
 batch into epl laliga seriea
 batch into bundesliga ligue1 mls nwsl
-batch into ncaaf ncaam ncaaw ncaabaseball ncaasoftball
+# NCAA baseball and softball only: football and basketball are usually already
+# in the version being extended. Add them here if starting from nothing.
+batch into ncaabaseball ncaasoftball
+[ -z "$INTO" ] && batch into ncaaf ncaam ncaaw
 
 # Last, and by far the longest: ESPN box scores, one date at a time.
 batch into nba nba-teams
 
 printf '\n\n========== what it produced ==========\n'
-VERSION=$("$PY" -m whul.cli benchmarks versions | awk '$3=="draft"{print $1; exit}')
+VERSION=${INTO:-$("$PY" -m whul.cli benchmarks versions \
+    | awk '$3=="draft"{print $1; exit}')}
 if [ -z "$VERSION" ]; then
     echo "No draft version was created -- the first batch must have failed."
     exit 1

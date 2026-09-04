@@ -73,6 +73,10 @@ def nascar_events(results: pd.DataFrame) -> pd.DataFrame:
             "season": resolve_num(results, ["season", "year", "season_year"], required=True).astype(int),
             "finish": resolve_num(results, ["finish", "fin", "position", "pos"]),
             "date": resolve_str(results, ["date", "race_date"]),
+            # Named where the feed names it: "Daytona 500 4th" is what a reader
+            # wants from a profile, and a bare finish is a number in a column.
+            "tournament": resolve_str(
+                results, ["race", "race_name", "event", "event_name", "tournament"]),
         }
     )
     work = work[work["finish"] > 0].copy()
@@ -121,6 +125,8 @@ def f1_events(results: pd.DataFrame) -> pd.DataFrame:
             "season": resolve_num(results, ["season", "season_year", "year"], required=True).astype(int),
             "finish": resolve_num(results, ["position", "finish", "pos"]),
             "date": resolve_str(results, ["date", "race_date"]),
+            "tournament": resolve_str(
+                results, ["race", "race_name", "event", "event_name", "tournament"]),
         }
     )
     reported = resolve_num(results, ["points"], default=float("nan")).reindex(work.index)

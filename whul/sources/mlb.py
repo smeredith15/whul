@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -262,15 +263,23 @@ def _fangraphs(season: int, stats: str, qual: int) -> pd.DataFrame:
     return frame
 
 
-def _merge_counting_and_advanced(season: int, group: str) -> pd.DataFrame:
+def _merge_counting_and_advanced(
+    season: int, group: str, since: date | None = None
+) -> pd.DataFrame:
     """Counting stats joined to the fWAR components, from one host.
 
     Both come from the MLB Stats API, which removes the FanGraphs dependency
     entirely: FanGraphs blocks datacenter IPs, so it was never going to serve a
     production scraper.
     """
-    counting = load_stats_api_players(season, group)
-    saber = load_sabermetrics(season, group)
+    counting = (
+        load_players_since(season, group, since) if since
+        else load_stats_api_players(season, group)
+    )
+    # The advanced figures have to cover the same span as the counting ones. WAR
+    # is itself a season total, and a whole season of it added to six weeks of
+    # hits would weight one player's WAR as heavily as another's whole summer.
+    saber = load_sabermetrics(season, group, since=since)
     if counting.empty:
         return counting
 
@@ -289,7 +298,9 @@ def _merge_counting_and_advanced(season: int, group: str) -> pd.DataFrame:
     return counting
 
 
-def load_batters(seasons: list[int], use_fangraphs: bool = False) -> pd.DataFrame:
+def load_batters(
+    seasons: list[int], use_fangraphs: bool = False, since: date | None = None
+) -> pd.DataFrame:
     """Batting lines with Offense and Defense attached.
 
     ``use_fangraphs`` is retained for the case where its leaderboard becomes
@@ -298,7 +309,7 @@ def load_batters(seasons: list[int], use_fangraphs: bool = False) -> pd.DataFram
     if use_fangraphs:
         return pd.concat([_fangraphs(y, "bat", BATTER_QUAL) for y in seasons], ignore_index=True)
 
-    frames = [_merge_counting_and_advanced(y, "hitting") for y in seasons]
+    frames = [_merge_counting_and_advanced(y, "hitting", since) for y in seasons]
     frames = [f for f in frames if not f.empty]
     if not frames:
         return pd.DataFrame()
@@ -312,12 +323,14 @@ def load_batters(seasons: list[int], use_fangraphs: bool = False) -> pd.DataFram
     })
 
 
-def load_pitchers(seasons: list[int], use_fangraphs: bool = False) -> pd.DataFrame:
+def load_pitchers(
+    seasons: list[int], use_fangraphs: bool = False, since: date | None = None
+) -> pd.DataFrame:
     """Pitching lines with WAR attached, and innings converted from outs notation."""
     if use_fangraphs:
         return pd.concat([_fangraphs(y, "pit", PITCHER_QUAL) for y in seasons], ignore_index=True)
 
-    frames = [_merge_counting_and_advanced(y, "pitching") for y in seasons]
+    frames = [_merge_counting_and_advanced(y, "pitching", since) for y in seasons]
     frames = [f for f in frames if not f.empty]
     if not frames:
         return pd.DataFrame()
@@ -383,7 +396,10 @@ def innings_to_float(value) -> float:
         return 0.0
 
 
-def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:
+def load_sabermetrics(
+    season: int, group: str = "hitting", since: date | None = None,
+    until: date | None = None,
+) -> pd.DataFrame:
     """Advanced metrics from the MLB Stats API.
 
     Worth trying before conceding the FanGraphs terms: this is the same host that
@@ -393,14 +409,22 @@ def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:
     models -- so adopting them is a scoring decision, but a far smaller one than
     dropping the components entirely.
     """
-    payload = _get(
-        f"{STATS_API}/stats",
-        {
-            "stats": "sabermetrics", "group": group, "season": season,
-            "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
-        },
-        cache_key=f"statsapi/saber_{group}_{season}",
-    )
+    common = {
+        "group": group, "season": season,
+        "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
+    }
+    if since is None:
+        params = {"stats": "sabermetrics", **common}
+        cache_key = f"statsapi/saber_{group}_{season}"
+    else:
+        end = until or date.today()
+        params = {
+            "stats": "sabermetrics", **common,
+            "startDate": since.isoformat(), "endDate": end.isoformat(),
+        }
+        cache_key = (f"statsapi/saber_{group}_{season}_"
+                     f"{since.isoformat()}_{end.isoformat()}")
+    payload = _get(f"{STATS_API}/stats", params, cache_key=cache_key)
     rows: list[dict] = []
     for split_group in payload.get("stats", []):
         for split in split_group.get("splits", []):
@@ -412,25 +436,40 @@ def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def load_stats_api_players(season: int, group: str = "hitting") -> pd.DataFrame:
-    """Season counting stats from the MLB Stats API.
+def load_stats_api_players(
+    season: int, group: str = "hitting",
+    since: date | None = None, until: date | None = None,
+) -> pd.DataFrame:
+    """Counting stats from the MLB Stats API, for a season or a span of it.
 
     A fallback, not a replacement: it carries every counting stat the formulas
     use but **not** FanGraphs' Offense, Defense or WAR, which contribute a
     meaningful share of a player's score. If FanGraphs becomes unavailable this
     is what remains, and dropping those three components is a scoring decision
     rather than something to do silently.
+
+    ``since`` switches to the byDateRange stat type. A league year that opens in
+    August cannot count a player's April, and the season totals this returns by
+    default are the whole year -- four months of which were earned before anyone
+    drafted him.
     """
-    payload = _get(
-        f"{STATS_API}/stats",
-        {
-            # playerPool=All matters: the default returns qualified players only
-            # (~145), where the R script's thresholds admit several hundred.
-            "stats": "season", "group": group, "season": season,
-            "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
-        },
-        cache_key=f"statsapi/{group}_{season}",
-    )
+    common = {
+        # playerPool=All matters: the default returns qualified players only
+        # (~145), where the R script's thresholds admit several hundred.
+        "group": group, "season": season,
+        "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
+    }
+    if since is None:
+        params = {"stats": "season", **common}
+        cache_key = f"statsapi/{group}_{season}"
+    else:
+        end = until or date.today()
+        params = {
+            "stats": "byDateRange", **common,
+            "startDate": since.isoformat(), "endDate": end.isoformat(),
+        }
+        cache_key = f"statsapi/{group}_{season}_{since.isoformat()}_{end.isoformat()}"
+    payload = _get(f"{STATS_API}/stats", params, cache_key=cache_key)
     rows: list[dict] = []
     for split_group in payload.get("stats", []):
         for split in split_group.get("splits", []):
@@ -440,6 +479,50 @@ def load_stats_api_players(season: int, group: str = "hitting") -> pd.DataFrame:
                          "player_id": player.get("id", ""),
                          "season": season, **stat})
     return pd.DataFrame(rows)
+
+
+#: Below this the two pulls are the same numbers and the range did nothing.
+RANGE_DIFFERENCE = 0.02
+
+
+def load_players_since(
+    season: int, group: str, since: date, until: date | None = None
+) -> pd.DataFrame:
+    """One span of a season, having checked the span was actually applied.
+
+    The Stats API ignores parameters it does not recognise rather than
+    rejecting them, so an unsupported date range comes back as a full season of
+    perfectly valid-looking numbers. Nothing downstream could tell the
+    difference: the player exists, the stat lines parse, the totals are real --
+    they are simply four months too generous. So the whole season is fetched as
+    well and the two are compared, and near-identical totals fail rather than
+    pass.
+    """
+    ranged = load_stats_api_players(season, group, since=since, until=until)
+    whole = load_stats_api_players(season, group)
+    _check_range_applied(ranged, whole, group, since)
+    return ranged
+
+
+def _check_range_applied(
+    ranged: pd.DataFrame, whole: pd.DataFrame, group: str, since: date
+) -> None:
+    column = "gamesPlayed"
+    if ranged.empty or whole.empty or column not in ranged or column not in whole:
+        return
+    part = pd.to_numeric(ranged[column], errors="coerce").sum()
+    full = pd.to_numeric(whole[column], errors="coerce").sum()
+    if not full:
+        return
+    if part >= full * (1 - RANGE_DIFFERENCE):
+        raise RuntimeError(
+            f"the Stats API returned the same {group} totals for "
+            f"{since}-onwards as for the whole {ranged['season'].iloc[0]} season "
+            f"({part:,.0f} vs {full:,.0f} games). It ignores parameters it does "
+            f"not recognise, so byDateRange is not being applied and every "
+            f"player would be scored on months earned before the league year "
+            f"opened."
+        )
 
 
 def daily_update_cost(season: int | None = None) -> float:

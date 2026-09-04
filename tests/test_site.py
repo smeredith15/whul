@@ -493,3 +493,224 @@ def test_the_note_cannot_fail_the_build(monkeypatch):
         version = "v1"
 
     assert site_build._uncovered(None, "2026-27", Version()) == []
+
+
+# --- a category reads as a block ---------------------------------------------
+
+def test_a_managers_slots_in_a_category_sit_together():
+    """NFL 1 and NFL 2 adjacent in that manager's colour, then the next
+    manager's two. Ordered the other way -- every manager's first slot, then
+    every manager's second -- a category cannot be read as a block, because
+    each manager's holding is split across the width of the chart."""
+    import re
+
+    from whul.site import charts
+
+    values = {
+        ("Avery", "NFL 1"): (100.0, "a1", "P. Vance"),
+        ("Avery", "NFL 2"): (80.0, "a2", "R. Ellis"),
+        ("Blake", "NFL 1"): (90.0, "b1", "K. Shaw"),
+        ("Blake", "NFL 2"): (70.0, "b2", "T. Moss"),
+    }
+    rows = [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")]
+    svg = charts.contribution_chart(rows, [("Avery", 1), ("Blake", 2)], values,
+                                    depth={"NFL": 2})
+
+    order = re.findall(r'data-manager="([^"]+)" data-category="([^"]+)"', svg)
+    assert order == [
+        ("Avery", "NFL 1"), ("Avery", "NFL 2"),
+        ("Blake", "NFL 1"), ("Blake", "NFL 2"),
+    ]
+
+
+def test_a_managers_slots_share_one_colour():
+    from whul.site import charts
+
+    values = {("Avery", "NFL 1"): (100.0, "a1", "x"),
+              ("Avery", "NFL 2"): (80.0, "a2", "y")}
+    svg = charts.contribution_chart(
+        [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")],
+        [("Avery", 1)], values, depth={"NFL": 2})
+    assert svg.count("var(--series-1)") == 2
+
+
+def test_the_rank_is_labelled_so_a_bar_says_which_slot_it_is():
+    """Colour says whose the bar is; without this nothing says whether it is
+    their best holding in the category or their fourth."""
+    from whul.site import charts
+
+    values = {("Avery", "NFL 1"): (100.0, "a1", "x"),
+              ("Avery", "NFL 2"): (80.0, "a2", "y")}
+    svg = charts.contribution_chart(
+        [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")],
+        [("Avery", 1)], values, depth={"NFL": 2})
+    assert ">#1<" in svg and ">#2<" in svg
+
+
+def test_a_single_slot_category_is_not_labelled_with_a_rank():
+    """"#1" under a category with one slot is a column of ones."""
+    from whul.site import charts
+
+    svg = charts.contribution_chart(
+        [("PGA", "PGA 1", "#1")], [("Avery", 1)],
+        {("Avery", "PGA 1"): (50.0, "p1", "x")}, depth={"PGA": 1})
+    assert ">#1<" not in svg
+
+
+def test_a_benched_slot_strikes_the_score_and_not_the_name():
+    """The player is not crossed out, their contribution is -- and a struck
+    name reads like a player who has been dropped rather than one whose week
+    was someone else's."""
+    from whul.site.build import _asset_button
+
+    assert "struck" not in _asset_button("a1", "P. Vance", counts=False)
+
+
+def test_the_header_carries_the_leagues_full_name():
+    """"WHUL" is unreadable to anyone outside the league."""
+    from whul.config.league import LEAGUE_ABBR, LEAGUE_NAME
+
+    assert LEAGUE_NAME == "Wolf Hill Uber League"
+    assert LEAGUE_ABBR == "WHUL"
+
+
+# --- what the profile window says --------------------------------------------
+
+def test_a_stat_is_labelled_in_words():
+    """`games_played` reads as debug output."""
+    from whul.site.build import _label_for
+
+    assert _label_for("games_played") == "Games played"
+    assert _label_for("reg_big_wins") == "Big wins"
+    assert _label_for("point_diff") == "Point differential"
+    # An unmapped column still reads as English rather than as a column name.
+    assert _label_for("some_new_thing") == "Some new thing"
+
+
+def test_every_figure_behind_the_score_is_shown():
+    """The window used to carry five columns because that is what the aggregate
+    kept. What it should carry is everything that went into the raw score."""
+    from whul.site.build import _stat_lines
+
+    row = {
+        "asset_id": "a1", "league": "NFL", "season": "2026-27", "source": "nfl",
+        "total_points": 210.0, "reg_wins": 11, "reg_big_wins": 4,
+        "div_wins": 5, "point_diff": 88.0, "playoff_wins": 2,
+    }
+    labels = dict(_stat_lines(row))
+    assert "Regular-season wins" in labels and labels["Regular-season wins"] == "11"
+    assert "Point differential" in labels
+    assert "Playoff wins" in labels
+    # Identity columns are not statistics.
+    assert "Asset id" not in labels and "League" not in labels
+
+
+def test_a_prorated_score_says_so():
+    """A prorated figure looks like an ordinary one, and a manager checking it
+    against a box score would find it does not reconcile."""
+    from whul.site.build import _scaling_notes
+
+    notes = _scaling_notes({"proration_factor": 1.218})
+    assert len(notes) == 1
+    assert "1.218" in notes[0]
+    assert "One-off achievements are not scaled" in notes[0]
+
+
+def test_an_unscaled_score_says_nothing():
+    """A note printed when nothing was scaled teaches everyone to ignore it."""
+    from whul.site.build import _scaling_notes
+
+    assert _scaling_notes({"proration_factor": 1.0}) == []
+    assert _scaling_notes({"total_points": 5.0}) == []
+
+
+def test_a_schedule_scaled_benchmark_says_so():
+    from whul.site.build import _scaling_notes
+
+    notes = _scaling_notes({"schedule_factor": 1.024})
+    assert notes and "1.024" in notes[0]
+
+
+def test_the_finish_list_survives_the_round_trip_through_the_database():
+    """The stats payload is stored as JSON, so a list comes back as a string."""
+    import json
+
+    from whul.site.build import _finish_list
+
+    finishes = [{"label": "ATP Winston Salem 250 F", "points": 150.0,
+                 "date": "2026-08-22"}]
+    assert _finish_list({"finishes": finishes}) == finishes
+    assert _finish_list({"finishes": json.dumps(finishes)}) == finishes
+    assert _finish_list({}) == []
+    assert _finish_list({"finishes": "not json"}) == []
+
+
+# --- collapsing and filtering -------------------------------------------------
+
+SECTION_ROWS = [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2"),
+                ("PGA", "PGA 1", "#1")]
+SECTION_VALUES = {
+    ("Avery", "NFL 1"): (100.0, "a1", "P. Vance"),
+    ("Avery", "NFL 2"): (60.0, "a2", "R. Ellis"),
+    ("Avery", "PGA 1"): (40.0, "a3", "S. Kerr"),
+}
+
+
+def test_each_league_is_its_own_collapsible_section():
+    """Twenty leagues open at once is a page that is long before it is
+    informative."""
+    from whul.site import charts
+
+    html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES,
+                                depth={"NFL": 2, "PGA": 1})
+    assert html.count("<details class=\"leaguebox\"") == 2
+    assert 'data-league="NFL"' in html and 'data-league="PGA"' in html
+
+
+def test_sections_open_by_default_and_work_without_script():
+    """`<details>` collapses with no JavaScript, which is what a static site
+    wants; the script only remembers what a reader left closed."""
+    from whul.site import charts
+
+    html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES)
+    assert " open>" in html
+
+
+def test_every_section_shares_one_ceiling():
+    """A per-section ceiling would make two sections' bars look alike at
+    different scores, which is the one thing a common scale is for."""
+    from whul.site import charts
+
+    html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES,
+                                depth={"NFL": 2, "PGA": 1})
+    # The 100-point bar is full width in its section; the 40-point one is not.
+    assert html.count('width="794.0"') == 1
+
+
+def test_a_filterable_legend_is_made_of_buttons():
+    """So the filter is reachable from a keyboard."""
+    from whul.site import charts
+
+    html = charts.legend([("Avery", 1)], filterable=True)
+    assert "<button" in html and 'data-manager="Avery"' in html
+    assert 'aria-pressed="false"' in html
+
+
+def test_a_plain_legend_is_still_just_a_key():
+    from whul.site import charts
+
+    assert "<button" not in charts.legend([("Avery", 1)])
+
+
+def test_a_progression_line_is_addressable_by_manager():
+    """Hiding a manager has to reach the line, its end marker and its label --
+    a hidden line with a floating label reads as a bug."""
+    from datetime import date
+
+    from whul.site import charts
+
+    svg = charts.progression_chart(
+        [date(2026, 8, 21), date(2026, 8, 22)],
+        [charts.Series("Avery", 1, [1.0, 2.0])],
+    )
+    assert svg.count('data-manager="Avery"') >= 3
