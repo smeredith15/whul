@@ -79,7 +79,8 @@ if [ "${INGEST_ONLY:-}" != "1" ]; then
     # and it does not announce itself: the standings still build, the page still
     # renders, and the leagues that dropped out simply score nothing. That is
     # how an 18-group version came to be published over a 30-group one.
-    "$PY" - "$VERSION" "$SEASON" <<'GUARD' || exit 1
+    set +e
+    "$PY" - "$VERSION" "$SEASON" <<'GUARD'
 import sys
 
 from whul import benchmarks
@@ -99,12 +100,12 @@ def covered(label):
 
 new = covered(version)
 active = store_benchmarks.active_version(store, season)
-if active is None:
+old = covered(active.version) if active else 0
+if active:
+    print(f"  {active.version} covers {old} pair(s); {version} covers {new}")
+else:
     print(f"  nothing frozen yet; {version} covers {new} league/type pair(s)")
-    raise SystemExit(0)
 
-old = covered(active.version)
-print(f"  {active.version} covers {old} pair(s); {version} covers {new}")
 if new < old:
     print()
     print(f"  !! Freezing {version} would score fewer leagues than the version")
@@ -112,12 +113,30 @@ if new < old:
     print(f"  !! out simply score nothing, on a page that still renders.")
     print(f"  !! Add the missing leagues to it, or name the version you meant.")
     raise SystemExit(1)
+
+# `benchmarks freeze` refuses a version with rostered assets it cannot score,
+# which is right for a first freeze and wrong for every one after: the gaps --
+# club soccer players with no reachable source, international soccer awaiting a
+# scoring decision -- are known, and already accepted in the version this
+# replaces. Exit 2 says "carry the accepted gaps over"; it is safe precisely
+# because the check above established that no league is being dropped, and the
+# About page names whatever stays uncovered so nobody reads the standings as
+# complete. With nothing frozen yet there is nothing to have accepted, so the
+# first freeze is left to refuse and be decided deliberately.
+raise SystemExit(2 if active else 0)
 GUARD
+    case $? in
+        0) FORCE="" ;;
+        2) FORCE="--force" ;;
+        *) set -e; exit 1 ;;
+    esac
+    set -e
 
     step "freezing $VERSION"
     # Frozen, not edited ever after: the standings point at this, and a scale
     # that moves under them rewrites history silently.
-    "$PY" -m whul.cli benchmarks freeze "$VERSION" || exit 1
+    # shellcheck disable=SC2086 -- FORCE is a flag or empty, deliberately unquoted
+    "$PY" -m whul.cli benchmarks freeze "$VERSION" $FORCE || exit 1
 fi
 
 # --- 2. today's results ----------------------------------------------------
