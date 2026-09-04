@@ -27,6 +27,7 @@ benchmarked against one.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -481,6 +482,25 @@ def save(
     )
 
 
+def _merge_notes(existing: str, added: str) -> str:
+    """The version's contents after a sitting, not a log of the sittings.
+
+    Recomputing a league supersedes it, so listing both spans reads as two
+    pools when there is one. The newest mention of each league wins.
+    """
+    entries: dict[str, str] = {}
+    for part in [p.strip() for p in f"{existing}; {added}".replace(";", ",").split(",")]:
+        if not part:
+            continue
+        # "PGA players 2021-22 to 2025-26" -> keyed on "PGA players". The span
+        # is however many words it takes to write, so the key is the words
+        # before it rather than all but the last.
+        words = part.split()
+        named = list(itertools.takewhile(lambda w: not w[:1].isdigit(), words))
+        entries[" ".join(named) or part] = part
+    return ", ".join(entries[k] for k in sorted(entries))
+
+
 def extend(
     store: Store, runs: list[BenchmarkRun], version: str, notes: str = ""
 ) -> str | None:
@@ -489,11 +509,7 @@ def extend(
     if combined is None:
         return None
     existing = store_benchmarks.get_version(store, version)
-    grew = (
-        f"{existing.notes}; {describe(runs)}"
-        if existing and existing.notes
-        else describe(runs)
-    )
+    grew = _merge_notes(existing.notes if existing else "", describe(runs))
     store_benchmarks.extend(store, version, combined, notes=notes or grew)
     return version
 

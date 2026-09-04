@@ -51,8 +51,20 @@ def normalize_name(name: str) -> str:
     Accents, punctuation and case go; word order and the words themselves stay.
     Anything more aggressive starts merging people who are actually different.
     """
+    return split_name(name)[0]
+
+
+def split_name(name: str) -> tuple[str, str]:
+    """A name as ``(base, generational suffix)``.
+
+    The suffix is kept apart rather than thrown away, because it is the only
+    thing distinguishing two people who are otherwise identical. John Daly II
+    is on a roster here and John Daly plays the same tour; folding them
+    together would credit one manager with the other man's score, and nothing
+    downstream could tell.
+    """
     if not name:
-        return ""
+        return "", ""
     folded = unicodedata.normalize("NFKD", str(name))
     folded = "".join(c for c in folded if not unicodedata.combining(c))
     folded = folded.lower().replace("&", " and ")
@@ -61,18 +73,13 @@ def normalize_name(name: str) -> str:
     # "JaMarr" can never match.
     folded = folded.replace("'", "").replace("\u2019", "")
     folded = re.sub(r"[^a-z0-9\s]", " ", folded)
-    return " ".join(_drop_suffix(_join_initials(folded.split())))
+    words = _join_initials(folded.split())
 
-
-def _drop_suffix(words: list[str]) -> list[str]:
-    """Drop a generational suffix, which is only ever the last word.
-
-    Dropping it anywhere would lose the name outright: "JR Smith" is a first
-    name, and stripping every "jr" leaves him as "smith".
-    """
+    suffix = ""
     while len(words) > 1 and words[-1] in SUFFIXES:
+        suffix = words[-1]
         words = words[:-1]
-    return words
+    return " ".join(words), suffix
 
 
 def _join_initials(words: list[str]) -> list[str]:
@@ -118,10 +125,16 @@ class Resolution:
     matched: list[Match] = field(default_factory=list)
     unmatched: list[tuple[str, str]] = field(default_factory=list)
     ambiguous: list[tuple[str, str, int]] = field(default_factory=list)
+    #: Roster name, league, and the feed name it nearly matched. Held back
+    #: rather than linked, because the suffix is the whole difference.
+    suffix_mismatch: list[tuple[str, str, str]] = field(default_factory=list)
 
     @property
     def rostered(self) -> int:
-        return len(self.matched) + len(self.unmatched) + len(self.ambiguous)
+        return (
+            len(self.matched) + len(self.unmatched) + len(self.ambiguous)
+            + len(self.suffix_mismatch)
+        )
 
     def __str__(self) -> str:
         lines = [
@@ -134,6 +147,12 @@ class Resolution:
             lines.append(
                 f"  {name} ({league}) matches {count} feed rows -- left unlinked "
                 f"rather than guessed"
+            )
+        for name, league, feed_name in self.suffix_mismatch:
+            lines.append(
+                f"  {name} ({league}) is not the {feed_name} the feed lists -- "
+                f"one carries a generational suffix and the other does not. Link "
+                f"them with `whul.cli alias` if they are the same person"
             )
         return "\n".join(lines)
 
@@ -198,7 +217,13 @@ def resolve(
         ] if not assets.empty else []
         return pd.DataFrame(), report
 
-    shape = normalize_team if asset_type == "Team" else normalize_name
+    teams = asset_type == "Team"
+    shape = normalize_team if teams else normalize_name
+
+    def key_of(name) -> tuple[str, str]:
+        # A club has no generational suffix to disagree about.
+        return (normalize_team(name), "") if teams else split_name(name)
+
     feed = scored.copy()
     feed["_league"] = feed["league"].astype(str) if "league" in feed else ""
 
@@ -208,11 +233,15 @@ def resolve(
     # Every name the feed offers is indexed, not just the primary one. A feed
     # that calls a team "SEA" in one column and "Seattle Seahawks" in another
     # is the common case, and a roster may use either.
+    suffixes: dict[int, str] = {}
     for column in (name_col, *also):
         for position, name in enumerate(feed[column]):
-            key = shape(name)
-            if key:
-                by_key.setdefault((feed["_league"].iat[position], key), set()).add(position)
+            base, suffix = key_of(name)
+            if base:
+                by_key.setdefault(
+                    (feed["_league"].iat[position], base), set()
+                ).add(position)
+                suffixes.setdefault(position, suffix)
             if str(name) in aliases:
                 by_alias.setdefault(aliases[str(name)], []).append(position)
 
@@ -230,13 +259,25 @@ def resolve(
             ))
             continue
 
-        key = shape(asset.display_name)
+        key, suffix = key_of(asset.display_name)
         hits = sorted({i for c in wanted for i in by_key.get((c, key), set())})
         if not hits and not feed["_league"].isin(wanted).any():
             # The frame is single-league and carries no league column to match
             # on; fall back to the name alone rather than reporting every asset
             # as missing.
             hits = sorted(by_key.get(("", key), set()))
+
+        # The suffix is part of the identity, not noise to be normalized away.
+        # A near-match on the base alone is reported rather than linked: it is
+        # as likely to be someone's father as a feed dropping a "Jr.", and an
+        # alias settles it in one command.
+        agreed = [i for i in hits if suffixes.get(i, "") == suffix]
+        if hits and not agreed:
+            report.suffix_mismatch.append(
+                (asset.display_name, asset.league, str(feed.iloc[hits[0]][name_col]))
+            )
+            continue
+        hits = agreed
         if len(hits) == 1:
             picked[hits[0]] = asset.asset_id
             report.matched.append(Match(

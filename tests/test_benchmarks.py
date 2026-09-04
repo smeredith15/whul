@@ -705,3 +705,14 @@ def test_a_bare_into_ignores_a_frozen_version(tmp_path, monkeypatch, capsys):
         "compute", "nfl", "--latest", "2024", "--save", "--into", "--db", str(db)
     ) == 1
     assert "Drop --into to start one" in capsys.readouterr().err
+
+
+def test_recomputing_a_league_supersedes_it_in_the_notes():
+    """Listing both spans reads as two pools when there is one."""
+    merged = benchmarks._merge_notes(
+        "NFL players 2021-2025; PGA players 2020-21 to 2024-25",
+        "PGA players 2021-22 to 2025-26",
+    )
+    assert merged.count("PGA players") == 1
+    assert "2021-22 to 2025-26" in merged
+    assert "NFL players 2021-2025" in merged

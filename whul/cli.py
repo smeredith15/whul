@@ -679,6 +679,61 @@ def _benchmark_store(args: argparse.Namespace):
     return open_store(args.db)
 
 
+def cmd_alias(args: argparse.Namespace) -> int:
+    """Link a feed's name to a rostered asset, by hand.
+
+    The resolver refuses to guess -- two people with one name, or a suffix that
+    disagrees, are reported rather than linked. This is how a person settles
+    one, and the link is permanent: it wins over re-deriving the match on every
+    run after.
+    """
+    from whul import resolve as resolver
+    from whul.store import open_store
+    from whul.store.db import _now
+
+    store = open_store(args.db)
+    assets = resolver.rostered_assets(store, args.season)
+    if assets.empty:
+        print(f"\nNothing rostered in {args.season}.\n", file=sys.stderr)
+        return 1
+
+    wanted = resolver.normalize_name(args.asset)
+    hits = assets[
+        assets["display_name"].map(resolver.normalize_name) == wanted
+    ] if not args.asset_id else assets[assets["asset_id"] == args.asset_id]
+
+    if hits.empty:
+        near = [
+            n for n in assets["display_name"]
+            if args.asset.lower() in str(n).lower()
+        ][:8]
+        print(f"\nNo rostered asset called {args.asset!r}.", file=sys.stderr)
+        if near:
+            print(f"  Did you mean: {', '.join(near)}", file=sys.stderr)
+        print(file=sys.stderr)
+        return 1
+    if len(hits) > 1:
+        print(f"\n{args.asset!r} matches {len(hits)} rostered assets; "
+              f"pass --asset-id to say which:", file=sys.stderr)
+        for row in hits.itertuples():
+            print(f"  {row.asset_id}  {row.display_name} ({row.league})", file=sys.stderr)
+        print(file=sys.stderr)
+        return 1
+
+    asset = hits.iloc[0]
+    store.upsert("asset_aliases", [{
+        "source": args.source, "source_key": args.feed_name,
+        "asset_id": asset["asset_id"], "match_kind": "manual",
+        "needs_review": 0, "created_at": _now(),
+    }], keys=("source", "source_key"))
+    print(
+        f"\n  {args.source}: {args.feed_name!r} -> {asset['display_name']} "
+        f"({asset['league']})"
+    )
+    print("  It will be used from the next ingest on.\n")
+    return 0
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     """Pull today's results for the live leagues and record them."""
     from datetime import date as _date
@@ -1392,6 +1447,17 @@ def main(argv: list[str] | None = None) -> int:
     site.add_argument("--season", default="2026-27-SIM", help="season to publish")
     site.add_argument("--out", default="site", help="output directory")
     site.set_defaults(func=cmd_site)
+
+    alias = sub.add_parser(
+        "alias", help="link a feed's name to a rostered asset the resolver would not guess"
+    )
+    alias.add_argument("source", help="source key, as `benchmarks list` names it")
+    alias.add_argument("feed_name", help="the name exactly as the feed spells it")
+    alias.add_argument("asset", help="the rostered asset's name")
+    alias.add_argument("--asset-id", help="disambiguate when the name is not unique")
+    alias.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    alias.add_argument("--season", default="2026-27", help="season whose roster to search")
+    alias.set_defaults(func=cmd_alias)
 
     ingest = sub.add_parser("ingest", help="pull today's results and record them")
     ingest.add_argument(

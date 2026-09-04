@@ -205,3 +205,55 @@ def test_a_suffix_is_only_dropped_at_the_end():
 
 def test_a_period_that_separates_words_still_does():
     assert resolve.normalize_team("St. Louis Cardinals") == "st louis cardinals"
+
+
+# --- a suffix is identity, not noise --------------------------------------
+
+def test_a_generational_suffix_is_not_folded_away():
+    """John Daly II is on a roster here and John Daly plays the same tour.
+    Folding them together credits one manager with the other man's score."""
+    assert resolve.split_name("John Daly II") == ("john daly", "ii")
+    assert resolve.split_name("John Daly") == ("john daly", "")
+
+
+def test_a_suffix_that_disagrees_is_reported_not_linked():
+    scored = feed(("John Daly", "PGA"))
+    assets = roster(("John Daly II", "PGA", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert matched.empty
+    assert report.suffix_mismatch == [("John Daly II", "PGA", "John Daly")]
+    assert "generational suffix" in str(report)
+    assert report.unmatched == [], "reported once, under the reason that fits"
+
+
+def test_the_right_one_of_two_relatives_is_matched():
+    scored = feed(("John Daly", "PGA"), ("John Daly II", "PGA"))
+    assets = roster(("John Daly II", "PGA", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert list(matched["player"]) == ["John Daly II"]
+    assert report.suffix_mismatch == []
+
+
+def test_an_alias_settles_a_suffix_the_feed_spells_differently(store):
+    add_asset(store, "a0", name="John Daly II", league="PGA")
+    store.upsert("asset_aliases", [{
+        "source": "pga", "source_key": "John Daly", "asset_id": "a0",
+        "match_kind": "manual", "needs_review": 0, "created_at": "2026-08-21",
+    }], keys=("source", "source_key"))
+
+    scored = feed(("John Daly", "PGA"))
+    assets = roster(("John Daly II", "PGA", "Player"))
+    assets["asset_id"] = ["a0"]
+    matched, _ = resolve.resolve(
+        scored, assets, "Player", aliases=resolve.load_aliases(store, "pga")
+    )
+    assert list(matched["asset_id"]) == ["a0"]
+
+
+def test_a_club_has_no_suffix_to_disagree_about():
+    scored = feed(("Arsenal", "Premier League"), asset_type="Team")
+    assets = roster(("Arsenal", "Premier League", "Team"))
+    matched, report = resolve.resolve(scored, assets, "Team")
+    assert len(matched) == 1 and report.suffix_mismatch == []
