@@ -322,12 +322,23 @@ def _series_points(summary: pd.DataFrame) -> pd.Series:
     )
 
 
-def score_teams(schedule: pd.DataFrame) -> pd.DataFrame:
+def score_teams(schedule: pd.DataFrame, partial: bool = False) -> pd.DataFrame:
     """Rolling twelve-month contract points per team.
 
     Each contract year pairs the post-break remainder of season N with the
     pre-break portion of season N+1, so a team only scores where both seasons are
     present in the data.
+
+    That is right for a benchmark and wrong for a season in progress. The
+    2026-27 contract year is post-break 2026 plus pre-break 2027, and pre-break
+    2027 has not been played -- so an inner join drops every team and the league
+    reports "no results yet for this season" in the middle of a pennant race.
+    ``partial`` keeps the half that has been played and scores it, which is what
+    a live standing is: incomplete on purpose.
+
+    Benchmarks must not pass it. A pool of half-finished contract years would
+    set the bar at roughly half a year's points, and every live team would score
+    about double.
     """
     summary = summarize_teams(schedule)
     if summary.empty:
@@ -362,7 +373,12 @@ def score_teams(schedule: pd.DataFrame) -> pd.DataFrame:
         ),
     })
 
-    out = year_n.merge(year_n1, on=["contract_year", "team"], how="inner")
+    # Left, not outer: an outer join would also raise the contract year *before*
+    # the earliest season loaded, whose first half nobody has played either, and
+    # a team would appear twice under two different years.
+    how = "left" if partial else "inner"
+    out = year_n.merge(year_n1, on=["contract_year", "team"], how=how)
+    out["year_n1_points"] = out["year_n1_points"].fillna(0.0)
     out["total_points"] = out["year_n_points"] + out["year_n1_points"]
     out["season"] = out["contract_year"]
     out["league"] = "MLB"

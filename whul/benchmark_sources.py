@@ -121,6 +121,23 @@ def _mlb_teams():
     )
 
 
+def _mlb_teams_live():
+    """The contract year that is running, scored on the half that has been played.
+
+    The 2026-27 contract year is post-break 2026 plus pre-break 2027. Asking for
+    both and joining them the way a benchmark does drops every team, because
+    nobody has played 2027 -- which the report then states as "no results yet
+    for this season", in September, mid-pennant-race.
+    """
+    from whul.scoring import mlb
+    from whul.sources import mlb as source
+
+    return (
+        lambda seasons: source.load_schedule(seasons),
+        lambda raw: mlb.score_teams(raw, partial=True),
+    )
+
+
 def _nba_players():
     from whul.scoring import nba
     from whul.sources import espn
@@ -374,7 +391,8 @@ SOURCES: dict[str, Source] = _register(
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified"),
     Source("mlb", "MLB", "Player", _mlb_players,
            note="FanGraphs leaderboards; season aggregates, no phase split"),
-    Source("mlb-teams", "MLB", "Team", _mlb_teams),
+    Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
+           note="a live contract year is scored on the half already played"),
     Source("nba", "NBA", "Player", _nba_players,
            note="ESPN box scores, one date at a time -- slow to backfill"),
     Source("nba-teams", "NBA", "Team", _nba_teams,

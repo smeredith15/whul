@@ -321,3 +321,19 @@ def test_dropping_advanced_terms_hurts_defenders_most():
 
     assert share(glove) > share(slugger)
     assert share(slugger) < 0.02
+
+
+def test_a_contract_year_in_progress_scores_the_half_that_has_been_played():
+    """The 2026-27 contract year is post-break 2026 plus pre-break 2027. Joined
+    the way a benchmark joins them, every team drops out because nobody has
+    played 2027 -- and the league reports no results yet, in September."""
+    from whul.scoring.mlb import score_teams
+
+    schedule = pd.DataFrame([game("NYY", "BOS", 5, 1, season=2026)] * 20)
+    assert score_teams(schedule).empty, "a benchmark needs both halves"
+
+    live = score_teams(schedule, partial=True)
+    assert not live.empty
+    assert (live["year_n1_points"] == 0).all(), "the second half has not happened"
+    assert (live["total_points"] == live["year_n_points"]).all()
+    assert set(live["season"]) == {2026}, "only the year that has started"
