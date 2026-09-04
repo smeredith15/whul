@@ -166,15 +166,35 @@ def _ncaa(key: str, category: str):
 
 
 def _soccer(key: str, category: str):
+    """A club's league, cup and European matches, gathered into one total.
+
+    Reading every competition is what gives the tiers meaning -- restricted to
+    league fixtures, every win would be worth three points and the Champions
+    League premium would never appear. But a competition's scoreboard returns
+    *every* match in it, not only the ones this league's clubs played, so the
+    rows have to be filtered back to the league's own clubs. Without that the
+    Premier League pool was 213 clubs a season instead of 20, with Real Madrid
+    and every lower-division cup opponent labelled Premier League.
+    """
     def build():
         from whul.scoring import soccer
         from whul.sources import espn
 
         def load(seasons):
             matches = espn.load_soccer_matches(key, seasons)
-            if not matches.empty:
-                matches["league"] = category
-            return matches
+            if matches.empty:
+                return matches
+            own = espn.load_eligible_teams(key)
+            if own:
+                matches = matches[matches["team"].isin(own)]
+            else:
+                # Better to say so than to quietly benchmark against Europe.
+                print(
+                    f"  {key}: could not read the league's own clubs; the pool "
+                    f"will include every opponent it met",
+                    flush=True,
+                )
+            return matches.assign(league=category)
 
         return load, soccer.score_teams
 
