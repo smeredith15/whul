@@ -92,7 +92,10 @@ LEAGUE_START: dict[str, date] = {
     "Bundesliga": date(2026, 8, 28),
     "La Liga": date(2026, 8, 15),
     "Serie A": date(2026, 8, 22),
-    "NCAAF": date(2026, 8, 27),
+    # ESPN labels Week 1 as August 22 to September 7, so the season's opening
+    # weekend is the 22nd, not the 27th. Starting on the 27th would discard
+    # real Week 1 results from the games played that first weekend.
+    "NCAAF": date(2026, 8, 22),
 }
 
 

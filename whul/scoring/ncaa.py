@@ -164,6 +164,15 @@ def _split_conference_title(summary: pd.DataFrame, pool: float) -> pd.Series:
     return (is_champ.astype(float) * pool / ties.where(ties > 0, 1)).fillna(0.0)
 
 
+class MissingConference(ValueError):
+    """Completed games arrived with no conference on any of them.
+
+    Football scoring cannot proceed without it, and the failure has to be loud:
+    silently returning nothing is indistinguishable from a week with no games,
+    which is how a whole league can go unscored without anyone noticing.
+    """
+
+
 def score_football(
     schedule: pd.DataFrame, eligible: set[str] | None = None
 ) -> pd.DataFrame:
@@ -172,11 +181,18 @@ def score_football(
     if games.empty:
         return pd.DataFrame()
 
-    games = games[games["conference"].notna() & (games["conference"] != "")]
-    if games.empty:
+    named = games[games["conference"].notna() & (games["conference"] != "")]
+    if named.empty:
         # No conference data means conference wins and the title split cannot be
-        # scored at all, so there is nothing meaningful to return.
-        return pd.DataFrame()
+        # scored at all. Returning an empty frame here reads downstream as "the
+        # league has not played yet", which is the opposite of what happened --
+        # it played, and the feed described it without conferences. Say so.
+        raise MissingConference(
+            f"{len(games)} completed game(s) arrived with no conference on any "
+            "team, so conference wins and the regular-season title cannot be "
+            "scored. This is a feed problem, not an empty week."
+        )
+    games = named
     games["is_playoff"] = games["is_post"] & _matches(games["notes"], FB_PLAYOFF_PATTERN)
     tougher_field = games["is_conf_game"] | games["is_post"]
     games["is_big_win"] = games["is_win"] & (

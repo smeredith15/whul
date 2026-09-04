@@ -31,7 +31,9 @@ on:
           Leagues to pull, space separated, as `benchmarks list` names them.
           Empty means every one, which is slow: the NBA alone is thousands of
           requests. Keep it to the leagues that are in season.
-        default: "pga epl"
+        default: >-
+          nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf
+          epl laliga seriea bundesliga ligue1 mls nwsl
       backfill:
         description: "Rebuild every day from the season start"
         type: boolean
@@ -51,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SEASON: ${{ inputs.season || '2026-27' }}
-      LEAGUES: ${{ inputs.leagues || 'pga epl' }}
+      LEAGUES: ${{ inputs.leagues || 'nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf epl laliga seriea bundesliga ligue1 mls nwsl' }}
     steps:
       - uses: actions/checkout@v4
 

@@ -99,6 +99,21 @@ IRREGULAR_SEASONS: tuple[IrregularSeason, ...] = (
     IrregularSeason("NASCAR", 2020, 0, 0, "COVID: season paused in March, schedule compressed"),
     IrregularSeason("F1", 2021, 0, 0, "COVID: the 17-race 2020 season falls in this window"),
     IrregularSeason("F1", 2020, 0, 0, "COVID: 17 races, season started in July"),
+    # College seasons, named the way ``season_label`` names them: football by
+    # the year it starts, basketball by the year it ends. Football's 2020 is the
+    # autumn of 2020, when the Big Ten played eight games, the Pac-12 six and
+    # the MAC none until November. Basketball's 2020 is the 2019-20 season that
+    # stopped before the tournament, and its 2021 is the season played through
+    # a winter of cancellations and pauses.
+    IrregularSeason("NCAAF", 2020, 0, 0, "COVID: conferences played schedules of different lengths"),
+    IrregularSeason("NCAAM", 2021, 0, 0, "COVID: cancellations and pauses throughout"),
+    IrregularSeason("NCAAM", 2020, 0, 0, "COVID: conference tournaments and March Madness cancelled"),
+    IrregularSeason("NCAAW", 2021, 0, 0, "COVID: cancellations and pauses throughout"),
+    IrregularSeason("NCAAW", 2020, 0, 0, "COVID: conference tournaments and March Madness cancelled"),
+    # Spring sports lost 2020 outright: both seasons were abandoned in March,
+    # about a third of the way through, and there was no postseason at all.
+    IrregularSeason("NCAA Baseball", 2020, 0, 0, "COVID: season abandoned in March, no postseason"),
+    IrregularSeason("NCAA Softball", 2020, 0, 0, "COVID: season abandoned in March, no postseason"),
 )
 
 #: The earliest season a league's benchmark pool may draw from, named by the

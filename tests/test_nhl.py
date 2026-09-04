@@ -213,3 +213,35 @@ def test_shortened_seasons_are_dropped_not_scaled():
     nhl_2021 = next(s for s in IRREGULAR_SEASONS if s.league == "NHL" and s.season == 2021)
     assert nhl_2021.games == 56
     assert nhl_2021.standard_games == 82
+
+
+def test_college_covid_seasons_are_excluded_under_their_own_numbering():
+    """Each league's exclusions are named the way ``season_label`` names its
+    seasons -- football by the year it starts, basketball by the year it ends --
+    so both point at the same disrupted winter of 2020-21. Name football's by
+    its end year and the exclusion lands on 2021, a season played in full, while
+    the shortened one walks into the pool."""
+    from whul.scoring.schedule import irregular_seasons, usable_seasons
+
+    assert irregular_seasons("NCAAF") == {2020}
+    assert 2021 not in irregular_seasons("NCAAF")
+    assert irregular_seasons("NCAAM") == {2020, 2021}
+    assert irregular_seasons("NCAAW") == {2020, 2021}
+    assert usable_seasons("NCAAF", [2019, 2020, 2021, 2022]) == [2019, 2021, 2022]
+
+
+def test_college_spring_sports_lost_2020_outright():
+    from whul.scoring.schedule import irregular_seasons
+
+    assert irregular_seasons("NCAA Baseball") == {2020}
+    assert irregular_seasons("NCAA Softball") == {2020}
+
+
+def test_a_calendar_exclusion_does_not_claim_a_game_count():
+    """These are excluded for what happened to the calendar, not for a number of
+    games we can stand behind -- so the note must not print "0 of 0 games"."""
+    from whul.scoring.schedule import describe_exclusions
+
+    note = describe_exclusions("NCAAM", [2021])[0]
+    assert "games" not in note
+    assert "COVID" in note

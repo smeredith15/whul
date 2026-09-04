@@ -438,6 +438,10 @@ before sending the offer sheet — replacing the R script's interactive console 
       match → record. Raw figures are written whether or not a benchmark exists, because a rolling
       feed's earlier weeks cannot be fetched back.
 
+Intl Soccer needs a scoring design before it needs an adapter — the tournament
+ladder, and what makes two federations' tournaments equivalent. See
+[`INTL_SOCCER.md`](INTL_SOCCER.md).
+
 ### Phase 2 — Per-league increments *(one league at a time, per your preference)*
 For each league, in order: **NFL ✅ → NBA ✅ → MLB → NHL → Club Soccer → NCAA (F/M/W/Baseball/Softball) →
 Intl Soccer → PGA → Tennis → Motorsports → (Olympics, WNBA deferred)**
@@ -466,6 +470,8 @@ Each increment ships end-to-end:
 - [x] Nightly standings snapshot + retroactive backfill to season start
 
 ### Phase 4 — Web app *(static site, see §3.2)*
+Presentation changes collected from use are in [`SITE_TODO.md`](SITE_TODO.md).
+
 - [x] Standings table — the default view, not a tab
 - [x] Contribution bar graph (§4.2) — grouped horizontal bars by roster category
 - [x] Progression line graph — hover crosshair, direct end labels, table view

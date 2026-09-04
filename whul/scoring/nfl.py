@@ -101,6 +101,12 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
 def _team_games(schedules: pd.DataFrame) -> pd.DataFrame:
     """One row per team per game, from a home/away schedule frame."""
     played = schedules[schedules["home_score"].notna() & schedules["away_score"].notna()]
+    if played.empty:
+        # Before week one every game is scheduled and none is played. Building
+        # the per-team frame anyway reads columns off an empty selection and
+        # raises on whichever is missing, which reads as a broken scorer rather
+        # than as a season that has not started.
+        return pd.DataFrame()
     sides = []
     for side, other in (("home", "away"), ("away", "home")):
         sides.append(
@@ -133,6 +139,12 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
     breaking ties).
     """
     games = _team_games(schedules)
+    if games.empty:
+        # Nothing has been played. groupby.apply over an empty frame returns a
+        # frame with no columns at all, so every reference after this raises a
+        # KeyError naming whichever column is read first -- which reads as a
+        # broken scorer rather than as a season that has not started.
+        return pd.DataFrame()
     summary = games.groupby(["season", "team"], as_index=False).apply(
         lambda g: pd.Series(
             {

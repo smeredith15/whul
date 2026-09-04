@@ -502,11 +502,60 @@ def test_european_competitions_and_cups_are_reachable():
 
 def test_mls_and_nwsl_run_within_a_calendar_year():
     for key in ("mls", "nwsl"):
-        _, _, ends_in_label_year = espn.SEASON_WINDOWS[key]
-        assert ends_in_label_year is False, key
+        assert espn.SEASON_WINDOWS[key][2] == "within", key
     for key in ("epl", "laliga", "ucl"):
-        _, _, ends_in_label_year = espn.SEASON_WINDOWS[key]
-        assert ends_in_label_year is True, key
+        assert espn.SEASON_WINDOWS[key][2] == "ends", key
+
+
+# --- how a season is numbered ----------------------------------------------
+
+def test_college_football_is_numbered_by_the_year_it_starts():
+    """ESPN indexes college football under its opening year, and so does
+    everyone who talks about it: the 2026 season, not the 2027 season. Asking
+    for the year it *finishes* in asks for a season nobody has played yet, which
+    returns nothing at all -- and, looking backwards, groups the COVID-shortened
+    2020 season under 2021 where a five-season reach picks it up."""
+    assert espn.season_label("ncaaf", date(2026, 9, 4)) == 2026
+    assert espn.season_label("ncaaf", date(2026, 12, 6)) == 2026
+    assert espn.season_label("ncaaf", date(2026, 7, 1)) == 2025
+
+
+def test_a_january_bowl_belongs_to_the_season_that_opened_in_august():
+    """The national championship is played in January and is the last game of
+    the previous autumn's season, not the first of the coming one."""
+    assert espn.season_label("ncaaf", date(2027, 1, 9)) == 2026
+
+
+def test_a_football_seasons_dates_open_in_its_own_august():
+    days = espn.season_dates(2024, "ncaaf")
+    assert days[0] == date(2024, 8, 1)
+    assert days[-1] == date(2025, 1, 31)
+
+
+def test_basketball_and_european_football_are_numbered_by_the_year_they_end():
+    assert espn.season_label("ncaam", date(2026, 12, 1)) == 2027
+    assert espn.season_label("ncaam", date(2027, 3, 1)) == 2027
+    assert espn.season_label("epl", date(2026, 8, 22)) == 2027
+    assert espn.season_label("nba", date(2026, 10, 25)) == 2027
+
+
+def test_a_season_played_inside_one_year_is_numbered_by_it():
+    assert espn.season_label("mls", date(2026, 8, 22)) == 2026
+    assert espn.season_label("mls", date(2026, 2, 1)) == 2026
+
+
+def test_every_season_window_declares_a_numbering_we_understand():
+    for key, (_, _, numbering) in espn.SEASON_WINDOWS.items():
+        assert numbering in ("within", "ends", "starts"), key
+
+
+def test_a_label_round_trips_through_the_dates_it_names():
+    """The two halves have to agree: every day ``season_dates`` produces for a
+    season must be a day ``season_label`` calls that season. They were derived
+    separately, and disagreed for football for as long as both existed."""
+    for league in ("ncaaf", "ncaam", "epl", "mls", "nba"):
+        for day in espn.season_dates(2024, league):
+            assert espn.season_label(league, day) == 2024, (league, day)
 
 
 # --- caching a date that is still being played -----------------------------
@@ -550,3 +599,119 @@ def test_a_settled_day_is_cached(tmp_path, monkeypatch):
     before = len(calls)
     espn.scoreboard("epl", old)
     assert len(calls) == before, "a finished day should come from disk"
+
+
+# --- asking ESPN the right question about college football -----------------
+
+def test_the_college_football_week_is_counted_from_the_opening_saturday():
+    """Counted from the data walk's August 1 start it was three weeks early,
+    which would have made the week query look broken when it was the arithmetic."""
+    from datetime import date
+
+    from whul.sources.espn import _espn_week, _opening_saturday
+
+    assert _opening_saturday(2026) == date(2026, 8, 29)
+    assert _opening_saturday(2024) == date(2024, 8, 31)
+    assert _espn_week(date(2026, 8, 29)) == 1
+    assert _espn_week(date(2026, 9, 5)) == 2
+    assert _espn_week(date(2024, 11, 9)) == 11
+
+
+def test_january_belongs_to_the_season_that_opened_in_august():
+    from datetime import date
+
+    from whul.sources.espn import _espn_week
+
+    # Bowl season, not week one of a season that has not started.
+    assert _espn_week(date(2027, 1, 9)) > 15
+
+
+def test_discovery_asks_for_a_week_and_a_range_as_well_as_a_date(monkeypatch):
+    from datetime import date
+
+    from whul.sources import espn
+
+    asked = []
+
+    def fake(url, params, cache_key=None):
+        asked.append(params)
+        return {"events": []}
+
+    monkeypatch.setattr(espn, "_get", fake)
+    espn.discover("ncaaf", date(2026, 8, 29))
+
+    assert any("week" in p for p in asked), "a date query is not how CFB is organised"
+    assert any("-" in str(p.get("dates", "")) for p in asked), "nor is one day"
+
+
+# --- a team's own schedule -------------------------------------------------
+
+def test_a_score_is_read_however_the_endpoint_spells_it():
+    """The scoreboard puts a bare string here and the team schedule an object.
+    Reading only one turns every game from the other into a fixture."""
+    from whul.sources.espn import _score_of
+
+    assert _score_of({"score": "24"}) == 24.0
+    assert _score_of({"score": {"value": 31, "displayValue": "31"}}) == 31.0
+    assert _score_of({"score": {"displayValue": "17"}}) == 17.0
+    assert _score_of({}) is None
+    assert _score_of({"score": None}) is None
+
+
+def test_a_team_schedule_becomes_the_rows_the_scorers_read(monkeypatch):
+    from whul.sources import espn
+
+    payload = {"team": {"displayName": "Ohio State Buckeyes"}, "events": [{
+        "id": "401", "date": "2026-08-30T23:00Z", "name": "Texas at Ohio State",
+        "seasonType": {"id": 2},
+        "competitions": [{
+            "status": {"type": {"completed": True}},
+            "competitors": [
+                {"homeAway": "home", "score": {"value": 31},
+                 "team": {"displayName": "Ohio State Buckeyes"}},
+                {"homeAway": "away", "score": {"value": 17},
+                 "team": {"displayName": "Texas Longhorns"}},
+            ],
+        }],
+    }]}
+    monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: payload)
+
+    rows = espn.load_team_schedule("ncaaf", "194", 2026)
+    assert len(rows) == 1
+    row = rows.iloc[0]
+    assert row["home_team"] == "Ohio State Buckeyes" and row["home_score"] == 31.0
+    assert row["away_team"] == "Texas Longhorns" and row["away_score"] == 17.0
+    assert bool(row["completed"]) and row["game_date"] == "2026-08-30"
+
+
+def test_two_rostered_teams_playing_each_other_is_one_game(monkeypatch):
+    from whul.sources import espn
+
+    game = {"season": 2026, "game_id": "401", "game_date": "2026-08-30",
+            "season_type": 2, "completed": True,
+            "home_team": "Ohio State Buckeyes", "away_team": "Texas Longhorns",
+            "home_conference": "", "away_conference": "",
+            "home_score": 31.0, "away_score": 17.0, "notes": ""}
+    monkeypatch.setattr(espn, "team_index", lambda league: {
+        "Ohio State Buckeyes": "194", "Texas Longhorns": "251"})
+    monkeypatch.setattr(
+        espn, "load_team_schedule",
+        lambda league, team_id, season: pd.DataFrame([game]),
+    )
+
+    rows = espn.load_rostered_schedules(
+        "ncaaf", [2026], ["Ohio State Buckeyes", "Texas Longhorns"], verbose=False
+    )
+    assert len(rows) == 1
+
+
+def test_a_team_the_feed_does_not_know_is_named(monkeypatch, capsys):
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "team_index", lambda league: {"Texas Longhorns": "251"})
+    monkeypatch.setattr(
+        espn, "load_team_schedule",
+        lambda league, team_id, season: pd.DataFrame(),
+    )
+    espn.load_rostered_schedules("ncaaf", [2026], ["Nowhere State"], verbose=True)
+    assert "Nowhere State" in capsys.readouterr().out

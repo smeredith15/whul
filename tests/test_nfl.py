@@ -214,3 +214,18 @@ def test_postseason_games_counts_player_appearances():
     out = score_players(stats).iloc[0]
     assert out["postseason_games"] == 2, "week 20 was missed and must not count"
     assert out["postseason_rate"] == pytest.approx(20.0)
+
+
+def test_a_season_with_no_games_played_scores_nothing_rather_than_raising():
+    """groupby.apply over an empty frame returns a frame with no columns, so
+    every reference after it raises a KeyError naming whichever column is read
+    first. In September that read as a broken scorer; it was a season that had
+    not kicked off."""
+    from whul.scoring.nfl import score_teams
+
+    schedules = pd.DataFrame({
+        "season": [2026, 2026], "game_type": ["REG", "REG"],
+        "home_team": ["BUF", "KC"], "away_team": ["NYJ", "LV"],
+        "home_score": [None, None], "away_score": [None, None],
+    })
+    assert score_teams(schedules, pd.DataFrame({"team_abbr": [], "team_division": []})).empty

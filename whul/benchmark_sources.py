@@ -47,10 +47,23 @@ class Source:
     #: not simply the calendar year. Set for the feeds that number a season by
     #: the year it ends in.
     seasons_for: Callable[[date], list[int]] | None = None
+    #: True when the live loader takes the rostered names as a second argument.
+    #: A team league is far cheaper and far more complete pulled team by team
+    #: than by walking dates -- eight requests instead of a season of them, and
+    #: a team's own schedule cannot be short of its own games.
+    roster_scoped: bool = False
     #: Where the *current* season comes from, when that is not where the
     #: history comes from. Tennis history is a static snapshot and the live feed
     #: is a rolling fortnight; neither can do the other's job.
     live: Callable[[], tuple[Callable, Callable]] | None = None
+    #: Run over the scored, normalized rows before they are recorded, for a
+    #: scorer that emits several rows per asset on purpose. MLB scores a player
+    #: once as a batter and once as a pitcher -- the two are normalized against
+    #: different benchmarks and only comparable afterwards -- and this folds
+    #: them into the one row the standings hold. Its presence is also what tells
+    #: the resolver that two rows for one name are the design rather than a
+    #: collision.
+    post_normalize: Callable | None = None
     #: True for the sports that run continuously, whose benchmark is drawn over
     #: the league year's own August-to-July window rather than over calendar
     #: seasons (PROJECT_PLAN 2.3). Their ``build`` returns an event-level scorer
@@ -104,6 +117,18 @@ def _mlb_players():
     return load, score
 
 
+def _mlb_two_way(scored):
+    """Fold a two-way player's batting and pitching rows into one.
+
+    Only after normalization: raw batting and pitching points are not
+    comparable, so the primary role is whichever scored higher on the 0-100
+    scale and the secondary contributes half.
+    """
+    from whul.scoring import mlb
+
+    return mlb.combine_two_way(scored)
+
+
 def _mlb_teams():
     from whul.scoring import mlb
     from whul.sources import mlb as source
@@ -113,6 +138,23 @@ def _mlb_teams():
     return (
         lambda seasons: source.load_schedule(sorted(set(seasons) | {max(seasons) + 1})),
         mlb.score_teams,
+    )
+
+
+def _mlb_teams_live():
+    """The contract year that is running, scored on the half that has been played.
+
+    The 2026-27 contract year is post-break 2026 plus pre-break 2027. Asking for
+    both and joining them the way a benchmark does drops every team, because
+    nobody has played 2027 -- which the report then states as "no results yet
+    for this season", in September, mid-pennant-race.
+    """
+    from whul.scoring import mlb
+    from whul.sources import mlb as source
+
+    return (
+        lambda seasons: source.load_schedule(seasons),
+        lambda raw: mlb.score_teams(raw, partial=True),
     )
 
 
@@ -127,10 +169,19 @@ def _nba_players():
 
 
 def _nba_teams():
-    from whul.scoring import nba
-    from whul.sources import hoopr
+    """Results from ESPN, not hoopR.
 
-    return lambda seasons: hoopr.load_schedule(seasons), nba.score_teams
+    The hoopR archive stops at 2023, so a five-season pull reaching 2024 and
+    2025 raised on a missing file and lost every NBA team -- which is why
+    coverage kept saying to run a command that could not work. ESPN's
+    scoreboard carries the same columns the scorer resolves, including the
+    season type that separates the regular season from the play-in, the
+    playoffs and the In-Season Tournament.
+    """
+    from whul.scoring import nba
+    from whul.sources import espn
+
+    return lambda seasons: espn.load_team_results("nba", seasons), nba.score_teams
 
 
 def _nhl_players():
@@ -156,18 +207,69 @@ def _nhl_teams():
     return load, lambda regular: nhl.score_teams(regular, held["playoffs"])
 
 
+def _ncaa_score(category: str):
+    from whul.scoring.ncaa import SCORERS
+
+    def score(raw):
+        # Whatever the feed returned is the division: the NCAA API states it in
+        # the URL and ESPN is asked for it by group, so there is nothing here to
+        # filter out that the request did not already exclude.
+        eligible = set(raw["home_team"]) | set(raw["away_team"])
+        return SCORERS[category](raw, eligible)
+
+    return score
+
+
 def _ncaa(key: str, category: str):
     def build():
-        from whul.scoring.ncaa import SCORERS
         from whul.sources import ncaa_api
 
-        def score(raw):
-            eligible = set(raw["home_team"]) | set(raw["away_team"])
-            return SCORERS[category](raw, eligible)
-
-        return lambda seasons: ncaa_api.load_team_results(key, seasons), score
+        return (
+            lambda seasons: ncaa_api.load_team_results(key, seasons),
+            _ncaa_score(category),
+        )
 
     return build
+
+
+def _ncaa_live(key: str, category: str):
+    """The rostered teams' own schedules, from ESPN.
+
+    Neither of the obvious sources works for a season in progress. The NCAA API
+    serves fixtures without results -- every 2026 game comes back not completed
+    with no score, while 2025 comes back final -- and that is a limit rather
+    than a lag: the same date still had no scores a week later. ESPN's
+    scoreboard has the results but caps at twenty-five events a request and
+    ignores both ``limit`` and ``page``, so it returns the featured games; the
+    big programs appear and a smaller fixture does not, which is the shape of
+    mistake that scores a team short without saying so.
+
+    A team's own schedule has neither problem. Eight rostered teams is eight
+    requests, and no cap can hide a team's own game from it.
+    """
+    def build():
+        from whul.sources import espn
+
+        return (
+            lambda seasons, names: espn.load_rostered_schedules(key, seasons, names),
+            _ncaa_score(category),
+        )
+
+    return build
+
+
+def _soccer_players():
+    """Club soccer players, from FBref's season stats.
+
+    One pull covers six leagues and each is normalized against itself, the way
+    a Premier League pick is measured against the Premier League rather than
+    against a pooled European field. The scorer already reads FBref's own
+    column names, so nothing is translated between them.
+    """
+    from whul.scoring import soccer
+    from whul.sources import fbref
+
+    return lambda seasons: fbref.load_players(seasons), soccer.score_players
 
 
 def _soccer(key: str, category: str):
@@ -258,7 +360,10 @@ def _tennis_live():
             subset=["season", "tournament", "round", "winner"], keep="first"
         )
 
-    return load, tennis.match_events
+    # Losses count here and not in the benchmark: a rostered player who lost
+    # their opening match has played, and the profile should say so rather than
+    # leave them looking absent. The row is worth nothing, so no total moves.
+    return load, lambda matches: tennis.match_events(matches, losses=True)
 
 
 def _tennis_players():
@@ -305,12 +410,16 @@ SOURCES: dict[str, Source] = _register(
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified"),
     Source("mlb", "MLB", "Player", _mlb_players,
-           note="FanGraphs leaderboards; season aggregates, no phase split"),
-    Source("mlb-teams", "MLB", "Team", _mlb_teams),
+           post_normalize=_mlb_two_way,
+           note="FanGraphs leaderboards; one row per player-role, folded after "
+                "normalization by the two-way rule"),
+    Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
+           note="a live contract year is scored on the half already played"),
     Source("nba", "NBA", "Player", _nba_players,
            note="ESPN box scores, one date at a time -- slow to backfill"),
     Source("nba-teams", "NBA", "Team", _nba_teams,
-           note="hoopR archive stops at 2023"),
+           seasons_for=_espn_seasons("nba"),
+           note="ESPN scoreboard; hoopR's archive stops at 2023"),
     Source("nhl", "NHL", "Player", _nhl_players, scale_for="NHL",
            note="82-game history lifted to the 84-game 2026-27 season"),
     Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL"),
@@ -323,6 +432,7 @@ SOURCES: dict[str, Source] = _register(
            note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
         Source(key, category, "Team", _ncaa(key, category),
+               live=_ncaa_live(key, category), roster_scoped=True,
                seasons_for=_espn_seasons(key))
         for key, category in NCAA_CATEGORIES.items()
     ],
@@ -331,6 +441,12 @@ SOURCES: dict[str, Source] = _register(
                seasons_for=_espn_seasons(key))
         for key, category in SOCCER_CATEGORIES.items()
     ],
+    Source("soccer-players", "Club Soccer", "Player", _soccer_players,
+           produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
+                     "Ligue 1", "MLS"),
+           seasons_for=_espn_seasons("epl"),
+           note="FBref Big 5 in one request per season, plus MLS; "
+                "six benchmarks, each league against itself"),
 )
 
 #: Run in this order. Cheap, verified sources first, so a failure late in the
@@ -338,6 +454,7 @@ SOURCES: dict[str, Source] = _register(
 ORDER = [
     "nfl", "nfl-teams", "tennis", "pga", "motorsports",
     "nhl", "nhl-teams", "mlb", "mlb-teams", "nba", "nba-teams",
+    "soccer-players",
     *NCAA_CATEGORIES, *SOCCER_CATEGORIES,
 ]
 

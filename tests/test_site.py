@@ -454,3 +454,42 @@ def test_an_empty_season_says_which_link_is_missing(tmp_path):
 
     with pytest.raises(ValueError, match="no results have been recorded"):
         build(store, "2026-27", tmp_path / "s")
+
+
+# --- saying what the standings cannot yet speak for --------------------------
+
+def test_the_about_page_names_what_is_not_yet_scored():
+    """A standing built while a league has no benchmark is not wrong, but it is
+    partial -- and it looks exactly like a complete one, because the managers
+    holding those picks are simply lower. Saying so is the difference between a
+    season in progress and a season being misreported."""
+    from whul.site.build import _uncovered_note
+
+    note = _uncovered_note([("Premier League", "Player", 10),
+                            ("Men's Intl Soccer", "Team", 2)])
+    assert "12 rostered pick" in note
+    assert "Premier League" in note
+    assert "shown lower than they will finish" in note
+
+
+def test_a_fully_covered_version_says_nothing():
+    """The note is for a real gap. Printed when there is none, it would teach
+    everyone to ignore it."""
+    from whul.site.build import _uncovered_note
+
+    assert _uncovered_note([]) == ""
+
+
+def test_the_note_cannot_fail_the_build(monkeypatch):
+    """A page annotation is worth less than the site it annotates."""
+    from whul import benchmarks as benchmark_method
+    from whul.site import build as site_build
+
+    monkeypatch.setattr(
+        benchmark_method, "coverage",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    class Version:
+        version = "v1"
+
+    assert site_build._uncovered(None, "2026-27", Version()) == []

@@ -78,6 +78,11 @@ QUERY = """
       AND m.round IN ({rounds})
 """
 
+# The app stores a row per player per match, so a completed match is two rows.
+# Only the winner's is read: it names both players, and the scorer works from
+# the winner's side. A loss reaches a profile through ``match_events``, which
+# turns each win into the beaten player's appearance as well.
+
 
 def candidate_paths(path: Path | None = None) -> list[Path]:
     """Everywhere the app's database might be, in the order worth trying."""

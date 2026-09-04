@@ -105,9 +105,30 @@ def test_short_seasons_are_kept_when_the_team_belongs():
 
 
 def test_football_requires_conference_affiliation():
-    """Conference wins are scored directly, so a feed without it cannot score."""
+    """Conference wins are scored directly, so a feed without it cannot score --
+    and it must say so rather than return nothing. An empty frame here is read
+    downstream as "the league has not played yet", which is the opposite of what
+    happened: it played, and the feed described it without conferences. That is
+    how a whole league goes unscored with no one the wiser."""
+    from whul.scoring.ncaa import MissingConference
+
     sched = pd.DataFrame(pad([game("A", "B", 20, 10, hc="", ac="")], 6, hc="", ac=""))
-    assert score_football(sched).empty
+    with pytest.raises(MissingConference, match="feed problem"):
+        score_football(sched)
+
+
+def test_a_week_with_no_games_is_still_quietly_empty():
+    """The loud failure is only for games that arrived unusable. Nothing played
+    is not a problem, and must not be reported as one."""
+    assert score_football(pd.DataFrame()).empty
+
+
+def test_football_scores_on_partial_conference_data():
+    """One unaffiliated opponent is not a feed failure -- an independent has no
+    conference, and the games that do carry one still score."""
+    sched = pd.DataFrame(pad([game("A", "B", 20, 10, ac="")], 6))
+    out = score_football(sched).set_index("team")
+    assert out.loc["A", "wins"] == 1
 
 
 # --- basketball ------------------------------------------------------------

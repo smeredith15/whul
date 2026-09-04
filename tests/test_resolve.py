@@ -257,3 +257,89 @@ def test_a_club_has_no_suffix_to_disagree_about():
     assets = roster(("Arsenal", "Premier League", "Team"))
     matched, report = resolve.resolve(scored, assets, "Team")
     assert len(matched) == 1 and report.suffix_mismatch == []
+
+
+# --- a feed that carries more of a name than the roster does ---------------
+
+def test_an_extra_surname_still_matches():
+    """Flashscore lists Carlos Alcaraz as "Carlos Alcaraz Garfia". Spanish and
+    Portuguese players routinely appear under both surnames in one feed and one
+    in another."""
+    scored = feed(("Carlos Alcaraz Garfia", "ATP"))
+    assets = roster(("Carlos Alcaraz", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert list(matched["asset_id"]) == ["a0"]
+    assert report.extra_names == [("Carlos Alcaraz", "Carlos Alcaraz Garfia")]
+    assert "the names they share" in str(report)
+
+
+def test_two_longer_names_are_a_guess_between_two_people():
+    scored = feed(("Carlos Alcaraz Garfia", "ATP"), ("Carlos Alcaraz Fernandez", "ATP"))
+    assets = roster(("Carlos Alcaraz", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert matched.empty
+    assert report.unmatched == [("Carlos Alcaraz", "Tennis")]
+
+
+def test_an_exact_match_is_never_displaced_by_a_longer_one():
+    scored = feed(("Carlos Alcaraz", "ATP"), ("Carlos Alcaraz Garfia", "ATP"))
+    assets = roster(("Carlos Alcaraz", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert list(matched["player"]) == ["Carlos Alcaraz"]
+    assert report.extra_names == []
+
+
+def test_a_shorter_roster_name_does_not_match_a_different_person():
+    # One shared word is not a name. Only a full leading run of them counts.
+    scored = feed(("Ben Sheltonberg", "ATP"))
+    assets = roster(("Ben Shelton", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+    assert matched.empty and report.unmatched
+
+
+def test_a_single_word_roster_name_never_extends():
+    scored = feed(("Ronaldo de Assis", "Premier League"), asset_type="Team")
+    assets = roster(("Ronaldo", "Premier League", "Team"))
+    matched, _ = resolve.resolve(scored, assets, "Team")
+    assert matched.empty, "one word is too little to infer a person from"
+
+
+# --- a feed that writes a name the other way round -------------------------
+
+def test_a_reversed_name_matches():
+    """Flashscore writes some players surname-first ("Fils Arthur") and others
+    given-name-first, in the same response."""
+    scored = feed(("Fils Arthur", "ATP"))
+    assets = roster(("Arthur Fils", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert list(matched["asset_id"]) == ["a0"]
+    assert report.reordered == [("Arthur Fils", "Fils Arthur")]
+    assert "the other way round" in str(report)
+
+
+def test_a_reversal_never_displaces_an_exact_match():
+    scored = feed(("Arthur Fils", "ATP"), ("Fils Arthur", "ATP"))
+    assets = roster(("Arthur Fils", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+
+    assert list(matched["player"]) == ["Arthur Fils"]
+    assert report.reordered == []
+
+
+def test_a_reversal_that_could_be_two_people_links_neither():
+    scored = feed(("Fils Arthur", "ATP"), ("Arthur Fils", "WTA"))
+    assets = roster(("Arthur Fils", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+    # The exact one wins; there is no ambiguity to resolve.
+    assert len(matched) == 1
+
+
+def test_different_people_who_share_no_words_do_not_reverse_into_each_other():
+    scored = feed(("Monfils Gael", "ATP"))
+    assets = roster(("Arthur Fils", "Tennis", "Player"))
+    matched, report = resolve.resolve(scored, assets, "Player")
+    assert matched.empty and report.unmatched == [("Arthur Fils", "Tennis")]

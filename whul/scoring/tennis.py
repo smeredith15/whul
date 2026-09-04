@@ -367,30 +367,49 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     return work.reset_index(drop=True)
 
 
-def match_events(matches: pd.DataFrame) -> pd.DataFrame:
-    """One dated, scored row per win, for a window-based benchmark.
+def match_events(matches: pd.DataFrame, losses: bool = False) -> pd.DataFrame:
+    """One dated, scored row per match played, for a window-based benchmark.
 
     The season-total view groups by calendar year; the benchmark for an
     August-to-July league year cannot, because tennis runs continuously and a
     calendar year contains a different slice of the tour than the league year
     does. Both views are aggregations of the same scored matches -- this is the
     one that keeps the date.
+
+    With ``losses``, the beaten player gets a row too, worth nothing. It changes
+    no total -- a zero cannot move a sum, and truncation to the buffer pool is
+    by points, so it cannot reach one either -- but it is the difference between
+    a profile reading "US Open R1" and reading as though the player never
+    entered. A player who loses their opening match has still played.
     """
     scored = score_matches(matches)
     if scored.empty:
         return pd.DataFrame()
 
-    return pd.DataFrame({
-        "player": scored["winner"],
-        "date": scored["date"],
-        "season": scored["season"],
-        "tournament": scored["tournament"],
-        "event_points": scored["match_points"],
-        "league": scored["tour"].str.upper().str.contains("WTA").map(
-            {True: "WTA", False: "ATP"}
-        ),
-        "role": "Singles",
-    })
+    def side(name_col: str, points, result: str) -> pd.DataFrame:
+        return pd.DataFrame({
+            "player": scored[name_col],
+            "date": scored["date"],
+            "season": scored["season"],
+            "tournament": scored["tournament"],
+            "round": scored["round"],
+            "result": result,
+            "event_points": points,
+            "league": scored["tour"].str.upper().str.contains("WTA").map(
+                {True: "WTA", False: "ATP"}
+            ),
+            "role": "Singles",
+        })
+
+    won = side("winner", scored["match_points"], "W")
+    if not losses:
+        return won
+
+    lost = side("loser", 0.0, "L")
+    # A match with no named loser is a bye or a walkover; there is no second
+    # player to credit with having played it.
+    lost = lost[lost["player"].astype(str).str.strip() != ""]
+    return pd.concat([won, lost], ignore_index=True)
 
 
 def score_players(matches: pd.DataFrame) -> pd.DataFrame:

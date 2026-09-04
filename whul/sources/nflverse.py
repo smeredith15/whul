@@ -31,13 +31,37 @@ def load_player_stats(seasons: list[int]) -> pd.DataFrame:
     Falls back to the retired `player_stats` release if a season is missing from
     `stats_player`, so an upstream reshuffle degrades rather than breaks.
     """
-    frames = []
+    frames, missing = [], []
     for year in seasons:
         try:
             frames.append(pd.read_parquet(f"{PLAYER_WEEK}_{year}.parquet"))
+            continue
         except Exception:
+            pass
+        try:
             frames.append(pd.read_parquet(f"{LEGACY_PLAYER_STATS}_{year}.parquet"))
-    return pd.concat(frames, ignore_index=True)
+        except Exception:
+            # nflverse publishes a season's file once that season has played.
+            # Asked for the current year in August, both releases 404, and the
+            # raised error reads as a broken feed rather than as a season that
+            # has not kicked off. A year nobody has played is not a failure;
+            # every year being absent is, and _check_seasons says so.
+            missing.append(year)
+    _check_seasons(missing, seasons)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _check_seasons(missing: list[int], seasons: list[int]) -> None:
+    """A season not yet published is fine. All of them missing is not."""
+    if missing and len(missing) == len(seasons):
+        raise FileNotFoundError(
+            f"nflverse has no player stats for {missing}. A season is published "
+            f"once it has played, so this is expected before week one and a "
+            f"broken feed at any other time."
+        )
+    if missing:
+        print(f"  nflverse: no player stats published yet for {missing}",
+              flush=True)
 
 
 def load_schedules(seasons: list[int] | None = None) -> pd.DataFrame:
