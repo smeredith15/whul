@@ -987,6 +987,29 @@ def cmd_benchmarks_freeze(args: argparse.Namespace) -> int:
 
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
+    if args.events:
+        from whul.sources import espn_individual
+
+        if args.league not in ("pga", "nascar", "f1"):
+            print("\n--events applies to pga, nascar and f1.\n", file=sys.stderr)
+            return 2
+        season = int(args.season) if args.season else _date.today().year - 1
+        report = espn_individual.diagnose_season(args.league, season)
+        print(f"\n  {report['league']} {report['season']}: {report['events']} events, "
+              f"{report['finished']} read as finished, {report['with_date']} carry a date\n")
+        print("  status shapes seen:")
+        for shape, count in sorted(
+            report["status_shapes"].items(), key=lambda kv: -kv[1]
+        ):
+            print(f"    {count:>4}  {shape}")
+        if report["unfinished"]:
+            print("\n  not reading as finished (first 12):")
+            for row in report["unfinished"]:
+                print(f"    {row['date']:<12}{row['name']:<46}{row['status']}")
+            print(f"\n  keys on one of them: {report['unfinished'][0]['keys']}")
+        print()
+        return 0
+
     if args.league == "tennis2026":
         from whul.sources import tennis2026
 
@@ -1453,6 +1476,11 @@ def main(argv: list[str] | None = None) -> int:
         metavar="league",
     )
     probe.add_argument("--date", help="YYYY-MM-DD to probe (default: yesterday)")
+    probe.add_argument(
+        "--events", action="store_true",
+        help="explain why a season's events do or do not read as finished "
+             "(pga, nascar, f1; reads the cached season list, costs nothing)",
+    )
     # The individual sports probe a whole season rather than a date: a golf
     # tournament or a race meeting spans days, so a single date says nothing.
     probe.add_argument("--season", help="season to probe (individual sports; default: last year)")

@@ -421,6 +421,48 @@ def daily_update_cost(league: str, season: int | None = None) -> float:
     return time.monotonic() - started
 
 
+def diagnose_season(league: str, season: int) -> dict:
+    """Why a season's events do or do not read as finished.
+
+    The completeness guard can only say a season came back short. This says
+    what the short events look like -- whether they carry a date, what status
+    shape they have, what they are called -- which is what a fix has to be
+    written against. The season list is cached, so this costs nothing to run.
+    """
+    events = season_events(league, season)
+    report: dict = {
+        "league": league, "season": season,
+        "events": len(events),
+        "finished": sum(1 for e in events if _is_final(e)),
+        "with_date": sum(1 for e in events if _event_date(e)),
+        "status_shapes": {},
+        "unfinished": [],
+    }
+
+    for event in events:
+        kinds = []
+        for status in _statuses(event):
+            kind = status.get("type") or {}
+            kinds.append("|".join(
+                f"{k}={kind[k]}" for k in ("completed", "state", "name") if k in kind
+            ) or "type empty")
+        # "no status" and "a status saying nothing" are different problems and
+        # want different fixes, so they are not collapsed into one label.
+        shape = ";".join(kinds) if any(_statuses(event)) else "no status at all"
+        report["status_shapes"][shape] = report["status_shapes"].get(shape, 0) + 1
+
+        if not _is_final(event):
+            report["unfinished"].append({
+                "id": str(event.get("id") or ""),
+                "name": _event_name(event)[:44],
+                "date": _event_date(event) or "(none)",
+                "keys": ",".join(sorted(event.keys()))[:90],
+                "status": shape[:60],
+            })
+    report["unfinished"] = report["unfinished"][:12]
+    return report
+
+
 def probe(league: str = "pga", season: int | None = None) -> dict:
     """Check the source end to end and report which stage fails.
 

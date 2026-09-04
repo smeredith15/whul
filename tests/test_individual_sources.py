@@ -1108,3 +1108,21 @@ def test_a_page_that_parsed_reports_no_problem():
     from whul.sources import tour_schedule
 
     assert tour_schedule.discover_endpoints(JS_RENDERED_PAGE)["problem"] == ""
+
+
+def test_the_season_diagnostic_says_what_the_short_events_look_like(monkeypatch):
+    """The completeness guard can only say a season came back short. A fix has
+    to be written against what the missing events actually carry."""
+    events = (
+        [{"id": str(i), "name": f"Open {i}", "date": "2022-05-15T00:00Z",
+          "status": {"type": {"completed": True}}} for i in range(3)]
+        + [{"id": "9", "name": "Mystery", "season": {"year": 2022}}]
+    )
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+
+    report = espn_ind.diagnose_season("pga", 2022)
+    assert report["events"] == 4 and report["finished"] == 3
+    assert report["with_date"] == 3
+    assert report["unfinished"][0]["date"] == "(none)"
+    assert "season" in report["unfinished"][0]["keys"]
+    assert report["status_shapes"]["no status at all"] == 1
