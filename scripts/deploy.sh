@@ -75,6 +75,45 @@ if [ "${INGEST_ONLY:-}" != "1" ]; then
     step "what this scale covers"
     "$PY" -m whul.cli benchmarks coverage "$VERSION" --season "$SEASON"
 
+    # A scale that covers less than the one already in force is a regression,
+    # and it does not announce itself: the standings still build, the page still
+    # renders, and the leagues that dropped out simply score nothing. That is
+    # how an 18-group version came to be published over a 30-group one.
+    "$PY" - "$VERSION" "$SEASON" <<'GUARD' || exit 1
+import sys
+
+from whul import benchmarks
+from whul.store import benchmarks as store_benchmarks
+from whul.store import open_store
+
+version, season = sys.argv[1], sys.argv[2]
+store = open_store("data/whul.sqlite3")
+
+
+def covered(label):
+    table = benchmarks.coverage(store, label, season)
+    if table.empty or "covered" not in table.columns:
+        return 0
+    return int(table["covered"].astype(bool).sum())
+
+
+new = covered(version)
+active = store_benchmarks.active_version(store, season)
+if active is None:
+    print(f"  nothing frozen yet; {version} covers {new} league/type pair(s)")
+    raise SystemExit(0)
+
+old = covered(active.version)
+print(f"  {active.version} covers {old} pair(s); {version} covers {new}")
+if new < old:
+    print()
+    print(f"  !! Freezing {version} would score fewer leagues than the version")
+    print(f"  !! already in force. Nothing would fail -- the leagues that drop")
+    print(f"  !! out simply score nothing, on a page that still renders.")
+    print(f"  !! Add the missing leagues to it, or name the version you meant.")
+    raise SystemExit(1)
+GUARD
+
     step "freezing $VERSION"
     # Frozen, not edited ever after: the standings point at this, and a scale
     # that moves under them rewrites history silently.
