@@ -126,7 +126,22 @@ def test_an_enum_written_by_name_still_resolves(database):
 def test_a_missing_database_says_where_it_looked(tmp_path):
     with pytest.raises(FileNotFoundError) as caught:
         tennis2026.load_matches(tmp_path / "nope.db")
-    assert "tennis2026" in str(caught.value)
+    message = str(caught.value)
+    assert "nope.db" in message, "the path it tried has to be in the message"
+    assert "WHUL_TENNIS2026_DB" in message
+
+
+def test_every_candidate_path_is_reported_not_just_the_first(monkeypatch):
+    monkeypatch.delenv("WHUL_TENNIS2026_DB", raising=False)
+    monkeypatch.delenv("WHUL_TENNIS2026", raising=False)
+    candidates = tennis2026.candidate_paths()
+    assert len(candidates) > 1
+    assert tennis2026.probe()["looked_in"] == [str(c) for c in candidates]
+
+
+def test_an_explicit_path_overrides_the_search(tmp_path, monkeypatch):
+    monkeypatch.setenv("WHUL_TENNIS2026_DB", str(tmp_path / "env.db"))
+    assert tennis2026.candidate_paths(tmp_path / "given.db") == [tmp_path / "given.db"]
 
 
 def test_the_probe_reports_the_span_it_holds(database):

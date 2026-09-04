@@ -1013,10 +1013,13 @@ def cmd_probe(args: argparse.Namespace) -> int:
     if args.league == "tennis2026":
         from whul.sources import tennis2026
 
-        report = tennis2026.probe()
+        report = tennis2026.probe(args.path)
         print(f"\n  database  {report['path']}")
         if not report.get("exists") or "error" in report:
-            print(f"  ERROR     {report.get('error', 'unreadable')}\n", file=sys.stderr)
+            print(f"  ERROR     {report.get('error', 'unreadable')}", file=sys.stderr)
+            for candidate in report.get("looked_in", []):
+                print(f"    looked in {candidate}", file=sys.stderr)
+            print(file=sys.stderr)
             return 1
         print(f"  matches   {report['matches']:,}")
         if report["matches"]:
@@ -1476,6 +1479,7 @@ def main(argv: list[str] | None = None) -> int:
         metavar="league",
     )
     probe.add_argument("--date", help="YYYY-MM-DD to probe (default: yesterday)")
+    probe.add_argument("--path", help="file to probe (tennis2026: the app's database)")
     probe.add_argument(
         "--events", action="store_true",
         help="explain why a season's events do or do not read as finished "

@@ -79,21 +79,25 @@ QUERY = """
 """
 
 
-def default_path(path: Path | None = None) -> Path:
-    """Where the app's database is, tried in the order it tends to be found."""
+def candidate_paths(path: Path | None = None) -> list[Path]:
+    """Everywhere the app's database might be, in the order worth trying."""
     if path is not None:
-        return Path(path)
+        return [Path(path)]
     env = os.environ.get("WHUL_TENNIS2026_DB")
     if env:
-        return Path(env)
+        return [Path(env)]
     roots = [Path(os.environ["WHUL_TENNIS2026"])] if os.environ.get("WHUL_TENNIS2026") \
         else list(CHECKOUT_CANDIDATES)
-    for root in roots:
-        for location in DB_LOCATIONS:
-            candidate = Path(root).expanduser() / location
-            if candidate.exists():
-                return candidate
-    return Path(roots[0]).expanduser() / DB_LOCATIONS[0]
+    return [
+        Path(root).expanduser() / location
+        for root in roots for location in DB_LOCATIONS
+    ]
+
+
+def default_path(path: Path | None = None) -> Path:
+    """Where the app's database is, tried in the order it tends to be found."""
+    candidates = candidate_paths(path)
+    return next((c for c in candidates if c.exists()), candidates[0])
 
 
 def load_matches(
@@ -108,10 +112,12 @@ def load_matches(
     """
     database = default_path(path)
     if not database.exists():
+        looked = "\n  ".join(str(c) for c in candidate_paths(path))
         raise FileNotFoundError(
-            f"{database} not found. It is the tennis2026 app's own database, "
-            f"which its scrapers write to -- start the app once to create it, "
-            f"or set WHUL_TENNIS2026_DB to point at a copy."
+            f"No tennis2026 database found. It is the app's own file, written by "
+            f"its scrapers and never committed, so a fresh clone will not have "
+            f"one -- it lives wherever the app actually runs. Copy it over, or "
+            f"set WHUL_TENNIS2026_DB to point at it.\n\nLooked in:\n  {looked}"
         )
 
     sql = QUERY.format(rounds=", ".join("?" for _ in MAIN_DRAW))
@@ -170,9 +176,17 @@ def _shape(frame: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
 def probe(path: Path | None = None) -> dict:
     """What the database holds, so a gap is visible before it is scored."""
     database = default_path(path)
-    report: dict = {"path": str(database), "exists": database.exists()}
+    report: dict = {
+        "path": str(database),
+        "exists": database.exists(),
+        "looked_in": [str(c) for c in candidate_paths(path)],
+    }
     if not database.exists():
-        report["error"] = "not found; start the tennis2026 app once, or set WHUL_TENNIS2026_DB"
+        report["error"] = (
+            "no database found; it is never committed, so a fresh clone will not "
+            "have one. Copy it from wherever the app runs, or set "
+            "WHUL_TENNIS2026_DB"
+        )
         return report
     try:
         frame = load_matches(database, verbose=False)
