@@ -9,6 +9,7 @@ import pandas as pd
 
 from whul.normalize import assign_norm_key
 from whul.scoring.tennis import (
+    match_events,
     ATP_WIN_POINTS,
     F,
     GRAND_SLAM,
@@ -389,3 +390,71 @@ def test_each_tour_is_measured_against_its_own_history():
 def test_empty_input_is_empty_output():
     assert score_players(pd.DataFrame()).empty
     assert score_matches(pd.DataFrame()).empty
+
+
+# --- a loss is a match played ---------------------------------------------
+
+def test_a_loss_is_recorded_as_a_match_played_worth_nothing():
+    """A profile should read "US Open R128", not as though the player never
+    entered. Djokovic and Fils played the US Open and lost; without this they
+    are indistinguishable from Sinner, who is injured and did not."""
+    matches = pd.DataFrame([
+        match(winner="Learner Tien", loser="Novak Djokovic",
+              tournament="US Open", round_name=R128),
+    ])
+    events = score_matches(matches)
+    assert not events.empty
+
+    both = match_events(matches, losses=True)
+    beaten = both[both["player"] == "Novak Djokovic"].iloc[0]
+    assert beaten["event_points"] == 0.0
+    assert beaten["result"] == "L" and beaten["round"] == R128
+    assert beaten["tournament"] == "US Open"
+
+
+def test_losses_are_left_out_unless_asked_for():
+    matches = pd.DataFrame([
+        match(winner="Learner Tien", loser="Novak Djokovic", round_name=R128),
+    ])
+    assert list(match_events(matches)["player"]) == ["Learner Tien"]
+
+
+def test_a_zero_cannot_move_a_players_total():
+    matches = pd.DataFrame([
+        match(winner="Carlos Alcaraz", loser="Someone", round_name=R128),
+        match(winner="Someone Else", loser="Carlos Alcaraz", round_name=R64),
+    ])
+    wins_only = match_events(matches)
+    with_losses = match_events(matches, losses=True)
+    for frame in (wins_only, with_losses):
+        total = frame[frame["player"] == "Carlos Alcaraz"]["event_points"].sum()
+        assert total == wins_only[
+            wins_only["player"] == "Carlos Alcaraz"
+        ]["event_points"].sum()
+
+
+def test_a_match_with_no_named_loser_adds_no_row():
+    # A bye or a walkover has no second player to credit with having played.
+    matches = pd.DataFrame([match(winner="Carlos Alcaraz", loser="", round_name=R128)])
+    both = match_events(matches, losses=True)
+    assert list(both["player"]) == ["Carlos Alcaraz"]
+
+
+def test_the_live_source_asks_for_losses():
+    from whul.benchmark_sources import SOURCES
+
+    matches = pd.DataFrame([
+        match(winner="Learner Tien", loser="Novak Djokovic", round_name=R128),
+    ])
+    _, score = SOURCES["tennis"].live()
+    assert set(score(matches)["result"]) == {"W", "L"}
+
+
+def test_the_benchmark_source_does_not():
+    from whul.benchmark_sources import SOURCES
+
+    matches = pd.DataFrame([
+        match(winner="Learner Tien", loser="Novak Djokovic", round_name=R128),
+    ])
+    _, score = SOURCES["tennis"].build()
+    assert set(score(matches)["result"]) == {"W"}

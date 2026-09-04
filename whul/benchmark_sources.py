@@ -267,7 +267,10 @@ def _tennis_live():
             subset=["season", "tournament", "round", "winner"], keep="first"
         )
 
-    return load, tennis.match_events
+    # Losses count here and not in the benchmark: a rostered player who lost
+    # their opening match has played, and the profile should say so rather than
+    # leave them looking absent. The row is worth nothing, so no total moves.
+    return load, lambda matches: tennis.match_events(matches, losses=True)
 
 
 def _tennis_players():

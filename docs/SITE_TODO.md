@@ -80,7 +80,10 @@ total, and it is the natural thing to want from a profile.
 
 The data is already there and already dated: `tennis.match_events`,
 `golf.score_events` and `motorsport.race_events` each return one row per event
-with the tournament, the date and the finish or round. They were written for
+with the tournament, the date and the finish or round. Tennis carries losses
+too, as rows worth nothing, so a first-round exit shows as "US Open R128"
+rather than as an absence — which is what distinguishes a player who lost from
+one who is injured and did not enter. They were written for
 the window benchmarks and the live ingest sums them — so the finishes exist and
 are thrown away at aggregation. Keeping the event rows for rostered assets is
 the work; the profile then reads them newest first.
