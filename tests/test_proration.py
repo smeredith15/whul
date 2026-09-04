@@ -152,3 +152,64 @@ def test_every_rule_for_a_season_can_be_read_at_once(store):
 def test_rules_are_scoped_to_their_season(store):
     save_rule(store, SHORT_SEASON)
     assert load_rules(store, "2026-27") == {}
+
+
+# --- the shortened 2026-27 baseball window -----------------------------------
+
+def test_mlb_2026_27_is_prorated_and_mlb_teams_are_not():
+    """Teams are bisected at the All-Star break and bisection already inflates
+    the second stretch so the two reconcile to a full season. Prorating them as
+    well would apply the same correction twice."""
+    from whul.scoring.proration import BUILT_IN_RULES, built_in_rule
+
+    rule = built_in_rule("MLB", "2026-27")
+    assert rule is not None
+    assert rule.expected_games == 162
+    assert 1.15 < rule.factor < 1.30
+    assert rule.validate() == []
+    assert [r.league for r in BUILT_IN_RULES] == ["MLB"]
+
+
+def test_the_rule_is_for_this_season_only():
+    """A full league year needs no correction; the window is what is short."""
+    from whul.scoring.proration import built_in_rule
+
+    assert built_in_rule("MLB", "2027-28") is None
+    assert built_in_rule("NFL", "2026-27") is None
+
+
+def test_a_players_whole_total_scales():
+    """Player scoring is counting production end to end -- no title or playoff
+    run in it to hold still -- so nothing is left behind by scaling the lot."""
+    import pandas as pd
+
+    from whul.scoring.proration import built_in_rule, prorate
+
+    rule = built_in_rule("MLB", "2026-27")
+    scored = pd.DataFrame({
+        "player": ["Judge", "Skenes"], "role": ["Batter", "Pitcher"],
+        "role_points": [400.0, 300.0], "total_points": [400.0, 300.0],
+    })
+    out = prorate(scored, rule, columns=["role_points"])
+    assert out["total_points"].tolist() == pytest.approx(
+        [400 * rule.factor, 300 * rule.factor])
+    assert out["role_points"].tolist() == out["total_points"].tolist()
+
+
+def test_the_live_mlb_source_prorates_and_the_historical_one_does_not():
+    """The benchmark must be drawn from unprorated whole seasons: prorating the
+    pool as well would lift the bar by exactly as much as it lifts the score,
+    and the correction would cancel itself out."""
+    import pandas as pd
+
+    from whul.benchmark_sources import _prorated
+
+    scored = pd.DataFrame({
+        "player": ["Judge"], "role": ["Batter"],
+        "role_points": [400.0], "total_points": [400.0],
+    })
+    lifted = _prorated(scored.copy(), "MLB")
+    assert lifted.loc[0, "total_points"] > 400.0
+
+    # A league with no rule passes through untouched.
+    assert _prorated(scored.copy(), "NFL").loc[0, "total_points"] == 400.0

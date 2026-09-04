@@ -148,9 +148,36 @@ def _mlb_players_live():
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def score(raw):
-        return mlb.score_players(raw[raw["_phase"] == "bat"], raw[raw["_phase"] == "pit"])
+        scored = mlb.score_players(
+            raw[raw["_phase"] == "bat"], raw[raw["_phase"] == "pit"])
+        return _prorated(scored, "MLB")
 
     return load, score
+
+
+def _prorated(scored, league: str):
+    """Lift a shortened league year's counting production to a full season.
+
+    The benchmark is drawn from whole seasons; this league year covers about
+    133 games of 162. Without this a player measured against that bar finishes
+    around 80 of a possible 100 however well he plays, and every baseball pick
+    sits below every other league's for a structural reason nobody could see in
+    the standings.
+
+    The benchmark itself is left alone deliberately. It is frozen, the
+    standings point at it, and correcting a one-season window by editing the
+    scale would mean a new version and a re-scored season for something that is
+    not a property of the scale at all.
+    """
+    from whul.config.league import SEASON
+    from whul.scoring import proration
+
+    rule = proration.built_in_rule(league, SEASON.label)
+    if rule is None or scored is None or scored.empty:
+        return scored
+    # Player scoring is counting production end to end -- there is no title or
+    # playoff run in it to hold still -- so the whole role total scales.
+    return proration.prorate(scored, rule, columns=["role_points"])
 
 
 def _mlb_teams():

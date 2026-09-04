@@ -80,6 +80,38 @@ class ProrationRule:
         return problems
 
 
+#: Rules that are part of the league's design rather than an admin's judgement
+#: call, so they live in code where they can be read and tested. An admin rule
+#: saved for the same league and season overrides one of these.
+#:
+#: MLB 2026-27 is the shortened-window case the module was written for. The
+#: league year opens on 15 August and closes at the 2027 All-Star Game, which
+#: is about 133 games of a 162-game season -- so a player measured against a
+#: benchmark drawn from whole seasons would finish around 80 of a possible 100
+#: however well he played, and every baseball pick would sit below every other
+#: league's for a structural reason nobody could see in the standings.
+#:
+#: Teams are deliberately absent. Their contract year is bisected at the
+#: All-Star break and ``whul.scoring.bisection`` already inflates the second
+#: stretch so the two reconcile to one full season; prorating them as well
+#: would apply the same correction twice.
+BUILT_IN_RULES: tuple[ProrationRule, ...] = (
+    ProrationRule(
+        league="MLB", season="2026-27", actual_games=133, expected_games=162,
+        note="15 Aug-27 Sep 2026 (43 days) plus 25 Mar-13 Jul 2027 (110 days), "
+             "at 162 games over 186 season days",
+    ),
+)
+
+
+def built_in_rule(league: str, season: str) -> ProrationRule | None:
+    """The design's own rule for a league and season, if it has one."""
+    return next(
+        (r for r in BUILT_IN_RULES if r.league == league and r.season == season),
+        None,
+    )
+
+
 def prorate(
     scored: pd.DataFrame,
     rule: ProrationRule,
