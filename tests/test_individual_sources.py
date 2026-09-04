@@ -1126,3 +1126,58 @@ def test_the_season_diagnostic_says_what_the_short_events_look_like(monkeypatch)
     assert report["unfinished"][0]["date"] == "(none)"
     assert "season" in report["unfinished"][0]["keys"]
     assert report["status_shapes"]["no status at all"] == 1
+
+
+def test_empty_padding_entries_are_not_events():
+    """ESPN's 2022 golf year carried 51 entries of which 25 had no keys at all.
+    Counting them made half a season look unfinished and hid that the rest was
+    missing outright."""
+    events = [{"id": "1", "name": "Open"}, {}, {"date": "2022-05-01"}, None]
+    assert len(espn_ind.usable_events(events)) == 2
+
+
+def test_a_season_short_against_its_neighbours_is_refused(monkeypatch):
+    """Every event returned was finished and served -- there were simply half
+    as many as the tour plays. Only the other seasons can show that."""
+    counts = {2021: 50, 2022: 26, 2023: 49, 2024: 51, 2025: 49}
+
+    def events(league, season):
+        return [
+            {"id": f"{season}-{i}", "name": "Open", "date": f"{season}-05-15T00:00Z",
+             "status": {"type": {"completed": True}}}
+            for i in range(counts[season])
+        ]
+
+    monkeypatch.setattr(espn_ind, "season_events", events)
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+
+    with pytest.raises(RuntimeError) as caught:
+        espn_ind.load_results("pga", sorted(counts), verbose=False)
+    assert "2022: 26" in str(caught.value)
+    assert "understate" in str(caught.value)
+
+
+def test_seasons_that_agree_are_not_refused(monkeypatch):
+    counts = {2021: 50, 2022: 47, 2023: 49, 2024: 51, 2025: 49}
+
+    def events(league, season):
+        return [
+            {"id": f"{season}-{i}", "name": "Open", "date": f"{season}-05-15T00:00Z",
+             "status": {"type": {"completed": True}}}
+            for i in range(counts[season])
+        ]
+
+    monkeypatch.setattr(espn_ind, "season_events", events)
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+    assert not espn_ind.load_results("pga", sorted(counts), verbose=False).empty
+
+
+def test_one_season_alone_is_not_judged_against_neighbours(monkeypatch):
+    # The live ingest pulls a single season; there is nothing to compare it to,
+    # and refusing it would refuse every nightly run.
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: [
+        {"id": "1", "name": "Open", "date": "2026-05-15T00:00Z",
+         "status": {"type": {"completed": True}}}
+    ])
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+    assert not espn_ind.load_results("pga", [2026], verbose=False).empty

@@ -60,20 +60,36 @@ def scoreboard_variants(season: int) -> list[dict]:
     ]
 
 
+def usable_events(events: list) -> list[dict]:
+    """The entries in a season list that are actually events.
+
+    ESPN pads a year's golf scoreboard with empty objects -- the 2022 response
+    carries 51 entries of which 25 have no keys at all. They are not events that
+    failed to finish; they are not events. Counting them made half a season look
+    unfinished and hid that the other half was missing outright.
+    """
+    return [
+        e for e in events
+        if isinstance(e, dict) and (e.get("id") or e.get("name") or e.get("date"))
+    ]
+
+
 def season_events(league: str, season: int) -> list[dict]:
     """Every event ESPN lists for a season.
 
-    A shape that returns no events is treated as suspect and the next one is
-    tried -- a 200 with an empty list is how ESPN reports a parameter it accepts
-    but does not honor, and accepting it would yield a silently empty season.
+    Each request shape is tried and the one returning the most usable events
+    wins. Taking the first non-empty answer is not enough: ESPN answers some
+    season requests with a half-populated list padded out with empty objects,
+    which reads as a successful response and silently halves the season.
     """
     sport, path = LEAGUE_PATHS[league]
     url = f"{BASE}/{sport}/{path}/scoreboard"
     cached = CACHE / f"{league}/season/{season}.json"
     if cached.exists():
-        return json.loads(cached.read_text()).get("events", [])
+        return usable_events(json.loads(cached.read_text()).get("events", []))
 
     best: dict | None = None
+    best_count = -1
     last: Exception | None = None
     for params in scoreboard_variants(season):
         try:
@@ -84,18 +100,16 @@ def season_events(league: str, season: int) -> list[dict]:
                 raise
             last = exc
             continue
-        if payload.get("events"):
-            best = payload
-            break
-        if best is None:
-            best = payload
+        count = len(usable_events(payload.get("events") or []))
+        if count > best_count:
+            best, best_count = payload, count
 
     if best is None:
         raise last if last else RuntimeError(f"no season shape succeeded for {league}")
 
     cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_text(json.dumps(best))
-    return best.get("events", [])
+    return usable_events(best.get("events", []))
 
 
 class EventUnavailable(RuntimeError):
@@ -292,9 +306,11 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
     win.
     """
     rows: list[dict] = []
+    listed: dict[int, int] = {}
     for season in seasons:
         events = season_events(league, season)
         finished = [e for e in events if _is_final(e)]
+        listed[season] = len(events)
         if verbose:
             print(
                 f"{league} {season}: {len(finished)} completed of {len(events)} events",
@@ -336,7 +352,44 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
                     }
                 )
         _report_unserved(league, season, unserved, len(finished), verbose)
+
+    _check_seasons_agree(league, listed, verbose)
     return pd.DataFrame(rows)
+
+
+#: How far below its neighbours a season may fall before it is not the same
+#: season they are. A tour plays roughly the same number of events every year,
+#: so a year at half the usual count is missing data, not playing less.
+SHORT_SEASON_LIMIT = 0.70
+
+
+def _check_seasons_agree(league: str, listed: dict[int, int], verbose: bool) -> None:
+    """Refuse a season the others show to be incomplete.
+
+    The other checks judge a season against itself, which cannot see this: every
+    event ESPN returned was finished and served, there were simply half as many
+    as the sport plays. Only its neighbours reveal that, and the cost of missing
+    it is a window whose totals are quietly halved.
+    """
+    real = {s: n for s, n in listed.items() if n}
+    if len(real) < 3:
+        return
+    counts = sorted(real.values())
+    median = counts[len(counts) // 2]
+    short = {
+        season: n for season, n in real.items() if n < median * SHORT_SEASON_LIMIT
+    }
+    if not short:
+        return
+    detail = ", ".join(f"{s}: {n}" for s, n in sorted(short.items()))
+    raise RuntimeError(
+        f"{league}: {detail} events, against {median} in a typical season here. "
+        f"A tour does not play half a year, so those seasons are missing events "
+        f"rather than short of them -- and a benchmark drawn from them would "
+        f"understate every athlete in that window. Clear "
+        f"data/cache/espn/{league}/season/ and re-run to refetch; if the count "
+        f"holds, ESPN does not have those seasons."
+    )
 
 
 #: How much of an elapsed season may be missing before it is not worth having.
