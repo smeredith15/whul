@@ -164,7 +164,39 @@ def load_team_results(
             print(f"    {index}/{len(days)} dates, {len(rows):,} games", flush=True)
 
     frame = pd.DataFrame(rows)
-    return frame[frame["completed"]].reset_index(drop=True) if not frame.empty else frame
+    if frame.empty:
+        return frame
+    frame = frame[frame["completed"]]
+    return _once_each(frame, league, verbose)
+
+
+def _once_each(frame: pd.DataFrame, league: str, verbose: bool = True) -> pd.DataFrame:
+    """One row per game, however many dates returned it.
+
+    This scoreboard is week-based for some sports: a request for a Tuesday can
+    come back with the whole week's games, so walking every date returns the
+    same game several times over. Summed, that multiplies a team's wins and
+    point differential by however many days its week spans -- which is not an
+    error anywhere, just a season in which everyone played eighty games.
+    """
+    keyed = frame[frame["game_id"].astype(str) != ""]
+    unkeyed = frame[frame["game_id"].astype(str) == ""]
+    deduped = keyed.drop_duplicates(subset=["game_id"])
+    if not unkeyed.empty:
+        # No id to trust, so fall back to what identifies a game without one.
+        unkeyed = unkeyed.drop_duplicates(
+            subset=["season", "game_date", "home_team", "away_team"]
+        )
+    out = pd.concat([deduped, unkeyed], ignore_index=True)
+
+    dropped = len(frame) - len(out)
+    if dropped and verbose:
+        print(
+            f"  {league}: {dropped:,} duplicate game rows dropped "
+            f"({len(out):,} distinct games)",
+            flush=True,
+        )
+    return out.reset_index(drop=True)
 
 
 def load_eligible_teams(league: str, seasons: list[int]) -> set[str]:

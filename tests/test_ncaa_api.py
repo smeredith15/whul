@@ -119,3 +119,68 @@ def test_probe_reports_raw_keys_when_extraction_comes_up_empty():
     assert rows[0]["home_team"] == ""
     inner = payload["games"][0]["game"]
     assert "names" in inner["home"]
+
+
+# --- one row per game -----------------------------------------------------
+
+def test_a_game_returned_on_several_dates_counts_once(monkeypatch, capsys):
+    """The scoreboard is week-based for some sports, so walking every date
+    returns the same game repeatedly. Summed, that multiplies a team's wins and
+    point differential by however many days its week spans -- which looks like
+    a season in which everyone played eighty games, and raises nowhere."""
+    from datetime import date
+
+    from whul.sources import ncaa_api
+
+    game = {
+        "season": 2024, "game_id": "555", "game_date": "2024-09-07",
+        "season_type": 2, "completed": True,
+        "home_team": "Alabama", "away_team": "Georgia",
+        "home_conference": "SEC", "away_conference": "SEC",
+        "home_score": 38.0, "away_score": 14.0, "notes": "",
+    }
+    monkeypatch.setattr(ncaa_api, "season_days", lambda l, s: [date(2024, 9, d) for d in range(1, 8)])
+    monkeypatch.setattr(ncaa_api, "scoreboard", lambda l, d: {})
+    monkeypatch.setattr(ncaa_api, "parse_scoreboard", lambda b, l, d: [dict(game)])
+
+    frame = ncaa_api.load_team_results("ncaaf", [2024], verbose=True)
+    assert len(frame) == 1
+    assert "6 duplicate game rows dropped" in capsys.readouterr().out
+
+
+def test_two_different_games_both_survive(monkeypatch):
+    from datetime import date
+
+    from whul.sources import ncaa_api
+
+    def rows(board, league, day):
+        return [{
+            "season": 2024, "game_id": f"g{day.day}", "game_date": day.isoformat(),
+            "season_type": 2, "completed": True,
+            "home_team": "Alabama", "away_team": "Georgia",
+            "home_conference": "SEC", "away_conference": "SEC",
+            "home_score": 38.0, "away_score": 14.0, "notes": "",
+        }]
+
+    monkeypatch.setattr(ncaa_api, "season_days", lambda l, s: [date(2024, 9, 7), date(2024, 9, 14)])
+    monkeypatch.setattr(ncaa_api, "scoreboard", lambda l, d: {})
+    monkeypatch.setattr(ncaa_api, "parse_scoreboard", rows)
+    assert len(ncaa_api.load_team_results("ncaaf", [2024], verbose=False)) == 2
+
+
+def test_a_game_with_no_id_falls_back_to_what_identifies_it(monkeypatch):
+    from datetime import date
+
+    from whul.sources import ncaa_api
+
+    game = {
+        "season": 2024, "game_id": "", "game_date": "2024-09-07",
+        "season_type": 2, "completed": True,
+        "home_team": "Alabama", "away_team": "Georgia",
+        "home_conference": "SEC", "away_conference": "SEC",
+        "home_score": 38.0, "away_score": 14.0, "notes": "",
+    }
+    monkeypatch.setattr(ncaa_api, "season_days", lambda l, s: [date(2024, 9, d) for d in (7, 8)])
+    monkeypatch.setattr(ncaa_api, "scoreboard", lambda l, d: {})
+    monkeypatch.setattr(ncaa_api, "parse_scoreboard", lambda b, l, d: [dict(game)])
+    assert len(ncaa_api.load_team_results("ncaaf", [2024], verbose=False)) == 1
