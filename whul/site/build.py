@@ -226,14 +226,15 @@ def build(
     from whul import pipeline
 
     out = Path(out or DEFAULT_OUT)
-    (out / "team").mkdir(parents=True, exist_ok=True)
 
     progression = pipeline.progression(store, season)
     if progression.empty:
-        raise ValueError(
-            f"no standings for {season}. Run the pipeline first, or "
-            f"`python -m whul.cli simulate` for a placeholder league."
-        )
+        raise ValueError(_why_no_standings(store, season))
+
+    # Only once there is something to write. Creating it first left an empty
+    # `team/` behind on every failed build, which a local server then served as
+    # a directory listing -- a site that looks built and is not.
+    (out / "team").mkdir(parents=True, exist_ok=True)
 
     latest = as_of or progression["as_of"].max()
     today = progression[progression["as_of"] == latest].sort_values("rank")
@@ -279,6 +280,56 @@ def build(
         "photos": photos,
         "profiles": len(profiles),
     }
+
+
+def _why_no_standings(store, season: str) -> str:
+    """Which link in the chain is missing, rather than that the chain is.
+
+    Every step depends on the one before, so "no standings" is the symptom of
+    four different problems. Naming the first one that is actually missing is
+    the difference between a message and an instruction.
+    """
+    from whul.store import benchmarks as bm
+
+    lines = [f"No standings for {season}, so there is nothing to build yet."]
+
+    rostered = store.scalar(
+        "SELECT COUNT(*) FROM slot_occupancy o "
+        "JOIN roster_slots s ON s.slot_id = o.slot_id WHERE s.season = ?",
+        (season,),
+    ) or 0
+    scores = store.scalar(
+        "SELECT COUNT(*) FROM daily_scores WHERE season = ?", (season,)
+    ) or 0
+    frozen = bm.active_version(store, season)
+
+    if not rostered:
+        lines.append(
+            f"  Nothing is rostered in {season}. Import the draft: "
+            f"`python -m whul.cli import-rosters --write --season {season}`"
+        )
+    elif frozen is None:
+        lines.append(
+            f"  {rostered} slots are filled, but no benchmark version is frozen "
+            f"for {season}, so nothing can be placed on the 0-100 scale.\n"
+            f"  `python -m whul.cli benchmarks versions`, then "
+            f"`benchmarks freeze <version>`."
+        )
+    elif not scores:
+        lines.append(
+            f"  Benchmark {frozen.version} is frozen and {rostered} slots are "
+            f"filled, but no results have been recorded.\n"
+            f"  `python -m whul.cli ingest --season {season}`"
+        )
+    else:
+        lines.append(
+            f"  {scores} scores are recorded but no day has been rolled up.\n"
+            f"  `python -m whul.cli rollup --season {season}`"
+        )
+    lines.append(
+        f"  For a placeholder league instead: `python -m whul.cli simulate`."
+    )
+    return "\n".join(lines)
 
 
 def _slot_rows(bars: pd.DataFrame, managers: list[str]) -> tuple[list, dict, dict]:
