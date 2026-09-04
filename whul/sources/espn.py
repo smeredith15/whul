@@ -182,6 +182,21 @@ def season_dates(season: int, league: str = "nba") -> list[date]:
     return [start + timedelta(days=n) for n in range((end - start).days + 1)]
 
 
+def season_label(league: str, day: date) -> int:
+    """The season number a date belongs to, in this feed's numbering.
+
+    European football and the college seasons are labelled by the year they
+    *end* in, so a match in September 2026 is part of season 2027. Asking for
+    the calendar year instead returns the season that finished in May -- a full
+    set of results, from last year, which is exactly the kind of wrong answer
+    that looks right.
+    """
+    start_md, _, ends_in_label_year = SEASON_WINDOWS[league]
+    if not ends_in_label_year:
+        return day.year
+    return day.year + 1 if (day.month, day.day) >= start_md else day.year
+
+
 def scoreboard_variants(league: str, day: date) -> list[dict]:
     """Request shapes to try, most informative first.
 
@@ -217,7 +232,8 @@ def scoreboard(league: str, day: date) -> dict:
     sport, path = LEAGUE_PATHS[league]
     url = f"{BASE}/{sport}/{path}/scoreboard"
     cached = CACHE / f"{league}/scoreboard/{day.isoformat()}.json"
-    if cached.exists():
+    settled = _has_settled(day)
+    if settled and cached.exists():
         return json.loads(cached.read_text())
 
     best: dict | None = None
@@ -240,9 +256,23 @@ def scoreboard(league: str, day: date) -> dict:
     if best is None:
         raise last if last else RuntimeError(f"no scoreboard variant succeeded for {league}")
 
-    cached.parent.mkdir(parents=True, exist_ok=True)
-    cached.write_text(json.dumps(best))
+    if settled:
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(json.dumps(best))
     return best
+
+
+#: How long a date is given to finish before its scoreboard is cached forever.
+#: A day cached while its matches were still being played would freeze a
+#: half-finished result, and the nightly job would read that copy every night
+#: after -- the score would simply never update. A full day clears both the
+#: matches and the timezone the feed dates them in.
+CACHE_SETTLE_DAYS = 1
+
+
+def _has_settled(day: date, today: date | None = None) -> bool:
+    """Whether a date's results can no longer change."""
+    return day < (today or date.today()) - timedelta(days=CACHE_SETTLE_DAYS)
 
 
 def load_eligible_teams(league: str) -> set[str]:

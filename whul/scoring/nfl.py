@@ -148,11 +148,11 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
         include_groups=False,
     )
 
-    summary = summary.merge(
-        teams_meta.rename(columns={"team_abbr": "team"})[["team", "team_division"]],
-        on="team",
-        how="left",
+    meta = teams_meta.rename(columns={"team_abbr": "team"})
+    columns = ["team", "team_division"] + (
+        ["team_name"] if "team_name" in meta.columns else []
     )
+    summary = summary.merge(meta[columns].drop_duplicates("team"), on="team", how="left")
     summary = summary.sort_values(
         ["reg_wins", "point_diff"], ascending=False, kind="mergesort"
     )
@@ -162,6 +162,10 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
 
     summary["total_points"] = sum(summary[c] * w for c, w in TEAM_WEIGHTS.items())
     summary["league"] = "NFL"
+    # The abbreviation stays the key; the full name is what a roster calls it.
+    if "team_name" not in summary.columns:
+        summary["team_name"] = summary["team"]
+    summary["team_name"] = summary["team_name"].fillna(summary["team"])
     return summary.sort_values(["season", "total_points"], ascending=[True, False]).reset_index(
         drop=True
     )

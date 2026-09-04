@@ -49,12 +49,67 @@ Two commands exist for checking a data source:
 .venv/bin/python -m whul.cli validate nfl --seasons 2020-2024 --target 2024
 ```
 
+## Freezing the benchmarks
+
+[`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) is the step-by-step procedure, in the
+order that fails cheapest — including which sources need a machine with open
+outbound HTTPS. [`docs/MAC_SETUP.md`](docs/MAC_SETUP.md) is the terminal setup
+that comes before it. In short:
+
+The benchmark is the number every score in its group is divided by, so it
+decides what 100 means. Getting it wrong produces no error — just a season of
+plausible, wrong standings. Computing, reviewing and adopting one are therefore
+three separate steps:
+
+```bash
+.venv/bin/python -m whul.cli benchmarks list                    # what can be computed
+.venv/bin/python -m whul.cli benchmarks compute nfl tennis      # pull, score, print
+.venv/bin/python -m whul.cli benchmarks compute --save          # every league, stored unfrozen
+.venv/bin/python -m whul.cli benchmarks coverage <version>      # what the roster needs
+.venv/bin/python -m whul.cli benchmarks compare <old> <new>     # how far scores would move
+.venv/bin/python -m whul.cli benchmarks freeze <version>        # adopt it
+```
+
+Five seasons by default, counting back from the last completed one. COVID
+seasons are excluded — and reaching past one lengthens the reach rather than
+shrinking the pool, so the NBA draws on 2019 and 2022-25.
+
+Every league is measured against its own history — ATP against ATP and WTA
+against WTA, F1 against F1 and NASCAR against NASCAR, each club soccer league
+against itself. Nothing pools two leagues together, though one pull can produce
+two benchmarks: tennis scores both tours in a single pass.
+
+Tennis, golf and motorsport are pooled differently over *time*: they run
+continuously, so
+their benchmark is drawn over the league year's own August-to-July window
+shifted back whole years, not over calendar seasons (§2.3). A window is judged
+by the year it *ends* in, and one the source cannot cover to its end date is
+dropped and replaced by reaching one further back — a half-covered window looks
+like a full one with quiet athletes in it. Tennis starts at 2022-23; golf and
+motorsport skip 2019-20 and 2020-21, which lost the shutdown months and then
+absorbed what was pushed into them (two Masters fall in the same golf league
+year).
+
+`freeze` refuses while a rostered asset has no benchmark, since that manager
+would otherwise score nothing without an error; `--force` overrides it. Nothing
+is measured against a version until it is frozen, and a frozen version is never
+edited — superseding it means a new version, which leaves both on the record.
+
+Tennis history comes from `model_data_snapshot.rds` in a `tennis2026` checkout.
+Set `WHUL_TENNIS2026` if it is not a sibling of this repository.
+
 ## Layout
 
 | Path | Purpose |
 |---|---|
 | `whul/config/league.py` | Roster template, slot caps, season window, pool rates |
 | `whul/normalize.py` | Buffer pool → frozen 99th-percentile benchmark → 0-100 scale |
+| `whul/benchmarks.py` | Compute, review and freeze a season's scale |
+| `docs/BENCHMARKS.md` | How to build and freeze one, step by step |
+| `docs/MAC_SETUP.md` | Terminal setup on macOS, from zero to a working database |
+| `whul/benchmark_sources.py` | Which loader and scorer each league's history comes from |
+| `whul/resolve.py` | Matching a feed's name to the asset a manager drafted |
+| `whul/ingest.py` | Pull a live league, match it to the roster, record it |
 | `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
 | `whul/scoring/` | Per-league scoring formulas, ported from `r-scripts/` |
 | `whul/sources/` | Data adapters (free sources only) |

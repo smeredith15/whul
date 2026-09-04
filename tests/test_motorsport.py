@@ -107,17 +107,16 @@ def test_points_are_computed_when_the_feed_omits_them():
     assert totals.loc["Lando Norris", "total_points"] == 18
 
 
-# --- the shared pool -------------------------------------------------------
+# --- one series, one distribution ------------------------------------------
 
-def test_both_series_normalize_against_one_distribution():
-    """NASCAR and Formula 1 fill the same roster slots, so they are ranked
-    against each other rather than each against its own series."""
+def test_each_series_is_measured_against_its_own_history():
+    """They fill the same roster slots, but a twenty-car grid and a forty-car
+    field are not one distribution, so each is normalized against itself."""
     nascar = pd.DataFrame([race(finish=1) for _ in range(NASCAR_MIN_RACES)])
     f1 = pd.DataFrame([grand_prix(position=1)])
-    pooled = score_players(nascar, f1)
-    assert set(pooled["league"]) == {"NASCAR", "F1"}
-    assert set(pooled["norm_league"]) == {"Motorsports"}
-    assert set(assign_norm_key(pooled, "Player")) == {"Motorsports"}
+    both = score_players(nascar, f1)
+    assert set(both["league"]) == {"NASCAR", "F1"}
+    assert set(assign_norm_key(both, "Player")) == {"NASCAR", "F1"}
 
 
 def test_empty_input_is_empty_output():

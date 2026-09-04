@@ -120,6 +120,42 @@ def save(
     return version
 
 
+def extend(
+    store: Store, version: str, benchmarks: pd.DataFrame, notes: str = ""
+) -> BenchmarkVersion:
+    """Add or replace groups in an existing unfrozen version.
+
+    Twenty leagues cannot always be pulled in one sitting -- a feed goes down, a
+    laptop sleeps -- and a second ``save`` would make a second version with a
+    different set of holes in it. Extending keeps one version growing until it
+    covers the roster and can be frozen.
+
+    Refuses on a frozen version. Once standings are measured against a set,
+    adding a group to it would restate scores that were already published;
+    superseding it means a new version, which leaves both on the record.
+    """
+    existing = get_version(store, version)
+    if existing is None:
+        raise ValueError(f"no benchmark version {version!r}")
+    if existing.is_frozen:
+        raise FrozenBenchmarkError(
+            f"{version} was frozen at {existing.frozen_at}; standings are measured "
+            f"against it. Compute a new version instead of adding to this one."
+        )
+    if benchmarks is None or benchmarks.empty:
+        raise ValueError("refusing to extend with an empty benchmark set")
+
+    rows = benchmarks.assign(version=version)
+    store.insert_frame("benchmarks", rows, keys=("version", "asset_type", "norm_key"))
+    if notes:
+        with store.transaction() as conn:
+            conn.execute(
+                "UPDATE benchmark_versions SET notes = ? WHERE version = ?",
+                (notes, version),
+            )
+    return get_version(store, version)
+
+
 def freeze(store: Store, version: str, notes: str = "") -> BenchmarkVersion:
     """Adopt a version as the one standings are scored against.
 
@@ -148,6 +184,28 @@ def get_version(store: Store, version: str) -> BenchmarkVersion | None:
     return _to_version(row) if row else None
 
 
+#: The simulator writes under the real season's label with this appended, so a
+#: placeholder run cannot be mistaken for the season itself.
+SIMULATED_SUFFIX = "-SIM"
+
+
+def latest_draft(store: Store, season: str) -> BenchmarkVersion | None:
+    """The newest unfrozen version for a season -- the one still being built.
+
+    A twenty-league run happens over several sittings, and having to carry the
+    version id between them is the part that goes wrong: an unset shell variable
+    turns into an argument error at best and a second half-built version at
+    worst. Frozen versions are excluded because adding to one is refused
+    anyway.
+    """
+    row = store.conn.execute(
+        "SELECT * FROM benchmark_versions WHERE season = ? AND frozen_at IS NULL "
+        "ORDER BY computed_at DESC, rowid DESC LIMIT 1",
+        (season,),
+    ).fetchone()
+    return _to_version(row) if row else None
+
+
 def active_version(store: Store, season: str) -> BenchmarkVersion | None:
     """The frozen version a season's scores are measured against.
 
@@ -155,15 +213,26 @@ def active_version(store: Store, season: str) -> BenchmarkVersion | None:
     is legitimate -- a mid-season correction is exactly that -- and the rows in
     ``daily_scores`` each name the version they used, so the older scores stay
     explainable.
+
+    A simulated season falls back to the real one's scale. The simulator exists
+    to show what the standings will look like, which it can only do if its
+    scores are on the same scale the season itself will use; freezing a second,
+    identical version under the ``-SIM`` label would just be a copy that can
+    drift.
     """
-    row = store.conn.execute(
-        # rowid breaks a tie deterministically by insertion order, so even
-        # two versions frozen in the same millisecond resolve the same way on
-        # every read rather than by whatever the engine returns first.
-        "SELECT * FROM benchmark_versions WHERE season = ? AND frozen_at IS NOT NULL "
-        "ORDER BY frozen_at DESC, rowid DESC LIMIT 1",
-        (season,),
-    ).fetchone()
+    def frozen(label: str):
+        return store.conn.execute(
+            # rowid breaks a tie deterministically by insertion order, so even
+            # two versions frozen in the same millisecond resolve the same way on
+            # every read rather than by whatever the engine returns first.
+            "SELECT * FROM benchmark_versions WHERE season = ? AND frozen_at IS NOT NULL "
+            "ORDER BY frozen_at DESC, rowid DESC LIMIT 1",
+            (label,),
+        ).fetchone()
+
+    row = frozen(season)
+    if row is None and season.endswith(SIMULATED_SUFFIX):
+        row = frozen(season[: -len(SIMULATED_SUFFIX)])
     return _to_version(row) if row else None
 
 

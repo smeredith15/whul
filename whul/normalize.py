@@ -42,19 +42,13 @@ def _rate_lookup(asset_type: str) -> dict[str, int]:
 def assign_norm_key(df: pd.DataFrame, asset_type: str) -> pd.Series:
     """Normalization group for each row.
 
-    Players are split by position where the league's positions have materially
-    different scoring distributions; everything else normalizes league-wide.
-
-    A ``norm_league`` column overrides the league for grouping purposes, which is
-    how sports that share a benchmark across tours or series -- ATP with WTA,
-    NASCAR with Formula 1 -- get one distribution instead of two pools each
-    sized for the whole category.
+    Every league is measured against its own history -- ATP against ATP, WTA
+    against WTA, each club soccer league against itself -- so the league is the
+    group, and nothing pools two of them together. Players are split further by
+    position where a league's positions have materially different scoring
+    distributions.
     """
-    if "norm_league" in df.columns:
-        basis = df["norm_league"].astype("string").fillna(df["league"].astype("string"))
-        basis = basis.mask(basis.str.strip() == "", df["league"].astype("string"))
-    else:
-        basis = df["league"].astype("string")
+    basis = df["league"].astype("string")
 
     if asset_type == "Team":
         return basis.astype(str)

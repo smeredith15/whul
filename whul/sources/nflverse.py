@@ -47,17 +47,28 @@ def load_schedules(seasons: list[int] | None = None) -> pd.DataFrame:
 
 
 def load_teams(seasons: list[int] | None = None) -> pd.DataFrame:
-    """Season-aware ``team_abbr`` -> ``team_division`` mapping.
+    """Season-aware ``team_abbr`` -> division and full name.
 
-    Derived from standings.csv because it tracks divisions per season, so
-    relocations and realignments resolve correctly for historical years.
+    Divisions come from standings.csv because it tracks them per season, so
+    relocations and realignments resolve correctly for historical years. The
+    full name comes from teams.csv, which is season-aware for the same reason
+    -- and it is needed because the feed identifies a team as "SEA" while a
+    roster calls it "Seattle Seahawks", and nothing can match those two by
+    spelling.
     """
     df = pd.read_csv(f"{NFLDATA}/standings.csv")
     if seasons:
         df = df[df["season"].isin(seasons)]
-    return (
+    teams = (
         df[["season", "team", "division"]]
         .rename(columns={"team": "team_abbr", "division": "team_division"})
         .drop_duplicates()
-        .reset_index(drop=True)
     )
+
+    named = pd.read_csv(f"{NFLDATA}/teams.csv")[["season", "team", "full"]]
+    named = named.rename(columns={"team": "team_abbr", "full": "team_name"})
+    teams = teams.merge(named, on=["season", "team_abbr"], how="left")
+    # A season the name table has not caught up with keeps the abbreviation
+    # rather than a blank, which would match nothing and say nothing.
+    teams["team_name"] = teams["team_name"].fillna(teams["team_abbr"])
+    return teams.reset_index(drop=True)

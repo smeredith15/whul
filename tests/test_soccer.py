@@ -342,3 +342,43 @@ def test_european_competitions_are_not_relabelled_as_postseason():
 def test_name_only_classification_also_finds_the_postseason():
     """For sources that supply no key, such as the historical FBref exports."""
     assert classify("MLS Cup Playoffs").win_points == 5
+
+
+# --- which clubs belong in a league's pool ---------------------------------
+
+def test_a_leagues_pool_is_its_own_clubs_not_everyone_they_played(monkeypatch):
+    """A competition's scoreboard returns every match in it. Unfiltered, the
+    Premier League pool was 213 clubs a season instead of 20, with Real Madrid
+    and every lower-division cup opponent labelled Premier League."""
+    import pandas as pd
+
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn
+
+    matches = pd.DataFrame([
+        {"team": "Arsenal", "opponent": "Real Madrid", "season": 2026},
+        {"team": "Real Madrid", "opponent": "Arsenal", "season": 2026},
+        {"team": "Barnsley", "opponent": "Arsenal", "season": 2026},
+    ])
+    monkeypatch.setattr(espn, "load_soccer_matches", lambda key, seasons: matches)
+    monkeypatch.setattr(espn, "load_eligible_teams", lambda key: {"Arsenal"})
+
+    load, _ = SOURCES["epl"].build()
+    kept = load([2026])
+    assert list(kept["team"]) == ["Arsenal"]
+    assert list(kept["league"]) == ["Premier League"]
+
+
+def test_an_unreadable_team_list_is_announced_not_silently_ignored(monkeypatch, capsys):
+    import pandas as pd
+
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn
+
+    matches = pd.DataFrame([{"team": "Arsenal", "season": 2026}])
+    monkeypatch.setattr(espn, "load_soccer_matches", lambda key, seasons: matches)
+    monkeypatch.setattr(espn, "load_eligible_teams", lambda key: set())
+
+    load, _ = SOURCES["epl"].build()
+    assert len(load([2026])) == 1
+    assert "every opponent it met" in capsys.readouterr().out

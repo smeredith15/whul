@@ -367,6 +367,32 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     return work.reset_index(drop=True)
 
 
+def match_events(matches: pd.DataFrame) -> pd.DataFrame:
+    """One dated, scored row per win, for a window-based benchmark.
+
+    The season-total view groups by calendar year; the benchmark for an
+    August-to-July league year cannot, because tennis runs continuously and a
+    calendar year contains a different slice of the tour than the league year
+    does. Both views are aggregations of the same scored matches -- this is the
+    one that keeps the date.
+    """
+    scored = score_matches(matches)
+    if scored.empty:
+        return pd.DataFrame()
+
+    return pd.DataFrame({
+        "player": scored["winner"],
+        "date": scored["date"],
+        "season": scored["season"],
+        "tournament": scored["tournament"],
+        "event_points": scored["match_points"],
+        "league": scored["tour"].str.upper().str.contains("WTA").map(
+            {True: "WTA", False: "ATP"}
+        ),
+        "role": "Singles",
+    })
+
+
 def score_players(matches: pd.DataFrame) -> pd.DataFrame:
     """Season totals per player."""
     scored = score_matches(matches)
@@ -384,9 +410,6 @@ def score_players(matches: pd.DataFrame) -> pd.DataFrame:
         {True: "WTA", False: "ATP"}
     )
     totals["role"] = "Singles"
-    # Both tours are measured against one distribution: the points table is the
-    # same by round, so the pooled field is the comparable one.
-    totals["norm_league"] = "Tennis"
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)

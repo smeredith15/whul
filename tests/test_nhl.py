@@ -182,11 +182,27 @@ def test_exclusions_explain_themselves():
     assert "COVID" in notes[0]
 
 
-def test_leagues_without_irregular_seasons_exclude_nothing():
+def test_a_league_with_no_entry_excludes_nothing():
+    # Named leagues keep acquiring exclusions as their COVID years get worked
+    # out, so this pins the mechanism rather than whichever league is currently
+    # clean: an unknown league filters nothing and explains nothing.
+    from whul.scoring.schedule import describe_exclusions, irregular_seasons, usable_seasons
+
+    assert irregular_seasons("Kabaddi") == set()
+    assert describe_exclusions("Kabaddi", [2020, 2021]) == []
+    assert usable_seasons("Kabaddi", [2020, 2021]) == [2020, 2021]
+
+
+def test_the_nfls_only_exclusion_is_a_length_change_not_covid():
+    """The NFL played every 2020 game. 2020 is out because it was the last
+    16-game season, not because it was disrupted -- and the note must say so,
+    since a reader who sees "COVID" will look for a distortion that isn't there."""
     from whul.scoring.schedule import describe_exclusions, irregular_seasons
 
-    assert irregular_seasons("NFL") == set()
-    assert describe_exclusions("NFL", [2020, 2021]) == []
+    assert irregular_seasons("NFL") == {2020}
+    note = describe_exclusions("NFL", [2020])[0]
+    assert "16 of 17 games" in note
+    assert "COVID" not in note
 
 
 def test_shortened_seasons_are_dropped_not_scaled():

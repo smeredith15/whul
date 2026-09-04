@@ -7,6 +7,8 @@ broken before (a value nested one level deeper than the code looked).
 
 import json
 import pathlib
+from datetime import date as _date
+from datetime import timedelta
 
 import pandas as pd
 import pytest
@@ -107,6 +109,128 @@ def test_golf_results_flow_into_scoring(monkeypatch):
     assert scored.set_index("player").loc["Winner", "total_points"] == 500 * golf.MAJOR_MULTIPLIER
     # The missed cut has no position, so it never reaches the totals.
     assert "Missed" not in set(scored["player"])
+
+
+# --- knowing an event is over --------------------------------------------
+
+def test_every_way_espn_says_finished_is_read():
+    """It reports completion inconsistently across sports and seasons. Reading
+    only the boolean dropped half of the 2022 PGA season."""
+    today = _date(2026, 9, 4)
+    for status in (
+        {"type": {"completed": True}},
+        {"type": {"state": "post"}},
+        {"type": {"name": "STATUS_FINAL"}},
+        {"type": {"name": "STATUS_PLAY_COMPLETE"}},
+    ):
+        assert espn_ind._is_final({"status": status, "date": "2026-09-03"}, today)
+
+
+def test_a_status_nested_under_the_competition_still_counts():
+    today = _date(2026, 9, 4)
+    event = {"date": "2026-09-03", "competitions": [{"status": {"type": {"state": "post"}}}]}
+    assert espn_ind._is_final(event, today)
+
+
+def test_an_event_a_week_past_is_over_whatever_the_payload_says():
+    # Dropping it would lower every athlete's total by what they earned there,
+    # with nothing anywhere reporting a gap.
+    today = _date(2026, 9, 4)
+    assert espn_ind._is_final({"date": "2026-08-01", "status": {}}, today)
+
+
+def test_an_event_still_being_played_is_not_final():
+    today = _date(2026, 9, 4)
+    assert not espn_ind._is_final({"date": "2026-09-03", "status": {}}, today)
+    assert not espn_ind._is_final(
+        {"date": "2026-09-03", "status": {"type": {"state": "in"}}}, today
+    )
+
+
+def test_an_elapsed_season_missing_its_events_is_refused(monkeypatch):
+    """The failure the unserved check misses: ESPN serves these events, it just
+    never marks them done, and the season quietly understates everyone in it."""
+    old = [{"id": str(i), "date": "2022-06-01T00:00Z", "status": {}} for i in range(50)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: old)
+    # Nothing reads as finished, and the season ended years ago.
+    monkeypatch.setattr(espn_ind, "_is_final", lambda e, today=None: e["id"] in "0123456789")
+
+    with pytest.raises(RuntimeError) as caught:
+        espn_ind.load_results("pga", [2022], verbose=False)
+    assert "understate" in str(caught.value)
+
+
+def test_a_season_still_being_played_is_not_judged(monkeypatch):
+    soon = (_date.today() + timedelta(days=30)).isoformat()
+    events = [{"id": str(i), "date": f"{soon}T00:00Z", "status": {}} for i in range(50)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+    monkeypatch.setattr(espn_ind, "_is_final", lambda e, today=None: e["id"] == "0")
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+
+    # Part-finished is what a live season looks like; refusing it would refuse
+    # every in-progress league.
+    espn_ind.load_results("pga", [_date.today().year], verbose=False)
+
+
+def _finished(event_id: str, name: str = "Some Open", day: str = "2026-04-12T18:00Z"):
+    return {"id": event_id, "name": name, "date": day,
+            "status": {"type": {"completed": True}}}
+
+
+def _field(*names):
+    return {"competitions": [{"competitors": [
+        {"athlete": {"displayName": n}, "status": {"position": {"displayName": str(i + 1)}}}
+        for i, n in enumerate(names)
+    ]}]}
+
+
+def test_one_unservable_event_does_not_lose_the_season(monkeypatch, capsys):
+    """ESPN serves no result for a few old events. Losing one of a season's
+    fifty is a rounding error; it used to end the pull and lose five seasons."""
+    events = [_finished(str(i)) for i in range(20)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+
+    def summary(league, event_id):
+        if event_id == "7":
+            raise espn_ind.EventUnavailable("no endpoint served pga event 7")
+        return _field("Winner", "Runner Up")
+
+    monkeypatch.setattr(espn_ind, "event_summary", summary)
+
+    raw = espn_ind.load_results("pga", [2026], verbose=True)
+    assert set(raw["event_id"]) == {str(i) for i in range(20)} - {"7"}
+    # Skipped quietly is how a benchmark ends up drawn from less than it says.
+    assert "skipped 1 event" in capsys.readouterr().out
+
+
+def test_a_season_mostly_unserved_is_refused_rather_than_understated(monkeypatch):
+    """Missing a tenth of a season lowers every athlete's total in it, and does
+    so invisibly -- the numbers are simply smaller."""
+    events = [_finished(str(i)) for i in range(20)]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+
+    def summary(league, event_id):
+        if int(event_id) < 5:
+            raise espn_ind.EventUnavailable("nothing here")
+        return _field("Winner")
+
+    monkeypatch.setattr(espn_ind, "event_summary", summary)
+
+    with pytest.raises(RuntimeError) as caught:
+        espn_ind.load_results("pga", [2026], verbose=False)
+    assert "5 of 20" in str(caught.value)
+
+
+def test_an_event_whose_field_is_inline_never_asks_for_a_summary(monkeypatch):
+    inline = _finished("401")
+    inline["competitions"] = _field("Winner")["competitions"]
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: [inline])
+
+    def refuse(league, event_id):
+        raise AssertionError("the season scoreboard already carried the field")
+
+    monkeypatch.setattr(espn_ind, "event_summary", refuse)
+    assert list(espn_ind.load_results("pga", [2026], verbose=False)["player"]) == ["Winner"]
 
 
 # --- Jolpica / Ergast ------------------------------------------------------
@@ -812,7 +936,9 @@ def test_data_attributes_on_the_container_are_reported():
 
 def test_a_page_with_nothing_to_find_reports_empty_rather_than_raising():
     found = schedule.discover_endpoints("<html><body>nothing here</body></html>")
-    assert found == {"urls": [], "data_attributes": [], "preloads": []}
+    assert found == {
+        "urls": [], "data_attributes": [], "preloads": [], "problem": ""
+    }
 
 
 # --- the WTA API -----------------------------------------------------------
@@ -950,3 +1076,108 @@ def test_prose_cannot_classify_a_tournament():
     event does not make every record a Masters."""
     record = {"title": "X", "blurb": "the 1000-point event returns this year"}
     assert schedule._category_from_any_field(record) is None
+
+
+def test_a_missing_parser_is_reported_rather_than_read_as_an_empty_page():
+    """Without bs4 the endpoint scan still runs, but its silence has to be
+    explained: an empty data_attributes list otherwise reads as "the page has no
+    data attributes", which sends the diagnosis after the markup when the
+    environment is what is wrong."""
+    import builtins
+
+    from whul.sources import tour_schedule
+
+    real_import = builtins.__import__
+
+    def no_bs4(name, *args, **kwargs):
+        if name == "bs4":
+            raise ImportError("No module named 'bs4'")
+        return real_import(name, *args, **kwargs)
+
+    builtins.__import__ = no_bs4
+    try:
+        found = tour_schedule.discover_endpoints(JS_RENDERED_PAGE)
+    finally:
+        builtins.__import__ = real_import
+
+    assert "beautifulsoup4" in found["problem"]
+    assert found["urls"], "the regex scan does not need a parser and should still run"
+
+
+def test_a_page_that_parsed_reports_no_problem():
+    from whul.sources import tour_schedule
+
+    assert tour_schedule.discover_endpoints(JS_RENDERED_PAGE)["problem"] == ""
+
+
+def test_the_season_diagnostic_says_what_the_short_events_look_like(monkeypatch):
+    """The completeness guard can only say a season came back short. A fix has
+    to be written against what the missing events actually carry."""
+    events = (
+        [{"id": str(i), "name": f"Open {i}", "date": "2022-05-15T00:00Z",
+          "status": {"type": {"completed": True}}} for i in range(3)]
+        + [{"id": "9", "name": "Mystery", "season": {"year": 2022}}]
+    )
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: events)
+
+    report = espn_ind.diagnose_season("pga", 2022)
+    assert report["events"] == 4 and report["finished"] == 3
+    assert report["with_date"] == 3
+    assert report["unfinished"][0]["date"] == "(none)"
+    assert "season" in report["unfinished"][0]["keys"]
+    assert report["status_shapes"]["no status at all"] == 1
+
+
+def test_empty_padding_entries_are_not_events():
+    """ESPN's 2022 golf year carried 51 entries of which 25 had no keys at all.
+    Counting them made half a season look unfinished and hid that the rest was
+    missing outright."""
+    events = [{"id": "1", "name": "Open"}, {}, {"date": "2022-05-01"}, None]
+    assert len(espn_ind.usable_events(events)) == 2
+
+
+def test_a_season_short_against_its_neighbours_is_refused(monkeypatch):
+    """Every event returned was finished and served -- there were simply half
+    as many as the tour plays. Only the other seasons can show that."""
+    counts = {2021: 50, 2022: 26, 2023: 49, 2024: 51, 2025: 49}
+
+    def events(league, season):
+        return [
+            {"id": f"{season}-{i}", "name": "Open", "date": f"{season}-05-15T00:00Z",
+             "status": {"type": {"completed": True}}}
+            for i in range(counts[season])
+        ]
+
+    monkeypatch.setattr(espn_ind, "season_events", events)
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+
+    with pytest.raises(RuntimeError) as caught:
+        espn_ind.load_results("pga", sorted(counts), verbose=False)
+    assert "2022: 26" in str(caught.value)
+    assert "understate" in str(caught.value)
+
+
+def test_seasons_that_agree_are_not_refused(monkeypatch):
+    counts = {2021: 50, 2022: 47, 2023: 49, 2024: 51, 2025: 49}
+
+    def events(league, season):
+        return [
+            {"id": f"{season}-{i}", "name": "Open", "date": f"{season}-05-15T00:00Z",
+             "status": {"type": {"completed": True}}}
+            for i in range(counts[season])
+        ]
+
+    monkeypatch.setattr(espn_ind, "season_events", events)
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+    assert not espn_ind.load_results("pga", sorted(counts), verbose=False).empty
+
+
+def test_one_season_alone_is_not_judged_against_neighbours(monkeypatch):
+    # The live ingest pulls a single season; there is nothing to compare it to,
+    # and refusing it would refuse every nightly run.
+    monkeypatch.setattr(espn_ind, "season_events", lambda league, season: [
+        {"id": "1", "name": "Open", "date": "2026-05-15T00:00Z",
+         "status": {"type": {"completed": True}}}
+    ])
+    monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
+    assert not espn_ind.load_results("pga", [2026], verbose=False).empty

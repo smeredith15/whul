@@ -429,8 +429,14 @@ before sending the offer sheet — replacing the R script's interactive console 
 - [x] Placeholder league — `simulate --from-season 2026-27` mirrors the real roster and invents
       only the scores, under season `2026-27-SIM`. Without `--from-season` it invents the players
       too, which is what to do before there is a draft file.
-- [ ] Asset identity layer (canonical IDs + alias table) — name matching across feeds will be a
-      recurring chore and needs to be designed in, not bolted on
+- [x] Asset identity layer (canonical IDs + alias table) — `whul/resolve.py`. Only rostered assets
+      are matched (~200, not a feed's thousands), so every failure can be *named*: an exact match on
+      the normalized name links and is stored, two feed rows sharing a name link neither, and
+      everything unmatched is reported by name on every run. Nothing is guessed; fuzzy matches go
+      behind `needs_review`.
+- [x] Live ingest — `whul/ingest.py` and `python -m whul.cli ingest`: pull → score → normalize →
+      match → record. Raw figures are written whether or not a benchmark exists, because a rolling
+      feed's earlier weeks cannot be fetched back.
 
 ### Phase 2 — Per-league increments *(one league at a time, per your preference)*
 For each league, in order: **NFL ✅ → NBA ✅ → MLB → NHL → Club Soccer → NCAA (F/M/W/Baseball/Softball) →
@@ -447,7 +453,12 @@ Each increment ships end-to-end:
 ### Phase 3 — Scoring pipeline
 - [x] Store: schema, ingest, staleness detection (SQLite now, portable SQL for Postgres later)
 - [x] Benchmark computation + freeze, parameterized by `benchmark_manager_count`
-- [x] Window-based benchmarking for individual sports (§2.3)
+- [x] Window-based benchmarking for individual sports (§2.3) — tennis, PGA and motorsport pool by
+      the season's own Aug-Jul window; a window the source cannot cover to its end is dropped
+- [x] `whul.cli benchmarks` — compute / coverage / compare / freeze, five usable seasons back,
+      COVID years excluded by lengthening the reach. Computing and adopting are separate acts, and
+      `freeze` refuses while a rostered asset has no benchmark. **NFL and tennis computed for real**;
+      every other league is proxy-blocked from the dev sandbox and must be run where the feeds reach
 - [x] Bisection weighting — MLB 0.75/1.181, WNBA 0.80/1.2255, NWSL 0.95/1.3294; MLS deliberately
       unbisected (drafting for 2027). See `whul/scoring/bisection.py`
 - [x] Proration engine (§2.4) — admin-entered expected games, counting stats only

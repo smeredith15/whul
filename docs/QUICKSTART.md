@@ -99,6 +99,25 @@ uv pip install --python .venv/bin/python -e '.[dev]'
 Everything afterwards is unchanged — `uv` produces an ordinary venv, so
 `.venv/bin/python` works exactly as documented.
 
+**One exception, and it bites later:** a `uv` venv contains no `pip`. So the
+usual way to pick up a dependency added since you set the checkout up —
+
+```bash
+.venv/bin/pip install -e '.[dev]'       # bash: .venv/bin/pip: No such file or directory
+```
+
+— fails, and unless you read the error it looks like nothing happened. Reinstall
+through `uv` instead:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+uv pip install --python .venv/bin/python -e '.[dev]'
+```
+
+`pytest` stops the run with that command in the message when a declared
+dependency is missing, so you do not have to remember which kind of venv this
+is.
+
 **Option C — no virtual environment at all (last resort):**
 
 ```bash

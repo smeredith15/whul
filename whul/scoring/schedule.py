@@ -69,7 +69,48 @@ IRREGULAR_SEASONS: tuple[IrregularSeason, ...] = (
     IrregularSeason("NBA", 2020, 67, 82, "COVID: season suspended, bubble restart"),
     IrregularSeason("MLB", 2020, 60, 162, "COVID: 60-game season"),
     IrregularSeason("WNBA", 2020, 22, 34, "COVID: 22-game bubble season"),
+    # The NFL played every 2020 game, so this is not a COVID exclusion: 2020 was
+    # simply the last 16-game season, and a 17-game season measured against it
+    # would be scored against a shorter year. It falls outside a five-season
+    # reach from 2025 anyway; it is listed so a longer reach cannot pick it up.
+    IrregularSeason("NFL", 2020, 16, 17, "the last 16-game season; the league now plays 17"),
+    # Tennis is excluded by calendar rather than by game count. 2020 lost
+    # Wimbledon and shifted the US Open and Roland Garros; 2021 kept the
+    # rearrangement, with the Australian Open in February and the Olympics
+    # displacing the summer. A benchmark drawn over an August-to-July window
+    # cannot compare those years to a normal one, because the events fall in
+    # different windows rather than merely being fewer.
+    IrregularSeason("ATP", 2021, 0, 0, "calendar still rearranged after COVID"),
+    IrregularSeason("ATP", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
+    IrregularSeason("WTA", 2021, 0, 0, "calendar still rearranged after COVID"),
+    IrregularSeason("WTA", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
+    IrregularSeason("Tennis", 2021, 0, 0, "calendar still rearranged after COVID"),
+    IrregularSeason("Tennis", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
+    # Golf and motorsport are excluded by calendar for the same reason, and
+    # named by the year each league year *ends* in, which is how a window is
+    # judged. The 2019-20 window lost the months the tours were shut down; the
+    # 2020-21 window is distorted by what was pushed into it -- for golf, the
+    # November 2020 Masters and the April 2021 Masters fall in the same window.
+    IrregularSeason("PGA", 2021, 0, 0, "COVID: two Masters in the same league year"),
+    IrregularSeason("PGA", 2020, 0, 0, "COVID: tour suspended, The Open cancelled"),
+    IrregularSeason("Motorsports", 2021, 0, 0, "COVID: the shortened 2020 season falls in this window"),
+    IrregularSeason("Motorsports", 2020, 0, 0, "COVID: seasons suspended and rescheduled"),
+    IrregularSeason("NASCAR", 2021, 0, 0, "COVID: the rescheduled 2020 season falls in this window"),
+    IrregularSeason("NASCAR", 2020, 0, 0, "COVID: season paused in March, schedule compressed"),
+    IrregularSeason("F1", 2021, 0, 0, "COVID: the 17-race 2020 season falls in this window"),
+    IrregularSeason("F1", 2020, 0, 0, "COVID: 17 races, season started in July"),
 )
+
+#: The earliest season a league's benchmark pool may draw from, named by the
+#: year the league year *ends* in. Tennis starts at 2023 -- the 2022-23 window
+#: -- because everything before it is either COVID-affected or played on a
+#: calendar the window-based benchmark cannot compare against. The 2021-22
+#: window is excluded too: it opens six weeks after the Tokyo Olympics that the
+#: rearranged 2021 calendar displaced into July, and the tour it inherits is
+#: still settling back into its normal shape.
+EARLIEST_SEASON: dict[str, int] = {
+    "ATP": 2023, "WTA": 2023, "Tennis": 2023,
+}
 
 
 def irregular_seasons(league: str) -> set[int]:
@@ -77,15 +118,35 @@ def irregular_seasons(league: str) -> set[int]:
     return {s.season for s in IRREGULAR_SEASONS if s.league == league}
 
 
+def usable_seasons(league: str, wanted: list[int]) -> list[int]:
+    """The requested seasons, minus the ones a benchmark must not draw from.
+
+    Two filters: seasons the league played irregularly, and anything before the
+    league's earliest usable year. Applied here rather than at each call site
+    so a league added later cannot be quietly benchmarked against a COVID year.
+    """
+    excluded = irregular_seasons(league)
+    floor = EARLIEST_SEASON.get(league, 0)
+    return [s for s in wanted if s not in excluded and s >= floor]
+
+
 def describe_exclusions(league: str, seasons: list[int]) -> list[str]:
     """Human-readable notes for whichever excluded seasons were requested."""
     excluded = {s.season: s for s in IRREGULAR_SEASONS if s.league == league}
-    return [
-        f"{s} excluded: {excluded[s].games} of {excluded[s].standard_games} games "
-        f"({excluded[s].reason})"
-        for s in seasons
-        if s in excluded
-    ]
+    notes = []
+    for season in seasons:
+        entry = excluded.get(season)
+        if entry is None:
+            continue
+        # Tennis is excluded by calendar rather than game count, so it carries
+        # no game totals; printing "0 of 0 games" would read as a data error.
+        count = (
+            f"{entry.games} of {entry.standard_games} games, "
+            if entry.standard_games
+            else ""
+        )
+        notes.append(f"{season} excluded: {count}{entry.reason}")
+    return notes
 
 
 def factor_for(league: str) -> float:

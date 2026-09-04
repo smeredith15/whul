@@ -71,6 +71,36 @@ SEASON = SeasonWindow(
 )
 
 
+#: When each league's results start counting, where that is not the league
+#: year's own start. Sports do not begin together, and a league year that opens
+#: on a fixed date will otherwise either miss a competition already under way or
+#: swallow the tail of the previous season.
+#:
+#: A date *earlier* than ``SEASON.start`` is deliberate and legitimate: La Liga
+#: was already three matchdays old when the WHUL year opened, and those results
+#: belong to this league year because there is no other one they could belong
+#: to. A date *later* excludes something the league considers last season's --
+#: tennis starts on the 23rd so the Cincinnati final does not count twice.
+LEAGUE_START: dict[str, date] = {
+    "ATP": date(2026, 8, 23),
+    "WTA": date(2026, 8, 23),
+    "Tennis": date(2026, 8, 23),
+    "NASCAR": date(2026, 8, 23),
+    "PGA": date(2026, 8, 20),
+    "Premier League": date(2026, 8, 21),
+    "Ligue 1": date(2026, 8, 21),
+    "Bundesliga": date(2026, 8, 28),
+    "La Liga": date(2026, 8, 15),
+    "Serie A": date(2026, 8, 22),
+    "NCAAF": date(2026, 8, 27),
+}
+
+
+def season_start(league: str, default: date | None = None) -> date:
+    """The first day a league's results count toward this league year."""
+    return LEAGUE_START.get(league, default or SEASON.start)
+
+
 @dataclass(frozen=True)
 class SlotGroup:
     """One roster category for one asset type.
@@ -187,3 +217,24 @@ POOL_MAP_TEAMS: dict[str, str] = {
 
 # Soccer pools whose players may transfer across the pool boundary mid-season.
 CROSS_POOL_SOCCER = ("Club Soccer Top 3", "Club Soccer Other")
+
+#: Roster categories that are open to more than one competition, and which
+#: competitions those are. Every league is normalized against its own history --
+#: ATP against ATP, WTA against WTA, F1 against F1, NASCAR against NASCAR -- but
+#: a roster slot does not always say which one an asset plays in: the draft
+#: sheet records twelve players as "Tennis" and three as "Motorsports", because
+#: that is the category they were drafted into.
+#:
+#: So this is not a normalization rule. It is what a coverage check needs to
+#: answer "can this version score that pick", and the answer is only yes when
+#: *every* competition the category admits has a benchmark -- there is no way to
+#: tell from the roster whether a "Tennis" pick is on the ATP or the WTA tour.
+CATEGORY_COMPETITIONS: dict[str, tuple[str, ...]] = {
+    "Tennis": ("ATP", "WTA"),
+    "Motorsports": ("F1", "NASCAR"),
+}
+
+
+def competitions_for(league: str) -> tuple[str, ...]:
+    """The competitions a rostered league covers, which is usually just itself."""
+    return CATEGORY_COMPETITIONS.get(league, (league,))

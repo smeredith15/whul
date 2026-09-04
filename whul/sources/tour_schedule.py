@@ -142,7 +142,7 @@ def discover_endpoints(html: str) -> dict:
     will ever find them. The endpoint is the only way in, and it is usually
     named in a script or in a data attribute on the container.
     """
-    found: dict = {"urls": [], "data_attributes": [], "preloads": []}
+    found: dict = {"urls": [], "data_attributes": [], "preloads": [], "problem": ""}
 
     urls = {m.group(1) for m in _URL_PATTERN.finditer(html)}
     interesting = {
@@ -155,6 +155,11 @@ def discover_endpoints(html: str) -> dict:
     try:
         soup = _soup(html)
     except ImportError:
+        # The URL scan is pure regex and still worth returning, but an empty
+        # data_attributes list has to be distinguishable from "the parser was
+        # never installed" -- reading it as the former is what sent a diagnosis
+        # after a page's markup when the environment was the problem.
+        found["problem"] = "beautifulsoup4 is not installed; only the URL scan ran"
         return found
 
     for element in soup.find_all(attrs={"class": True}):

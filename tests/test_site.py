@@ -373,3 +373,84 @@ def test_the_standings_total_ignores_empty_slots(site):
     assert ">NaN<" not in html
     for row in re.findall(r"<td class='num'>([^<]*)</td>", html):
         assert row.strip().lower() != "nan"
+
+
+def test_the_progression_chart_survives_the_seasons_first_day():
+    """One day of scores is what the first live run produces, and it used to
+    raise: the x-scale is floored at one step, so the axis asked for a second
+    day that does not exist."""
+    from datetime import date
+
+    from whul.site import charts
+
+    svg = charts.progression_chart(
+        [date(2026, 8, 21)], [charts.Series("Tyler", 1, [12.5])]
+    )
+    assert "21 Aug 2026" in svg
+    assert svg.count("21 Aug 2026") == 1, "one day is one label, not three"
+
+
+def test_the_progression_chart_labels_both_ends_of_two_days():
+    from datetime import date
+
+    from whul.site import charts
+
+    svg = charts.progression_chart(
+        [date(2026, 8, 21), date(2026, 8, 22)],
+        [charts.Series("Tyler", 1, [12.5, 20.0])],
+    )
+    assert "21 Aug 2026" in svg and "22 Aug 2026" in svg
+
+
+# --- a build that cannot run --------------------------------------------
+
+def test_a_failed_build_leaves_no_directory_behind(tmp_path):
+    """`site/team/` was created before anything was checked, so a failed build
+    left it there -- and a local server serves that as a directory listing: a
+    site that looks built and is not."""
+    from whul.site.build import build
+    from whul.store import open_store
+
+    out = tmp_path / "site"
+    with pytest.raises(ValueError):
+        build(open_store(":memory:"), "2026-27", out)
+    assert not out.exists()
+
+
+def test_an_empty_season_says_which_link_is_missing(tmp_path):
+    """Every step depends on the one before, so "no standings" is the symptom
+    of four different problems."""
+    import pandas as pd
+
+    from whul.site.build import build
+    from whul.store import benchmarks as bm
+    from whul.store import open_store, rosters
+
+    store = open_store(":memory:")
+
+    with pytest.raises(ValueError, match="Nothing is rostered"):
+        build(store, "2026-27", tmp_path / "s")
+
+    rosters.add_manager(store, "TG")
+    rosters.create_slots(store, "TG", "2026-27")
+    store.upsert("assets", [{
+        "asset_id": "a", "asset_type": "Player", "display_name": "Someone",
+        "league": "NFL", "role": "", "norm_key": "NFL", "active": 1,
+        "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    slot = store.query(
+        "SELECT slot_id FROM roster_slots WHERE season = ? LIMIT 1", ("2026-27",)
+    ).loc[0, "slot_id"]
+    rosters.assign(store, slot, "a", "2026-08-21")
+
+    with pytest.raises(ValueError, match="no benchmark version is frozen"):
+        build(store, "2026-27", tmp_path / "s")
+
+    version = bm.save(store, pd.DataFrame([{
+        "asset_type": "Player", "norm_key": "NFL", "benchmark": 100.0,
+        "pool_size": 300, "seasons": "2025",
+    }]), "2026-27")
+    bm.freeze(store, version)
+
+    with pytest.raises(ValueError, match="no results have been recorded"):
+        build(store, "2026-27", tmp_path / "s")

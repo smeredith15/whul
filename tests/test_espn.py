@@ -507,3 +507,46 @@ def test_mls_and_nwsl_run_within_a_calendar_year():
     for key in ("epl", "laliga", "ucl"):
         _, _, ends_in_label_year = espn.SEASON_WINDOWS[key]
         assert ends_in_label_year is True, key
+
+
+# --- caching a date that is still being played -----------------------------
+
+def test_a_day_still_in_play_is_not_cached_forever(tmp_path, monkeypatch):
+    """A day cached mid-match would freeze a half-finished result, and every
+    nightly run after would read that copy rather than the final score."""
+    from datetime import date
+
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+    calls = []
+
+    def fetch(url, params, cache_key=None):
+        calls.append(params)
+        return {"events": [{"id": "1"}]}
+
+    monkeypatch.setattr(espn, "_get", fetch)
+    today = date.today()
+
+    espn.scoreboard("epl", today)
+    espn.scoreboard("epl", today)
+    assert len(calls) >= 2, "today must be refetched, not served from disk"
+    assert not (tmp_path / f"epl/scoreboard/{today.isoformat()}.json").exists()
+
+
+def test_a_settled_day_is_cached(tmp_path, monkeypatch):
+    from datetime import date, timedelta
+
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+    calls = []
+    monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: (
+        calls.append(params) or {"events": [{"id": "1"}]}
+    ))
+    old = date.today() - timedelta(days=30)
+
+    espn.scoreboard("epl", old)
+    before = len(calls)
+    espn.scoreboard("epl", old)
+    assert len(calls) == before, "a finished day should come from disk"
