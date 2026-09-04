@@ -8,6 +8,7 @@ over ESPN is that division membership is explicit in the URL.
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from whul.sources import ncaa_api
 from whul.scoring.ncaa import score_football
@@ -267,3 +268,96 @@ def test_both_ncaa_sources_score_the_same_rows_the_same_way():
     _, live = SOURCES["ncaaf"].live()
     # One scorer, two feeds: a season must not be worth more from one of them.
     assert historical(games).equals(live(games))
+
+
+# --- a pull that comes back short --------------------------------------------
+
+def test_an_overtime_final_is_a_final():
+    """The API writes overtime into the state field -- "FINAL(OT)", "Final/2OT".
+    Compared for equality against "final", every overtime game is discarded, and
+    discarded as though it had never been played: the teams lose the win, the
+    margin and the game from their record, and nothing reports it."""
+    for state in ("final", "FINAL", "Final/OT", "FINAL(2OT)", "Final "):
+        assert ncaa_api._is_final(state), state
+    for state in ("", None, "live", "scheduled", "postponed", "cancelled"):
+        assert not ncaa_api._is_final(state), state
+
+
+def test_a_date_that_fails_is_counted_not_swallowed(monkeypatch, capsys):
+    """This API is rate limited. A date that 429s is a Saturday of missing
+    games, and skipping it silently produces a season nobody played."""
+    import requests
+
+    monkeypatch.setattr(ncaa_api, "season_days", lambda l, s: [date(2024, 11, 9)])
+    monkeypatch.setattr(ncaa_api, "RETRY_BACKOFF", 0)
+
+    def refuse(league, day):
+        response = requests.Response()
+        response.status_code = 429
+        raise requests.HTTPError("too many requests", response=response)
+
+    monkeypatch.setattr(ncaa_api, "scoreboard", refuse)
+    with pytest.raises(ncaa_api.IncompleteSeason, match="HTTP 429"):
+        ncaa_api.load_team_results("ncaaf", [2024])
+
+
+def test_a_rate_limit_is_waited_out_before_it_is_counted(monkeypatch):
+    """A 429 is a wait, not an answer."""
+    import requests
+
+    monkeypatch.setattr(ncaa_api, "RETRY_BACKOFF", 0)
+    calls = []
+
+    def flaky(league, day):
+        calls.append(day)
+        if len(calls) < 3:
+            response = requests.Response()
+            response.status_code = 429
+            raise requests.HTTPError("slow down", response=response)
+        return {"games": []}
+
+    monkeypatch.setattr(ncaa_api, "scoreboard", flaky)
+    assert ncaa_api._scoreboard_with_retry("ncaaf", date(2024, 11, 9)) == {"games": []}
+    assert len(calls) == 3
+
+
+def test_a_404_is_not_retried(monkeypatch):
+    """A date with no page is not a date being throttled."""
+    import requests
+
+    monkeypatch.setattr(ncaa_api, "RETRY_BACKOFF", 0)
+    calls = []
+
+    def missing(league, day):
+        calls.append(day)
+        response = requests.Response()
+        response.status_code = 404
+        raise requests.HTTPError("no such date", response=response)
+
+    monkeypatch.setattr(ncaa_api, "scoreboard", missing)
+    with pytest.raises(requests.HTTPError):
+        ncaa_api._scoreboard_with_retry("ncaaf", date(2024, 11, 9))
+    assert len(calls) == 1
+
+
+def test_a_thin_season_says_so(capsys):
+    """A season total looks plausible at almost any size -- there is no number
+    of college football games that reads as obviously wrong. Games per team
+    does: everyone plays about twelve."""
+    frame = pd.DataFrame([
+        {"season": 2024, "home_team": f"T{i}", "away_team": f"T{i + 1}"}
+        for i in range(40)
+    ])
+    ncaa_api._report_coverage(frame, "ncaaf")
+    out = capsys.readouterr().out
+    assert "per team" in out
+    assert "thin" in out
+
+
+def test_a_full_season_is_not_flagged(capsys):
+    games = [
+        {"season": 2024, "home_team": f"T{i}", "away_team": f"T{j}"}
+        for i in range(20) for j in range(20) if i < j
+    ]
+    ncaa_api._report_coverage(pd.DataFrame(games), "ncaaf")
+    assert "thin" not in capsys.readouterr().out

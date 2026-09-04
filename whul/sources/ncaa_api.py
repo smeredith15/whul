@@ -27,6 +27,27 @@ import pandas as pd
 import requests
 
 BASE = "https://ncaa-api.henrygd.me"
+
+#: Statuses worth waiting out rather than treating as "no games that day".
+RETRY_STATUSES = (429, 500, 502, 503, 504)
+RETRY_BACKOFF = 2.0
+
+#: Fraction of a season's dates that may fail before the pull is not a season.
+FAILED_DATE_LIMIT = 0.02
+
+#: Roughly how many games a team plays, used only to notice a pull that came
+#: back thin. Football is 12 regular-season games plus a bowl.
+EXPECTED_GAMES_PER_TEAM = {
+    "ncaaf": 12, "ncaam": 31, "ncaaw": 31,
+    "ncaabaseball": 55, "ncaasoftball": 55,
+}
+THIN_SEASON_LIMIT = 0.75
+
+
+class IncompleteSeason(RuntimeError):
+    """Too many dates failed for what came back to be called a season."""
+
+
 CACHE = Path("data/cache/ncaa_api")
 REQUEST_PAUSE = 0.5
 TIMEOUT = 30
@@ -99,6 +120,18 @@ def _team_conference(side: dict) -> str:
     return ""
 
 
+#: Game states that mean the result is settled. The API writes overtime into
+#: the same field -- "FINAL(OT)", "Final/2OT" -- so an equality test against
+#: "final" throws away every game that went to overtime, and throws it away
+#: as though it had not been played.
+FINAL_STATES = ("final", "complete")
+
+
+def _is_final(state) -> bool:
+    text = str(state or "").strip().lower()
+    return any(text.startswith(prefix) for prefix in FINAL_STATES)
+
+
 def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
     """Flatten one date's games into rows matching the ESPN adapter's shape.
 
@@ -132,7 +165,7 @@ def parse_scoreboard(payload: dict, league: str, day: date) -> list[dict]:
                 "game_id": inner.get("gameID") or inner.get("url", ""),
                 "game_date": day.isoformat(),
                 "season_type": 2,
-                "completed": str(inner.get("gameState", "")).lower() == "final",
+                "completed": _is_final(inner.get("gameState", "")),
                 "home_team": _team_name(home),
                 "away_team": _team_name(away),
                 "home_conference": _team_conference(home),
@@ -164,19 +197,88 @@ def load_team_results(
         print(f"  {league}: walking {len(days)} dates ...", flush=True)
 
     rows: list[dict] = []
+    failures: dict[str, int] = {}
     for index, day in enumerate(days):
         try:
-            rows.extend(parse_scoreboard(scoreboard(league, day), league, day))
-        except Exception:
-            continue
+            rows.extend(parse_scoreboard(_scoreboard_with_retry(league, day), league, day))
+        except Exception as exc:  # noqa: BLE001 -- one date must not lose the season
+            # Counted, never swallowed. This API is rate limited, and a date that
+            # 429s is a Saturday of missing games -- which is not an error
+            # anywhere downstream, just a season in which nobody played much.
+            label = type(exc).__name__
+            if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                label = f"HTTP {exc.response.status_code}"
+            failures[label] = failures.get(label, 0) + 1
         if verbose and index and index % 50 == 0:
             print(f"    {index}/{len(days)} dates, {len(rows):,} games", flush=True)
+
+    if failures:
+        detail = ", ".join(f"{n} x {why}" for why, n in sorted(failures.items()))
+        message = (
+            f"{league}: {sum(failures.values())} of {len(days)} dates could not be "
+            f"fetched ({detail})"
+        )
+        if verbose:
+            print(f"  ! {message}", flush=True)
+        if sum(failures.values()) > len(days) * FAILED_DATE_LIMIT:
+            raise IncompleteSeason(
+                message + ". Every missing date is missing games, and a benchmark "
+                "drawn from a partial season sets the bar too low for every team "
+                "in it. Re-run once the API stops refusing -- successful dates "
+                "are cached, so a re-run only fetches what is still missing."
+            )
 
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
     frame = frame[frame["completed"]]
-    return _once_each(frame, league, verbose)
+    frame = _once_each(frame, league, verbose)
+    if verbose:
+        _report_coverage(frame, league)
+    return frame
+
+
+def _scoreboard_with_retry(league: str, day: date, attempts: int = 3) -> dict:
+    """One date, retrying the errors that go away on their own.
+
+    A rate limit is a wait, not an answer. Without this the walk treats it as a
+    date with no games.
+    """
+    for attempt in range(attempts):
+        try:
+            return scoreboard(league, day)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status not in RETRY_STATUSES or attempt == attempts - 1:
+                raise
+        except requests.RequestException:
+            if attempt == attempts - 1:
+                raise
+        time.sleep(RETRY_BACKOFF * (2 ** attempt))
+    raise RuntimeError("unreachable")
+
+
+def _report_coverage(frame: pd.DataFrame, league: str) -> None:
+    """Games per team per season, which is how a half-empty pull shows itself.
+
+    A season total looks plausible at almost any size -- there is no number of
+    college football games that reads as obviously wrong. Games per team does:
+    everyone plays about twelve, and a pull averaging four has lost two thirds
+    of the season without failing at anything.
+    """
+    expected = EXPECTED_GAMES_PER_TEAM.get(league)
+    for season, games in frame.groupby("season"):
+        teams = set(games["home_team"]) | set(games["away_team"])
+        teams.discard("")
+        per_team = 2 * len(games) / len(teams) if teams else 0.0
+        flag = ""
+        if expected and per_team < expected * THIN_SEASON_LIMIT:
+            flag = f"  <-- thin; a full season is about {expected} per team"
+        print(
+            f"    {season}: {len(games):,} games, {len(teams)} teams, "
+            f"{per_team:.1f} per team{flag}",
+            flush=True,
+        )
 
 
 def _once_each(frame: pd.DataFrame, league: str, verbose: bool = True) -> pd.DataFrame:
