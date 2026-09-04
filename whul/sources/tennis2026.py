@@ -102,6 +102,17 @@ QUERY = """
 # turns each win into the beaten player's appearance as well.
 
 
+#: Where a copy carried over from the machine running the app tends to be put.
+#: The app's own checkout is not on every machine that scores tennis, so a copy
+#: dropped in this project's data directory is the ordinary case, not the
+#: exception -- and looking for it here is the difference between working and
+#: needing an environment variable nobody remembers to set.
+LOCAL_COPIES = (
+    Path("data") / "tennis2026-whul.db",
+    Path("data") / DB_NAME,
+)
+
+
 def candidate_paths(path: Path | None = None) -> list[Path]:
     """Everywhere the app's database might be, in the order worth trying."""
     if path is not None:
@@ -111,7 +122,7 @@ def candidate_paths(path: Path | None = None) -> list[Path]:
         return [Path(env)]
     roots = [Path(os.environ["WHUL_TENNIS2026"])] if os.environ.get("WHUL_TENNIS2026") \
         else list(CHECKOUT_CANDIDATES)
-    return [
+    return list(LOCAL_COPIES) + [
         Path(root).expanduser() / location
         for root in roots for location in DB_LOCATIONS
     ]

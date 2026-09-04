@@ -9,6 +9,7 @@ import sqlite3
 from datetime import date
 
 import pytest
+from pathlib import Path
 
 from whul.scoring import tennis
 from whul.sources import tennis2026
@@ -195,3 +196,31 @@ def test_title_casing_a_member_name_is_not_enough():
 
     assert "ATP_MASTERS_1000".replace("_", " ").title() not in CATEGORIES
     assert "Atp Masters 1000" not in CATEGORIES
+
+
+def test_a_copy_in_the_project_data_directory_is_found(tmp_path, monkeypatch):
+    """The app's checkout is not on every machine that scores tennis, so a copy
+    carried over and dropped in data/ is the ordinary case. Requiring an
+    environment variable for it means the nightly run works only when someone
+    remembered to export one."""
+    from whul.sources import tennis2026
+
+    monkeypatch.delenv("WHUL_TENNIS2026_DB", raising=False)
+    monkeypatch.delenv("WHUL_TENNIS2026", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    copy = tmp_path / "data" / "tennis2026-whul.db"
+    copy.touch()
+
+    assert tennis2026.default_path() == Path("data/tennis2026-whul.db")
+
+
+def test_an_explicit_path_still_wins(tmp_path, monkeypatch):
+    from whul.sources import tennis2026
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "tennis2026-whul.db").touch()
+    monkeypatch.setenv("WHUL_TENNIS2026_DB", "/somewhere/else.db")
+
+    assert tennis2026.default_path() == Path("/somewhere/else.db")
