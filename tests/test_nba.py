@@ -211,3 +211,54 @@ def test_postseason_games_counts_player_appearances():
     out = score_players(games).iloc[0]
     assert out["postseason_games"] == 3
     assert out["postseason_rate"] == pytest.approx(40.0)
+
+
+# --- team results from either feed -----------------------------------------
+
+def _espn_game(**kwargs):
+    """The shape `espn.load_team_results` returns."""
+    row = {
+        "season": 2025, "game_id": "1", "game_date": "2025-01-05",
+        "season_type": 2, "completed": True,
+        "home_team": "Boston Celtics", "away_team": "Miami Heat",
+        "home_score": 110.0, "away_score": 100.0, "notes": "",
+    }
+    row.update(kwargs)
+    return row
+
+
+def test_espn_game_rows_score_as_hoopr_ones_do():
+    """The hoopR archive stops at 2023, so a five-season pull needs ESPN. Both
+    feeds carry the same columns under one different name."""
+    import pandas as pd
+
+    from whul.scoring import nba
+
+    games = pd.DataFrame([_espn_game(game_id=str(i)) for i in range(20)])
+    scored = nba.score_teams(games)
+    assert set(scored["team"]) == {"Boston Celtics", "Miami Heat"}
+    assert scored.set_index("team").loc["Boston Celtics", "reg_wins"] == 20
+
+
+def test_an_unplayed_game_is_not_a_result_in_either_spelling():
+    import pandas as pd
+
+    from whul.scoring import nba
+
+    played = [_espn_game(game_id=str(i)) for i in range(20)]
+    unplayed = [
+        _espn_game(game_id=f"f{i}", completed=False, home_score=0.0, away_score=0.0)
+        for i in range(20)
+    ]
+    scored = nba.score_teams(pd.DataFrame(played + unplayed))
+    # A future fixture carries 0-0 rather than NA, so filtering on NA counts
+    # every one of them as a played tie.
+    assert scored.set_index("team").loc["Boston Celtics", "reg_wins"] == 20
+
+
+def test_the_nba_team_source_asks_espn_for_the_right_season():
+    from datetime import date
+
+    from whul.benchmark_sources import SOURCES
+
+    assert SOURCES["nba-teams"].seasons_for(date(2026, 12, 1)) == [2027]

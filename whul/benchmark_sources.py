@@ -127,10 +127,19 @@ def _nba_players():
 
 
 def _nba_teams():
-    from whul.scoring import nba
-    from whul.sources import hoopr
+    """Results from ESPN, not hoopR.
 
-    return lambda seasons: hoopr.load_schedule(seasons), nba.score_teams
+    The hoopR archive stops at 2023, so a five-season pull reaching 2024 and
+    2025 raised on a missing file and lost every NBA team -- which is why
+    coverage kept saying to run a command that could not work. ESPN's
+    scoreboard carries the same columns the scorer resolves, including the
+    season type that separates the regular season from the play-in, the
+    playoffs and the In-Season Tournament.
+    """
+    from whul.scoring import nba
+    from whul.sources import espn
+
+    return lambda seasons: espn.load_team_results("nba", seasons), nba.score_teams
 
 
 def _nhl_players():
@@ -310,7 +319,8 @@ SOURCES: dict[str, Source] = _register(
     Source("nba", "NBA", "Player", _nba_players,
            note="ESPN box scores, one date at a time -- slow to backfill"),
     Source("nba-teams", "NBA", "Team", _nba_teams,
-           note="hoopR archive stops at 2023"),
+           seasons_for=_espn_seasons("nba"),
+           note="ESPN scoreboard; hoopR's archive stops at 2023"),
     Source("nhl", "NHL", "Player", _nhl_players, scale_for="NHL",
            note="82-game history lifted to the 84-game 2026-27 season"),
     Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL"),

@@ -154,8 +154,15 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
     # carry a 0-0 score with status_type_completed False, so filtering on NA (as
     # the R script does) silently counts every future fixture as a played tie.
     # Harmless on a finished season, badly wrong during a live one.
-    if "status_type_completed" in schedule.columns:
-        completed = schedule["status_type_completed"].fillna(False).astype(bool).to_numpy()
+    # hoopR spells it status_type_completed and ESPN spells it completed; both
+    # mean the same thing and both feeds are used, hoopR for the seasons it
+    # archived and ESPN for everything after.
+    flag = next(
+        (c for c in ("status_type_completed", "completed") if c in schedule.columns),
+        None,
+    )
+    if flag is not None:
+        completed = schedule[flag].fillna(False).astype(bool).to_numpy()
         base = base[completed[: len(base)] if len(completed) == len(base) else completed]
     else:
         base = base[(base["home_score"] > 0) | (base["away_score"] > 0)]
