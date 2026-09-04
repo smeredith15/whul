@@ -130,7 +130,9 @@ def progression_chart(
         points = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(entry.values))
         parts.append(
             f'<polyline points="{points}" fill="none" stroke="{entry.color}" '
-            f'stroke-width="{LINE_WIDTH}" stroke-linejoin="round" stroke-linecap="round"/>'
+            f'data-manager="{escape(entry.name)}" '
+            f'stroke-width="{LINE_WIDTH}" stroke-linejoin="round" '
+            f'stroke-linecap="round"/>'
         )
 
     # End markers and direct labels. Labels are placed top-down in value order
@@ -145,7 +147,9 @@ def progression_chart(
         ex, ey = x(steps), y(entry.values[-1])
         parts.append(
             f'<circle cx="{ex:.1f}" cy="{ey:.1f}" r="{END_MARKER_RADIUS}" '
-            f'fill="{entry.color}" stroke="var(--surface-1)" stroke-width="{SURFACE_RING}"/>'
+            f'data-manager="{escape(entry.name)}" '
+            f'fill="{entry.color}" stroke="var(--surface-1)" '
+            f'stroke-width="{SURFACE_RING}"/>'
         )
         label_y = ey if previous is None else max(ey, previous + min_gap)
         previous = label_y
@@ -154,10 +158,12 @@ def progression_chart(
         if label_y - ey > 2:
             parts.append(
                 f'<path d="M{ex + 5:.1f},{ey:.1f} L{ex + 8:.1f},{label_y:.1f}" '
+                f'data-manager="{escape(entry.name)}" '
                 f'stroke="{entry.color}" stroke-width="1" fill="none" opacity="0.6"/>'
             )
         parts.append(
             f'<text x="{ex + 11:.1f}" y="{label_y + 4:.1f}" font-size="12" '
+            f'data-manager="{escape(entry.name)}" '
             f'fill="var(--text-secondary)">{escape(entry.name)} '
             f'<tspan fill="var(--text-primary)" font-weight="600">'
             f'{_fmt(entry.values[-1])}</tspan></text>'
@@ -201,6 +207,7 @@ def contribution_chart(
     width: int = 1000,
     chart_id: str = "contribution",
     depth: dict[str, int] | None = None,
+    top: float | None = None,
 ) -> str:
     """One row per category, one run of bars per manager within it.
 
@@ -245,7 +252,9 @@ def contribution_chart(
     plot_h = sum(heights.values())
     height = pad_top + plot_h + 28
     plot_w = width - pad_left - pad_right
-    top = _nice_ceiling(max((v[0] for v in values.values()), default=1))
+    # Shared across sections when one is passed in: a per-section ceiling would
+    # make two sections' bars look alike at different scores.
+    top = top or _nice_ceiling(max((v[0] for v in values.values()), default=1))
 
     parts = [
         f'<svg viewBox="0 0 {width} {height}" role="img" '
@@ -314,14 +323,86 @@ def contribution_chart(
     return '<div class="chart">' + "".join(parts) + "</div>"
 
 
-def legend(managers: list[tuple[str, int]]) -> str:
-    """Always present for two or more series, so identity is never colour alone."""
+def slot_sections(
+    rows: list[tuple[str, str, str]],
+    managers: list[tuple[str, int]],
+    values: dict[tuple[str, str], tuple[float, str, str]],
+    depth: dict[str, int] | None = None,
+    width: int = 1000,
+) -> str:
+    """One collapsible section per league, each with its own chart.
+
+    Twenty leagues open at once is a page that is long before it is
+    informative. ``<details>`` collapses without script and keeps working with
+    JavaScript off, which is what a static site wants; the script only
+    remembers which sections a reader left open, because a reader who collapses
+    fifteen leagues does not want to do it again tomorrow.
+
+    Each section draws its own chart rather than one chart being cut up, so a
+    collapsed league costs nothing to lay out and every chart is still on the
+    same 0-100 scale -- the ceiling is computed across all of them, not per
+    section, or two sections could not be compared.
+    """
+    if not rows or not managers:
+        return '<p class="sub">Nothing scored yet.</p>'
+
+    categories: list[str] = []
+    for category, _, _ in rows:
+        if category not in categories:
+            categories.append(category)
+    # One ceiling across every section: a per-section ceiling would make two
+    # sections' bars look alike at different scores.
+    top = _nice_ceiling(max((v[0] for v in values.values()), default=1))
+
+    parts = []
+    for category in categories:
+        block = [r for r in rows if r[0] == category]
+        held = sum(
+            1 for _, key, _ in block for manager, _ in managers
+            if (manager, key) in values
+        )
+        chart = contribution_chart(
+            block, managers, values, width=width,
+            chart_id=f"slots-{_slug(category)}", depth=depth, top=top,
+        )
+        parts.append(
+            f'<details class="leaguebox" data-league="{escape(category)}" open>'
+            f'<summary><span class="name">{escape(category)}</span>'
+            f'<span class="count">{held} slot{"" if held == 1 else "s"}</span>'
+            f'</summary>{chart}</details>'
+        )
+    return "".join(parts)
+
+
+def _slug(text: str) -> str:
+    return "".join(c.lower() if c.isalnum() else "-" for c in str(text)).strip("-")
+
+
+def legend(managers: list[tuple[str, int]], filterable: bool = False) -> str:
+    """Always present for two or more series, so identity is never colour alone.
+
+    ``filterable`` makes each entry a button that hides that manager across the
+    bars, the tables and the progression line together, because a reader
+    filtering one means all three. Rendered as real buttons so the filter is
+    reachable from a keyboard; with no script they are inert and the key still
+    reads as a key.
+    """
+    if not filterable:
+        items = "".join(
+            f'<span><i class="swatch" style="background: var(--series-{slot})"></i>'
+            f'{escape(name)}</span>'
+            for name, slot in managers
+        )
+        return f'<div class="legend">{items}</div>'
+
     items = "".join(
-        f'<span><i class="swatch" style="background: var(--series-{slot})"></i>'
-        f'{escape(name)}</span>'
+        f'<button type="button" class="legenditem" data-manager="{escape(name)}" '
+        f'aria-pressed="false">'
+        f'<i class="swatch" style="background: var(--series-{slot})"></i>'
+        f'{escape(name)}</button>'
         for name, slot in managers
     )
-    return f'<div class="legend">{items}</div>'
+    return f'<div class="legend filterable">{items}</div>'
 
 
 SCRIPT = """\
@@ -380,6 +461,56 @@ SCRIPT = """\
     box.addEventListener('mouseleave', function () {
       tip.style.opacity = '0';
       cross.setAttribute('opacity', '0');
+    });
+  });
+
+  // --- filtering by manager, and remembering collapsed leagues ---------
+  // Hiding a series is a class, not a redraw: the axis must not move when a
+  // manager is hidden, because a rescaling axis makes the remaining lines
+  // appear to move as well.
+  var hidden = {};
+  function applyFilter() {
+    document.querySelectorAll(
+      'svg [data-manager]'
+    ).forEach(function (node) {
+      node.classList.toggle('ghosted', !!hidden[node.dataset.manager]);
+    });
+    document.querySelectorAll('table[data-columns]').forEach(function (table) {
+      var names = JSON.parse(table.dataset.columns);
+      names.forEach(function (name, index) {
+        var off = !!hidden[name];
+        table.querySelectorAll('tr').forEach(function (row) {
+          var cell = row.children[index + 1];
+          if (cell) cell.classList.toggle('ghosted', off);
+        });
+      });
+    });
+  }
+  document.querySelectorAll('.legend.filterable .legenditem').forEach(function (item) {
+    item.addEventListener('click', function () {
+      var name = item.dataset.manager;
+      hidden[name] = !hidden[name];
+      document.querySelectorAll(
+        '.legend.filterable .legenditem[data-manager="' + name.replace(/"/g, '\\"') + '"]'
+      ).forEach(function (twin) {
+        twin.setAttribute('aria-pressed', hidden[name] ? 'true' : 'false');
+        twin.classList.toggle('off', !!hidden[name]);
+      });
+      applyFilter();
+    });
+  });
+
+  // Which leagues a reader left collapsed. Someone who closes fifteen of them
+  // does not want to do it again tomorrow.
+  var KEY = 'whul.collapsed';
+  var collapsed = {};
+  try { collapsed = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) {}
+  document.querySelectorAll('details.leaguebox').forEach(function (box) {
+    var name = box.dataset.league;
+    if (collapsed[name]) box.open = false;
+    box.addEventListener('toggle', function () {
+      collapsed[name] = !box.open;
+      try { localStorage.setItem(KEY, JSON.stringify(collapsed)); } catch (e) {}
     });
   });
 

@@ -643,3 +643,74 @@ def test_the_finish_list_survives_the_round_trip_through_the_database():
     assert _finish_list({"finishes": json.dumps(finishes)}) == finishes
     assert _finish_list({}) == []
     assert _finish_list({"finishes": "not json"}) == []
+
+
+# --- collapsing and filtering -------------------------------------------------
+
+SECTION_ROWS = [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2"),
+                ("PGA", "PGA 1", "#1")]
+SECTION_VALUES = {
+    ("Avery", "NFL 1"): (100.0, "a1", "P. Vance"),
+    ("Avery", "NFL 2"): (60.0, "a2", "R. Ellis"),
+    ("Avery", "PGA 1"): (40.0, "a3", "S. Kerr"),
+}
+
+
+def test_each_league_is_its_own_collapsible_section():
+    """Twenty leagues open at once is a page that is long before it is
+    informative."""
+    from whul.site import charts
+
+    html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES,
+                                depth={"NFL": 2, "PGA": 1})
+    assert html.count("<details class=\"leaguebox\"") == 2
+    assert 'data-league="NFL"' in html and 'data-league="PGA"' in html
+
+
+def test_sections_open_by_default_and_work_without_script():
+    """`<details>` collapses with no JavaScript, which is what a static site
+    wants; the script only remembers what a reader left closed."""
+    from whul.site import charts
+
+    html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES)
+    assert " open>" in html
+
+
+def test_every_section_shares_one_ceiling():
+    """A per-section ceiling would make two sections' bars look alike at
+    different scores, which is the one thing a common scale is for."""
+    from whul.site import charts
+
+    html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES,
+                                depth={"NFL": 2, "PGA": 1})
+    # The 100-point bar is full width in its section; the 40-point one is not.
+    assert html.count('width="794.0"') == 1
+
+
+def test_a_filterable_legend_is_made_of_buttons():
+    """So the filter is reachable from a keyboard."""
+    from whul.site import charts
+
+    html = charts.legend([("Avery", 1)], filterable=True)
+    assert "<button" in html and 'data-manager="Avery"' in html
+    assert 'aria-pressed="false"' in html
+
+
+def test_a_plain_legend_is_still_just_a_key():
+    from whul.site import charts
+
+    assert "<button" not in charts.legend([("Avery", 1)])
+
+
+def test_a_progression_line_is_addressable_by_manager():
+    """Hiding a manager has to reach the line, its end marker and its label --
+    a hidden line with a floating label reads as a bug."""
+    from datetime import date
+
+    from whul.site import charts
+
+    svg = charts.progression_chart(
+        [date(2026, 8, 21), date(2026, 8, 22)],
+        [charts.Series("Avery", 1, [1.0, 2.0])],
+    )
+    assert svg.count('data-manager="Avery"') >= 3

@@ -303,8 +303,17 @@ def _standings_table(table: pd.DataFrame, mvps: dict[str, str], managers: list[s
     )
 
 
-def _table_view(summary: str, header: list[str], rows: list[list[str]]) -> str:
-    """A chart's values as a table -- the readable-without-hover fallback."""
+def _table_view(
+    summary: str, header: list[str], rows: list[list[str]],
+    columns: list[str] | None = None,
+) -> str:
+    """A chart's values as a table -- the readable-without-hover fallback.
+
+    ``columns`` names the per-manager columns in order, so hiding a manager in
+    the key hides them here too: a reader filtering the chart means the table
+    as well, and a table still listing someone the chart has dropped is the
+    kind of half-applied filter that gets read as a bug.
+    """
     head = "".join(
         f"<th class='num'>{escape(h)}</th>" if i else f"<th>{escape(h)}</th>"
         for i, h in enumerate(header)
@@ -316,9 +325,13 @@ def _table_view(summary: str, header: list[str], rows: list[list[str]]) -> str:
         ) + "</tr>"
         for row in rows
     )
+    named = (
+        f' data-columns="{escape(json.dumps(columns))}"' if columns else ""
+    )
     return (
         f"<details class='tableview'><summary>{escape(summary)}</summary>"
-        f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></details>"
+        f"<table{named}><thead><tr>{head}</tr></thead>"
+        f"<tbody>{body}</tbody></table></details>"
     )
 
 
@@ -577,20 +590,23 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 <div class="card">
   <h2>Progression</h2>
   <p class="sub">Total score by day. Hover for every manager on a given date.</p>
-  {charts.legend(slotted)}
+  {charts.legend(slotted, filterable=True)}
   {charts.progression_chart(days, series)}
-  {_table_view("Show as a table", ["Date"] + [s.name for s in series], progression_rows)}
+  {_table_view("Show as a table", ["Date"] + [s.name for s in series],
+               progression_rows, columns=[s.name for s in series])}
 </div>
 
 <div class="card">
   <h2>Every counting slot</h2>
-  <p class="sub">One row per category. Each manager's slots sit together in
-    their own colour, ranked best first, so a category reads as a block. Every
-    bar is a single normalized score, so any two are directly comparable. Click
-    a bar for the player behind it.</p>
-  {charts.legend(slotted)}
-  {charts.contribution_chart(slot_rows, slotted, values, depth=slot_depth)}
-  {_table_view("Show as a table", ["Slot"] + [m for m, _ in slotted], bar_rows)}
+  <p class="sub">One section per league, each collapsible. A manager's slots sit
+    together in their own colour, ranked best first, so a category reads as a
+    block. Every bar is a single normalized score, so any two are directly
+    comparable. Click a manager in the key to hide them; click a bar for the
+    player behind it.</p>
+  {charts.legend(slotted, filterable=True)}
+  {charts.slot_sections(slot_rows, slotted, values, depth=slot_depth)}
+  {_table_view("Show as a table", ["Slot"] + [m for m, _ in slotted], bar_rows,
+               columns=[m for m, _ in slotted])}
 </div>
 {_profile_payload(profiles)}
 """
