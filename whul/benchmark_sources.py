@@ -21,6 +21,7 @@ those groups where they differ from ``league``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Callable
 
 import pandas as pd
@@ -42,6 +43,10 @@ class Source:
     #: ``league``. A tennis pull scores ATP and WTA in one pass and each is
     #: normalized against itself, so one source yields two groups.
     produces: tuple[str, ...] = ()
+    #: Which season number to ask a source for on a given day, where that is
+    #: not simply the calendar year. Set for the feeds that number a season by
+    #: the year it ends in.
+    seasons_for: Callable[[date], list[int]] | None = None
     #: Where the *current* season comes from, when that is not where the
     #: history comes from. Tennis history is a static snapshot and the live feed
     #: is a rolling fortnight; neither can do the other's job.
@@ -270,6 +275,16 @@ def _tennis_players():
     return lambda seasons: snapshot.load_matches(seasons), tennis.match_events
 
 
+def _espn_seasons(key: str):
+    """This feed numbers some seasons by the year they end in."""
+    def seasons(day: date) -> list[int]:
+        from whul.sources import espn
+
+        return [espn.season_label(key, day)]
+
+    return seasons
+
+
 NCAA_CATEGORIES = {
     "ncaaf": "NCAAF", "ncaam": "NCAAM", "ncaaw": "NCAAW",
     "ncaabaseball": "NCAA Baseball", "ncaasoftball": "NCAA Softball",
@@ -307,11 +322,13 @@ SOURCES: dict[str, Source] = _register(
            windowed=True, produces=("ATP", "WTA"),
            note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
-        Source(key, category, "Team", _ncaa(key, category))
+        Source(key, category, "Team", _ncaa(key, category),
+               seasons_for=_espn_seasons(key))
         for key, category in NCAA_CATEGORIES.items()
     ],
     *[
-        Source(key, category, "Team", _soccer(key, category))
+        Source(key, category, "Team", _soccer(key, category),
+               seasons_for=_espn_seasons(key))
         for key, category in SOCCER_CATEGORIES.items()
     ],
 )

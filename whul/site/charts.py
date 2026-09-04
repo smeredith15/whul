@@ -116,7 +116,11 @@ def progression_chart(
         )
 
     # Date axis: first, middle and last only -- one label per day is unreadable.
-    for index in {0, steps // 2, steps}:
+    # Indexed off the days themselves rather than off ``steps``, which is
+    # floored at 1 so the x-scale never divides by zero: on the season's first
+    # day there is one day and no ``days[1]`` to label it with.
+    last = len(days) - 1
+    for index in sorted({0, last // 2, last}):
         parts.append(
             f'<text x="{x(index):.1f}" y="{height - 12}" text-anchor="middle" '
             f'font-size="11" fill="var(--muted)">{days[index].strftime("%d %b %Y")}</text>'

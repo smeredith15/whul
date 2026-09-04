@@ -373,3 +373,30 @@ def test_the_standings_total_ignores_empty_slots(site):
     assert ">NaN<" not in html
     for row in re.findall(r"<td class='num'>([^<]*)</td>", html):
         assert row.strip().lower() != "nan"
+
+
+def test_the_progression_chart_survives_the_seasons_first_day():
+    """One day of scores is what the first live run produces, and it used to
+    raise: the x-scale is floored at one step, so the axis asked for a second
+    day that does not exist."""
+    from datetime import date
+
+    from whul.site import charts
+
+    svg = charts.progression_chart(
+        [date(2026, 8, 21)], [charts.Series("Tyler", 1, [12.5])]
+    )
+    assert "21 Aug 2026" in svg
+    assert svg.count("21 Aug 2026") == 1, "one day is one label, not three"
+
+
+def test_the_progression_chart_labels_both_ends_of_two_days():
+    from datetime import date
+
+    from whul.site import charts
+
+    svg = charts.progression_chart(
+        [date(2026, 8, 21), date(2026, 8, 22)],
+        [charts.Series("Tyler", 1, [12.5, 20.0])],
+    )
+    assert "21 Aug 2026" in svg and "22 Aug 2026" in svg

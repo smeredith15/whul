@@ -263,3 +263,23 @@ def test_a_loaded_version_is_shaped_for_apply_benchmarks(store):
     })
     out = apply_benchmarks(scored, bench, "Player")
     assert out.iloc[0]["scaled_score"] == pytest.approx(100.0)
+
+
+def test_a_payload_naming_a_table_column_does_not_duplicate_it(store):
+    """The scored rows carry `league` and `season`, and so does the table. Two
+    columns of one name make pandas drop one without saying which, and the
+    profile window loses stat lines it never reports missing."""
+    add_asset(store)
+    store.record_stats(
+        [{"asset_id": "nfl-lamar-jackson", "league": "NFL", "season": "2026-27",
+          "passing_yards": 4172.0}],
+        source="nflverse", season="2026-27", as_of="2026-09-04", league="NFL",
+    )
+
+    frame = store.read_stats("2026-27", "2026-09-04")
+    assert list(frame.columns).count("league") == 1
+    assert list(frame.columns).count("season") == 1
+    assert frame.loc[0, "passing_yards"] == 4172.0
+    # The table's own value wins, and nothing is silently omitted.
+    assert frame.loc[0, "league"] == "NFL"
+    assert frame.to_dict("records")[0]["passing_yards"] == 4172.0

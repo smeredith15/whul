@@ -20,6 +20,7 @@ class FakeSource:
     league: str = "NFL"
     asset_type: str = "Player"
     produces: tuple[str, ...] = ()
+    seasons_for: object = None
     windowed: bool = False
     live: Callable | None = None
     build: Callable = lambda: (lambda seasons: pd.DataFrame(), lambda raw: raw)
@@ -33,10 +34,13 @@ def store():
 def rostered(store, *names, league="NFL", season="2026-27", asset_type="Player"):
     rosters.add_manager(store, "TG")
     rosters.create_slots(store, "TG", season)
+    category = {"NFL": "NFL", "Tennis": "Tennis"}.get(
+        league, "Club Soccer Top 3" if "Premier" in league else "Tennis"
+    )
     slots = store.query(
         "SELECT slot_id FROM roster_slots WHERE season = ? AND asset_type = ? "
         "AND category = ?",
-        (season, asset_type, "NFL" if league == "NFL" else "Tennis"),
+        (season, asset_type, category),
     )
     for index, name in enumerate(names):
         asset_id = f"a{index}"
@@ -182,3 +186,42 @@ def test_running_twice_on_one_day_replaces_rather_than_doubles(store):
 
     assert len(store.query("SELECT * FROM daily_scores")) == 1
     assert len(store.query("SELECT * FROM raw_stats")) == 1
+
+
+def test_a_feed_that_numbers_a_season_by_its_end_year_is_asked_for_the_right_one(store):
+    """European football labels 2026-27 as season 2027. Asking for the calendar
+    year returns the season that finished in May -- a full set of results, from
+    last year, which is the kind of wrong answer that looks right."""
+    asked = []
+
+    def build():
+        def load(seasons):
+            asked.append(list(seasons))
+            return pd.DataFrame([
+                {"team": "Arsenal", "league": "Premier League",
+                 "date": "2026-08-22", "total_points": 40.0},
+            ])
+        return load, (lambda raw: raw)
+
+    source = FakeSource(
+        key="epl", league="Premier League", asset_type="Team",
+        build=build, seasons_for=lambda day: [day.year + 1],
+    )
+    rostered(store, "Arsenal", league="Premier League", asset_type="Team")
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert asked == [[2027]]
+
+
+def test_results_before_a_leagues_start_date_are_dropped(store):
+    """La Liga was three matchdays old when the league year opened; the
+    Premier League's first fixtures fall the week before its 8/21 start."""
+    source = source_over(
+        [{"team": "Arsenal", "league": "Premier League", "date": "2026-08-15",
+          "total_points": 40.0},
+         {"team": "Arsenal", "league": "Premier League", "date": "2026-08-22",
+          "total_points": 40.0}],
+        key="epl", league="Premier League", asset_type="Team",
+    )
+    rostered(store, "Arsenal", league="Premier League", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert report.pulled == 1

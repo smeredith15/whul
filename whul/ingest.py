@@ -180,8 +180,9 @@ def _pull(source, as_of: date, verbose: bool) -> pd.DataFrame:
     from whul.scoring import window
 
     load, score = (source.live or source.build)()
+    seasons = source.seasons_for(as_of) if source.seasons_for else [as_of.year]
     if not source.windowed:
-        raw = load([as_of.year])
+        raw = load(seasons)
         if raw is None or raw.empty:
             return pd.DataFrame()
         return score(_from_season_start(raw, source.league))

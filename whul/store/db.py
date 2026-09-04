@@ -254,7 +254,13 @@ class Store:
             return rows
         expanded = pd.json_normalize(rows["stats"].map(json.loads))
         expanded.index = rows.index
-        return pd.concat([rows.drop(columns=["stats"]), expanded], axis=1)
+        kept = rows.drop(columns=["stats"])
+        # A payload naming something the table already has -- league, season --
+        # would produce two columns of that name, and pandas then drops one
+        # without saying which. The table's own value is the authoritative copy,
+        # so the payload's is discarded rather than duplicated.
+        expanded = expanded.drop(columns=[c for c in expanded.columns if c in kept.columns])
+        return pd.concat([kept, expanded], axis=1)
 
     def record_source_status(
         self,

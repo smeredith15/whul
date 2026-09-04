@@ -182,6 +182,21 @@ def season_dates(season: int, league: str = "nba") -> list[date]:
     return [start + timedelta(days=n) for n in range((end - start).days + 1)]
 
 
+def season_label(league: str, day: date) -> int:
+    """The season number a date belongs to, in this feed's numbering.
+
+    European football and the college seasons are labelled by the year they
+    *end* in, so a match in September 2026 is part of season 2027. Asking for
+    the calendar year instead returns the season that finished in May -- a full
+    set of results, from last year, which is exactly the kind of wrong answer
+    that looks right.
+    """
+    start_md, _, ends_in_label_year = SEASON_WINDOWS[league]
+    if not ends_in_label_year:
+        return day.year
+    return day.year + 1 if (day.month, day.day) >= start_md else day.year
+
+
 def scoreboard_variants(league: str, day: date) -> list[dict]:
     """Request shapes to try, most informative first.
 
