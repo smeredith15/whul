@@ -593,3 +593,76 @@ def test_discovery_asks_for_a_week_and_a_range_as_well_as_a_date(monkeypatch):
 
     assert any("week" in p for p in asked), "a date query is not how CFB is organised"
     assert any("-" in str(p.get("dates", "")) for p in asked), "nor is one day"
+
+
+# --- a team's own schedule -------------------------------------------------
+
+def test_a_score_is_read_however_the_endpoint_spells_it():
+    """The scoreboard puts a bare string here and the team schedule an object.
+    Reading only one turns every game from the other into a fixture."""
+    from whul.sources.espn import _score_of
+
+    assert _score_of({"score": "24"}) == 24.0
+    assert _score_of({"score": {"value": 31, "displayValue": "31"}}) == 31.0
+    assert _score_of({"score": {"displayValue": "17"}}) == 17.0
+    assert _score_of({}) is None
+    assert _score_of({"score": None}) is None
+
+
+def test_a_team_schedule_becomes_the_rows_the_scorers_read(monkeypatch):
+    from whul.sources import espn
+
+    payload = {"team": {"displayName": "Ohio State Buckeyes"}, "events": [{
+        "id": "401", "date": "2026-08-30T23:00Z", "name": "Texas at Ohio State",
+        "seasonType": {"id": 2},
+        "competitions": [{
+            "status": {"type": {"completed": True}},
+            "competitors": [
+                {"homeAway": "home", "score": {"value": 31},
+                 "team": {"displayName": "Ohio State Buckeyes"}},
+                {"homeAway": "away", "score": {"value": 17},
+                 "team": {"displayName": "Texas Longhorns"}},
+            ],
+        }],
+    }]}
+    monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: payload)
+
+    rows = espn.load_team_schedule("ncaaf", "194", 2026)
+    assert len(rows) == 1
+    row = rows.iloc[0]
+    assert row["home_team"] == "Ohio State Buckeyes" and row["home_score"] == 31.0
+    assert row["away_team"] == "Texas Longhorns" and row["away_score"] == 17.0
+    assert bool(row["completed"]) and row["game_date"] == "2026-08-30"
+
+
+def test_two_rostered_teams_playing_each_other_is_one_game(monkeypatch):
+    from whul.sources import espn
+
+    game = {"season": 2026, "game_id": "401", "game_date": "2026-08-30",
+            "season_type": 2, "completed": True,
+            "home_team": "Ohio State Buckeyes", "away_team": "Texas Longhorns",
+            "home_conference": "", "away_conference": "",
+            "home_score": 31.0, "away_score": 17.0, "notes": ""}
+    monkeypatch.setattr(espn, "team_index", lambda league: {
+        "Ohio State Buckeyes": "194", "Texas Longhorns": "251"})
+    monkeypatch.setattr(
+        espn, "load_team_schedule",
+        lambda league, team_id, season: pd.DataFrame([game]),
+    )
+
+    rows = espn.load_rostered_schedules(
+        "ncaaf", [2026], ["Ohio State Buckeyes", "Texas Longhorns"], verbose=False
+    )
+    assert len(rows) == 1
+
+
+def test_a_team_the_feed_does_not_know_is_named(monkeypatch, capsys):
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "team_index", lambda league: {"Texas Longhorns": "251"})
+    monkeypatch.setattr(
+        espn, "load_team_schedule",
+        lambda league, team_id, season: pd.DataFrame(),
+    )
+    espn.load_rostered_schedules("ncaaf", [2026], ["Nowhere State"], verbose=True)
+    assert "Nowhere State" in capsys.readouterr().out

@@ -78,7 +78,7 @@ def ingest(
         return report
 
     try:
-        scored = _pull(source, as_of, verbose)
+        scored = _pull(source, as_of, verbose, names=list(assets["display_name"]))
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
         return report
@@ -174,15 +174,25 @@ def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
     return raw[days.isna() | (days.dt.date >= season_start(league))]
 
 
-def _pull(source, as_of: date, verbose: bool) -> pd.DataFrame:
+def _pull(
+    source, as_of: date, verbose: bool, names: list[str] | None = None
+) -> pd.DataFrame:
     """Season-to-date totals for one league, however that league counts them."""
     from whul.config.league import season_start
     from whul.scoring import window
 
+    live = source.live is not None
     load, score = (source.live or source.build)()
     seasons = source.seasons_for(as_of) if source.seasons_for else [as_of.year]
+    # A roster-scoped loader is asked only for what the roster holds, which for
+    # a team league is eight requests rather than a season of dates.
+    fetch = (
+        (lambda years: load(years, names or []))
+        if live and source.roster_scoped
+        else load
+    )
     if not source.windowed:
-        raw = load(seasons)
+        raw = fetch(seasons)
         if raw is None or raw.empty:
             return pd.DataFrame()
         return score(_from_season_start(raw, source.league))
@@ -192,7 +202,7 @@ def _pull(source, as_of: date, verbose: bool) -> pd.DataFrame:
     # benchmark was drawn over -- and over each produced league's own window,
     # since two series sharing a pull need not start on the same day.
     years = sorted({season_start(source.league).year, as_of.year})
-    events = score(load(years))
+    events = score(fetch(years))
     if events is None or events.empty:
         return pd.DataFrame()
 

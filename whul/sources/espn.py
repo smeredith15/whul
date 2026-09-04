@@ -387,6 +387,126 @@ def _event_rows(event: dict, league: str, season: int, day: date) -> dict | None
     }
 
 
+def _score_of(entry: dict) -> float | None:
+    """A competitor's score, however this endpoint spells it.
+
+    The scoreboard puts a bare string here and the team schedule an object with
+    ``value`` and ``displayValue``. Reading only one of them turns every game
+    from the other endpoint into a fixture with no result.
+    """
+    value = entry.get("score")
+    if isinstance(value, dict):
+        value = value.get("value", value.get("displayValue"))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def team_index(league: str) -> dict[str, str]:
+    """``{team display name: ESPN id}`` for a league.
+
+    The schedule endpoint takes an id and answers 400 to a slug, so a roster
+    written in names needs this to reach it.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    payload = _get(
+        f"{BASE}/{sport}/{path}/teams", {"limit": 1000},
+        cache_key=f"{league}/teams-index",
+    )
+    found: dict[str, str] = {}
+    for group in payload.get("sports", []):
+        for entry in group.get("leagues", []):
+            for row in entry.get("teams", []):
+                team = row.get("team") or {}
+                name = team.get("displayName") or team.get("name") or ""
+                if name and team.get("id"):
+                    found[str(name)] = str(team["id"])
+    return found
+
+
+def load_team_schedule(league: str, team_id: str, season: int) -> pd.DataFrame:
+    """One team's whole season, in the shape the scorers read.
+
+    A team's own schedule cannot be short of its own games, which the
+    scoreboard can: it caps at twenty-five events a request and ignores both
+    ``limit`` and ``page``, so it returns the featured games rather than the
+    slate. For a roster of eight teams this is eight requests and complete.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    payload = _get(
+        f"{BASE}/{sport}/{path}/teams/{team_id}/schedule",
+        {"season": season},
+        cache_key=None,   # a season in progress changes daily
+    )
+    rows: list[dict] = []
+    for event in payload.get("events", []):
+        competition = (event.get("competitions") or [{}])[0]
+        status = (competition.get("status") or {}).get("type", {}) or {}
+        home, away = _competitor(competition, "home"), _competitor(competition, "away")
+        if not home or not away:
+            continue
+        day = str(event.get("date", ""))[:10]
+        rows.append({
+            "season": season,
+            "game_id": str(event.get("id", "")),
+            "game_date": day,
+            "season_type": int((event.get("seasonType") or {}).get("id", 2) or 2),
+            "completed": bool(status.get("completed")),
+            "home_team": (home.get("team") or {}).get("displayName", ""),
+            "away_team": (away.get("team") or {}).get("displayName", ""),
+            "home_conference": _conference(home),
+            "away_conference": _conference(away),
+            "home_score": _score_of(home),
+            "away_score": _score_of(away),
+            "notes": str(event.get("name", "")),
+        })
+    return pd.DataFrame(rows)
+
+
+def load_rostered_schedules(
+    league: str, seasons: list[int], names: list[str], verbose: bool = True
+) -> pd.DataFrame:
+    """Every game the named teams played, one request per team per season.
+
+    Names that the feed does not know are reported rather than skipped: a
+    rostered team quietly absent scores nothing, and nothing else would say so.
+    """
+    index = team_index(league)
+    lookup = {_match_key(name): team_id for name, team_id in index.items()}
+
+    frames, missing = [], []
+    for name in names:
+        team_id = lookup.get(_match_key(name))
+        if not team_id:
+            missing.append(name)
+            continue
+        for season in seasons:
+            try:
+                frames.append(load_team_schedule(league, team_id, season))
+            except Exception as exc:  # noqa: BLE001 -- one team must not lose the rest
+                if verbose:
+                    print(f"  {league}: {name} season {season} failed: "
+                          f"{type(exc).__name__}", flush=True)
+    if missing and verbose:
+        print(
+            f"  {league}: no ESPN team called {', '.join(missing)} -- "
+            f"they will score nothing",
+            flush=True,
+        )
+    if not frames:
+        return pd.DataFrame()
+    both = pd.concat(frames, ignore_index=True)
+    # Two rostered teams playing each other return the same game twice.
+    return both.drop_duplicates(subset=["game_id"]).reset_index(drop=True)
+
+
+def _match_key(name: str) -> str:
+    from whul.resolve import normalize_team
+
+    return normalize_team(name)
+
+
 def load_team_results(league: str, seasons: list[int], verbose: bool = True) -> pd.DataFrame:
     """Completed game results for whole seasons -- no box scores.
 

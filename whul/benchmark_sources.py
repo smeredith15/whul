@@ -47,6 +47,11 @@ class Source:
     #: not simply the calendar year. Set for the feeds that number a season by
     #: the year it ends in.
     seasons_for: Callable[[date], list[int]] | None = None
+    #: True when the live loader takes the rostered names as a second argument.
+    #: A team league is far cheaper and far more complete pulled team by team
+    #: than by walking dates -- eight requests instead of a season of them, and
+    #: a team's own schedule cannot be short of its own games.
+    roster_scoped: bool = False
     #: Where the *current* season comes from, when that is not where the
     #: history comes from. Tennis history is a static snapshot and the live feed
     #: is a rolling fortnight; neither can do the other's job.
@@ -191,20 +196,25 @@ def _ncaa(key: str, category: str):
 
 
 def _ncaa_live(key: str, category: str):
-    """Results from ESPN for the season being played.
+    """The rostered teams' own schedules, from ESPN.
 
-    The NCAA API is the historical source because it states the division in the
-    URL, which ESPN cannot do -- but for the current season it serves fixtures
-    without results: every 2026 game comes back `completed: false` with no
-    score, while 2024 comes back final. ESPN has the results, and its group
-    filter is close enough for a live pull, where the only teams that matter
-    are the eight on a roster.
+    Neither of the obvious sources works for a season in progress. The NCAA API
+    serves fixtures without results -- every 2026 game comes back not completed
+    with no score, while 2025 comes back final -- and that is a limit rather
+    than a lag: the same date still had no scores a week later. ESPN's
+    scoreboard has the results but caps at twenty-five events a request and
+    ignores both ``limit`` and ``page``, so it returns the featured games; the
+    big programs appear and a smaller fixture does not, which is the shape of
+    mistake that scores a team short without saying so.
+
+    A team's own schedule has neither problem. Eight rostered teams is eight
+    requests, and no cap can hide a team's own game from it.
     """
     def build():
         from whul.sources import espn
 
         return (
-            lambda seasons: espn.load_team_results(key, seasons),
+            lambda seasons, names: espn.load_rostered_schedules(key, seasons, names),
             _ncaa_score(category),
         )
 
@@ -368,7 +378,8 @@ SOURCES: dict[str, Source] = _register(
            note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
         Source(key, category, "Team", _ncaa(key, category),
-               live=_ncaa_live(key, category), seasons_for=_espn_seasons(key))
+               live=_ncaa_live(key, category), roster_scoped=True,
+               seasons_for=_espn_seasons(key))
         for key, category in NCAA_CATEGORIES.items()
     ],
     *[

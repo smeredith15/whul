@@ -21,6 +21,7 @@ class FakeSource:
     asset_type: str = "Player"
     produces: tuple[str, ...] = ()
     seasons_for: object = None
+    roster_scoped: bool = False
     windowed: bool = False
     live: Callable | None = None
     build: Callable = lambda: (lambda seasons: pd.DataFrame(), lambda raw: raw)
@@ -34,7 +35,7 @@ def store():
 def rostered(store, *names, league="NFL", season="2026-27", asset_type="Player"):
     rosters.add_manager(store, "TG")
     rosters.create_slots(store, "TG", season)
-    category = {"NFL": "NFL", "Tennis": "Tennis"}.get(
+    category = {"NFL": "NFL", "Tennis": "Tennis", "NCAAF": "NCAAF"}.get(
         league, "Club Soccer Top 3" if "Premier" in league else "Tennis"
     )
     slots = store.query(
@@ -267,3 +268,47 @@ def test_an_empty_feed_is_called_a_source_problem(tmp_path, capsys):
     with mock.patch.object(ingest_module, "_pull", return_value=pd.DataFrame()):
         assert main(["feed-names", "tennis", "--db", str(db), "--season", "2026-27"]) == 1
     assert "not a spelling one" in capsys.readouterr().out
+
+
+def test_a_roster_scoped_source_is_asked_only_for_what_is_rostered(store):
+    """A team league pulled team by team is eight requests rather than a season
+    of dates, and a team's own schedule cannot be short of its own games."""
+    asked = []
+
+    def build():
+        def load(seasons, names):
+            asked.append(sorted(names))
+            return pd.DataFrame([
+                {"team": n, "league": "NCAAF", "game_date": "2026-08-30",
+                 "total_points": 40.0} for n in names
+            ])
+        return load, (lambda raw: raw)
+
+    rostered(store, "Ohio State Buckeyes", "Texas Longhorns",
+             league="NCAAF", asset_type="Team")
+    source = FakeSource(
+        key="ncaaf", league="NCAAF", asset_type="Team",
+        build=lambda: (lambda s: pd.DataFrame(), lambda raw: raw),
+        live=build, roster_scoped=True,
+    )
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+
+    assert asked == [["Ohio State Buckeyes", "Texas Longhorns"]]
+    assert report.matched == 2
+
+
+def test_a_source_that_is_not_roster_scoped_is_called_the_old_way(store):
+    calls = []
+
+    def build():
+        def load(seasons):
+            calls.append(seasons)
+            return pd.DataFrame([
+                {"player": "Josh Allen", "league": "NFL", "role": "QB",
+                 "total_points": 200.0}])
+        return load, (lambda raw: raw)
+
+    rostered(store, "Josh Allen")
+    source = FakeSource(build=build, live=build)
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert calls == [[2026]]
