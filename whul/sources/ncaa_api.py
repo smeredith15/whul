@@ -383,16 +383,23 @@ def _report_coverage(frame: pd.DataFrame, league: str) -> None:
     """
     expected = EXPECTED_GAMES_PER_TEAM.get(league)
     for season, games in frame.groupby("season"):
-        teams = set(games["home_team"]) | set(games["away_team"])
-        teams.discard("")
-        per_team = 2 * len(games) / len(teams) if teams else 0.0
+        counts = pd.concat([games["home_team"], games["away_team"]]).value_counts()
+        counts = counts[counts.index.astype(str) != ""]
+        # The median, not the mean. A division's scoreboard carries its
+        # opponents too -- about a hundred FCS teams appear in FBS results
+        # having played the single game that put them there -- and averaged in,
+        # they drag a complete season of 13.8 games a team down to 8.3, which
+        # reads as a pull that lost a third of its games. The median ignores
+        # them, because they are a minority of one-game visitors.
+        middle = float(counts.median()) if len(counts) else 0.0
         flag = ""
-        if expected and per_team < expected * THIN_SEASON_LIMIT:
+        if expected and middle < expected * THIN_SEASON_LIMIT:
             flag = f"  <-- thin; a full season is about {expected} per team"
         dates = games["game_date"].nunique() if "game_date" in games else 0
         print(
-            f"    {season}: {len(games):,} games, {len(teams)} teams, "
-            f"{per_team:.1f} per team, {dates} distinct game dates{flag}",
+            f"    {season}: {len(games):,} games, {len(counts)} teams, "
+            f"{middle:.0f} games per team (median), "
+            f"{dates} distinct game dates{flag}",
             flush=True,
         )
 

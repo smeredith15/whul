@@ -340,6 +340,27 @@ def test_a_404_is_not_retried(monkeypatch):
     assert len(calls) == 1
 
 
+def test_a_divisions_one_game_visitors_do_not_read_as_a_thin_season(capsys):
+    """A division's scoreboard carries its opponents too: about a hundred FCS
+    teams appear in FBS results having played the single game that put them
+    there. Averaged in, a complete season of 13.8 games a team reads as 8.3 --
+    a pull that has apparently lost a third of its games. The median ignores
+    them, because they are a minority of one-game visitors."""
+    import pandas as pd
+
+    games = [
+        {"season": 2024, "game_date": f"2024-09-{d:02d}",
+         "home_team": f"FBS{i}", "away_team": f"FBS{(i + d) % 40}"}
+        for i in range(40) for d in range(1, 13)
+    ] + [
+        {"season": 2024, "game_date": "2024-09-01",
+         "home_team": f"FBS{i}", "away_team": f"FCS{i}"}
+        for i in range(30)
+    ]
+    ncaa_api._report_coverage(pd.DataFrame(games), "ncaaf")
+    assert "thin" not in capsys.readouterr().out
+
+
 def test_a_thin_season_says_so(capsys):
     """A season total looks plausible at almost any size -- there is no number
     of college football games that reads as obviously wrong. Games per team
