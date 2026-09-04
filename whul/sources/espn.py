@@ -114,23 +114,35 @@ DOMESTIC_CUPS = {
     "nwsl": (),
 }
 
-#: (start month, day) -> (end month, day), and whether the season label is the
-#: calendar year it ends in. Football is labelled by the year it starts.
+#: (start month, day) -> (end month, day) -> how the season is numbered.
+#:
+#:   "within" -- it begins and ends inside the year it is named for.
+#:   "ends"   -- it crosses new year and is named for the year it finishes in,
+#:               which is how college basketball, the NBA and European football
+#:               are all spoken of and indexed.
+#:   "starts" -- it crosses new year and is named for the year it begins, which
+#:               is how college football is spoken of: the 2026 season runs to
+#:               January 2027, and ESPN indexes it under 2026.
+#:
+#: The distinction was previously a boolean with only the first two cases, and
+#: football was set to "ends" while the comment above it said the opposite. That
+#: asked ESPN for next season and grouped the COVID-shortened 2020 season under
+#: 2021, where a five-season reach picked it up.
 SEASON_WINDOWS = {
-    "ncaaf": ((8, 1), (1, 31), True),
-    "ncaam": ((11, 1), (4, 15), True),
-    "ncaaw": ((11, 1), (4, 15), True),
-    "ncaabaseball": ((2, 1), (6, 30), False),
-    "ncaasoftball": ((2, 1), (6, 30), False),
+    "ncaaf": ((8, 1), (1, 31), "starts"),
+    "ncaam": ((11, 1), (4, 15), "ends"),
+    "ncaaw": ((11, 1), (4, 15), "ends"),
+    "ncaabaseball": ((2, 1), (6, 30), "within"),
+    "ncaasoftball": ((2, 1), (6, 30), "within"),
     # European seasons run August to May and are labelled by the year they end.
-    **{key: ((8, 1), (5, 31), True) for key in
+    **{key: ((8, 1), (5, 31), "ends") for key in
        ("epl", "laliga", "seriea", "bundesliga", "ligue1",
         "ucl", "uel", "uecl", "facup", "efl_cup", "copadelrey",
         "dfbpokal", "coppaitalia", "coupedefrance")},
     # MLS and NWSL run within a calendar year.
-    "mls": ((2, 20), (12, 15), False),
-    "nwsl": ((3, 1), (11, 30), False),
-    "nba": (NBA_SEASON_START, NBA_SEASON_END, True),
+    "mls": ((2, 20), (12, 15), "within"),
+    "nwsl": ((3, 1), (11, 30), "within"),
+    "nba": (NBA_SEASON_START, NBA_SEASON_END, "ends"),
 }
 
 # ESPN season_type ids, matching the codes hoopR exposed.
@@ -169,13 +181,13 @@ def season_dates(season: int, league: str = "nba") -> list[date]:
 
     Never runs past today, so a season that has not started yields nothing.
     """
-    start_md, end_md, ends_in_label_year = SEASON_WINDOWS[league]
-    if ends_in_label_year:
-        start = date(season - 1, *start_md)
-        end = date(season, *end_md)
+    start_md, end_md, numbering = SEASON_WINDOWS[league]
+    if numbering == "ends":
+        start, end = date(season - 1, *start_md), date(season, *end_md)
+    elif numbering == "starts":
+        start, end = date(season, *start_md), date(season + 1, *end_md)
     else:
-        start = date(season, *start_md)
-        end = date(season, *end_md)
+        start, end = date(season, *start_md), date(season, *end_md)
     end = min(end, date.today())
     if end < start:
         return []
@@ -191,10 +203,13 @@ def season_label(league: str, day: date) -> int:
     set of results, from last year, which is exactly the kind of wrong answer
     that looks right.
     """
-    start_md, _, ends_in_label_year = SEASON_WINDOWS[league]
-    if not ends_in_label_year:
+    start_md, _, numbering = SEASON_WINDOWS[league]
+    if numbering == "within":
         return day.year
-    return day.year + 1 if (day.month, day.day) >= start_md else day.year
+    started = (day.month, day.day) >= start_md
+    if numbering == "starts":
+        return day.year if started else day.year - 1
+    return day.year + 1 if started else day.year
 
 
 def _opening_saturday(year: int) -> date:

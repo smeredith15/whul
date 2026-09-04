@@ -189,7 +189,10 @@ def test_a_game_with_no_id_falls_back_to_what_identifies_it(monkeypatch):
 def test_a_season_that_crosses_new_year_is_not_cut_in_half():
     """College football runs August to January. Labelled by the calendar year,
     a thirteen-win season becomes eleven wins in one season and two bowl games
-    in the next, and the benchmark is drawn from half-seasons nobody played."""
+    in the next, and the benchmark is drawn from half-seasons nobody played.
+
+    The whole season is the one that opened in August, so both halves carry the
+    opening year -- which is also how ESPN indexes it."""
     from datetime import date
 
     from whul.sources import ncaa_api
@@ -203,7 +206,7 @@ def test_a_season_that_crosses_new_year_is_not_cut_in_half():
 
     autumn = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2024, 11, 9))
     bowls = ncaa_api.parse_scoreboard(payload, "ncaaf", date(2025, 1, 9))
-    assert autumn[0]["season"] == bowls[0]["season"] == 2025
+    assert autumn[0]["season"] == bowls[0]["season"] == 2024
 
 
 def test_a_season_inside_one_calendar_year_is_unchanged():

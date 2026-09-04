@@ -502,11 +502,60 @@ def test_european_competitions_and_cups_are_reachable():
 
 def test_mls_and_nwsl_run_within_a_calendar_year():
     for key in ("mls", "nwsl"):
-        _, _, ends_in_label_year = espn.SEASON_WINDOWS[key]
-        assert ends_in_label_year is False, key
+        assert espn.SEASON_WINDOWS[key][2] == "within", key
     for key in ("epl", "laliga", "ucl"):
-        _, _, ends_in_label_year = espn.SEASON_WINDOWS[key]
-        assert ends_in_label_year is True, key
+        assert espn.SEASON_WINDOWS[key][2] == "ends", key
+
+
+# --- how a season is numbered ----------------------------------------------
+
+def test_college_football_is_numbered_by_the_year_it_starts():
+    """ESPN indexes college football under its opening year, and so does
+    everyone who talks about it: the 2026 season, not the 2027 season. Asking
+    for the year it *finishes* in asks for a season nobody has played yet, which
+    returns nothing at all -- and, looking backwards, groups the COVID-shortened
+    2020 season under 2021 where a five-season reach picks it up."""
+    assert espn.season_label("ncaaf", date(2026, 9, 4)) == 2026
+    assert espn.season_label("ncaaf", date(2026, 12, 6)) == 2026
+    assert espn.season_label("ncaaf", date(2026, 7, 1)) == 2025
+
+
+def test_a_january_bowl_belongs_to_the_season_that_opened_in_august():
+    """The national championship is played in January and is the last game of
+    the previous autumn's season, not the first of the coming one."""
+    assert espn.season_label("ncaaf", date(2027, 1, 9)) == 2026
+
+
+def test_a_football_seasons_dates_open_in_its_own_august():
+    days = espn.season_dates(2024, "ncaaf")
+    assert days[0] == date(2024, 8, 1)
+    assert days[-1] == date(2025, 1, 31)
+
+
+def test_basketball_and_european_football_are_numbered_by_the_year_they_end():
+    assert espn.season_label("ncaam", date(2026, 12, 1)) == 2027
+    assert espn.season_label("ncaam", date(2027, 3, 1)) == 2027
+    assert espn.season_label("epl", date(2026, 8, 22)) == 2027
+    assert espn.season_label("nba", date(2026, 10, 25)) == 2027
+
+
+def test_a_season_played_inside_one_year_is_numbered_by_it():
+    assert espn.season_label("mls", date(2026, 8, 22)) == 2026
+    assert espn.season_label("mls", date(2026, 2, 1)) == 2026
+
+
+def test_every_season_window_declares_a_numbering_we_understand():
+    for key, (_, _, numbering) in espn.SEASON_WINDOWS.items():
+        assert numbering in ("within", "ends", "starts"), key
+
+
+def test_a_label_round_trips_through_the_dates_it_names():
+    """The two halves have to agree: every day ``season_dates`` produces for a
+    season must be a day ``season_label`` calls that season. They were derived
+    separately, and disagreed for football for as long as both existed."""
+    for league in ("ncaaf", "ncaam", "epl", "mls", "nba"):
+        for day in espn.season_dates(2024, league):
+            assert espn.season_label(league, day) == 2024, (league, day)
 
 
 # --- caching a date that is still being played -----------------------------
