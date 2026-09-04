@@ -25,7 +25,13 @@ on:
     inputs:
       season:
         description: "Season to publish"
-        default: "2026-27-SIM"
+        default: "2026-27"
+      leagues:
+        description: >-
+          Leagues to pull, space separated, as `benchmarks list` names them.
+          Empty means every one, which is slow: the NBA alone is thousands of
+          requests. Keep it to the leagues that are in season.
+        default: "pga epl"
       backfill:
         description: "Rebuild every day from the season start"
         type: boolean
@@ -44,7 +50,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      SEASON: ${{ inputs.season || '2026-27-SIM' }}
+      SEASON: ${{ inputs.season || '2026-27' }}
+      LEAGUES: ${{ inputs.leagues || 'pga epl' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +61,18 @@ jobs:
           cache: pip
 
       - run: pip install -e .
+
+      # The feeds are walked one date at a time and a finished date never
+      # changes, so without this every night re-fetches the whole season from
+      # scratch -- thousands of requests for results already known. Restored
+      # from the most recent run and saved under today's key.
+      - name: Restore the feed cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: feed-cache-${{ github.run_id }}
+          restore-keys: |
+            feed-cache-
 
       - name: Restore the database
         run: |
@@ -65,16 +84,23 @@ jobs:
           if [ ! -f data/whul.sqlite3 ]; then
             echo "No database yet -- building one from the draft file."
             python -m whul.cli import-rosters --season 2026-27 --write
-            # Placeholder scores over the real roster, until the season starts
-            # and real ones exist to score. Under their own season label, so
-            # nothing invented is ever written into 2026-27.
-            python -m whul.cli simulate --from-season 2026-27
+            # The benchmarks are not rebuilt here. They take hours, they are a
+            # deliberate act rather than a nightly one, and a frozen version is
+            # part of the state the data branch carries. A run that finds no
+            # frozen version records the raw figures and says so.
           fi
 
       - name: Refresh the rosters from the draft file
         # Cheap and idempotent, and it means a re-uploaded spreadsheet reaches
         # the site on the next run without anyone having to remember a step.
         run: python -m whul.cli import-rosters --season 2026-27 --write
+
+      - name: Pull today's results
+        # Never fatal. A feed that is down, or a league with nothing on today,
+        # must not take the site down with it -- yesterday's standings beat
+        # none, and every problem is printed in this step's log.
+        continue-on-error: true
+        run: python -m whul.cli ingest $LEAGUES --season "$SEASON"
 
       - name: Roll up the standings
         run: |
