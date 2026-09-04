@@ -157,3 +157,41 @@ def test_the_probe_reports_the_span_it_holds(database):
 def test_the_probe_reports_a_missing_file_rather_than_raising(tmp_path):
     report = tennis2026.probe(tmp_path / "nope.db")
     assert report["exists"] is False and "error" in report
+
+
+# --- the app's two spellings of one category ---------------------------------
+
+def test_both_spellings_of_a_category_resolve():
+    """SQLAlchemy's Enum persists the member *name*, so the app's database holds
+    ATP_MASTERS_1000 where its own Python reads "ATP Masters 1000", and a row
+    written another way can hold either."""
+    from whul.sources.tennis2026 import CATEGORY_LOOKUP, _category_key
+
+    for spelling in ("ATP_MASTERS_1000", "ATP Masters 1000", "WTA_1000",
+                     "TournamentCategory.ATP_MASTERS_1000"):
+        from whul.scoring.tennis import MASTERS_1000
+        assert CATEGORY_LOOKUP[_category_key(spelling)] == MASTERS_1000, spelling
+
+
+def test_every_category_the_app_defines_is_mapped():
+    """The app's enum is the whole vocabulary. One member unmapped is a tier of
+    tournaments dropped -- reported, but dropped."""
+    from whul.sources.tennis2026 import CATEGORY_LOOKUP, _category_key
+
+    app_members = (
+        "GRAND_SLAM", "ATP_MASTERS_1000", "ATP_500", "ATP_250", "ATP_FINALS",
+        "WTA_1000", "WTA_500", "WTA_250", "WTA_FINALS", "INTERNATIONAL",
+    )
+    unmapped = [m for m in app_members if _category_key(m) not in CATEGORY_LOOKUP]
+    assert not unmapped, f"these tiers would be dropped entirely: {unmapped}"
+
+
+def test_title_casing_a_member_name_is_not_enough():
+    """The reason the previous fallback failed: .title() lowercases ATP, so
+    every ATP and WTA event was dropped and only the Grand Slams and the
+    Internationals came through -- most of the tour, silently absent from a
+    benchmark that would then be drawn from four majors a year."""
+    from whul.sources.tennis2026 import CATEGORIES
+
+    assert "ATP_MASTERS_1000".replace("_", " ").title() not in CATEGORIES
+    assert "Atp Masters 1000" not in CATEGORIES
