@@ -32,6 +32,29 @@ ncaaf epl laliga seriea bundesliga ligue1 mls nwsl"}
 
 step () { printf '\n\n========== %s ==========\n' "$*"; }
 
+# Which code this is. Three times now a deploy has run against a checkout that
+# was behind the branch, and each time it took reconstructing a score by hand to
+# notice -- the output of an old pipeline looks exactly like the output of a new
+# one, only wrong. Printed first so it is at the top of the log.
+step "the code this deploy is running"
+git --no-pager log --oneline -1
+BEHIND=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
+if [ "${BEHIND:-0}" -gt 0 ]; then
+    echo
+    echo "!! This checkout is $BEHIND commit(s) behind $(git rev-parse --abbrev-ref @{u})."
+    echo "!! Deploying it would publish standings computed by superseded code."
+    echo "!! Run: git pull"
+    exit 1
+fi
+"$PY" - <<'CHECK'
+from whul.config.league import SEASON, season_start
+from whul.scoring.proration import built_in_rule
+rule = built_in_rule("MLB", SEASON.label)
+print(f"  season      {SEASON.label}")
+print(f"  MLB starts  {season_start('MLB')}")
+print(f"  proration   {'x%.3f' % rule.factor if rule else 'none'}")
+CHECK
+
 # --- 1. a scale to score against -------------------------------------------
 if [ "${INGEST_ONLY:-}" != "1" ]; then
     VERSION=${1:-}
