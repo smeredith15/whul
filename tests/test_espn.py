@@ -550,3 +550,46 @@ def test_a_settled_day_is_cached(tmp_path, monkeypatch):
     before = len(calls)
     espn.scoreboard("epl", old)
     assert len(calls) == before, "a finished day should come from disk"
+
+
+# --- asking ESPN the right question about college football -----------------
+
+def test_the_college_football_week_is_counted_from_the_opening_saturday():
+    """Counted from the data walk's August 1 start it was three weeks early,
+    which would have made the week query look broken when it was the arithmetic."""
+    from datetime import date
+
+    from whul.sources.espn import _espn_week, _opening_saturday
+
+    assert _opening_saturday(2026) == date(2026, 8, 29)
+    assert _opening_saturday(2024) == date(2024, 8, 31)
+    assert _espn_week(date(2026, 8, 29)) == 1
+    assert _espn_week(date(2026, 9, 5)) == 2
+    assert _espn_week(date(2024, 11, 9)) == 11
+
+
+def test_january_belongs_to_the_season_that_opened_in_august():
+    from datetime import date
+
+    from whul.sources.espn import _espn_week
+
+    # Bowl season, not week one of a season that has not started.
+    assert _espn_week(date(2027, 1, 9)) > 15
+
+
+def test_discovery_asks_for_a_week_and_a_range_as_well_as_a_date(monkeypatch):
+    from datetime import date
+
+    from whul.sources import espn
+
+    asked = []
+
+    def fake(url, params, cache_key=None):
+        asked.append(params)
+        return {"events": []}
+
+    monkeypatch.setattr(espn, "_get", fake)
+    espn.discover("ncaaf", date(2026, 8, 29))
+
+    assert any("week" in p for p in asked), "a date query is not how CFB is organised"
+    assert any("-" in str(p.get("dates", "")) for p in asked), "nor is one day"

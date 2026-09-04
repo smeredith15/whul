@@ -197,6 +197,26 @@ def season_label(league: str, day: date) -> int:
     return day.year + 1 if (day.month, day.day) >= start_md else day.year
 
 
+def _opening_saturday(year: int) -> date:
+    """College football's week one, which is the last Saturday in August."""
+    day = date(year, 8, 31)
+    while day.weekday() != 5:  # Saturday
+        day -= timedelta(days=1)
+    return day
+
+
+def _espn_week(day: date) -> int:
+    """Which week of the college football season a date falls in.
+
+    Counted from the opening Saturday rather than from the date the data walk
+    starts, which is the first of August and three weeks early. Only used for
+    discovery, where being a week out would still answer the question -- does a
+    week query return a full slate where a date query does not.
+    """
+    year = day.year if day.month >= 8 else day.year - 1
+    return max(1, ((day - _opening_saturday(year)).days // 7) + 1)
+
+
 def scoreboard_variants(league: str, day: date) -> list[dict]:
     """Request shapes to try, most informative first.
 
@@ -464,11 +484,23 @@ def discover(league: str, day: date | None = None) -> dict:
     # every division whatever is passed), so measure the scoreboard directly:
     # which parameter combination actually narrows the field, and to what.
     group = DIVISION_I_GROUPS.get(league) or (GROUP_CANDIDATES.get(league) or [None])[0]
+    grouped = {"groups": group} if group else {}
     combos: list[tuple[str, dict]] = [
-        ("groups+limit", {"dates": dates, "limit": 900, **({"groups": group} if group else {})}),
-        ("groups only", {"dates": dates, **({"groups": group} if group else {})}),
+        ("groups+limit", {"dates": dates, "limit": 900, **grouped}),
+        ("groups only", {"dates": dates, **grouped}),
         ("limit only", {"dates": dates, "limit": 900}),
         ("bare", {"dates": dates}),
+        # A week, and a week's worth of dates. College football is organised by
+        # week rather than by day, and a single date has come back with eight
+        # games on a Saturday that had sixty -- so whether the date query is
+        # simply the wrong question is worth asking directly.
+        ("week", {"dates": str(day.year), "seasontype": 2,
+                  "week": _espn_week(day), "limit": 900, **grouped}),
+        ("date range", {
+            "dates": f"{(day - timedelta(days=3)).strftime('%Y%m%d')}-"
+                     f"{(day + timedelta(days=3)).strftime('%Y%m%d')}",
+            "limit": 900, **grouped,
+        }),
     ]
     combo_report: list[str] = []
     conferences: dict[str, int] = {}
