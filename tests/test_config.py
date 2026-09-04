@@ -197,3 +197,31 @@ def test_no_source_file_is_excluded_by_gitignore():
         f"these source files are excluded by .gitignore and would be missing "
         f"from a clean checkout: {ignored}"
     )
+
+
+# --- when each league's results start counting ------------------------------
+
+def test_college_football_starts_on_its_opening_weekend():
+    """ESPN labels Week 1 as August 22 to September 7. A start on the 27th
+    discards the games played that first weekend, and discards them as results
+    that belong to no league year at all -- last season's is over."""
+    from datetime import date
+
+    from whul.config.league import season_start
+
+    assert season_start("NCAAF") == date(2026, 8, 22)
+
+
+def test_a_league_with_no_start_of_its_own_uses_the_league_years():
+    from whul.config.league import SEASON, season_start
+
+    assert season_start("NHL") == SEASON.start
+
+
+def test_every_league_start_falls_in_this_league_year():
+    """A typo in the month here silently drops or admits weeks of results."""
+    from whul.config.league import LEAGUE_START, SEASON
+
+    for league, day in LEAGUE_START.items():
+        assert SEASON.start.year - 1 <= day.year <= SEASON.start.year + 1, league
+        assert abs((day - SEASON.start).days) <= 45, (league, day)

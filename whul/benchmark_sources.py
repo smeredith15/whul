@@ -221,6 +221,20 @@ def _ncaa_live(key: str, category: str):
     return build
 
 
+def _soccer_players():
+    """Club soccer players, from FBref's season stats.
+
+    One pull covers six leagues and each is normalized against itself, the way
+    a Premier League pick is measured against the Premier League rather than
+    against a pooled European field. The scorer already reads FBref's own
+    column names, so nothing is translated between them.
+    """
+    from whul.scoring import soccer
+    from whul.sources import fbref
+
+    return lambda seasons: fbref.load_players(seasons), soccer.score_players
+
+
 def _soccer(key: str, category: str):
     """A club's league, cup and European matches, gathered into one total.
 
@@ -387,6 +401,12 @@ SOURCES: dict[str, Source] = _register(
                seasons_for=_espn_seasons(key))
         for key, category in SOCCER_CATEGORIES.items()
     ],
+    Source("soccer-players", "Club Soccer", "Player", _soccer_players,
+           produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
+                     "Ligue 1", "MLS"),
+           seasons_for=_espn_seasons("epl"),
+           note="FBref Big 5 in one request per season, plus MLS; "
+                "six benchmarks, each league against itself"),
 )
 
 #: Run in this order. Cheap, verified sources first, so a failure late in the
@@ -394,6 +414,7 @@ SOURCES: dict[str, Source] = _register(
 ORDER = [
     "nfl", "nfl-teams", "tennis", "pga", "motorsports",
     "nhl", "nhl-teams", "mlb", "mlb-teams", "nba", "nba-teams",
+    "soccer-players",
     *NCAA_CATEGORIES, *SOCCER_CATEGORIES,
 ]
 

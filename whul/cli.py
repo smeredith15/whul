@@ -1155,6 +1155,12 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 print(f"  {season}      {count:,} wins")
         print()
         return 0
+    if args.league in ("fbref", "soccer-players"):
+        from whul.sources import fbref
+
+        seasons = [int(args.season)] if args.season else None
+        return fbref.probe(seasons)
+
     if args.league == "tennis":
         from whul.sources import flashscore
 
@@ -1621,7 +1627,7 @@ def main(argv: list[str] | None = None) -> int:
         "league",
         choices=sorted(
             set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)
-            | {"tennis2026"}
+            | {"tennis2026", "fbref"}
         ),
         metavar="league",
     )

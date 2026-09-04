@@ -38,6 +38,10 @@ batch into pga motorsports
 batch into nhl nhl-teams
 batch into mlb mlb-teams
 
+# Club soccer players: one FBref request per season covers the five European
+# leagues, and MLS one more. Six benchmarks out of about a dozen requests.
+batch into soccer-players
+
 # Date-walked. The European competitions are shared between the leagues and
 # cached under their own name, so the first soccer batch pays for the rest.
 batch into epl laliga seriea
