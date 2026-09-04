@@ -36,6 +36,7 @@ from whul.config.league import (
     BENCHMARK_MANAGER_COUNT,
     SEASON,
     competitions_for,
+    season_start,
 )
 from whul.scoring.schedule import (
     EARLIEST_SEASON,
@@ -135,6 +136,11 @@ def windows_for(league: str, count: int = DEFAULT_SEASONS) -> tuple[list, list[s
     than over calendar seasons (see PROJECT_PLAN 2.3). This picks which of those
     shifted windows may be used.
 
+    The window is the league's own, so a sport that starts later than the
+    league year opens is benchmarked over the span it will actually play. The
+    offseason share then matches between the benchmark and live scoring, which
+    is the whole point of drawing it this way.
+
     A window is judged by the calendar year it *ends* in, which is the year the
     sport itself calls that season: the 2020-21 window holds the February 2021
     Australian Open and the July 2021 Olympics, so it is the one the tennis
@@ -143,10 +149,13 @@ def windows_for(league: str, count: int = DEFAULT_SEASONS) -> tuple[list, list[s
     """
     from whul.scoring import window
 
+    # The league's own start, not the league year's: a benchmark drawn over a
+    # window the live season will not fill would price the sport against
+    # results it can no longer earn.
+    live_from = season_start(league)
     # Ask for more than needed: excluded years must lengthen the reach rather
     # than shorten the pool, exactly as they do for a calendar season.
-    candidates = window.season_windows(count + 8)
-    live_from = SEASON.start
+    candidates = window.season_windows(count + 8, start=live_from)
 
     usable, skipped = [], []
     for candidate in reversed(candidates):
@@ -172,6 +181,43 @@ def windows_for(league: str, count: int = DEFAULT_SEASONS) -> tuple[list, list[s
     return usable, notes
 
 
+#: How much further back to generate a league's own windows when re-deriving
+#: them by label, so a label the run kept is still in reach after exclusions.
+WINDOW_LOOKBACK = 4
+
+
+def _totals_per_league(
+    scored: pd.DataFrame, windows: list, produces: tuple[str, ...], count: int
+) -> pd.DataFrame:
+    """Window totals, each league summed over the window *it* plays.
+
+    One pull can serve two leagues that start on different days -- NASCAR opens
+    two days after Formula 1 does -- and a shared window would price one of them
+    against results it cannot earn. The window labels stay the source's, so the
+    pool is still truncated one window at a time.
+    """
+    from whul.scoring import window
+
+    if len(produces) < 2 or "league" not in scored.columns:
+        return window.window_totals(scored, windows)
+
+    # Match on the label, never by position: the run has already dropped any
+    # window the source cannot cover, and re-deriving by slicing would quietly
+    # put an incomplete one back.
+    chosen = {w.label for w in windows}
+    frames = []
+    for name in produces:
+        rows = scored[scored["league"].astype(str) == name]
+        if rows.empty:
+            continue
+        own, _ = windows_for(name, len(windows) + WINDOW_LOOKBACK)
+        own = [w for w in own if w.label in chosen] or windows
+        frames.append(window.window_totals(rows, own))
+    if not frames:
+        return window.window_totals(scored, windows)
+    return pd.concat(frames, ignore_index=True)
+
+
 def _window_years(windows) -> list[int]:
     """Every calendar year a set of windows touches -- the unit sources load in."""
     return sorted({y for w in windows for y in (w.start.year, w.end.year)})
@@ -181,6 +227,7 @@ def compute_windowed(
     league: str,
     load,
     events,
+    produces: tuple[str, ...] = (),
     seasons: int = DEFAULT_SEASONS,
     managers: int = BENCHMARK_MANAGER_COUNT,
     verbose: bool = True,
@@ -275,7 +322,7 @@ def compute_windowed(
             f"than intended and the percentile less stable"
         )
 
-    totals = window.window_totals(scored, windows)
+    totals = _totals_per_league(scored, windows, produces, len(windows))
     if totals.empty:
         run.problems.append("no events fell inside any window")
         return run

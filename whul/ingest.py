@@ -151,21 +151,57 @@ def _leagues_of(source) -> set[str]:
     return produced | categories | {source.league}
 
 
+#: Columns a raw feed puts an event's date in, in the order worth trying.
+DATE_COLUMNS = ("date", "game_date", "event_date", "match_date", "start_date")
+
+
+def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
+    """Drop rows from before the league's results start counting.
+
+    A league's own season rarely opens on the day the fantasy year does. Without
+    this, the Premier League's first two matchweeks -- played the week before --
+    would be scored as part of this league year, and tennis would count the
+    Cincinnati final twice.
+    """
+    from whul.config.league import season_start
+
+    column = next((c for c in DATE_COLUMNS if c in raw.columns), None)
+    if column is None:
+        return raw
+    days = pd.to_datetime(raw[column], errors="coerce", utc=True).dt.tz_localize(None)
+    # A row whose date will not parse is kept: dropping it would lose a result
+    # silently, and the scorer is the better place to notice a broken row.
+    return raw[days.isna() | (days.dt.date >= season_start(league))]
+
+
 def _pull(source, as_of: date, verbose: bool) -> pd.DataFrame:
     """Season-to-date totals for one league, however that league counts them."""
+    from whul.config.league import season_start
     from whul.scoring import window
 
     load, score = (source.live or source.build)()
     if not source.windowed:
-        return score(load([as_of.year]))
+        raw = load([as_of.year])
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        return score(_from_season_start(raw, source.league))
 
     # A continuously running sport accrues over the league year, not the
     # calendar one, so its live total is summed over the same window its
-    # benchmark was drawn over -- shifted to the season now being played.
-    current = window.season_windows(0)[-1]
-    years = sorted({current.start.year, current.end.year, as_of.year})
+    # benchmark was drawn over -- and over each produced league's own window,
+    # since two series sharing a pull need not start on the same day.
+    years = sorted({season_start(source.league).year, as_of.year})
     events = score(load(years))
     if events is None or events.empty:
         return pd.DataFrame()
-    totals = window.window_totals(events, [current])
-    return totals.rename(columns={"season": "window"}).assign(season=current.label)
+
+    frames = []
+    for name in source.produces or (source.league,):
+        rows = events[events["league"].astype(str) == name] \
+            if "league" in events.columns else events
+        if rows.empty:
+            continue
+        current = window.season_windows(0, start=season_start(name))[-1]
+        totals = window.window_totals(rows, [current])
+        frames.append(totals.assign(season=current.label))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

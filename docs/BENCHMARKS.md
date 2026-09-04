@@ -243,6 +243,25 @@ a per-tour pool sits about 1.5% below a half-sized one on ATP and 3.4% on WTA,
 which is how much tennis scores run high against a sport whose category is a
 single league.
 
+### When each league's results start
+
+A league year opens on a fixed date, but sports do not begin together. Each
+league's own start is in `LEAGUE_START` in `whul/config/league.py`, and it is
+used in both directions: live results before it are dropped, and the historical
+windows a window-pooled sport is benchmarked over start on the same day of the
+year. That is the point — the offseason share has to match between the
+benchmark and live scoring, or the sport is priced against results it cannot
+earn.
+
+A start *earlier* than the league year is legitimate. La Liga was three
+matchdays old when the 2026-27 year opened, and those results belong to this
+league year because there is no other one they could. A start *later* excludes
+something the league counts as last season's: tennis begins on the 23rd so the
+Cincinnati final is not paid twice.
+
+One pull can serve two leagues that start on different days — motorsport does —
+so each is summed over its own window rather than a shared one.
+
 ### Which seasons
 
 The window sports are judged by the calendar year their league year *ends* in,

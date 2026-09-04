@@ -202,16 +202,38 @@ def _motorsports_players():
 
 
 def _tennis_live():
-    """The live tennis feed, which reaches back about a fortnight.
+    """The current tennis season, from the app's database and today's feed.
 
-    That window is the reason the nightly run matters more here than anywhere
-    else: results older than it are not fetchable, so a week not captured is a
-    week lost until the snapshot is refreshed.
+    Three vintages of the same data. The static snapshot ends in February; the
+    tennis2026 app's own database carries on from there, because its scrapers
+    keep writing; and the Flashscore feed covers the last seven days, which is
+    all it serves. The database is the one that closes the gap -- the feed alone
+    forgets a week every week.
     """
     from whul.scoring import tennis
-    from whul.sources import flashscore
+    from whul.sources import flashscore, tennis2026
 
-    return lambda _years: flashscore.load_matches(), tennis.match_events
+    def load(_years):
+        frames = []
+        try:
+            frames.append(tennis2026.load_matches())
+        except FileNotFoundError as exc:
+            # Not fatal: the feed still covers the last week. But it is the
+            # difference between the season and the last seven days of it.
+            print(f"  tennis2026 database unavailable ({exc.args[0].splitlines()[0]})",
+                  flush=True)
+        frames.append(flashscore.load_matches())
+        frames = [f for f in frames if f is not None and not f.empty]
+        if not frames:
+            return pd.DataFrame()
+        both = pd.concat(frames, ignore_index=True)
+        # The two overlap over the last week; the same win must not be paid
+        # twice, and either copy will do.
+        return both.drop_duplicates(
+            subset=["season", "tournament", "round", "winner"], keep="first"
+        )
+
+    return load, tennis.match_events
 
 
 def _tennis_players():

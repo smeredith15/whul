@@ -71,6 +71,36 @@ SEASON = SeasonWindow(
 )
 
 
+#: When each league's results start counting, where that is not the league
+#: year's own start. Sports do not begin together, and a league year that opens
+#: on a fixed date will otherwise either miss a competition already under way or
+#: swallow the tail of the previous season.
+#:
+#: A date *earlier* than ``SEASON.start`` is deliberate and legitimate: La Liga
+#: was already three matchdays old when the WHUL year opened, and those results
+#: belong to this league year because there is no other one they could belong
+#: to. A date *later* excludes something the league considers last season's --
+#: tennis starts on the 23rd so the Cincinnati final does not count twice.
+LEAGUE_START: dict[str, date] = {
+    "ATP": date(2026, 8, 23),
+    "WTA": date(2026, 8, 23),
+    "Tennis": date(2026, 8, 23),
+    "NASCAR": date(2026, 8, 23),
+    "PGA": date(2026, 8, 20),
+    "Premier League": date(2026, 8, 21),
+    "Ligue 1": date(2026, 8, 21),
+    "Bundesliga": date(2026, 8, 28),
+    "La Liga": date(2026, 8, 15),
+    "Serie A": date(2026, 8, 22),
+    "NCAAF": date(2026, 8, 27),
+}
+
+
+def season_start(league: str, default: date | None = None) -> date:
+    """The first day a league's results count toward this league year."""
+    return LEAGUE_START.get(league, default or SEASON.start)
+
+
 @dataclass(frozen=True)
 class SlotGroup:
     """One roster category for one asset type.

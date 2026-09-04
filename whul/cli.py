@@ -766,7 +766,8 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
             # A continuously running sport is benchmarked over the league
             # year's own window, so --latest (a calendar year) does not apply.
             run = benchmarks.compute_windowed(
-                source.league, load, score, seasons=args.seasons,
+                source.league, load, score,
+                produces=source.produces, seasons=args.seasons,
             )
         else:
             run = benchmarks.compute(
@@ -986,6 +987,22 @@ def cmd_benchmarks_freeze(args: argparse.Namespace) -> int:
 
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
+    if args.league == "tennis2026":
+        from whul.sources import tennis2026
+
+        report = tennis2026.probe()
+        print(f"\n  database  {report['path']}")
+        if not report.get("exists") or "error" in report:
+            print(f"  ERROR     {report.get('error', 'unreadable')}\n", file=sys.stderr)
+            return 1
+        print(f"  matches   {report['matches']:,}")
+        if report["matches"]:
+            print(f"  span      {report['first']} -> {report['last']}")
+            print(f"  tours     {', '.join(report['tours'])}")
+            for season, count in sorted(report["by_season"].items()):
+                print(f"  {season}      {count:,} wins")
+        print()
+        return 0
     if args.league == "tennis":
         from whul.sources import flashscore
 
@@ -1429,7 +1446,10 @@ def main(argv: list[str] | None = None) -> int:
     # scored as leagues in their own right.
     probe.add_argument(
         "league",
-        choices=sorted(set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)),
+        choices=sorted(
+            set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)
+            | {"tennis2026"}
+        ),
         metavar="league",
     )
     probe.add_argument("--date", help="YYYY-MM-DD to probe (default: yesterday)")
