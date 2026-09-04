@@ -201,18 +201,41 @@ def test_coverage_matches_a_positional_league_on_any_of_its_groups(store):
     assert nfl["groups"] == "NFL_QB"
 
 
-def test_coverage_folds_a_tour_into_the_league_it_normalizes_across(store):
-    # A rostered WTA player is answered by the Tennis benchmark that scores her.
-    rostered(store, "WTA", "Player")
+def test_a_category_open_to_two_tours_needs_both(store):
+    # Twelve picks are recorded as "Tennis" because that is the category they
+    # were drafted into. Nothing on the roster says which tour each plays, so
+    # an ATP benchmark alone leaves every WTA pick among them unscored.
+    rostered(store, "Tennis", "Player")
+    atp = benchmarks.compute(
+        "ATP", *fake_league(400, league="ATP", role=""), latest=2025, verbose=False
+    )
+    version = benchmarks.save(store, [atp], "2026-27")
+
+    half = benchmarks.coverage(store, version, "2026-27")
+    assert not half[half["league"] == "Tennis"].iloc[0]["covered"]
+
+    wta = benchmarks.compute(
+        "WTA", *fake_league(400, league="WTA", role=""), latest=2025, verbose=False
+    )
+    benchmarks.extend(store, [wta], version)
+
+    whole = benchmarks.coverage(store, version, "2026-27").set_index("league")
+    assert bool(whole.loc["Tennis", "covered"])
+    assert whole.loc["Tennis", "groups"] == "ATP, WTA"
+
+
+def test_a_tour_rostered_by_name_needs_only_itself(store):
+    # One pick is recorded as "NASCAR" outright, and on that one an F1
+    # benchmark has no bearing.
+    rostered(store, "NASCAR", "Player")
     run = benchmarks.compute(
-        "Tennis", *fake_league(400, league="Tennis", role=""), latest=2025, verbose=False
+        "NASCAR", *fake_league(400, league="NASCAR", role=""), latest=2025, verbose=False
     )
     version = benchmarks.save(store, [run], "2026-27")
 
-    rows = benchmarks.coverage(store, version, "2026-27")
-    wta = rows[rows["league"] == "WTA"].iloc[0]
-    assert bool(wta["covered"])
-    assert wta["groups"] == "Tennis"
+    rows = benchmarks.coverage(store, version, "2026-27").set_index("league")
+    assert bool(rows.loc["NASCAR", "covered"])
+    assert rows.loc["NASCAR", "groups"] == "NASCAR"
 
 
 def test_coverage_reports_a_league_nobody_computed(store):

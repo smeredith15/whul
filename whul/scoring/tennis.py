@@ -39,7 +39,6 @@ import re
 
 import pandas as pd
 
-from whul.config.league import norm_league
 from whul.scoring.base import resolve_num, resolve_str
 
 # --- rounds ---------------------------------------------------------------
@@ -391,7 +390,6 @@ def match_events(matches: pd.DataFrame) -> pd.DataFrame:
             {True: "WTA", False: "ATP"}
         ),
         "role": "Singles",
-        "norm_league": norm_league("ATP"),
     })
 
 
@@ -412,9 +410,6 @@ def score_players(matches: pd.DataFrame) -> pd.DataFrame:
         {True: "WTA", False: "ATP"}
     )
     totals["role"] = "Singles"
-    # Both tours are measured against one distribution: the points table is the
-    # same by round, so the pooled field is the comparable one.
-    totals["norm_league"] = norm_league("ATP")
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)

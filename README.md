@@ -74,7 +74,13 @@ Five seasons by default, counting back from the last completed one. COVID
 seasons are excluded — and reaching past one lengthens the reach rather than
 shrinking the pool, so the NBA draws on 2019 and 2022-25.
 
-Tennis, golf and motorsport are pooled differently: they run continuously, so
+Every league is measured against its own history — ATP against ATP and WTA
+against WTA, F1 against F1 and NASCAR against NASCAR, each club soccer league
+against itself. Nothing pools two leagues together, though one pull can produce
+two benchmarks: tennis scores both tours in a single pass.
+
+Tennis, golf and motorsport are pooled differently over *time*: they run
+continuously, so
 their benchmark is drawn over the league year's own August-to-July window
 shifted back whole years, not over calendar seasons (§2.3). A window is judged
 by the year it *ends* in, and one the source cannot cover to its end date is

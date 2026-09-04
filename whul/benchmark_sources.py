@@ -10,11 +10,12 @@ Every entry is lazy. Importing this must not import twenty source modules or
 touch the network, so each source is a factory that binds its loader only when
 that league is actually asked for.
 
-``league`` is the name the scoring modules write into the ``league`` column,
-because that is what the draft pool and normalization group are keyed on. It
-is also the key ``whul.scoring.schedule`` consults for COVID years, which is
-why tennis is registered under ``Tennis`` rather than ATP and WTA separately:
-one benchmark, one pool, one set of excluded seasons.
+``league`` is the key ``whul.scoring.schedule`` consults for excluded seasons
+and for the earliest usable one. It is not always a benchmark group: tennis is
+registered under ``Tennis`` because ATP and WTA share a calendar and so share
+their COVID exclusions, but one pull produces two benchmarks, one per tour,
+because each tour is normalized against its own history. ``produces`` names
+those groups where they differ from ``league``.
 """
 
 from __future__ import annotations
@@ -37,6 +38,10 @@ class Source:
     #: these benchmarks. Set where history is shorter than the season being
     #: scored, so an 82-game past does not understate an 84-game present.
     scale_for: str | None = None
+    #: The benchmark groups one pull produces, when they are not just
+    #: ``league``. A tennis pull scores ATP and WTA in one pass and each is
+    #: normalized against itself, so one source yields two groups.
+    produces: tuple[str, ...] = ()
     #: True for the sports that run continuously, whose benchmark is drawn over
     #: the league year's own August-to-July window rather than over calendar
     #: seasons (PROJECT_PLAN 2.3). Their ``build`` returns an event-level scorer
@@ -237,9 +242,11 @@ SOURCES: dict[str, Source] = _register(
     Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL"),
     Source("pga", "PGA", "Player", _pga_players, windowed=True),
     Source("motorsports", "Motorsports", "Player", _motorsports_players, windowed=True,
-           note="NASCAR and F1 share one pool"),
+           produces=("F1", "NASCAR"),
+           note="one pull, two benchmarks -- each series against itself"),
     Source("tennis", "Tennis", "Player", _tennis_players, windowed=True,
-           note="ATP and WTA share one pool; 2022 is the earliest usable season"),
+           produces=("ATP", "WTA"),
+           note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
         Source(key, category, "Team", _ncaa(key, category))
         for key, category in NCAA_CATEGORIES.items()

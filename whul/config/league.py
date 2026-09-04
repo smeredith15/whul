@@ -188,19 +188,23 @@ POOL_MAP_TEAMS: dict[str, str] = {
 # Soccer pools whose players may transfer across the pool boundary mid-season.
 CROSS_POOL_SOCCER = ("Club Soccer Top 3", "Club Soccer Other")
 
-#: Leagues that normalize together. A roster names the tour or series a player
-#: competes on, but the benchmark is drawn across both: one Tennis distribution
-#: rather than an ATP one and a WTA one each sized for the whole category, and
-#: one Motorsports distribution rather than a NASCAR one and an F1 one. The
-#: scorers write the value on the right into ``norm_league``; this is the map
-#: they write it from, so a reader asking which benchmark covers a rostered
-#: NASCAR driver has one place to look.
-SHARED_NORM_LEAGUE: dict[str, str] = {
-    "ATP": "Tennis", "WTA": "Tennis", "Tennis": "Tennis",
-    "NASCAR": "Motorsports", "F1": "Motorsports", "Motorsports": "Motorsports",
+#: Roster categories that are open to more than one competition, and which
+#: competitions those are. Every league is normalized against its own history --
+#: ATP against ATP, WTA against WTA, F1 against F1, NASCAR against NASCAR -- but
+#: a roster slot does not always say which one an asset plays in: the draft
+#: sheet records twelve players as "Tennis" and three as "Motorsports", because
+#: that is the category they were drafted into.
+#:
+#: So this is not a normalization rule. It is what a coverage check needs to
+#: answer "can this version score that pick", and the answer is only yes when
+#: *every* competition the category admits has a benchmark -- there is no way to
+#: tell from the roster whether a "Tennis" pick is on the ATP or the WTA tour.
+CATEGORY_COMPETITIONS: dict[str, tuple[str, ...]] = {
+    "Tennis": ("ATP", "WTA"),
+    "Motorsports": ("F1", "NASCAR"),
 }
 
 
-def norm_league(league: str) -> str:
-    """The league a benchmark is drawn across, which is usually the league."""
-    return SHARED_NORM_LEAGUE.get(league, league)
+def competitions_for(league: str) -> tuple[str, ...]:
+    """The competitions a rostered league covers, which is usually just itself."""
+    return CATEGORY_COMPETITIONS.get(league, (league,))

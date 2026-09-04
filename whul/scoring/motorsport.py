@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pandas as pd
 
-from whul.config.league import norm_league
 from whul.scoring.base import resolve_num, resolve_str
 
 # --- NASCAR ---------------------------------------------------------------
@@ -155,10 +154,7 @@ def score_players(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:
     frames = [f for f in (score_nascar(nascar), score_f1(f1)) if f is not None and not f.empty]
     if not frames:
         return pd.DataFrame()
-    out = pd.concat(frames, ignore_index=True)
-    # The normalization group is the shared pool, not the individual series.
-    out["norm_league"] = norm_league("NASCAR")
-    return out
+    return pd.concat(frames, ignore_index=True)
 
 
 def race_events(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:
@@ -169,6 +165,4 @@ def race_events(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:
     ]
     if not frames:
         return pd.DataFrame()
-    out = pd.concat(frames, ignore_index=True)
-    out["norm_league"] = norm_league("NASCAR")
-    return out
+    return pd.concat(frames, ignore_index=True)

@@ -855,15 +855,26 @@ def cmd_benchmarks_coverage(args: argparse.Namespace) -> int:
     # A missing benchmark has two very different causes, and the fix differs:
     # a league nobody has computed yet is one command away, while a league with
     # no registered source at all needs a scraper written first.
-    registered = {(src.league, src.asset_type): src.key for src in SOURCES.values()}
+    registered: dict[tuple[str, str], str] = {}
+    for src in SOURCES.values():
+        for group in src.produces or (src.league,):
+            registered[(group, src.asset_type)] = src.key
+
+    def source_for(row) -> str | None:
+        keys = {
+            registered[(c, row.asset_type)]
+            for c in row.needs.split(", ")
+            if (c, row.asset_type) in registered
+        }
+        return ", ".join(sorted(keys)) if keys else None
 
     missing = rows[~rows["covered"]]
     print(f"\n  {'league':<22}{'type':<8}{'assets':>7}  {'benchmark groups'}")
     for row in rows.itertuples():
         if row.covered:
             state = row.groups
-        elif (row.norm_league, row.asset_type) in registered:
-            state = f"MISSING -- run `benchmarks compute {registered[(row.norm_league, row.asset_type)]}`"
+        elif source_for(row):
+            state = f"MISSING -- run `benchmarks compute {source_for(row)}`"
         else:
             state = "MISSING -- no source registered for it yet"
         print(f"  {row.league:<22}{row.asset_type.lower():<8}{row.assets:>7}  {state}")
@@ -872,10 +883,7 @@ def cmd_benchmarks_coverage(args: argparse.Namespace) -> int:
         print(f"\n  Every rostered asset in {args.season} has a benchmark.\n")
         return 0
 
-    unsourced = [
-        r for r in missing.itertuples()
-        if (r.norm_league, r.asset_type) not in registered
-    ]
+    unsourced = [r for r in missing.itertuples() if not source_for(r)]
     print(
         f"\n  {int(missing['assets'].sum())} rostered asset(s) across "
         f"{len(missing)} league/type pair(s) would score nothing."

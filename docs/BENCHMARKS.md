@@ -204,6 +204,36 @@ Five back from the last completed one. COVID years are excluded, and excluding
 one **lengthens the reach** rather than shrinking the pool — so the NBA draws
 on 2019 plus 2022-25 rather than on three seasons.
 
+### One league, one distribution
+
+Every league is measured against its own history and nothing pools two
+together. ATP is normalized against ATP and WTA against WTA; F1 against F1 and
+NASCAR against NASCAR; each club soccer league against itself. A tennis pull
+scores both tours in one pass and produces two benchmarks from it, which is why
+`benchmarks list` shows one source named `tennis` and `coverage` reports groups
+called `ATP` and `WTA`.
+
+A roster category can still be open to more than one of them. The draft sheet
+records twelve picks as "Tennis" and three as "Motorsports", because that is
+the category they were drafted into, and nothing on the roster says which tour
+or series each plays. Those categories therefore count as covered only when
+*every* competition they admit has a benchmark — an ATP benchmark alone would
+leave every WTA pick among the twelve unscored.
+
+One consequence worth knowing: the buffer pool is still sized from the roster
+category, so each tour is truncated to the depth the whole category allows
+rather than to its share of it. Tennis has three slots per manager, and both
+ATP and WTA draw a pool of 68 per window rather than roughly 34 each. That
+makes both benchmarks lower — a deeper pool reaches further down the field —
+and so makes tennis scores run slightly high against the sports whose category
+is one league. On the 2022-25 windows it is worth about 1.5% on the ATP
+benchmark and 3.4% on the WTA one. Halving the rates in
+`whul/config/league.py` is the fix if that matters; leaving them is defensible
+if you read the pool as "who is plausibly draftable" rather than "how many get
+drafted".
+
+### Which seasons
+
 The window sports are judged by the calendar year their league year *ends* in,
 which is the year the sport itself calls that season:
 

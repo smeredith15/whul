@@ -32,7 +32,11 @@ from datetime import date
 
 import pandas as pd
 
-from whul.config.league import BENCHMARK_MANAGER_COUNT, SEASON, norm_league
+from whul.config.league import (
+    BENCHMARK_MANAGER_COUNT,
+    SEASON,
+    competitions_for,
+)
 from whul.scoring.schedule import (
     EARLIEST_SEASON,
     SCHEDULE_CHANGES,
@@ -275,11 +279,6 @@ def compute_windowed(
     if totals.empty:
         run.problems.append("no events fell inside any window")
         return run
-    # window_totals groups by the league the event was played in; the pool is
-    # drawn across the shared one, and that is what the benchmark is keyed on.
-    if "norm_league" in scored.columns:
-        totals["norm_league"] = scored["norm_league"].iloc[0]
-
     run.used = [w.label for w in windows]
     run.rows = len(totals)
     bench = store_benchmarks.compute(
@@ -463,8 +462,10 @@ def coverage(store: Store, version: str, season: str) -> pd.DataFrame:
     present, which is the failure this is actually for: a league nobody
     computed, whose managers would quietly score nothing.
 
-    Tennis and motorsports are folded to the league they normalize across, so a
-    rostered WTA player is answered by the Tennis benchmark that will score her.
+    A roster category open to several competitions needs all of them. Twelve
+    picks are recorded as "Tennis" because that is the category they were
+    drafted into, and nothing on the roster says which tour each plays; an ATP
+    benchmark alone would leave every WTA pick among them unscored.
     """
     bench = store_benchmarks.load(store, version)
     have = {(row.asset_type, row.norm_key) for row in bench.itertuples()}
@@ -479,18 +480,23 @@ def coverage(store: Store, version: str, season: str) -> pd.DataFrame:
         (season,),
     )
     if rostered.empty:
-        return rostered.assign(norm_league=None, covered=None, groups=None)
+        return rostered.assign(needs=None, covered=None, groups=None)
 
-    rostered["norm_league"] = rostered["league"].map(norm_league)
-    groups, covered = [], []
-    for row in rostered.itertuples():
-        matched = sorted(
+    def groups_for(asset_type: str, competition: str) -> list[str]:
+        return sorted(
             key for kind, key in have
-            if kind == row.asset_type
-            and (key == row.norm_league or key.startswith(f"{row.norm_league}_"))
+            if kind == asset_type
+            and (key == competition or key.startswith(f"{competition}_"))
         )
-        groups.append(", ".join(matched))
-        covered.append(bool(matched))
+
+    needs, groups, covered = [], [], []
+    for row in rostered.itertuples():
+        wanted = competitions_for(row.league)
+        found = {c: groups_for(row.asset_type, c) for c in wanted}
+        needs.append(", ".join(wanted))
+        groups.append(", ".join(g for c in wanted for g in found[c]))
+        covered.append(all(found.values()))
+    rostered["needs"] = needs
     rostered["groups"] = groups
     rostered["covered"] = covered
     return rostered.sort_values(

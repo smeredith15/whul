@@ -373,16 +373,17 @@ def test_season_total_sums_wins():
     assert row["titles"] == 1
 
 
-def test_both_tours_normalize_against_one_distribution():
-    """ATP and WTA fill the same roster slots and pay the identical table by
-    round, so the pooled field is the comparable one."""
+def test_each_tour_is_measured_against_its_own_history():
+    """The tours pay the identical table by round, so the raw scores are
+    comparable -- but the fields are not, and each is normalized against
+    itself."""
     matches = pd.DataFrame([
         match(winner="Man", tour="ATP", round_name=R128),
         match(winner="Woman", tour="WTA Tour", tournament="US Open", round_name=R128),
     ])
     totals = score_players(matches)
     assert set(totals["league"]) == {"ATP", "WTA"}
-    assert set(assign_norm_key(totals, "Player")) == {"Tennis"}
+    assert set(assign_norm_key(totals, "Player")) == {"ATP", "WTA"}
 
 
 def test_empty_input_is_empty_output():
