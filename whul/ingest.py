@@ -363,6 +363,56 @@ def _leagues_of(source) -> set[str]:
     return produced | categories | {source.league}
 
 
+def uncovered(store: Store, season: str, sources) -> pd.DataFrame:
+    """Rostered assets no source in this run could have scored.
+
+    ``cmd_ingest`` already names the assets that were asked for and did not
+    match. This is the failure one level up: a league nobody asked for. Every
+    source it was asked to run can succeed, every asset those sources cover
+    can match, and a whole league still scores nothing -- because it was never
+    in the list. That is how thirty-two club soccer players sat at zero
+    through a run that reported no problems at all.
+
+    Groups rather than lists, because the list is the roster and the point is
+    the league. Each group carries the source that would have covered it, so a
+    league left out of tonight's list reads differently from a league nothing
+    can score yet -- the first is a one-word fix, the second is a known gap.
+    """
+    from whul.benchmark_sources import resolve
+
+    rostered = resolver.rostered_assets(store, season)
+    if rostered.empty:
+        return rostered
+
+    covered = {
+        (source.asset_type, league)
+        for source in sources
+        for league in _leagues_of(source)
+    }
+    exists = {
+        (source.asset_type, league): source.key
+        for source in resolve(None)
+        for league in _leagues_of(source)
+    }
+    missed = rostered[[
+        (row.asset_type, row.league) not in covered
+        for row in rostered.itertuples()
+    ]]
+    if missed.empty:
+        return missed
+    grouped = (
+        missed.groupby(["league", "asset_type"], as_index=False)
+        .agg(assets=("display_name", "size"),
+             names=("display_name", lambda names: ", ".join(sorted(names)[:3])))
+        .sort_values(["league", "asset_type"])
+    )
+    grouped["source"] = [
+        exists.get((row.asset_type, row.league), "")
+        for row in grouped.itertuples()
+    ]
+    return grouped
+
+
 #: Columns a raw feed puts an event's date in, in the order worth trying.
 DATE_COLUMNS = ("date", "game_date", "event_date", "match_date", "start_date")
 

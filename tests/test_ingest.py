@@ -38,6 +38,7 @@ def rostered(store, *names, league="NFL", season="2026-27", asset_type="Player")
     category = {
         "NFL": "NFL", "Tennis": "Tennis", "NCAAF": "NCAAF", "NBA": "NBA",
         "MLS": "Club Soccer Other", "NWSL": "Club Soccer Other",
+        "Men's Intl Soccer": "Intl Soccer", "Women's Intl Soccer": "Intl Soccer",
     }.get(league, "Club Soccer Top 3" if "Premier" in league else "Tennis")
     slots = store.query(
         "SELECT slot_id FROM roster_slots WHERE season = ? AND asset_type = ? "
@@ -617,3 +618,41 @@ def test_a_source_that_raised_leaves_a_trace_too(store):
     assert len(status) == 1 and int(status.loc[0, "last_ok"]) == 0
     assert "none of the rostered teams" in status.loc[0, "message"]
     assert any("LookupError" in p for p in report.problems)
+
+
+def test_uncovered_names_a_league_nobody_asked_for():
+    """The failure a league at a time cannot see.
+
+    Every source in the run can succeed and every asset it covers can match,
+    and a whole league still scores nothing -- because it was never in the
+    list. That is how thirty-two club soccer players sat at zero through a
+    nightly run that reported no problems at all.
+    """
+    store = open_store(":memory:")
+    rostered(store, "Josh Allen")
+    rostered(store, "Bukayo Saka", league="Premier League")
+
+    from whul.benchmark_sources import resolve
+
+    missed = ingest.uncovered(store, "2026-27", resolve(["nfl"]))
+    assert list(missed["league"]) == ["Premier League"]
+    assert int(missed["assets"].iloc[0]) == 1
+    # Named, so the fix is one word rather than a hunt.
+    assert missed["source"].iloc[0] == "soccer-players"
+
+    covered = ingest.uncovered(store, "2026-27", resolve(["nfl", "soccer-players"]))
+    assert covered.empty
+
+
+def test_uncovered_tells_a_gap_from_an_omission():
+    """A league left out of tonight's pull is a one-word fix. A league no
+    source can score is a known gap. Reporting them the same way makes the
+    first invisible among the second."""
+    store = open_store(":memory:")
+    rostered(store, "Spain", league="Men's Intl Soccer", asset_type="Team")
+
+    from whul.benchmark_sources import resolve
+
+    missed = ingest.uncovered(store, "2026-27", resolve(["nfl"]))
+    assert list(missed["league"]) == ["Men's Intl Soccer"]
+    assert missed["source"].iloc[0] == ""

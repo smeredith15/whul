@@ -33,7 +33,7 @@ on:
           requests. Keep it to the leagues that are in season.
         default: >-
           nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf
-          epl laliga seriea bundesliga ligue1 mls nwsl
+          epl laliga seriea bundesliga ligue1 mls nwsl soccer-players
       backfill:
         description: "Rebuild every day from the season start"
         type: boolean
@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SEASON: ${{ inputs.season || '2026-27' }}
-      LEAGUES: ${{ inputs.leagues || 'nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf epl laliga seriea bundesliga ligue1 mls nwsl' }}
+      LEAGUES: ${{ inputs.leagues || 'nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf epl laliga seriea bundesliga ligue1 mls nwsl soccer-players' }}
     steps:
       - uses: actions/checkout@v4
 

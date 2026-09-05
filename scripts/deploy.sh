@@ -28,7 +28,7 @@ BRANCH=${BRANCH:-claude/fantasy-league-webapp-dp99e3}
 # leagues are left out because a pull that finds nothing is minutes of
 # requests to learn that nobody played.
 LEAGUES=${LEAGUES:-"nfl nfl-teams tennis pga motorsports mlb mlb-teams \
-ncaaf epl laliga seriea bundesliga ligue1 mls nwsl"}
+ncaaf epl laliga seriea bundesliga ligue1 mls nwsl soccer-players"}
 
 step () { printf '\n\n========== %s ==========\n' "$*"; }
 

@@ -850,6 +850,30 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             print(f"    ... and {len(unmatched) - 20} more")
         print("\n  A name the feed spells differently is fixable in the alias table;")
         print("  a player who has not appeared yet will match itself once they do.")
+
+    # The failure a league at a time cannot see: a league nobody asked for.
+    # Every source can succeed and every asset match, and a whole league still
+    # score nothing, because it was never in the list.
+    missed = ingest_module.uncovered(store, args.season, sources)
+    left_out = missed[missed["source"] != ""] if not missed.empty else missed
+    unsourced = missed[missed["source"] == ""] if not missed.empty else missed
+    if not left_out.empty:
+        total = int(left_out["assets"].sum())
+        print(
+            f"\n  {total} rostered asset(s) scored nothing because their league "
+            f"was not in this pull:"
+        )
+        for row in left_out.itertuples():
+            print(f"    {row.league} {row.asset_type.lower()}s ({row.assets}) "
+                  f"-- add `{row.source}`: {row.names}")
+        print("\n  Out of season is a fair reason to leave one out. Nothing here")
+        print("  failed, so nothing else will mention them.")
+    if not unsourced.empty:
+        total = int(unsourced["assets"].sum())
+        print(f"\n  {total} rostered asset(s) have no source at all yet:")
+        for row in unsourced.itertuples():
+            print(f"    {row.league} {row.asset_type.lower()}s "
+                  f"({row.assets}): {row.names}")
     print()
     return 0 if scored or recorded else 1
 
