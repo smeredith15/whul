@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from typing import Callable
 
 import pandas as pd
@@ -376,6 +377,45 @@ def _soccer_players():
     return lambda seasons: fbref.load_players(seasons), soccer.score_players
 
 
+def _uefa_season(season: int) -> str:
+    """The UEFA season a domestic one earns a place in.
+
+    A campaign labelled 2027 is 2026-27, played out by May 2027, and what it
+    earns is a place in the 2027-28 competitions. Getting this backwards would
+    award last year's qualification to this year's finish, and both are real
+    numbers so nothing would look wrong.
+    """
+    return f"{season}-{(season + 1) % 100:02d}"
+
+
+@lru_cache(maxsize=None)
+def _uefa_entrants(season: int):
+    """Who entered Europe off the season labelled ``season``, as a frame.
+
+    Cached because six leagues each want the same three articles, and the API
+    is asked politely -- one request a second. Empty where the season has not
+    settled yet: the article for a competition that has not been drawn has no
+    participants, which is not a failure, it is May not having happened.
+    """
+    import pandas as pd
+
+    from whul.sources import wikipedia
+
+    rows = []
+    for competition in wikipedia.COMPETITION_TITLES:
+        try:
+            entrants = wikipedia.load_entrants(competition, _uefa_season(season))
+        except Exception as exc:  # noqa: BLE001 -- one competition must not stop the rest
+            print(f"  UEFA entry: {competition} {_uefa_season(season)} unavailable "
+                  f"({type(exc).__name__}), so no club is credited a place in it",
+                  flush=True)
+            continue
+        for club, entry_round in entrants.items():
+            rows.append({"team": club, "season": season,
+                         "competition": competition, "entry_round": entry_round})
+    return pd.DataFrame(rows, columns=["team", "season", "competition", "entry_round"])
+
+
 def _soccer(key: str, category: str):
     """A club's league, cup and European matches, gathered into one total.
 
@@ -391,6 +431,8 @@ def _soccer(key: str, category: str):
         from whul.scoring import soccer
         from whul.sources import espn
 
+        held: dict[str, object] = {}
+
         def load(seasons):
             matches = espn.load_soccer_matches(key, seasons)
             if matches.empty:
@@ -405,9 +447,28 @@ def _soccer(key: str, category: str):
                     f"will include every opponent it met",
                     flush=True,
                 )
+            held["entry"] = pd.concat(
+                [_uefa_entrants(int(year)) for year in sorted(set(seasons))],
+                ignore_index=True,
+            )
             return matches.assign(league=category)
 
-        return load, soccer.score_teams
+        def score(matches):
+            entry = held.get("entry")
+            scored = soccer.score_teams(matches, uefa_entry=entry)
+            missed = soccer.unmatched_uefa_entry(scored, entry)
+            if missed:
+                # A name that does not match costs the club up to twelve points
+                # and reads as nothing at all.
+                print(
+                    f"  {key}: {len(missed)} European entrant(s) look like one of "
+                    f"this league's clubs but matched none: "
+                    + ", ".join(f"{n} ({s})" for n, s in missed[:8]),
+                    flush=True,
+                )
+            return scored
+
+        return load, score
 
     return build
 

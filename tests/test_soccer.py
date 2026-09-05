@@ -426,3 +426,130 @@ def test_a_win_in_europe_is_told_from_a_win_at_home():
     assert row["wins_league"] == 1
     assert row["pts_wins"] == 8          # 5 + 3
     assert row["total_points"] == 10     # plus two clean sheets, no big margins
+
+
+# --- a place in Europe ------------------------------------------------------
+
+def entry_row(team, season=2027, competition="Champions League",
+              entry_round="League phase"):
+    return {"team": team, "season": season, "competition": competition,
+            "entry_round": entry_round}
+
+
+def one_win(team="Arsenal", league="Premier League", date="2027-05-10"):
+    return pd.DataFrame([{
+        "team": team, "league": league, "date": date,
+        "competition": league, "goals_for": 2, "goals_against": 0,
+    }])
+
+
+def test_reaching_europe_is_worth_points_a_season_of_wins_does_not_say():
+    """Nothing in a club's own results says it earned a place. Without this the
+    biggest outcome of a domestic season short of the title is worth nothing."""
+    row = soccer.score_teams(
+        one_win(), uefa_entry=pd.DataFrame([entry_row("Arsenal")])
+    ).iloc[0]
+    assert row["uefa_entry"] == "Champions League -- League phase"
+    assert row["pts_uefa_entry"] == 12.0
+    # 3 for the win, 1 for the two-goal margin, 1 for the clean sheet, 12 for Europe
+    assert row["total_points"] == 17.0
+
+
+@pytest.mark.parametrize("competition,entry_round,expected", [
+    ("Champions League", "League phase", 12.0),
+    ("Champions League", "Third qualifying round", 6.0),
+    ("Europa League", "League phase", 8.0),
+    ("Europa League", "Play-off round", 4.0),
+    ("Conference League", "Play-off round", 4.0),
+])
+def test_where_a_club_comes_in_is_what_it_is_worth(competition, entry_round, expected):
+    """A place in the league phase and a place in a qualifying draw are not the
+    same thing, and the participant list states which is which."""
+    row = soccer.score_teams(
+        one_win(),
+        uefa_entry=pd.DataFrame([entry_row("Arsenal", competition=competition,
+                                           entry_round=entry_round)]),
+    ).iloc[0]
+    assert row["pts_uefa_entry"] == expected
+
+
+def test_the_conference_league_play_off_is_not_discounted():
+    """It *is* how a club from a top-five league enters, against opposition it
+    is overwhelmingly expected to beat. Halving it prices a near-certainty as a
+    coin toss."""
+    from whul.scoring.competition import uefa_entry_points
+
+    assert uefa_entry_points("Conference League", "Play-off round") == \
+        uefa_entry_points("Conference League", "League phase")
+    assert uefa_entry_points("Champions League", "Play-off round") < \
+        uefa_entry_points("Champions League", "League phase")
+
+
+def test_a_club_with_no_place_in_europe_is_unaffected():
+    row = soccer.score_teams(one_win(), uefa_entry=pd.DataFrame([
+        entry_row("Liverpool")
+    ])).iloc[0]
+    assert row["uefa_entry"] == "" and row["pts_uefa_entry"] == 0.0
+    assert row["total_points"] == 5.0
+
+
+def test_entry_is_matched_on_a_normalized_name():
+    """The participant list and the match feed do not spell clubs alike."""
+    row = soccer.score_teams(
+        one_win(team="Monaco", league="Ligue 1"),
+        uefa_entry=pd.DataFrame([entry_row("AS Monaco")]),
+    ).iloc[0]
+    assert row["pts_uefa_entry"] == 12.0
+
+
+def test_a_name_that_did_not_match_is_named_rather_than_lost():
+    """A miss costs up to twelve points and reads as nothing at all. Only names
+    that look like one of ours are reported -- the participant list holds every
+    club in Europe and listing them all would bury the one that matters."""
+    ours = pd.DataFrame([{"team": "Internazionale", "season": 2027}])
+    entry = pd.DataFrame([
+        entry_row("Inter Milan"),
+        entry_row("Bodø/Glimt"),
+        entry_row("Slovan Bratislava"),
+    ])
+    assert soccer.unmatched_uefa_entry(ours, entry) == [("Inter Milan", 2027)]
+
+
+def test_a_different_club_that_shares_a_word_is_not_reported():
+    """Real Betis is not Real Madrid, and a report full of those is a report
+    nobody reads."""
+    ours = pd.DataFrame([{"team": "Real Madrid", "season": 2027}])
+    entry = pd.DataFrame([entry_row("Real Betis")])
+    assert soccer.unmatched_uefa_entry(ours, entry) == []
+
+
+def test_a_domestic_season_earns_a_place_in_the_following_uefa_year():
+    """The 2026-27 campaign, labelled 2027, is played out by May 2027 and earns
+    a place in the 2027-28 competitions. Backwards, this would award last
+    year's qualification to this year's finish -- and both are real numbers, so
+    nothing would look wrong."""
+    from whul.benchmark_sources import _uefa_season
+
+    assert _uefa_season(2027) == "2027-28"
+    # The season the probe was run against: 2025-26 entry was earned in 2024-25,
+    # which this labels 2025.
+    assert _uefa_season(2025) == "2025-26"
+    assert _uefa_season(2029) == "2029-30"
+
+
+def test_a_season_that_has_not_settled_costs_nothing_and_stops_nothing():
+    """Before May the article for a competition that has not been drawn has no
+    participants. That is not a failure, it is the season not having ended, and
+    it must not take the rest of the pull down with it."""
+    from unittest import mock
+
+    from whul import benchmark_sources
+
+    with mock.patch("whul.sources.wikipedia.load_entrants",
+                    side_effect=LookupError("no section headed 'Teams'")):
+        benchmark_sources._uefa_entrants.cache_clear()
+        frame = benchmark_sources._uefa_entrants(2027)
+    benchmark_sources._uefa_entrants.cache_clear()
+
+    assert frame.empty
+    assert list(frame.columns) == ["team", "season", "competition", "entry_round"]

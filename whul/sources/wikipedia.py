@@ -87,9 +87,17 @@ DIRECT_ENTRY = "League phase"
 LEAGUE_PHASE_SIZE = 36
 
 #: Superscript markers Wikipedia appends to a club in these tables. Stripped by
-#: exact match only: a trailing pair of capitals is not safely removable when
-#: AZ, PSV and RFS are clubs.
-MARKERS = ("TH", "CW", "UCL", "UEL", "UECL")
+#: exact match only: a trailing run of capitals is not safely removable when AZ,
+#: PSV, RFS and FCSB are clubs.
+#:
+#: EPS is the European Performance Spot -- the extra Champions League place the
+#: two best-performing associations earn each year. It is exactly the moving
+#: allocation that reading the participant list was meant to avoid modelling,
+#: and it turned up in the first live run: Newcastle United and Villarreal took
+#: those places in 2025-26. Without it here, both names reach the roster with
+#: " EPS" attached, match nothing, and score no entry at all -- twelve points
+#: each, in silence.
+MARKERS = ("TH", "CW", "EPS", "UCL", "UEL", "UECL")
 
 #: Text in a club cell that names a slot rather than a club, which is what an
 #: article carries before qualifying has been played.

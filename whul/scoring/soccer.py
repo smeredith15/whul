@@ -21,12 +21,19 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
-from whul.scoring.competition import Tier, bye_credit, classify, classify_key
+from whul.scoring.competition import (
+    Tier, bye_credit, classify, classify_key, uefa_entry_points,
+)
 
 # --- teams ----------------------------------------------------------------
 BIG_MARGIN = 2
 PTS_BIG_MARGIN = 1
 PTS_CLEAN_SHEET = 1
+
+#: How long a word must be before it counts as identifying a club. Five, so
+#: "real" does not make Real Betis look like Real Madrid, while "inter" still
+#: finds Internazionale behind "Inter Milan".
+DISTINCT = 5
 
 # --- players --------------------------------------------------------------
 #: Appearance points are **per game**: 2 for playing 60 minutes or more in a
@@ -150,13 +157,20 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
 
 
 def score_teams(
-    matches: pd.DataFrame, byes: pd.DataFrame | None = None
+    matches: pd.DataFrame,
+    byes: pd.DataFrame | None = None,
+    uefa_entry: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Season totals per club.
 
     ``byes`` credits rounds a team skipped by finishing high enough to earn one,
     scored as a sweep. Expects ``team``, ``season``, ``tier`` and optionally
     ``legs``; without it a bye is indistinguishable from an early exit.
+
+    ``uefa_entry`` credits a place in Europe earned by the season's league
+    finish -- ``team``, ``season``, ``competition``, ``entry_round``. Nothing in
+    a club's own results says it earned one, so without this the biggest
+    outcome of a domestic season short of the title is worth nothing.
     """
     scored = score_team_matches(matches)
     if scored.empty:
@@ -212,9 +226,95 @@ def score_teams(
     else:
         totals["bye_points"] = 0.0
 
+    totals = _with_uefa_entry(totals, uefa_entry)
+
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)
+
+
+def _with_uefa_entry(
+    totals: pd.DataFrame, entry: pd.DataFrame | None
+) -> pd.DataFrame:
+    """Add the points for a place in Europe earned by this season's finish.
+
+    Matched on a normalized club name, because the participant list and the
+    match feed do not spell clubs alike -- one says Inter Milan and the other
+    Internazionale, one Monaco and the other AS Monaco. A name that fails to
+    match costs the club up to twelve points and reads as nothing at all, which
+    is why ``unmatched_uefa_entry`` exists to name them.
+    """
+    from whul.resolve import normalize_team
+
+    totals = totals.copy()
+    totals["uefa_entry"] = ""
+    totals["pts_uefa_entry"] = 0.0
+    if entry is None or entry.empty:
+        totals["total_points"] = totals["total_points"] + totals["pts_uefa_entry"]
+        return totals
+
+    wanted = {}
+    for row in entry.itertuples():
+        key = (normalize_team(str(row.team)), int(row.season))
+        wanted[key] = (str(row.competition), str(row.entry_round))
+
+    labels, points = [], []
+    for row in totals.itertuples():
+        found = wanted.get((normalize_team(str(row.team)), int(row.season)))
+        if found is None:
+            labels.append("")
+            points.append(0.0)
+            continue
+        competition, entry_round = found
+        labels.append(f"{competition} -- {entry_round}")
+        points.append(uefa_entry_points(competition, entry_round))
+    totals["uefa_entry"] = labels
+    totals["pts_uefa_entry"] = points
+    totals["total_points"] = totals["total_points"] + totals["pts_uefa_entry"]
+    return totals
+
+
+def unmatched_uefa_entry(
+    totals: pd.DataFrame, entry: pd.DataFrame | None
+) -> list[tuple[str, int]]:
+    """Entrants that look like one of our clubs but matched none of them.
+
+    The participant list holds every club in Europe, most of which are nothing
+    to do with the five leagues scored here, so an unmatched name is usually
+    correct and listing them all would bury the one that matters. Only names
+    sharing a word with a club actually in the frame are returned -- which is
+    what "Inter Milan" against "Internazionale" looks like, and what a silent
+    twelve-point loss looks like from the outside.
+    """
+    from whul.resolve import normalize_team
+
+    if entry is None or entry.empty or totals is None or totals.empty:
+        return []
+
+    ours = {normalize_team(str(t)) for t in totals["team"]}
+    our_words = {w for name in ours for w in name.split() if len(w) >= DISTINCT}
+
+    def looks_like_ours(name: str) -> bool:
+        # Prefix as well as whole word, because the case this exists for --
+        # "Inter Milan" against "Internazionale" -- shares no whole word at
+        # all. Five characters, so "real" does not make Real Betis look like
+        # Real Madrid while "inter" still finds Internazionale.
+        for word in name.split():
+            if len(word) < DISTINCT:
+                continue
+            if any(word == ours or word.startswith(ours) or ours.startswith(word)
+                   for ours in our_words):
+                return True
+        return False
+
+    missed = []
+    for row in entry.itertuples():
+        name = normalize_team(str(row.team))
+        if name in ours:
+            continue
+        if looks_like_ours(name):
+            missed.append((str(row.team), int(row.season)))
+    return sorted(set(missed))
 
 
 def score_players(players: pd.DataFrame) -> pd.DataFrame:

@@ -223,3 +223,16 @@ def test_a_club_with_digits_in_its_name_survives(club):
 @pytest.mark.parametrize("count", ["4", "0", "1"])
 def test_a_bare_number_is_a_count(count):
     assert wikipedia._is_a_count(count)
+
+
+@pytest.mark.parametrize("name,club", [
+    ("Newcastle United EPS", "Newcastle United"),
+    ("Villarreal EPS", "Villarreal"),
+    ("Paris Saint-Germain TH", "Paris Saint-Germain"),
+])
+def test_the_extra_place_marker_is_stripped(name, club):
+    """EPS is the European Performance Spot, the extra Champions League place
+    the two best-performing associations earn. It appeared in the first live
+    run on Newcastle and Villarreal, and left in the name it would have cost
+    both clubs twelve points without anything reading as wrong."""
+    assert wikipedia.clean(name) == club

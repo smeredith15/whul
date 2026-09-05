@@ -57,6 +57,17 @@ BIG_MARGIN = 2
 PTS_BIG_MARGIN = 1
 PTS_CLEAN_SHEET = 1
 
+#: A place in Europe, earned by where the club finished at home. Read from the
+#: published participant list rather than derived: nothing in a club's own
+#: results says it got one.
+UEFA_LEAGUE_PHASE = {"Champions League": 12, "Europa League": 8,
+                     "Conference League": 4}
+#: Entering before the league phase is a place in a draw, not in the
+#: competition. Not discounted for the Conference League, where the play-off
+#: round is simply how a top-five-league club comes in.
+UEFA_QUALIFYING = {"Champions League": 0.5, "Europa League": 0.5,
+                   "Conference League": 1.0}
+
 #: The cheapest and dearest a win can be, used to bound a total when the stored
 #: row carries no breakdown.
 MIN_PER_WIN = TIER_POINTS["league"]
@@ -101,6 +112,22 @@ def show_rules():
     with nothing raised. The per-tier breakdown below is what makes that
     visible: a club that played in Europe and shows no European wins is worth
     a second look.
+
+  A PLACE IN EUROPE
+    Worth points on its own, before a ball is kicked in it, because nothing in
+    a club's own results says it earned one -- that depends on where everyone
+    else finished, on both cup winners, on the cascade when a cup winner has
+    already qualified, and on an allocation that moves every year.
+
+      12   Champions League, straight into the league phase
+       6   Champions League, entering a qualifying round
+       8   Europa League, straight into the league phase
+       4   Europa League, entering a qualifying round
+       4   Conference League, however it comes in
+
+    The Conference League is not discounted, and that is deliberate: the
+    play-off round *is* how a club from a top-five league enters it, against
+    opposition it is overwhelmingly expected to beat.
 
   QUALIFYING
     Dropped outright, neither scored nor allowed to pad a match count. A
@@ -226,6 +253,11 @@ class Audit:
                   f"{PTS_BIG_MARGIN:>9}{big * PTS_BIG_MARGIN:>11.2f}")
             print(f"    {'conceded nothing':<34}{clean:>6.0f}"
                   f"{PTS_CLEAN_SHEET:>9}{clean * PTS_CLEAN_SHEET:>11.2f}")
+            entry = str(stats.get("uefa_entry") or "")
+            entry_points = float(stats.get("pts_uefa_entry") or 0.0)
+            if entry or entry_points:
+                total += entry_points
+                print(f"    {entry[:33]:<34}{'':>6}{'':>9}{entry_points:>11.2f}")
             if byes:
                 total += byes
                 print(f"    {'byes, credited as a sweep':<34}{'':>6}{'':>9}{byes:>11.2f}")
