@@ -173,6 +173,63 @@ class Audit:
             (str(r.asset_type), str(r.norm_key)): r for r in rows.itertuples()
         }
 
+    def absent(self):
+        """Rostered assets with nothing in the feed today.
+
+        The audit walks feed rows, so anyone the feed never named is invisible
+        in it -- and a player on the injured list and a player the feed forgot
+        look exactly alike from inside a list of the ones it did name. Only the
+        roster says who should have been there.
+
+        Split by whether the feed has *ever* named them. One who was being
+        scored and stopped is on the injured list or in the minors, which is
+        ordinary. One who has never appeared across every day the league year
+        has run is a different thing, and the one worth stopping on: he may not
+        have played, or the roster may spell him in a way the feed does not, and
+        the standings show 0.00 either way.
+        """
+        frame = self.store.query(
+            "SELECT a.display_name, a.asset_type, m.display_name AS manager, "
+            "       (SELECT COUNT(*) FROM raw_stats r WHERE r.asset_id = a.asset_id "
+            "         AND r.as_of = ?) AS rows_today, "
+            "       (SELECT COUNT(*) FROM raw_stats r WHERE r.asset_id = a.asset_id) "
+            "         AS rows_ever "
+            "FROM assets a "
+            "JOIN slot_occupancy so USING (asset_id) "
+            "JOIN roster_slots rs USING (slot_id) "
+            "JOIN managers m USING (manager_id) "
+            "WHERE a.league = 'MLB' AND so.end_date IS NULL "
+            "ORDER BY a.asset_type, a.display_name",
+            (self.as_of,),
+        )
+        print(f"\n{RULE}\nROSTERED BUT ABSENT FROM THE FEED\n{RULE}")
+        if frame.empty:
+            print("  nothing rostered in MLB")
+            return
+        missing = frame[frame["rows_today"] == 0]
+        if missing.empty:
+            print(f"  none -- all {len(frame)} rostered asset(s) have a row today")
+            return
+
+        never = missing[missing["rows_ever"] == 0]
+        lapsed = missing[missing["rows_ever"] > 0]
+        print(f"  {len(missing)} of {len(frame)} rostered asset(s) have no row on "
+              f"{self.as_of}, so they score nothing.")
+
+        if not lapsed.empty:
+            print(f"\n  Scored before, not today -- injured, rested or demoted:\n")
+            for row in lapsed.itertuples():
+                print(f"    {str(row.display_name):<24}{str(row.asset_type):<8}"
+                      f"{str(row.manager):<10}seen in {int(row.rows_ever)} earlier pull(s)")
+        if not never.empty:
+            print(f"\n  NEVER seen in this feed, on any day of the league year:\n")
+            for row in never.itertuples():
+                print(f"    {str(row.display_name):<24}{str(row.asset_type):<8}"
+                      f"{str(row.manager):<10}has scored 0.00 every day")
+            print(f"\n  Either he has not played since the league year opened, or "
+                  f"the roster spells\n  him in a way the feed does not. Those look "
+                  f"the same from here and only\n  one is acceptable.")
+
     def rows(self, source: str):
         frame = self.store.query(
             "SELECT rs.asset_id, a.display_name, a.asset_type, rs.stats "
@@ -525,6 +582,7 @@ def main():
         audit.players()
     if not args.players_only:
         audit.teams()
+    audit.absent()
     audit.footer()
 
 
