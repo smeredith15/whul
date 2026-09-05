@@ -65,8 +65,14 @@ def test_a_span_never_reaches_past_its_own_edges():
     ("nfl", date(2026, 9, 5), [2026]),
     ("nba-teams", date(2026, 12, 1), [2027]),
     ("epl", date(2027, 3, 15), [2027]),
-    ("mls", date(2027, 3, 15), [2026, 2027]),
-    ("nwsl", date(2027, 3, 15), [2026, 2027]),
+    # Drafted for 2027, so the 2026 season they are playing now is not asked
+    # for at all -- and before 2027 opens they ask for nothing, which is how a
+    # club picked for a season nobody has played scores zero rather than being
+    # paid for the wrong one.
+    ("mls", date(2027, 3, 15), [2027]),
+    ("nwsl", date(2027, 3, 15), [2027]),
+    ("mls", date(2026, 9, 5), []),
+    ("nwsl", date(2026, 9, 5), []),
 ])
 def test_each_source_asks_its_feed_for_the_season_being_played(key, day, expected):
     assert SOURCES[key].seasons_for(day) == expected

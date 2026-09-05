@@ -12,6 +12,7 @@ came back.
 
 import pandas as pd
 import pytest
+import requests
 
 from whul.sources import espn_soccer
 
@@ -179,7 +180,7 @@ def test_a_statistics_block_this_cannot_read_does_not_raise(monkeypatch, payload
 def test_a_club_that_fails_costs_that_club_only(monkeypatch):
     """Nineteen clubs' players are worth more than none."""
     monkeypatch.setattr(espn_soccer, "team_ids",
-                        lambda league, season, session=None: {"A": "1", "B": "2"})
+                        lambda league, season, session=None, note=None: {"A": "1", "B": "2"})
 
     def flaky(league, team_id, season, session=None):
         if team_id == "1":
@@ -344,7 +345,7 @@ def test_a_whole_league_failing_is_reported_as_one_fact(monkeypatch, capsys):
     from whul.sources import espn_soccer as source
 
     monkeypatch.setattr(source, "team_ids",
-                        lambda league, season, session=None:
+                        lambda league, season, session=None, note=None:
                         {f"Club {i}": str(i) for i in range(30)})
 
     def gone(league, team_id, season, session=None):
@@ -364,7 +365,7 @@ def test_some_clubs_failing_still_names_them(monkeypatch, capsys):
     from whul.sources import espn_soccer as source
 
     monkeypatch.setattr(source, "team_ids",
-                        lambda league, season, session=None: {"A": "1", "B": "2"})
+                        lambda league, season, session=None, note=None: {"A": "1", "B": "2"})
 
     def flaky(league, team_id, season, session=None):
         if team_id == "1":
@@ -375,3 +376,65 @@ def test_some_clubs_failing_still_names_them(monkeypatch, capsys):
     source.load_players("epl", [2027])
     out = capsys.readouterr().out
     assert "A failed" in out and "every club failed" not in out
+
+
+class _Refuses:
+    """A session that answers 403 to the seasoned club list, as ESPN did."""
+
+    def __init__(self, refuse_seasoned=True, refuse_all=False):
+        self.refuse_seasoned = refuse_seasoned
+        self.refuse_all = refuse_all
+        self.asked = []
+
+    def get(self, url, params=None, timeout=None, **kwargs):
+        self.asked.append(dict(params or {}))
+        if self.refuse_all or (self.refuse_seasoned and params):
+            raise requests.HTTPError(
+                "403 Client Error: Forbidden", response=_Response(403))
+        return _Response(200, {"sports": [{"leagues": [{"teams": [
+            {"team": {"id": "359", "displayName": "Arsenal"}},
+        ]}]}]})
+
+
+class _Response:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code}", response=self)
+
+    def json(self):
+        return self._payload
+
+
+def test_a_refused_club_list_falls_back_and_says_it_did():
+    """A 403 does not say what it objects to, so the bare request is tried
+    before the league is written off. The substitution is reported: a current
+    club list is right for the season in progress and wrong by however many
+    clubs went up or down for an older one."""
+    session = _Refuses()
+    note = []
+    clubs = espn_soccer.team_ids("epl", 2027, session, note=note)
+    assert clubs == {"Arsenal": "359"}
+    assert session.asked == [{"season": 2026}, {}]
+    assert any("403" in line for line in note)
+    assert any("promoted or relegated" in line for line in note)
+
+
+def test_a_club_list_refused_both_ways_returns_nothing_rather_than_raising():
+    """One league that cannot be reached is one league scoring nothing. It
+    raised before, which took the other five leagues down with it."""
+    note = []
+    assert espn_soccer.team_ids(
+        "epl", 2027, _Refuses(refuse_all=True), note=note) == {}
+    assert len(note) == 2  # both shapes tried, both reported
+
+
+def test_no_custom_user_agent_is_sent():
+    """The module that is pulled from GitHub Actions every night sends none,
+    and this one drew a 403 from the same runner while sending one."""
+    session = _Refuses(refuse_seasoned=False)
+    espn_soccer.team_ids("epl", 2027, session)
+    assert session.asked  # and no headers reached the call at all
