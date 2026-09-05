@@ -184,9 +184,23 @@ rm -f "$INDEX"
 COMMIT=$(git commit-tree "$TREE" \
     -m "Database after $(date -u +%Y-%m-%dT%H:%M:%SZ)") || exit 1
 
+# An inherited credential helper that is broken -- an editor's, whose socket has
+# gone -- does not fail over to asking: it errors, git falls back to anonymous,
+# and the push is refused with no prompt. An empty `-c credential.helper=` is
+# the documented way to clear the inherited list, so what follows is the only
+# helper in play.
+#
+# With GITHUB_TOKEN set, the token is read from the environment by a helper
+# rather than put in the remote URL, so it never appears in the command line,
+# in `git remote -v`, or in an error message that echoes the URL back.
+AUTH=(-c credential.helper=)
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    AUTH+=(-c "credential.helper=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f")
+fi
+
 pushed=0
 for wait in 2 4 8 16; do
-    OUT=$(git push -f origin "$COMMIT:refs/heads/data" 2>&1) && { pushed=1; break; }
+    OUT=$(git "${AUTH[@]}" push -f origin "$COMMIT:refs/heads/data" 2>&1) && { pushed=1; break; }
     echo "$OUT"
     # A refused credential is not a blip. Retrying it four times just prints the
     # same failure four times and buries the one line that says what to do.
@@ -202,19 +216,20 @@ the scale is frozen, the standings are rolled up, and the site is built in
 
 To finish, git needs to be able to push. Two ways, quickest first:
 
-  1. If this is a VS Code / Code OSS terminal and the error mentions a
-     vscode-git socket, its credential helper has gone stale. Reload the
-     window (Command Palette -> "Developer: Reload Window"), open a fresh
-     terminal, and run this script again.
+  1. Give it a token directly. It is read from the environment, so it never
+     reaches the command line, the remote URL, or an error message:
 
-  2. Otherwise use a personal access token with Contents: read and write on
-     this repository. Held in memory for an hour, never written to disk:
+         read -rsp "GitHub token: " GITHUB_TOKEN; echo
+         export GITHUB_TOKEN
+         INGEST_ONLY=1 ./scripts/deploy.sh
 
-         git config --global credential.helper 'cache --timeout=3600'
-         git push origin HEAD          # username, then the token as password
+     The token needs Contents: read and write on this repository. `read -rs`
+     keeps it off the screen and out of shell history.
 
-     Then re-run this script. `INGEST_ONLY=1 ./scripts/deploy.sh` skips
-     straight past the freeze, which has already happened.
+  2. Or fix the editor's helper: reload the window (Command Palette ->
+     "Developer: Reload Window") and open a fresh terminal.
+
+  INGEST_ONLY=1 skips straight past the freeze, which has already happened.
 
 AUTH
         exit 1
