@@ -688,3 +688,59 @@ def test_a_two_way_player_who_did_not_pitch_in_the_window_scores_his_bat():
     row = folded.iloc[0]
     assert not row["is_two_way"]
     assert row["scaled_score"] == pytest.approx(row["primary_score"], abs=0.01)
+
+
+_PITCHED_BADLY = _payload(_split("Shohei Ohtani", OHTANI, {
+    "gamesPlayed": 1, "inningsPitched": "2.0", "strikeOuts": 0, "hits": 5,
+    "baseOnBalls": 3, "hitByPitch": 0, "homeRuns": 2, "saves": 0, "holds": 0}))
+
+
+def test_a_bad_secondary_outing_is_counted_against_him():
+    """Two innings for five hits, three walks and two home runs is worth about
+    -32 points, and over a three-week window that is the whole pitching sample.
+
+    It used to be dropped for being non-positive, which made the start free: a
+    two-way player's secondary role could help him and never cost him. Over a
+    full season nobody finishes a role in the red, so the old filter only ever
+    bit here -- on the short window, where one start is most of what there is.
+    """
+    roles, folded = _ohtani(_PITCHED_BADLY)
+
+    assert set(roles["role"]) == {"Batter", "Pitcher"}
+    pitching = roles[roles["role"] == "Pitcher"].iloc[0]
+    assert pitching["role_points"] < 0
+
+    row = folded.iloc[0]
+    assert row["is_two_way"]
+    assert row["primary_score"] == pytest.approx(row["scaled_score"]
+                                                 - row["secondary_score"] * 0.5, abs=0.01)
+    # Half of a negative secondary, so the total lands below the bat alone.
+    assert row["secondary_score"] < 0
+    assert row["scaled_score"] < row["primary_score"]
+
+
+def test_a_benchmark_is_unmoved_by_the_rows_that_used_to_be_dropped():
+    """Keeping negative lines is safe for the scale as well as right for the
+    score: the buffer pool takes the top N of each group, and a replacement
+    line is never in the top N. This is what says so rather than assuming it."""
+    import numpy as np
+
+    from whul.normalize import compute_benchmarks
+
+    rng = np.random.default_rng(7)
+    real = pd.DataFrame({
+        "season": np.repeat([2021, 2022, 2023, 2024, 2025], 340),
+        "player": [f"p{i}" for i in range(1700)],
+        "league": "MLB", "role": "Batter",
+        "total_points": rng.normal(700, 300, 1700).clip(min=1),
+    })
+    replacement = real.iloc[:400].copy()
+    replacement["player"] = [f"j{i}" for i in range(400)]
+    replacement["total_points"] = rng.normal(-40, 30, 400)
+
+    without = compute_benchmarks(real, "Player", season_col="season")
+    with_them = compute_benchmarks(
+        pd.concat([real, replacement], ignore_index=True), "Player", season_col="season"
+    )
+    assert without.loc[0, "benchmark"] == with_them.loc[0, "benchmark"]
+    assert without.loc[0, "n_in_pool"] == with_them.loc[0, "n_in_pool"]
