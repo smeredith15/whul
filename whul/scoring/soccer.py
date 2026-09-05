@@ -162,11 +162,41 @@ def score_teams(
     if scored.empty:
         return pd.DataFrame()
 
+    # The components, not only the sum. A club with two wins and eleven points
+    # has not won twice in its league -- the league pays three a win and five
+    # at most with both bonuses -- but the total alone cannot say that, and a
+    # reader looking at the profile has no way to reach the same number. It is
+    # also what makes the arithmetic checkable at all: a competition the
+    # classifier could not place falls through to the league and pays three
+    # instead of five, and that is invisible in a total.
+    scored = scored.copy()
+    scored["win_points"] = scored["is_win"] * scored["base_points"]
+    scored["big_margin"] = scored["is_win"] & (scored["margin"] >= BIG_MARGIN)
+    scored["clean_sheet"] = scored["is_win"] & (scored["goals_against"] == 0)
+
     totals = scored.groupby(["league", "team", "season"], as_index=False).agg(
         matches_played=("match_points", "size"),
         wins=("is_win", "sum"),
+        pts_wins=("win_points", "sum"),
+        big_margins=("big_margin", "sum"),
+        clean_sheets=("clean_sheet", "sum"),
         total_points=("match_points", "sum"),
     )
+    totals["pts_big_margin"] = totals["big_margins"] * PTS_BIG_MARGIN
+    totals["pts_clean_sheet"] = totals["clean_sheets"] * PTS_CLEAN_SHEET
+
+    # Wins by where they happened, so the tier premium is visible rather than
+    # folded into one figure.
+    for tier in Tier:
+        if tier is Tier.QUALIFYING:
+            continue
+        column = f"wins_{tier.value}"
+        won_here = scored["is_win"] & (scored["tier"] == tier.value)
+        by_club = scored.assign(_w=won_here).groupby(
+            ["league", "team", "season"], as_index=False
+        )["_w"].sum().rename(columns={"_w": column})
+        totals = totals.merge(by_club, on=["league", "team", "season"], how="left")
+        totals[column] = totals[column].fillna(0).astype(int)
 
     if byes is not None and not byes.empty:
         credit = byes.copy()

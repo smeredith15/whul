@@ -6,6 +6,7 @@ Expected values are computed by hand from Club_Soccer.R.
 import pandas as pd
 import pytest
 
+from whul.scoring import soccer
 from whul.scoring.competition import Tier, bye_credit, classify
 from whul.scoring.soccer import (
     goal_points_for,
@@ -382,3 +383,46 @@ def test_an_unreadable_team_list_is_announced_not_silently_ignored(monkeypatch, 
     load, _ = SOURCES["epl"].build()
     assert len(load([2026])) == 1
     assert "every opponent it met" in capsys.readouterr().out
+
+
+# --- the components behind a club total ------------------------------------
+
+def test_a_club_total_carries_the_wins_that_made_it():
+    """Two wins can be nine points or fourteen, and the total alone does not
+    say which. A club on eleven from two wins has not won twice in its league
+    -- the league pays three a win and five at most with both bonuses -- and
+    without the breakdown nobody reading the profile can reach that number."""
+    matches = pd.DataFrame([
+        {"team": "Borussia Dortmund", "league": "Bundesliga", "date": "2026-08-16",
+         "competition": "DFB-Pokal", "goals_for": 4, "goals_against": 0},
+        {"team": "Borussia Dortmund", "league": "Bundesliga", "date": "2026-08-23",
+         "competition": "Bundesliga", "goals_for": 3, "goals_against": 0},
+    ])
+    row = soccer.score_teams(matches).iloc[0]
+
+    assert row["wins"] == 2
+    assert row["wins_domestic_cup"] == 1
+    assert row["wins_league"] == 1
+    assert row["pts_wins"] == 7          # 4 for the cup tie, 3 for the league one
+    assert row["big_margins"] == 2
+    assert row["clean_sheets"] == 2
+    assert row["total_points"] == 11
+    # And the parts must reconstruct the whole, which is the point of storing them.
+    assert (row["pts_wins"] + row["pts_big_margin"] + row["pts_clean_sheet"]
+            + row["bye_points"]) == row["total_points"]
+
+
+def test_a_win_in_europe_is_told_from_a_win_at_home():
+    """The tier premium is what makes gathering every competition worthwhile:
+    restricted to league fixtures every win would be worth three."""
+    matches = pd.DataFrame([
+        {"team": "Arsenal", "league": "Premier League", "date": "2026-09-16",
+         "competition": "UEFA Champions League", "goals_for": 1, "goals_against": 0},
+        {"team": "Arsenal", "league": "Premier League", "date": "2026-09-20",
+         "competition": "Premier League", "goals_for": 1, "goals_against": 0},
+    ])
+    row = soccer.score_teams(matches).iloc[0]
+    assert row["wins_champions_league"] == 1
+    assert row["wins_league"] == 1
+    assert row["pts_wins"] == 8          # 5 + 3
+    assert row["total_points"] == 10     # plus two clean sheets, no big margins
