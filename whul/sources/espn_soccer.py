@@ -37,7 +37,9 @@ import time
 import pandas as pd
 import requests
 
-from whul.sources.espn import BASE, LEAGUE_PATHS, REQUEST_PAUSE, TIMEOUT
+from whul.sources.espn import (
+    BASE, LEAGUE_PATHS, REQUEST_PAUSE, SEASON_WINDOWS, TIMEOUT,
+)
 
 #: Where each figure the scorer needs lives, as ``category.stat``. Read by the
 #: stat's own name rather than its position: the order of both the categories
@@ -57,6 +59,42 @@ STAT_PATHS = {
 #: similarly enough to be picked up by a looser match. Conceding one must never
 #: be paid as scoring one.
 NOT_A_GOAL = "ownGoals"
+
+
+def roster_season(league: str, season: int) -> int:
+    """Our season label, in ESPN's numbering.
+
+    ESPN names a soccer season for the year it starts; we name it for the year
+    it ends. A live run confirmed it: asked for 2021, the feed answered
+    "2021-22 English Premier League". So every European league is one year
+    apart from us, and MLS -- which runs inside a calendar year and answered
+    "2021 MLS" -- is not.
+
+    That distinction is already in ``SEASON_WINDOWS`` as "ends" against
+    "within", so it is derived rather than listed and a league added later is
+    right without anyone remembering this.
+
+    The cost of getting it wrong is not the benchmark, where five consecutive
+    seasons are five consecutive seasons. It is the live pull: our 2026-27 is
+    2027, and asking ESPN for 2027 returns 2027-28, a season nobody has played.
+    Every rostered player would score zero and the run would look like it had
+    worked.
+    """
+    numbering = SEASON_WINDOWS.get(league, ((), (), "within"))[2]
+    return season - 1 if numbering == "ends" else season
+
+
+def season_matches(league: str, season: int, said: str) -> bool:
+    """Does the label the feed returned describe the season we meant?
+
+    Deliberately strict about which year it must start with. The first version
+    of this check accepted a label beginning with either the year asked for or
+    the year before, which is to say it accepted both conventions and so
+    detected neither -- it passed on the very shift it was written to find.
+    """
+    if not said:
+        return True
+    return said.strip().startswith(str(roster_season(league, season)))
 
 
 def _get(url: str, params: dict, session=None) -> dict:
@@ -143,11 +181,16 @@ def season_label(payload: dict) -> str:
 def load_squad(
     league: str, team_id: str, season: int, session=None
 ) -> pd.DataFrame:
-    """One club's players for one season, in the shape the scorer reads."""
+    """One club's players for one season, in the shape the scorer reads.
+
+    ``season`` is our label throughout -- 2027 is 2026-27 -- and the
+    translation into ESPN's numbering happens at the request. The rows come
+    back tagged with ours, so nothing downstream has to know the difference.
+    """
     sport, path = LEAGUE_PATHS[league]
     payload = _get(
         f"{BASE}/{sport}/{path}/teams/{team_id}/roster",
-        {"season": season}, session,
+        {"season": roster_season(league, season)}, session,
     )
     club = str((payload.get("team") or {}).get("displayName", ""))
     said = season_label(payload)
@@ -182,7 +225,8 @@ def load_squad(
 def team_ids(league: str, season: int, session=None) -> dict[str, str]:
     """``{club: espn id}`` for one league and season."""
     sport, path = LEAGUE_PATHS[league]
-    payload = _get(f"{BASE}/{sport}/{path}/teams", {"season": season}, session)
+    payload = _get(f"{BASE}/{sport}/{path}/teams",
+                   {"season": roster_season(league, season)}, session)
     out = {}
     try:
         entries = payload["sports"][0]["leagues"][0]["teams"]

@@ -226,20 +226,18 @@ def test_a_league_that_returns_nothing_costs_that_league_only(monkeypatch, capsy
 
 
 def test_a_feed_that_numbers_seasons_differently_is_announced(monkeypatch, capsys):
-    """We name 2026-27 for the year it ends. If ESPN names it for the year it
-    starts, every benchmark season holds the wrong year's football -- and every
-    figure is still a real footballer's real season, so nothing reads as
-    wrong."""
+    """Superseded by the strict check below, which knows the translation. Kept
+    because the message is what a reader of the log has to act on."""
     from whul import benchmark_sources
 
     lines_up = pd.DataFrame([{"season": 2025, "season_said": "2024-25"}])
     benchmark_sources._check_season_convention("epl", lines_up)
-    assert "do not line up" not in capsys.readouterr().out
+    assert "different season" not in capsys.readouterr().out
 
-    shifted = pd.DataFrame([{"season": 2025, "season_said": "2026-27"}])
+    shifted = pd.DataFrame([{"season": 2025, "season_said": "2025-26"}])
     benchmark_sources._check_season_convention("epl", shifted)
     out = capsys.readouterr().out
-    assert "do not line up" in out and "wrong year" in out
+    assert "different season than the one meant" in out and "wrong year" in out
 
 
 def test_a_feed_that_says_nothing_about_the_season_is_also_announced(capsys):
@@ -248,3 +246,52 @@ def test_a_feed_that_says_nothing_about_the_season_is_also_announced(capsys):
     benchmark_sources._check_season_convention(
         "epl", pd.DataFrame([{"season": 2025, "season_said": ""}]))
     assert "did not say which season" in capsys.readouterr().out
+
+
+# --- the season two sources number differently ------------------------------
+
+@pytest.mark.parametrize("league,ours,asked", [
+    # European: ESPN names the year it starts, we name the year it ends.
+    ("epl", 2027, 2026), ("laliga", 2025, 2024), ("bundesliga", 2021, 2020),
+    # MLS runs inside a calendar year, so both name it the same.
+    ("mls", 2026, 2026), ("nwsl", 2025, 2025),
+])
+def test_our_season_is_translated_into_espns(league, ours, asked):
+    """Confirmed live: asked for 2021, the feed answered "2021-22 English
+    Premier League", and "2021 MLS" for the same request to MLS."""
+    assert espn_soccer.roster_season(league, ours) == asked
+
+
+def test_the_live_year_is_the_one_this_gets_wrong():
+    """The benchmark survives a one-year shift -- five consecutive seasons are
+    five consecutive seasons. The live pull does not: our 2026-27 is 2027, and
+    asking ESPN for 2027 returns 2027-28, a season nobody has played. Every
+    rostered player scores zero and the run looks like it worked."""
+    assert espn_soccer.roster_season("epl", 2027) == 2026
+
+
+@pytest.mark.parametrize("league,ours,said,ok", [
+    ("epl", 2027, "2026-27 English Premier League", True),
+    ("epl", 2027, "2027-28 English Premier League", False),
+    ("mls", 2026, "2026 MLS", True),
+    ("mls", 2026, "2025 MLS", False),
+    ("epl", 2027, "", True),          # nothing said, nothing to contradict
+])
+def test_the_label_is_checked_strictly(league, ours, said, ok):
+    """The first check accepted a label starting with either the year asked
+    for or the year before -- both conventions, so neither detected. It passed
+    on the shift it existed to find."""
+    assert espn_soccer.season_matches(league, ours, said) is ok
+
+
+def test_a_shifted_season_is_announced(capsys):
+    from whul import benchmark_sources
+
+    benchmark_sources._check_season_convention(
+        "epl", pd.DataFrame([{"season": 2027, "season_said": "2027-28 EPL"}]))
+    out = capsys.readouterr().out
+    assert "different season than the one meant" in out
+
+    benchmark_sources._check_season_convention(
+        "epl", pd.DataFrame([{"season": 2027, "season_said": "2026-27 EPL"}]))
+    assert "different season" not in capsys.readouterr().out

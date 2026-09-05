@@ -409,21 +409,23 @@ PLAYER_LEAGUES = {
 
 
 def _check_season_convention(key: str, frame) -> None:
-    """Say whether ESPN numbers a season the way we do.
+    """Say whether the feed answered with the season we meant.
 
-    We name 2026-27 for the year it ends, 2027. ESPN may name it for the year
-    it starts. A one-year shift would fill every benchmark season with the
-    wrong year's football, and every figure would still be a real footballer's
-    real season -- so nothing would read as wrong anywhere.
+    ESPN names a soccer season for the year it starts and we name it for the
+    year it ends, so every European league is translated on the way out. This
+    reads the label back and checks the translation landed.
 
-    The feed states which season it answered with, so this compares rather than
-    deduces. I could argue the numbers either way and did: Raya's 38 then 37
-    appearances read as one pair of seasons, Saka's 25 with six goals and ten
-    assists as another.
+    The first version of this accepted a label beginning with either the year
+    asked for or the year before it -- which accepts both conventions and so
+    detects neither. It passed silently on the very shift it was written to
+    find, and the only reason the shift was visible at all is that this
+    function also prints the labels. It prints them still.
 
     Reported, not raised. A label ESPN stops sending is not a reason to lose a
-    league, and the first run settles the convention.
+    league.
     """
+    from whul.sources.espn_soccer import roster_season, season_matches
+
     if "season_said" not in frame.columns or "season" not in frame.columns:
         return
     pairs = sorted({(int(a), str(b)) for a, b in
@@ -432,16 +434,16 @@ def _check_season_convention(key: str, frame) -> None:
         print(f"  {key}: the feed did not say which season it answered with, so "
               f"the year could be off by one with nothing to show it", flush=True)
         return
-    for asked, said in pairs[:3]:
-        print(f"  {key}: asked season {asked}, feed says {said}", flush=True)
-    # Ours ends in the year asked for, so 2025 is 2024-25 and a label starting
-    # 2025 or 2024 lines up. Anything else is a different convention.
-    wrong = [f"asked {a}, got {b}" for a, b in pairs
-             if not (b.startswith(str(a)) or b.startswith(str(a - 1)))]
+
+    for ours, said in pairs[:3]:
+        print(f"  {key}: our {ours} -> asked {roster_season(key, ours)}, "
+              f"feed says {said}", flush=True)
+    wrong = [f"our {o} got {s}" for o, s in pairs if not season_matches(key, o, s)]
     if wrong:
-        print(f"  {key}: !! the feed's season labels do not line up with ours "
-              f"({'; '.join(wrong[:3])}). Every historical figure would be from "
-              f"the wrong year.", flush=True)
+        print(f"  {key}: !! the feed answered with a different season than the "
+              f"one meant ({'; '.join(wrong[:3])}). Every figure would be from "
+              f"the wrong year, and every one of them a real footballer's real "
+              f"season.", flush=True)
 
 
 def _uefa_season(season: int) -> str:
