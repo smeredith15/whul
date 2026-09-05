@@ -98,6 +98,45 @@ def walk(node, path="", depth=0):
         yield path, node
 
 
+def stats_of(athlete: dict) -> dict[str, float]:
+    """``{category.stat: value}`` for one athlete, from the real shape:
+
+        statistics.splits.categories[N].stats[M].{name, value}
+
+    Values only. The last version of this compared whole athlete records and
+    announced that nineteen players' numbers had moved, when what had moved was
+    an index and a category ordering -- every stat printed underneath was
+    identical. A false green tick on the one question that decides the design.
+    """
+    stats = athlete.get("statistics")
+    if isinstance(stats, list):
+        stats = stats[0] if stats else None
+    if not isinstance(stats, dict):
+        return {}
+    splits = stats.get("splits")
+    if isinstance(splits, list):
+        splits = splits[0] if splits else None
+    if not isinstance(splits, dict):
+        return {}
+
+    out: dict[str, float] = {}
+    for category in splits.get("categories") or []:
+        if not isinstance(category, dict):
+            continue
+        group = str(category.get("name") or "")
+        for stat in category.get("stats") or []:
+            if not isinstance(stat, dict):
+                continue
+            name = str(stat.get("name") or stat.get("abbreviation") or "")
+            if not name:
+                continue
+            try:
+                out[f"{group}.{name}"] = float(stat.get("value"))
+            except (TypeError, ValueError):
+                out[f"{group}.{name}"] = stat.get("displayValue")
+    return out
+
+
 def stat_map(athlete: dict) -> dict[str, str]:
     """``{leaf path: value}`` for one athlete, whatever shape the stats take.
 
@@ -198,35 +237,80 @@ def main():
     show_one(second)
 
     print(f"\n{RULE}\nDOES THE SEASON PARAMETER DO ANYTHING?\n{RULE}")
-    if json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True):
-        print(f"""
-  NO. The two payloads are byte-identical, so `season` is decoration -- ESPN
-  accepted it and ignored it. This is the MLB sabermetrics trap exactly: every
-  run would look right and every historical season would be this season's
-  numbers.
 
-  The benchmark cannot be built from this endpoint. Match summaries (one per
-  match, carrying their own date) are the fallback, at about seventy-six
-  minutes rather than four.
+    def by_name(payload):
+        return {str(a.get("displayName") or ""): stats_of(a)
+                for a in athletes_in(payload) if a.get("displayName")}
+
+    old_stats, new_stats = by_name(first), by_name(second)
+    shared = sorted(k for k in set(old_stats) & set(new_stats)
+                    if old_stats[k] and new_stats[k])
+    print(f"\n  {len(shared)} player(s) carry stats in both seasons.")
+    if not shared:
+        print("""
+  Nothing to compare, so this proves nothing either way. Try two seasons the
+  club had a settled squad in.
 """)
         return 1
 
-    shared = sorted(set(a) & set(b))
-    print(f"\n  The payloads differ. {len(shared)} player(s) appear in both.")
-    moved = [n for n in shared if a[n] and b[n] and a[n] != b[n]]
-    print(f"  {len(moved)} of them have different numbers in the two seasons.")
+    moved = [n for n in shared if old_stats[n] != new_stats[n]]
+    print(f"  {len(moved)} of them have at least one stat VALUE that differs.")
+
+    for name in shared[:4]:
+        before, after = old_stats[name], new_stats[name]
+        keys = sorted(set(before) | set(after))
+        changed = [k for k in keys if before.get(k) != after.get(k)]
+        print(f"\n    {name}  --  {len(changed)} of {len(keys)} stat(s) differ")
+        for key in [k for k in keys if k.split(".")[-1] in
+                    ("appearances", "subIns", "totalGoals", "goalAssists",
+                     "yellowCards", "redCards")]:
+            was, now = before.get(key, "-"), after.get(key, "-")
+            mark = "   <-- moved" if was != now else ""
+            print(f"      {key:<34}{str(was):>8}{str(now):>8}{mark}")
+
     if not moved:
-        print("""
-  But no player's stats moved, which is its own kind of wrong: the squads
-  differ and the numbers do not. Read the sample below before trusting it.
+        print(f"""
+  NO STAT MOVED. `season` is decoration: ESPN accepted it and answered with the
+  same figures either way. This is the MLB sabermetrics trap exactly -- every
+  run would look right and every historical season would hold this season's
+  numbers.
+
+  The benchmark cannot come from this endpoint. Match summaries carry their own
+  date, so they can: about seventy-six minutes for a full backfill rather than
+  four.
 """)
-    for name in moved[:3]:
-        print(f"\n    {name}")
-        keys = sorted(set(a[name]) | set(b[name]))
-        for key in keys[:10]:
-            was, now = a[name].get(key, "-"), b[name].get(key, "-")
-            mark = "  <-- moved" if was != now else ""
-            print(f"      {key:<26}{was:>10}{now:>10}{mark}")
+        return 1
+
+    print(f"""
+  The stats move, so the season is honoured and one endpoint can serve both the
+  benchmark and the standings.
+""")
+
+    print(f"{RULE}\nEVERY STAT AVAILABLE, FOR ONE PLAYER\n{RULE}")
+    richest = max(new_stats, key=lambda n: len(new_stats[n]))
+    print(f"\n  {richest}:\n")
+    for key, value in sorted(new_stats[richest].items()):
+        print(f"    {key:<40}{value}")
+
+    print(f"\n  What the scorer needs:\n")
+    have = new_stats[richest]
+    def find(*names):
+        return next((k for k in have if k.split(".")[-1] in names), None)
+    for field, names in (("appearances", ("appearances",)),
+                         ("substitute apps", ("subIns",)),
+                         ("goals", ("totalGoals", "goals")),
+                         ("assists", ("goalAssists", "assists")),
+                         ("yellow", ("yellowCards",)),
+                         ("red", ("redCards",)),
+                         ("minutes", ("minutes", "timePlayed", "minutesPlayed"))):
+        key = find(*names)
+        print(f"    {field:<18}{key or 'NOT FOUND':<40}"
+              f"{have.get(key, '') if key else ''}")
+    print(f"""
+    starts is appearances minus substitute appearances, which is what the
+    scorer's season-aggregate path takes. Minutes it prefers but does not
+    need.
+""")
 
     print(f"\n{RULE}\nWHAT TO DO WITH THIS\n{RULE}")
     print("""
