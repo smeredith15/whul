@@ -544,3 +544,41 @@ def test_a_league_that_has_not_reached_the_year_is_not_fetched(store):
 
     assert asked == []
     assert any("has been played inside this league year yet" in p for p in report.problems)
+
+
+def test_a_shrinking_season_total_is_reported(store):
+    """A season-to-date total accumulates over a league year, so within one it
+    can only grow. A drop is the feed no longer reaching as far back as it did
+    -- tennis assembled from three vintages, losing the middle one -- and the
+    score simply gets smaller with nothing raised."""
+    rostered(store, "Coco Gauff", league="WTA", asset_type="Player")
+
+    def source_at(points):
+        return source_over(
+            [{"player": "Coco Gauff", "league": "WTA", "total_points": points}],
+            key="tennis", league="WTA", asset_type="Player",
+        )
+
+    ingest.ingest(store, source_at(537.5), "2026-27", date(2026, 9, 4), verbose=False)
+    report = ingest.ingest(store, source_at(100.0), "2026-27", date(2026, 9, 5),
+                           verbose=False)
+
+    shrunk = [p for p in report.problems if "smaller season-to-date total" in p]
+    assert shrunk, report.problems
+    assert "Coco Gauff 537.5 -> 100.0" in shrunk[0]
+
+
+def test_a_growing_total_is_not_reported(store):
+    """The ordinary case must stay quiet, or the report is noise."""
+    rostered(store, "Coco Gauff", league="WTA", asset_type="Player")
+
+    def source_at(points):
+        return source_over(
+            [{"player": "Coco Gauff", "league": "WTA", "total_points": points}],
+            key="tennis", league="WTA", asset_type="Player",
+        )
+
+    ingest.ingest(store, source_at(100.0), "2026-27", date(2026, 9, 4), verbose=False)
+    report = ingest.ingest(store, source_at(537.5), "2026-27", date(2026, 9, 5),
+                           verbose=False)
+    assert not [p for p in report.problems if "smaller season-to-date" in p]

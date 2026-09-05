@@ -21,6 +21,8 @@ could not match, by name.
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -108,6 +110,8 @@ def ingest(
     if getattr(source, "cumulative", False):
         mine = _against_the_league_year(store, mine, source, season, as_of, report)
 
+    _report_shrinkage(store, mine, source, season, as_of, report)
+
     # Raw first, and unconditionally. A benchmark can be computed next week;
     # a rolling feed's earlier weeks cannot be fetched back.
     report.recorded = store.record_stats(
@@ -148,6 +152,93 @@ def ingest(
         store, placed, season, as_of, version.version
     )
     return report
+
+
+#: A windowed total below the last one by more than this is reported. A small
+#: dip is possible where a scorer's inputs are revised; a large one is a feed
+#: that has stopped reaching as far back as it did.
+SHRINKAGE_TOLERANCE = 0.005
+
+
+def _report_shrinkage(
+    store: Store, mine: pd.DataFrame, source, season: str, as_of: date,
+    report: IngestReport,
+) -> None:
+    """Say when an asset's season-to-date total came back smaller than before.
+
+    These totals accumulate over a league year, so within one they can only
+    grow. A drop is not a bad week -- it is the feed no longer reaching as far
+    back as it did, and the score simply gets smaller with nothing raised.
+
+    Tennis is the standing example. It is assembled from three vintages, and
+    the middle one closes the gap between an archive that ends in February and
+    a feed that serves seven days. Lose it and the totals quietly become the
+    last week of the season: a player who won a Masters a fortnight ago is
+    suddenly on nothing, and the standings look like a slump.
+
+    Reported rather than refused. The smaller figure may be the correct one
+    after a correction upstream, and a pipeline that will not record today
+    because yesterday was bigger would be worse than one that says so.
+    """
+    if mine.empty or "total_points" not in mine.columns or "asset_id" not in mine.columns:
+        return
+
+    previous = store.query(
+        "SELECT asset_id, stats FROM raw_stats WHERE league = ? AND source = ? "
+        "AND season = ? AND as_of = (SELECT MAX(as_of) FROM raw_stats "
+        "  WHERE league = ? AND source = ? AND season = ? AND as_of < ?)",
+        (source.league, source.key, season, source.league, source.key, season,
+         as_of.isoformat()),
+    )
+    if previous.empty:
+        return
+
+    was = {}
+    for row in previous.itertuples():
+        try:
+            figures = json.loads(row.stats)
+        except (TypeError, ValueError):
+            continue
+        value = pd.to_numeric(pd.Series([figures.get("total_points")]),
+                              errors="coerce").iloc[0]
+        if pd.notna(value):
+            was[str(row.asset_id)] = float(value)
+
+    shrunk = []
+    for row in mine.itertuples():
+        asset_id = str(getattr(row, "asset_id", ""))
+        before = was.get(asset_id)
+        now = pd.to_numeric(pd.Series([getattr(row, "total_points", None)]),
+                            errors="coerce").iloc[0]
+        if before is None or pd.isna(now):
+            continue
+        if now < before - abs(before) * SHRINKAGE_TOLERANCE:
+            shrunk.append((asset_id, before, float(now)))
+
+    if not shrunk:
+        return
+    names = _names_for(store, [a for a, _, _ in shrunk])
+    worst = sorted(shrunk, key=lambda s: s[2] - s[1])[:5]
+    detail = "; ".join(
+        f"{names.get(a, a)} {b:,.1f} -> {n:,.1f}" for a, b, n in worst
+    )
+    report.problems.append(
+        f"{len(shrunk)} asset(s) came back with a smaller season-to-date total "
+        f"than the last pull, which within a league year should only grow. This "
+        f"is what a feed losing its earlier weeks looks like: {detail}"
+        + (f" (and {len(shrunk) - len(worst)} more)" if len(shrunk) > len(worst) else "")
+    )
+
+
+def _names_for(store: Store, asset_ids: list[str]) -> dict[str, str]:
+    if not asset_ids:
+        return {}
+    marks = ",".join("?" for _ in asset_ids)
+    rows = store.query(
+        f"SELECT asset_id, display_name FROM assets WHERE asset_id IN ({marks})",
+        tuple(asset_ids),
+    )
+    return {str(r.asset_id): str(r.display_name) for r in rows.itertuples()}
 
 
 #: How late a baseline may be taken and still be treated as the league year's
