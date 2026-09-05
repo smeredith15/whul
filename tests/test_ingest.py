@@ -582,3 +582,38 @@ def test_a_growing_total_is_not_reported(store):
     report = ingest.ingest(store, source_at(537.5), "2026-27", date(2026, 9, 5),
                            verbose=False)
     assert not [p for p in report.problems if "smaller season-to-date" in p]
+
+
+def test_a_source_that_found_nothing_still_leaves_a_trace(store):
+    """source_status exists because the dangerous scraper failure is not a
+    crash but a feed that quietly stops updating. It was written only on a
+    successful record, so the one case it was built for left no row at all --
+    and eight NCAAF teams sat on zero for a fortnight with nothing in the
+    database to say the league had even been tried."""
+    source = source_over([], key="ncaaf", league="NCAAF", asset_type="Team")
+    rostered(store, "Ohio State Buckeyes", league="NCAAF", asset_type="Team")
+
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 5), verbose=False)
+
+    status = store.query("SELECT * FROM source_status WHERE source = 'ncaaf'")
+    assert len(status) == 1
+    assert int(status.loc[0, "last_ok"]) == 0
+    assert int(status.loc[0, "rows_last_run"]) == 0
+    assert status.loc[0, "message"]
+
+
+def test_a_source_that_raised_leaves_a_trace_too(store):
+    def build():
+        def load(seasons):
+            raise LookupError("none of the rostered teams match ESPN's index")
+        return load, (lambda raw: raw)
+
+    source = FakeSource(key="ncaaf", league="NCAAF", asset_type="Team", build=build)
+    rostered(store, "Ohio State Buckeyes", league="NCAAF", asset_type="Team")
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 5), verbose=False)
+
+    status = store.query("SELECT * FROM source_status WHERE source = 'ncaaf'")
+    assert len(status) == 1 and int(status.loc[0, "last_ok"]) == 0
+    assert "none of the rostered teams" in status.loc[0, "message"]
+    assert any("LookupError" in p for p in report.problems)

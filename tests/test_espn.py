@@ -706,6 +706,9 @@ def test_two_rostered_teams_playing_each_other_is_one_game(monkeypatch):
 
 
 def test_a_team_the_feed_does_not_know_is_named(monkeypatch, capsys):
+    """One unknown name among several is reported and costs only that team.
+    A roster where *nothing* resolves is a different case and raises -- see
+    below, because an empty frame there reads as a season nobody has played."""
     from whul.sources import espn
 
     monkeypatch.setattr(espn, "team_index", lambda league: {"Texas Longhorns": "251"})
@@ -713,5 +716,40 @@ def test_a_team_the_feed_does_not_know_is_named(monkeypatch, capsys):
         espn, "load_team_schedule",
         lambda league, team_id, season: pd.DataFrame(),
     )
-    espn.load_rostered_schedules("ncaaf", [2026], ["Nowhere State"], verbose=True)
+    espn.load_rostered_schedules(
+        "ncaaf", [2026], ["Texas Longhorns", "Nowhere State"], verbose=True
+    )
     assert "Nowhere State" in capsys.readouterr().out
+
+
+def test_a_roster_that_matches_no_espn_team_raises(monkeypatch):
+    """An empty frame here is indistinguishable from a season nobody has
+    played, and it would cost the whole year without anything raising. Eight
+    NCAAF teams on zero in September is not an empty week."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "team_index", lambda league: {"Ohio State": "194"})
+    with pytest.raises(LookupError, match="none of the 2 rostered"):
+        espn.load_rostered_schedules(
+            "ncaaf", [2026], ["Bogus Team", "Another Bogus"], verbose=False
+        )
+
+
+def test_one_unknown_team_among_several_does_not_raise(monkeypatch):
+    """A single misspelling costs that team and is reported; it must not take
+    the other seven down with it."""
+    import pandas as pd
+
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "team_index", lambda league: {"Ohio State": "194"})
+    monkeypatch.setattr(
+        espn, "load_team_schedule",
+        lambda league, team_id, season: pd.DataFrame([
+            {"game_id": "1", "season": season, "game_date": "2026-08-30"}
+        ]),
+    )
+    out = espn.load_rostered_schedules(
+        "ncaaf", [2026], ["Ohio State", "Bogus Team"], verbose=False
+    )
+    assert len(out) == 1

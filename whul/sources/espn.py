@@ -508,11 +508,13 @@ def load_rostered_schedules(
     lookup = {_match_key(name): team_id for name, team_id in index.items()}
 
     frames, missing = [], []
+    found_any = False
     for name in names:
         team_id = lookup.get(_match_key(name))
         if not team_id:
             missing.append(name)
             continue
+        found_any = True
         for season in seasons:
             try:
                 frames.append(load_team_schedule(league, team_id, season))
@@ -525,6 +527,16 @@ def load_rostered_schedules(
             f"  {league}: no ESPN team called {', '.join(missing)} -- "
             f"they will score nothing",
             flush=True,
+        )
+    if names and not found_any:
+        # Every rostered name failed to resolve, so no schedule was ever
+        # requested. That is not an empty week and must not read as one: an
+        # empty frame here is indistinguishable from a season nobody has played,
+        # and it would cost the whole year without anything raising.
+        raise LookupError(
+            f"none of the {len(names)} rostered {league} team(s) match a team in "
+            f"ESPN's index of {len(index)}: {', '.join(missing)}. No schedule was "
+            f"requested, so nothing can score."
         )
     if not frames:
         return pd.DataFrame()

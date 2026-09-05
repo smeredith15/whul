@@ -86,11 +86,13 @@ def ingest(
         )
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
+        _record_nothing(store, source, as_of, report)
         return report
     if scored is None or scored.empty:
         report.problems.append(
             notes[0] if notes else "the source has no results yet for this season"
         )
+        _record_nothing(store, source, as_of, report)
         return report
     report.pulled = len(scored)
 
@@ -451,6 +453,22 @@ def _pull(
         totals = window.window_totals(rows, [current])
         frames.append(_with_finishes(totals.assign(season=current.label), rows, current))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _record_nothing(store: Store, source, as_of: date, report: IngestReport) -> None:
+    """Leave a trace for a run that recorded no rows.
+
+    ``source_status`` exists because the dangerous scraper failure is not a
+    crash but a feed that quietly stops updating. It was only written on a
+    successful record, so the one case it was built for -- a source that ran and
+    came back with nothing -- left no row at all, and "ran and found nothing"
+    could not be told from "never ran". Eight NCAAF teams sat on zero for a
+    fortnight with nothing in the database to say the league had been tried.
+    """
+    store.record_source_status(
+        source.key, source.league, ok=False, rows=0,
+        message="; ".join(report.problems)[:500],
+    )
 
 
 #: Columns that say *which* asset a row is about, as the several scorers name
