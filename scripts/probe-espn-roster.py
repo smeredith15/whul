@@ -77,15 +77,46 @@ def athletes_in(payload: dict) -> list[dict]:
     return found
 
 
+def walk(node, path="", depth=0):
+    """Every leaf in a payload, as ``path -> value``.
+
+    Written blind on purpose. The first version of this probe assumed
+    ``statistics`` was a list of blocks holding a list of stats, and died on an
+    AttributeError when it turned out to hold something else -- which taught me
+    nothing except that I had guessed. A probe exists to show a shape, so it
+    must not have opinions about the shape.
+    """
+    if depth > 8:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from walk(value, f"{path}.{key}" if path else str(key), depth + 1)
+    elif isinstance(node, list):
+        for index, value in enumerate(node[:40]):
+            yield from walk(value, f"{path}[{index}]", depth + 1)
+    else:
+        yield path, node
+
+
 def stat_map(athlete: dict) -> dict[str, str]:
-    """``{stat name: value}`` for one athlete, wherever the stats hide."""
-    out: dict[str, str] = {}
-    for block in athlete.get("statistics") or []:
-        for stat in block.get("stats") or []:
-            name = str(stat.get("name") or stat.get("abbreviation") or "")
-            if name:
-                out[name] = str(stat.get("displayValue", stat.get("value", "")))
-    return out
+    """``{leaf path: value}`` for one athlete, whatever shape the stats take.
+
+    Keyed by path rather than by stat name, because the name may itself be a
+    value one level down -- ``{"name": "goals", "value": 12}`` -- and reading
+    it as a key would find nothing while looking like it had looked.
+    """
+    return {path: value for path, value in walk(athlete)
+            if not isinstance(value, (dict, list))}
+
+
+def where(athlete: dict, words: tuple[str, ...]) -> list[str]:
+    """Paths whose key or value mentions any of these words."""
+    hits = []
+    for path, value in walk(athlete):
+        haystack = f"{path} {value}".lower()
+        if any(word.lower() in haystack for word in words):
+            hits.append(f"{path} = {str(value)[:40]}")
+    return hits
 
 
 def summarise(label: str, payload: dict) -> dict[str, dict[str, str]]:
@@ -99,9 +130,45 @@ def summarise(label: str, payload: dict) -> dict[str, dict[str, str]]:
         name = str(athlete.get("displayName") or athlete.get("fullName") or "")
         if name:
             by_name[name] = stat_map(athlete)
-    with_stats = sum(1 for s in by_name.values() if s)
-    print(f"    {with_stats} of them carry a statistics block")
+    numeric = sum(1 for s in by_name.values()
+                  if any(k.startswith("statistics") for k in s))
+    print(f"    {numeric} of them carry anything under 'statistics'")
     return by_name
+
+
+def show_one(payload: dict) -> None:
+    """The shape of a single athlete record, before anything is assumed."""
+    people = athletes_in(payload)
+    if not people:
+        return
+    athlete = max(people, key=lambda a: len(json.dumps(a, default=str)))
+    name = athlete.get("displayName", "?")
+    print(f"\n{RULE}\nONE ATHLETE, AS THE PAYLOAD ACTUALLY HAS IT\n{RULE}")
+    print(f"\n  {name} -- top-level keys:")
+    for key, value in sorted(athlete.items()):
+        kind = type(value).__name__
+        size = f" ({len(value)})" if isinstance(value, (list, dict, str)) else ""
+        print(f"    {key:<24}{kind}{size}")
+
+    leaves = stat_map(athlete)
+    print(f"\n  {len(leaves)} leaf value(s). Those under 'statistics':\n")
+    stats = {p: v for p, v in leaves.items() if p.startswith("statistics")}
+    for path, value in list(stats.items())[:60]:
+        print(f"    {path:<52}{str(value)[:20]}")
+    if not stats:
+        print("    none -- the stats are not under that key, if they are here at all")
+    if len(stats) > 60:
+        print(f"    ... and {len(stats) - 60} more")
+
+    print(f"\n  Where each field the scorer needs might be:\n")
+    for field, words in WANTED.items():
+        hits = where(athlete, words)
+        if hits:
+            print(f"    {field}")
+            for hit in hits[:4]:
+                print(f"      {hit}")
+        else:
+            print(f"    {field:<14}NOT FOUND  (tried {', '.join(words)})")
 
 
 def main():
@@ -128,6 +195,7 @@ def main():
     print(f"\n  club: {(first.get('team') or {}).get('displayName', '?')}")
     a = summarise(f"season {older}", first)
     b = summarise(f"season {newer}", second)
+    show_one(second)
 
     print(f"\n{RULE}\nDOES THE SEASON PARAMETER DO ANYTHING?\n{RULE}")
     if json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True):
@@ -160,31 +228,13 @@ def main():
             mark = "  <-- moved" if was != now else ""
             print(f"      {key:<26}{was:>10}{now:>10}{mark}")
 
-    print(f"\n{RULE}\nCAN THE EIGHT FIELDS BE FOUND?\n{RULE}")
-    sample = next((n for n in b if b[n]), None)
-    if sample is None:
-        print("\n  No athlete in the newer season carries a statistics block.")
-        return 1
-    print(f"\n  Every stat ESPN gives for {sample}:\n")
-    for key, value in sorted(b[sample].items()):
-        print(f"    {key:<32}{value}")
-
-    print(f"\n  What the scorer needs, and where it is:\n")
-    missing = []
-    for field, names in WANTED.items():
-        found = next((n for n in names if n in b[sample]), None)
-        if found:
-            print(f"    {field:<14}{found:<26}{b[sample][found]}")
-        else:
-            missing.append(field)
-            print(f"    {field:<14}{'NOT FOUND':<26}tried {', '.join(names)}")
-    print()
-    if missing:
-        print(f"  Missing: {', '.join(missing)}. The stat list above is what an")
-        print(f"  adapter has to be written against -- paste it back.")
-        return 1
-    print("  All present. The roster can serve both the benchmark and the")
-    print("  standings, from one source, at four minutes for a full backfill.")
+    print(f"\n{RULE}\nWHAT TO DO WITH THIS\n{RULE}")
+    print("""
+  Paste it back. The athlete record above is what an adapter has to be written
+  against, and the two probe runs before this one each proved a guess wrong --
+  clubs running four across in a Wikipedia table, and a competition that had
+  been renamed. Guessing at a third shape would be a choice.
+""")
     return 0
 
 
