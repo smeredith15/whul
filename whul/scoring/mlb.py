@@ -74,8 +74,23 @@ PTS_RUN_DIFF = 0.05
 PTS_DIV_CHAMP = 5.0
 #: Flat series milestones -- deliberately not deflated by the year-N multiplier.
 PTS_SERIES = {"wc": 5, "lds": 6, "lcs": 7, "ws": 8}
-#: Top fifth of the league by wins is treated as a division winner.
-DIV_CHAMP_PERCENTILE = 0.80
+
+#: A division is won by the team with the most regular-season wins in it, and
+#: only once the season is over.
+#:
+#: This was previously the top fifth of the *league* by wins, which is not a
+#: division title in any sense: it named six teams a season without reference to
+#: any division, so a 92-win second-place club was a champion and an 84-win
+#: division winner was not. Worse, it was evaluated on whatever games were in
+#: hand, so four clubs were being paid for titles in the first three weeks of a
+#: league year, mid-pennant-race.
+#:
+#: Ties take the title together. MLB settles them with a tiebreaker game or by
+#: head-to-head record, neither of which is reconstructable from a schedule
+#: alone, and awarding it to nobody would be further from the truth than
+#: awarding it to both. Ties for a division lead are rare enough that the
+#: benchmark barely moves either way.
+TIED_DIVISION_LEADERS_SHARE = False
 
 GAME_TYPE_REGULAR = "R"
 GAME_TYPE_WC = "F"
@@ -296,8 +311,17 @@ TEAM_SUMMARY_COLUMNS = [
 ]
 
 
-def summarize_teams(schedule: pd.DataFrame) -> pd.DataFrame:
-    """Per-season team totals, before the contract weighting."""
+def summarize_teams(
+    schedule: pd.DataFrame, divisions: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Per-season team totals, before the contract weighting.
+
+    ``divisions`` maps a team to its division for a season -- columns
+    ``season``, ``team``, ``division``. Without it no division title is awarded,
+    which is the honest answer rather than a guess: a title cannot be inferred
+    from a schedule, because a schedule does not say who a team was competing
+    against for it.
+    """
     games = _team_games(schedule)
     if games.empty:
         return pd.DataFrame({c: pd.Series(dtype="object") for c in TEAM_SUMMARY_COLUMNS})
@@ -329,10 +353,47 @@ def summarize_teams(schedule: pd.DataFrame) -> pd.DataFrame:
     summary["playoff_game_wins"] = (
         summary["wc_wins"] + summary["lds_wins"] + summary["lcs_wins"] + summary["ws_wins"]
     )
-    summary["is_division_champ"] = (
-        summary.groupby("season")["reg_wins"].rank(pct=True) >= DIV_CHAMP_PERCENTILE
-    ).astype(int)
+    summary["is_division_champ"] = _division_champs(summary, divisions)
     return summary
+
+
+def _division_champs(
+    summary: pd.DataFrame, divisions: pd.DataFrame | None
+) -> pd.Series:
+    """Most regular-season wins inside each division, per season.
+
+    Returns zeroes where the divisions are not known. A season's champions can
+    only be read off a completed season, so a caller scoring games in progress
+    must not use this -- see ``_window_points``, which awards no title at all.
+    """
+    zero = pd.Series(0, index=summary.index, dtype=int)
+    if divisions is None or divisions.empty:
+        return zero
+    if not {"season", "team", "division"} <= set(divisions.columns):
+        return zero
+
+    lookup = divisions.assign(
+        season=pd.to_numeric(divisions["season"], errors="coerce"),
+        team=divisions["team"].astype(str),
+        division=divisions["division"].astype(str),
+    ).dropna(subset=["season"])
+    lookup["season"] = lookup["season"].astype(int)
+
+    placed = summary[["season", "team"]].copy()
+    placed["season"] = pd.to_numeric(placed["season"], errors="coerce").astype("Int64")
+    placed["team"] = placed["team"].astype(str)
+    placed = placed.merge(
+        lookup[["season", "team", "division"]], on=["season", "team"], how="left"
+    )
+    placed["reg_wins"] = pd.to_numeric(summary["reg_wins"], errors="coerce").to_numpy()
+
+    known = placed["division"].notna()
+    if not known.any():
+        return zero
+    best = placed[known].groupby(["season", "division"])["reg_wins"].transform("max")
+    champ = zero.copy()
+    champ.loc[placed.index[known][placed.loc[known, "reg_wins"] == best]] = 1
+    return champ
 
 
 def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
@@ -346,10 +407,13 @@ def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
 
     So the window is scored at face value, and split into components rather
     than a single number, because the two kinds do not scale alike: wins, big
-    wins, shutouts and run differential grow with games played, while a
-    division title and a playoff run happen once however long the window is.
-    ``whul.scoring.proration`` lifts the first four to a full season and leaves
-    the rest where they are.
+    wins, shutouts and run differential grow with games played, while a playoff
+    run happens once however long the window is. ``whul.scoring.proration``
+    lifts the first four to a full season and leaves the rest where they are.
+
+    A division title is never awarded here. It is not a rate that a longer
+    window would produce more of; it is an outcome, and it does not exist until
+    the season it belongs to has finished.
     """
     out = pd.DataFrame({
         "season": summary["season"],
@@ -359,7 +423,11 @@ def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
         "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN,
         "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT,
         "pts_run_diff": summary["run_diff"] * PTS_RUN_DIFF,
-        "pts_div_champ": summary["is_division_champ"] * PTS_DIV_CHAMP,
+        # No division title mid-season. Nobody has won one while the games are
+        # still being played, and the previous rule paid four clubs for titles
+        # in the first three weeks of a league year. It is added when the
+        # season ends and the standings say who won.
+        "pts_div_champ": pd.Series(0.0, index=summary.index),
         "pts_playoff": (
             summary["playoff_game_wins"] * BASE_PLAYOFF_WIN + _series_points(summary)
         ),
@@ -385,7 +453,11 @@ def _series_points(summary: pd.DataFrame) -> pd.Series:
     )
 
 
-def score_teams(schedule: pd.DataFrame, partial: bool = False) -> pd.DataFrame:
+def score_teams(
+    schedule: pd.DataFrame,
+    partial: bool = False,
+    divisions: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Rolling twelve-month contract points per team.
 
     Each contract year pairs the post-break remainder of season N with the
@@ -402,8 +474,14 @@ def score_teams(schedule: pd.DataFrame, partial: bool = False) -> pd.DataFrame:
     Benchmarks must not pass it. A pool of half-finished contract years would
     set the bar at roughly half a year's points, and every live team would score
     about double.
+
+    ``divisions`` -- ``season``, ``team``, ``division`` -- is what makes a
+    division title scoreable. Omitted, no title is awarded to anyone, which
+    lowers the benchmark by up to five points for the clubs that won one. A
+    benchmark computed without it is a different scale, so the benchmark source
+    checks for it rather than letting it default quietly.
     """
-    summary = summarize_teams(schedule)
+    summary = summarize_teams(schedule, divisions)
     if summary.empty:
         return pd.DataFrame({
             c: pd.Series(dtype="object")

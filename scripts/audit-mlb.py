@@ -99,10 +99,10 @@ TEAM_COMPONENTS = [
     ("pts_playoff", "playoff wins and series", None, False),
 ]
 
-#: A team in the top fifth of the league by wins is scored as a division
-#: winner. Over a full season that is a reasonable stand-in for the standings;
-#: over a three-week window it is a lead in a race nobody has finished.
-DIV_CHAMP_PERCENTILE = 0.80
+#: A division is won by the team with the most regular-season wins in it, and
+#: only once the season is over. Any division points at all in a season still
+#: being played mean the old league-wide-win-rank rule is still in force.
+DIV_CHAMP_ONLY_WHEN_COMPLETE = True
 
 RULE = "-" * 78
 
@@ -397,10 +397,9 @@ class Audit:
                 ))
             if num(stats.get("pts_div_champ")) > 0:
                 flags.append((
-                    f"scored as a division winner, though no division has been won "
-                    f"on {self.as_of}. The rule gives it to the top "
-                    f"{(1 - DIV_CHAMP_PERCENTILE) * 100:.0f}% of the league by wins, "
-                    f"which over a short window is a lead rather than a title",
+                    f"scored as a division winner, though no division has been "
+                    f"won on {self.as_of}. A title is an outcome, not a rate: it "
+                    f"does not exist until the season it belongs to has finished",
                     "+5.00 points",
                 ))
 

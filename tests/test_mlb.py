@@ -197,6 +197,14 @@ def two_seasons(rows_2025, rows_2026):
     return pd.DataFrame(rows_2025 + rows_2026)
 
 
+def divisions_of(*teams, season=2025, division="AL East"):
+    """A one-division map, for the seasons a test spans."""
+    return pd.DataFrame([
+        {"season": year, "team": team, "division": division}
+        for year in (season, season + 1) for team in teams
+    ])
+
+
 def test_contract_multipliers_reconcile_to_a_full_season():
     """The year N+1 inflation exists so the weighted shares sum to 1."""
     assert SHARE_POST_ASB * MULT_YEAR_N + SHARE_PRE_ASB * MULT_YEAR_N1 == pytest.approx(1.0)
@@ -259,12 +267,12 @@ def test_contract_blends_the_two_seasons():
         [game("NYY", "BOS", 5, 1, season=2025)],
         [game("NYY", "BOS", 5, 1, season=2026)],
     )
-    out = score_teams(sched)
+    out = score_teams(sched, divisions=divisions_of("NYY", "BOS"))
     nyy = out[out["team"] == "NYY"].iloc[0]
     assert nyy["season"] == 2025
     expected_n = 0.42 * 2.0 * 0.75 + 4 * 0.42 * 0.05 * 0.75
     expected_n1 = 0.58 * 2.0 * MULT_YEAR_N1 + 4 * 0.58 * 0.05 * MULT_YEAR_N1
-    # Both teams top their season on wins, so both count as division champions.
+    # NYY beat BOS, so it leads their shared division and takes the title.
     assert nyy["year_n1_points"] == pytest.approx(expected_n1)
     assert nyy["year_n_points"] == pytest.approx(expected_n + 5.0 * 0.75)
 
@@ -353,3 +361,67 @@ def test_the_window_separates_what_grows_from_what_happens_once():
     assert "pts_div_champ" in live.columns
     assert "pts_playoff" in live.columns
     assert "pts_div_champ" not in WINDOW_COUNTING
+
+
+# --- division titles --------------------------------------------------------
+
+def test_a_division_title_goes_to_the_most_wins_in_that_division():
+    """Not the most wins in the league. A club can win 100 games and finish
+    second, and a club can win 84 and win its division -- the old rule, which
+    took the top fifth of the league by wins, got both of those backwards."""
+    sched = pd.DataFrame(
+        [game("NYY", "BOS", 5, 1)] * 3          # NYY 3 wins, BOS 0
+        + [game("LAD", "SFG", 5, 1)] * 2        # LAD 2 wins, SFG 0
+        + [game("SFG", "LAD", 5, 1)]            # SFG 1 win
+    )
+    divisions = pd.DataFrame([
+        {"season": 2025, "team": "NYY", "division": "AL East"},
+        {"season": 2025, "team": "BOS", "division": "AL East"},
+        {"season": 2025, "team": "LAD", "division": "NL West"},
+        {"season": 2025, "team": "SFG", "division": "NL West"},
+    ])
+    out = summarize_teams(sched, divisions).set_index("team")
+    assert out.loc["NYY", "is_division_champ"] == 1
+    assert out.loc["LAD", "is_division_champ"] == 1   # fewer wins than NYY
+    assert out.loc["BOS", "is_division_champ"] == 0
+    assert out.loc["SFG", "is_division_champ"] == 0
+
+
+def test_clubs_tied_for_a_division_lead_both_take_it():
+    """MLB settles a tie with a game or head-to-head record, neither of which
+    a schedule alone reconstructs. Awarding it to nobody would be further from
+    the truth than awarding it to both."""
+    sched = pd.DataFrame([game("NYY", "BOS", 5, 1), game("BOS", "NYY", 5, 1)])
+    out = summarize_teams(sched, divisions_of("NYY", "BOS")).set_index("team")
+    assert out.loc["NYY", "is_division_champ"] == 1
+    assert out.loc["BOS", "is_division_champ"] == 1
+
+
+def test_no_divisions_means_no_title_rather_than_a_guess():
+    """A schedule does not say who a team was competing with for a division,
+    so without that there is nothing to award."""
+    sched = pd.DataFrame([game("NYY", "BOS", 5, 1)] * 3)
+    out = summarize_teams(sched).set_index("team")
+    assert set(out["is_division_champ"]) == {0}
+
+
+def test_a_team_outside_the_division_map_wins_nothing_and_costs_nobody():
+    """An expansion club or a renamed one is unknown to the map. It takes no
+    title, and it does not become the yardstick for anyone else's."""
+    sched = pd.DataFrame(
+        [game("NYY", "BOS", 5, 1)] * 2 + [game("XXX", "BOS", 5, 1)] * 9
+    )
+    out = summarize_teams(sched, divisions_of("NYY", "BOS")).set_index("team")
+    assert out.loc["XXX", "is_division_champ"] == 0
+    assert out.loc["NYY", "is_division_champ"] == 1
+
+
+def test_a_season_in_progress_awards_no_division_title():
+    """Four clubs were being paid five points each for titles in the first
+    three weeks of the league year. Nobody has won a division in September."""
+    from whul.scoring.mlb import score_teams
+
+    sched = pd.DataFrame([game("NYY", "BOS", 9, 0, season=2026)] * 15)
+    live = score_teams(sched, partial=True,
+                       divisions=divisions_of("NYY", "BOS", season=2026))
+    assert set(live["pts_div_champ"]) == {0.0}

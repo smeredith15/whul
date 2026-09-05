@@ -138,6 +138,52 @@ def _get(url: str, params: dict, cache_key: str | None = None) -> dict | list:
     return payload
 
 
+def load_divisions(seasons: list[int]) -> pd.DataFrame:
+    """Which division each club played in, per season.
+
+    A division title is the one team scoring term that cannot be read off a
+    schedule: a schedule says who a club played, not who it was competing with
+    for a title. Fetched per season rather than hardcoded because divisions
+    move -- Houston changed league in 2013, and a map written today would score
+    an older season against an alignment that did not exist.
+
+    One request per season, and the answer is stable once a season is over, so
+    it caches permanently.
+
+    Returns ``season``, ``team``, ``division`` -- and an empty frame where the
+    feed gives nothing, which the scoring reads as "no title to award" rather
+    than guessing one.
+    """
+    rows: list[dict] = []
+    for season in seasons:
+        payload = _get(
+            f"{STATS_API}/teams",
+            {
+                "sportId": 1,
+                "season": season,
+                "fields": "teams,id,name,season,division,id,name,active",
+            },
+            cache_key=f"divisions/{season}",
+        )
+        teams = payload.get("teams", []) if isinstance(payload, dict) else []
+        for team in teams:
+            division = (team.get("division") or {}).get("name")
+            name = team.get("name")
+            if not division or not name:
+                # A club with no division is a spring-training or minor-league
+                # entry the sportId filter let through. Skipping it is right;
+                # inventing a division for it would not be.
+                continue
+            rows.append({
+                "season": int(team.get("season", season)),
+                "team": str(name),
+                "division": str(division),
+            })
+    if not rows:
+        return pd.DataFrame(columns=["season", "team", "division"])
+    return pd.DataFrame(rows).drop_duplicates(subset=["season", "team"])
+
+
 def load_schedule(seasons: list[int]) -> pd.DataFrame:
     """Every completed game for the given seasons, one row per game.
 
