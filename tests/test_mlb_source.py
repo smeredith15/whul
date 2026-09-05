@@ -516,3 +516,175 @@ def test_the_mlb_source_has_a_live_builder_distinct_from_its_history():
     from whul.benchmark_sources import SOURCES
 
     assert SOURCES["mlb"].live is not None
+
+
+# --- run values, cut down to the window ------------------------------------
+#
+# The Stats API serves counting stats for a date range and refuses to serve run
+# values for one: the sabermetrics stat type answers with the season to date
+# whatever dates it is given. So Offense, Defense and WAR are apportioned by
+# the games a player played inside the window.
+#
+# The failure this guards against is silent. An unshared figure is a real
+# number for a real player and it parses; only its size gives it away, and only
+# to someone who knows what a season's worth looks like.
+
+from datetime import date  # noqa: E402
+from unittest import mock  # noqa: E402
+
+import pandas as pd  # noqa: E402
+
+
+def _split(name, pid, stat):
+    return {"player": {"fullName": name, "id": pid}, "stat": stat}
+
+
+def _payload(*splits):
+    return {"stats": [{"splits": list(splits)}]}
+
+
+def _feed(**groups):
+    """A fake ``_get`` answering the three calls a windowed pull makes."""
+    def fake_get(url, params, cache_key=None):
+        ranged, whole, saber = groups[params["group"]]
+        if params.get("stats") == "sabermetrics":
+            return saber
+        if params.get("stats") == "byDateRange":
+            return ranged
+        return whole
+    return fake_get
+
+
+PCA = 691718
+
+
+def test_run_values_are_cut_to_the_share_of_the_season_played():
+    """18 games of 140 is 12.86% of the year, so 12.86% of the run values."""
+    feed = _feed(hitting=(
+        _payload(_split("Pete Crow-Armstrong", PCA, {
+            "gamesPlayed": 18, "atBats": 70, "hits": 19, "doubles": 4,
+            "triples": 1, "homeRuns": 4, "baseOnBalls": 5, "hitByPitch": 0,
+            "stolenBases": 5, "caughtStealing": 1})),
+        _payload(_split("Pete Crow-Armstrong", PCA, {
+            "gamesPlayed": 140, "atBats": 520, "hits": 140, "doubles": 30,
+            "triples": 5, "homeRuns": 30, "baseOnBalls": 40, "hitByPitch": 4,
+            "stolenBases": 35, "caughtStealing": 8})),
+        # Off = batting + baseRunning = 38.0; Def = fielding + positional = 22.54
+        _payload(_split("Pete Crow-Armstrong", PCA, {
+            "batting": 30.0, "baseRunning": 8.0,
+            "fielding": 16.0, "positional": 6.54})),
+    ))
+    with mock.patch.object(mlb, "_get", side_effect=feed):
+        batters = mlb.load_batters([2026], since=date(2026, 8, 15))
+
+    row = batters.iloc[0]
+    assert row["G"] == 18
+    assert row["advanced_share"] == pytest.approx(18 / 140, abs=1e-4)
+    assert row["Off"] == pytest.approx(38.0 * 18 / 140, abs=0.01)
+    assert row["Def"] == pytest.approx(22.54 * 18 / 140, abs=0.01)
+    # The number the live site was showing, and what it must never be again.
+    assert row["Off"] < 38.0
+
+
+def test_the_share_survives_into_the_scored_row():
+    """A run value that looks measured and is not is the number somebody checks
+    against Baseball Reference and cannot find. The scored row has to carry the
+    share that explains it."""
+    from whul.scoring import mlb as scoring
+
+    feed = _feed(hitting=(
+        _payload(_split("Pete Crow-Armstrong", PCA,
+                        {"gamesPlayed": 18, "atBats": 70, "hits": 19})),
+        _payload(_split("Pete Crow-Armstrong", PCA,
+                        {"gamesPlayed": 140, "atBats": 520, "hits": 140})),
+        _payload(_split("Pete Crow-Armstrong", PCA,
+                        {"batting": 30.0, "baseRunning": 8.0,
+                         "fielding": 16.0, "positional": 6.54})),
+    ))
+    with mock.patch.object(mlb, "_get", side_effect=feed):
+        batters = mlb.load_batters([2026], since=date(2026, 8, 15))
+
+    scored = scoring.score_batters(batters)
+    assert scored.loc[0, "advanced_share"] == pytest.approx(18 / 140, abs=1e-4)
+    assert scored.loc[0, "offense"] == pytest.approx(38.0 * 18 / 140, abs=0.01)
+
+
+# --- a two-way player, through the whole chain ------------------------------
+
+OHTANI = 660271
+
+_BAT = (
+    _payload(_split("Shohei Ohtani", OHTANI, {
+        "gamesPlayed": 16, "atBats": 64, "hits": 13, "doubles": 1, "triples": 2,
+        "homeRuns": 3, "baseOnBalls": 9, "hitByPitch": 2, "stolenBases": 4,
+        "caughtStealing": 0})),
+    _payload(_split("Shohei Ohtani", OHTANI, {
+        "gamesPlayed": 140, "atBats": 520, "hits": 150, "doubles": 25,
+        "triples": 6, "homeRuns": 45, "baseOnBalls": 90, "hitByPitch": 6,
+        "stolenBases": 20, "caughtStealing": 4})),
+    _payload(_split("Shohei Ohtani", OHTANI, {
+        "batting": 55.0, "baseRunning": 5.0,
+        "fielding": -8.0, "positional": -12.0})),
+)
+
+_PITCHED_IN_THE_WINDOW = _payload(_split("Shohei Ohtani", OHTANI, {
+    "gamesPlayed": 3, "inningsPitched": "17.0", "strikeOuts": 24, "hits": 11,
+    "baseOnBalls": 4, "hitByPitch": 1, "homeRuns": 1, "saves": 0, "holds": 0}))
+_PITCHED_NONE = _payload(_split("Shohei Ohtani", OHTANI, {
+    "gamesPlayed": 0, "inningsPitched": "0.0", "strikeOuts": 0, "hits": 0,
+    "baseOnBalls": 0, "hitByPitch": 0, "homeRuns": 0, "saves": 0, "holds": 0}))
+_PIT_WHOLE = _payload(_split("Shohei Ohtani", OHTANI, {
+    "gamesPlayed": 20, "inningsPitched": "110.0", "strikeOuts": 150, "hits": 80,
+    "baseOnBalls": 30, "hitByPitch": 5, "homeRuns": 12, "saves": 0, "holds": 0}))
+_PIT_SABER = _payload(_split("Shohei Ohtani", OHTANI, {"war": 3.60}))
+
+BENCH = pd.DataFrame([
+    {"asset_type": "Player", "norm_key": "MLB_Batter", "benchmark": 1466.832071},
+    {"asset_type": "Player", "norm_key": "MLB_Pitcher", "benchmark": 1229.001950},
+])
+
+
+def _ohtani(pitching_in_window):
+    from whul.scoring import mlb as scoring
+    from whul.normalize import apply_benchmarks
+
+    feed = _feed(
+        hitting=_BAT,
+        pitching=(pitching_in_window, _PIT_WHOLE, _PIT_SABER),
+    )
+    with mock.patch.object(mlb, "_get", side_effect=feed):
+        batters = mlb.load_batters([2026], since=date(2026, 8, 15))
+        pitchers = mlb.load_pitchers([2026], since=date(2026, 8, 15))
+    roles = scoring.score_players(batters, pitchers)
+    return roles, scoring.combine_two_way(apply_benchmarks(roles, BENCH, "Player"))
+
+
+def test_a_two_way_players_pitching_counts_when_he_pitched_in_the_window():
+    """Both halves are scored, each against its own benchmark, and only then
+    combined -- raw batting and pitching points are not comparable, so the
+    primary role is whichever scored higher on the 0-100 scale."""
+    roles, folded = _ohtani(_PITCHED_IN_THE_WINDOW)
+
+    assert set(roles["role"]) == {"Batter", "Pitcher"}
+    # Both halves cut to their own share: 16 of 140 batting, 3 of 20 pitching.
+    shares = dict(zip(roles["role"], roles["advanced_share"]))
+    assert shares["Batter"] == pytest.approx(16 / 140, abs=1e-4)
+    assert shares["Pitcher"] == pytest.approx(3 / 20, abs=1e-4)
+
+    row = folded.iloc[0]
+    assert row["is_two_way"]
+    assert row["scaled_score"] == pytest.approx(
+        row["primary_score"] + row["secondary_score"] * 0.5, abs=0.01
+    )
+    assert row["scaled_score"] > row["primary_score"]
+
+
+def test_a_two_way_player_who_did_not_pitch_in_the_window_scores_his_bat():
+    """He earns nothing for pitching he did not do, and his batting is
+    untouched by the absence -- not held back, not halved."""
+    roles, folded = _ohtani(_PITCHED_NONE)
+
+    assert list(roles["role"]) == ["Batter"]
+    row = folded.iloc[0]
+    assert not row["is_two_way"]
+    assert row["scaled_score"] == pytest.approx(row["primary_score"], abs=0.01)
