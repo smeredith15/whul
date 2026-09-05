@@ -94,6 +94,26 @@ def _empty_role_frame() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype="object") for c in EMPTY_ROLE_COLUMNS})
 
 
+def _carry_advanced_share(work: pd.DataFrame, df: pd.DataFrame) -> None:
+    """Keep the note saying the run values were shared out, not measured.
+
+    The scoring frame is built column by column from names it knows, so
+    anything the source attached is dropped unless it is named here. That is
+    usually right and was wrong for this one: Offense, Defense and WAR are a
+    share of a whole season, apportioned by the games a player actually played
+    in the window, and without the share recorded alongside them the figure
+    looks measured. A run value that looks measured and is not is exactly the
+    number somebody checks against Baseball Reference and cannot find.
+
+    Absent where the source could not compute one -- which is itself worth
+    seeing, since it means the figure is a whole season's and has not been cut
+    down to the window at all.
+    """
+    for name in ("advanced_share",):
+        if name in df.columns:
+            work[name] = pd.to_numeric(df[name], errors="coerce").to_numpy()
+
+
 def score_batters(df: pd.DataFrame, include_advanced: bool | None = None) -> pd.DataFrame:
     """Season batting points per player.
 
@@ -123,6 +143,7 @@ def score_batters(df: pd.DataFrame, include_advanced: bool | None = None) -> pd.
             "games": resolve_num(df, ["g", "G", "games"]),
         }
     )
+    _carry_advanced_share(work, df)
     advanced = INCLUDE_ADVANCED_METRICS if include_advanced is None else include_advanced
     work["role_points"] = sum(work[c] * w for c, w in BATTER_WEIGHTS.items())
     if advanced:
@@ -158,6 +179,7 @@ def score_pitchers(df: pd.DataFrame, include_advanced: bool | None = None) -> pd
             "games": resolve_num(df, ["g", "G", "games"]),
         }
     )
+    _carry_advanced_share(work, df)
     advanced = INCLUDE_ADVANCED_METRICS if include_advanced is None else include_advanced
     work["role_points"] = sum(work[c] * w for c, w in PITCHER_WEIGHTS.items())
     if advanced:
