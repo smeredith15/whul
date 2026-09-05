@@ -804,3 +804,53 @@ def test_a_match_with_no_shootout_reports_zero_rather_than_nothing():
     rows = espn._soccer_rows(SOCCER_EVENT, "ucl", date(2026, 10, 22))
     assert all(r["shootout_for"] == 0.0 and r["shootout_against"] == 0.0
                for r in rows)
+
+
+#: The 2022 FA Cup final exactly as ESPN returned it: Chelsea hosted, both
+#: sides finished goalless, and Liverpool won the shootout 6-5 from away.
+GOALLESS_SHOOTOUT_EVENT = {
+    "name": "Liverpool at Chelsea",
+    "league": {"name": "Emirates FA Cup"},
+    "competitions": [
+        {
+            "status": {"type": {"completed": True}},
+            "notes": [{"headline": "Final"}],
+            "competitors": [
+                {"homeAway": "home", "score": "0", "shootoutScore": 5,
+                 "winner": False, "team": {"displayName": "Chelsea"}},
+                {"homeAway": "away", "score": "0", "shootoutScore": 6,
+                 "winner": True, "team": {"displayName": "Liverpool"}},
+            ],
+        }
+    ],
+}
+
+
+def test_both_sides_of_a_goalless_shootout_score_the_right_way_round():
+    """The away side won this one, which is the case worth pinning: the two
+    rows must mirror each other, not both take the home side's figures.
+
+    It is also where the clean sheet and the shootout rules meet -- nobody
+    scored, so both sides keep the point, and the two points and a third
+    between them is the shootout, not the defending.
+    """
+    import pandas as pd
+
+    from whul.scoring.soccer import score_team_matches
+
+    rows = espn._soccer_rows(GOALLESS_SHOOTOUT_EVENT, "facup", date(2022, 5, 14))
+    scored = score_team_matches(
+        pd.DataFrame(rows).assign(league="Premier League")
+    ).set_index("team")
+
+    liverpool, chelsea = scored.loc["Liverpool"], scored.loc["Chelsea"]
+    assert (liverpool["shootout_for"], liverpool["shootout_against"]) == (6.0, 5.0)
+    assert (chelsea["shootout_for"], chelsea["shootout_against"]) == (5.0, 6.0)
+    assert liverpool["outcome"] == "shootout_win"
+    assert chelsea["outcome"] == "shootout_loss"
+
+    # A domestic cup pays 4 a win, so the shares are 2 and 1 scaled by 4/3.
+    assert liverpool["clean_sheet"] and chelsea["clean_sheet"]
+    assert liverpool["match_points"] == pytest.approx(2 * 4 / 3 + 1)
+    assert chelsea["match_points"] == pytest.approx(1 * 4 / 3 + 1)
+    assert liverpool["match_points"] > chelsea["match_points"]

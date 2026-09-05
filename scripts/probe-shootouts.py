@@ -44,14 +44,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-#: Ties decided on penalties, with what they actually finished at:
-#: (league key, date, what it was, goals, penalties) from the home side's view.
+#: Ties decided on penalties, with what they actually finished at.
+#:
+#: Every figure here is **the home side's**, which is why the home side is
+#: named rather than implied: the obvious mistake is to write down the winner's
+#: score, and in two of these three the winner was away. Naming the club makes
+#: that a mismatch the probe reports rather than a wrong number it blames on
+#: the feed -- which is exactly what happened when this list said 6-5 for a
+#: final Chelsea hosted and lost 5-6.
+#:
 #: Two of the three are goalless, which is also the case the clean-sheet rule
-#: turns on -- a 0-0 shootout earns the point whoever wins the penalties.
+#: turns on: a 0-0 shootout earns the point for both sides.
 KNOWN_SHOOTOUTS = [
-    ("copadelrey", date(2024, 4, 6), "Copa del Rey final", (1, 1), (4, 2)),
-    ("facup", date(2022, 5, 14), "FA Cup final", (0, 0), (6, 5)),
-    ("efl_cup", date(2022, 2, 27), "EFL Cup final", (0, 0), (11, 10)),
+    # home side          goals   penalties
+    ("copadelrey", date(2024, 4, 6), "Copa del Rey final",
+     "Athletic Club", (1, 1), (4, 2)),   # Athletic won it at home
+    ("facup", date(2022, 5, 14), "FA Cup final",
+     "Chelsea", (0, 0), (5, 6)),         # Liverpool won it from away
+    ("efl_cup", date(2022, 2, 27), "EFL Cup final",
+     "Chelsea", (0, 0), (10, 11)),       # Liverpool won it from away
 ]
 
 
@@ -65,7 +76,8 @@ def scoring_keys(entry: dict) -> dict:
     }
 
 
-def check(event: dict, label: str, goals=None, penalties=None) -> bool:
+def check(event: dict, label: str, home_side=None, goals=None,
+          penalties=None) -> bool:
     """Print one match's scoring fields, and say whether it read correctly."""
     from whul.sources.espn import _competitor, _soccer_rows
 
@@ -99,7 +111,15 @@ def check(event: dict, label: str, goals=None, penalties=None) -> bool:
         print("       normal time, and wrong only if this one was drawn.")
         return False
 
-    # The home side's figures, since that is the row taken above.
+    # Everything below is the home side's, since that is the row taken above.
+    # Check whose row it is first: a mismatch here means this script has the
+    # tie the wrong way round, and reporting that as a scoreline error would
+    # blame the feed for a mistake in the table.
+    if home_side and row["team"] != home_side:
+        print(f"    -> this script expected {home_side} at home, and the feed")
+        print(f"       says {row['team']}. The table above is wrong, not the feed;")
+        print("       the figures in it are the home side's.")
+        return False
     if read_goals != tuple(float(g) for g in goals):
         print(f"    -> WRONG. It finished {goals[0]}-{goals[1]}. Penalties folded")
         print("       into `score` would look exactly like this, and would pay a")
@@ -125,7 +145,8 @@ def main() -> int:
 
     ad_hoc = bool(args.league and args.date)
     if ad_hoc:
-        wanted = [(args.league, date.fromisoformat(args.date), "requested", None, None)]
+        wanted = [(args.league, date.fromisoformat(args.date), "requested",
+                   None, None, None)]
     elif args.league or args.date:
         print("--league and --date go together.", file=sys.stderr)
         return 2
@@ -134,7 +155,7 @@ def main() -> int:
 
     print(__doc__.split("Run it")[0].strip())
     checked = passed = 0
-    for league, day, label, goals, penalties in wanted:
+    for league, day, label, home_side, goals, penalties in wanted:
         print(f"\n{'=' * 68}\n{league} {day}  ({label})")
         try:
             board = scoreboard(league, day)
@@ -150,7 +171,7 @@ def main() -> int:
         # full card, so check them all and count only the ones that matched.
         for event in events:
             checked += 1
-            if check(event, label, goals, penalties):
+            if check(event, label, home_side, goals, penalties):
                 passed += 1
 
     print(f"\n{'=' * 68}")
