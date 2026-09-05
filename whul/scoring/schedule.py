@@ -1,0 +1,185 @@
+"""Schedule-length changes.
+
+When a league changes how many games it plays, historical benchmarks stop
+describing the same thing. The NHL expands from 82 to 84 games in 2026-27, so a
+benchmark drawn from 82-game seasons sets a bar every skater would clear about
+2.4% too easily.
+
+The correction applies to the **benchmark**, not to live scores: scaling one
+number per normalization group leaves a manager checking the arithmetic with one
+fewer step to follow than rescaling every historical season and re-deriving.
+
+It applies only to **counting stats**. Goals, assists, shots, wins and goal
+differential all scale with games played; a division title or a playoff berth
+does not. Player scoring in these leagues is entirely counting stats, so a
+player benchmark scales whole. Team scoring mixes the two, so a team's
+regular-season components are scaled at source and its achievement components
+left alone -- which is why ``score_teams`` takes the factor rather than having it
+applied afterwards.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ScheduleChange:
+    """A league's game count moving between seasons."""
+
+    league: str
+    historical_games: int
+    current_games: int
+    effective_season: str
+
+    @property
+    def factor(self) -> float:
+        """Multiplier taking a historical pace to the current one."""
+        return self.current_games / self.historical_games
+
+
+#: Live schedule changes. The NFL's expansion to 18 games is expected but not
+#: scheduled, so it is absent until a date is known.
+SCHEDULE_CHANGES: dict[str, ScheduleChange] = {
+    "NHL": ScheduleChange("NHL", historical_games=82, current_games=84,
+                          effective_season="2026-27"),
+}
+
+
+@dataclass(frozen=True)
+class IrregularSeason:
+    """A season whose length makes it unusable as benchmark evidence."""
+
+    league: str
+    season: int
+    games: int
+    standard_games: int
+    reason: str
+
+
+#: Seasons excluded from benchmark pools. Scaling a 56-game season up to 84 is a
+#: 1.5x extrapolation across a year that also had no crowds, condensed travel and
+#: division-only schedules -- the distortion is not just one of length, so the
+#: honest move is to drop it rather than model it. `MLB_Players_Teams.R` set the
+#: precedent by filtering 2020 "to eradicate COVID season distortion".
+IRREGULAR_SEASONS: tuple[IrregularSeason, ...] = (
+    IrregularSeason("NHL", 2021, 56, 82, "COVID: 56 games, division-only schedule"),
+    IrregularSeason("NHL", 2020, 71, 82, "COVID: season halted in March"),
+    IrregularSeason("NBA", 2021, 72, 82, "COVID: 72-game season"),
+    IrregularSeason("NBA", 2020, 67, 82, "COVID: season suspended, bubble restart"),
+    IrregularSeason("MLB", 2020, 60, 162, "COVID: 60-game season"),
+    IrregularSeason("WNBA", 2020, 22, 34, "COVID: 22-game bubble season"),
+    # The NFL played every 2020 game, so this is not a COVID exclusion: 2020 was
+    # simply the last 16-game season, and a 17-game season measured against it
+    # would be scored against a shorter year. It falls outside a five-season
+    # reach from 2025 anyway; it is listed so a longer reach cannot pick it up.
+    IrregularSeason("NFL", 2020, 16, 17, "the last 16-game season; the league now plays 17"),
+    # Tennis is excluded by calendar rather than by game count. 2020 lost
+    # Wimbledon and shifted the US Open and Roland Garros; 2021 kept the
+    # rearrangement, with the Australian Open in February and the Olympics
+    # displacing the summer. A benchmark drawn over an August-to-July window
+    # cannot compare those years to a normal one, because the events fall in
+    # different windows rather than merely being fewer.
+    IrregularSeason("ATP", 2021, 0, 0, "calendar still rearranged after COVID"),
+    IrregularSeason("ATP", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
+    IrregularSeason("WTA", 2021, 0, 0, "calendar still rearranged after COVID"),
+    IrregularSeason("WTA", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
+    IrregularSeason("Tennis", 2021, 0, 0, "calendar still rearranged after COVID"),
+    IrregularSeason("Tennis", 2020, 0, 0, "COVID: tour suspended, Wimbledon cancelled"),
+    # Golf and motorsport are excluded by calendar for the same reason, and
+    # named by the year each league year *ends* in, which is how a window is
+    # judged. The 2019-20 window lost the months the tours were shut down; the
+    # 2020-21 window is distorted by what was pushed into it -- for golf, the
+    # November 2020 Masters and the April 2021 Masters fall in the same window.
+    IrregularSeason("PGA", 2021, 0, 0, "COVID: two Masters in the same league year"),
+    IrregularSeason("PGA", 2020, 0, 0, "COVID: tour suspended, The Open cancelled"),
+    IrregularSeason("Motorsports", 2021, 0, 0, "COVID: the shortened 2020 season falls in this window"),
+    IrregularSeason("Motorsports", 2020, 0, 0, "COVID: seasons suspended and rescheduled"),
+    IrregularSeason("NASCAR", 2021, 0, 0, "COVID: the rescheduled 2020 season falls in this window"),
+    IrregularSeason("NASCAR", 2020, 0, 0, "COVID: season paused in March, schedule compressed"),
+    IrregularSeason("F1", 2021, 0, 0, "COVID: the 17-race 2020 season falls in this window"),
+    IrregularSeason("F1", 2020, 0, 0, "COVID: 17 races, season started in July"),
+    # College seasons, named the way ``season_label`` names them: football by
+    # the year it starts, basketball by the year it ends. Football's 2020 is the
+    # autumn of 2020, when the Big Ten played eight games, the Pac-12 six and
+    # the MAC none until November. Basketball's 2020 is the 2019-20 season that
+    # stopped before the tournament, and its 2021 is the season played through
+    # a winter of cancellations and pauses.
+    IrregularSeason("NCAAF", 2020, 0, 0, "COVID: conferences played schedules of different lengths"),
+    IrregularSeason("NCAAM", 2021, 0, 0, "COVID: cancellations and pauses throughout"),
+    IrregularSeason("NCAAM", 2020, 0, 0, "COVID: conference tournaments and March Madness cancelled"),
+    IrregularSeason("NCAAW", 2021, 0, 0, "COVID: cancellations and pauses throughout"),
+    IrregularSeason("NCAAW", 2020, 0, 0, "COVID: conference tournaments and March Madness cancelled"),
+    # Spring sports lost 2020 outright: both seasons were abandoned in March,
+    # about a third of the way through, and there was no postseason at all.
+    IrregularSeason("NCAA Baseball", 2020, 0, 0, "COVID: season abandoned in March, no postseason"),
+    IrregularSeason("NCAA Softball", 2020, 0, 0, "COVID: season abandoned in March, no postseason"),
+)
+
+#: The earliest season a league's benchmark pool may draw from, named by the
+#: year the league year *ends* in. Tennis starts at 2023 -- the 2022-23 window
+#: -- because everything before it is either COVID-affected or played on a
+#: calendar the window-based benchmark cannot compare against. The 2021-22
+#: window is excluded too: it opens six weeks after the Tokyo Olympics that the
+#: rearranged 2021 calendar displaced into July, and the tour it inherits is
+#: still settling back into its normal shape.
+EARLIEST_SEASON: dict[str, int] = {
+    "ATP": 2023, "WTA": 2023, "Tennis": 2023,
+}
+
+
+def irregular_seasons(league: str) -> set[int]:
+    """Seasons to keep out of a league's benchmark pool."""
+    return {s.season for s in IRREGULAR_SEASONS if s.league == league}
+
+
+def usable_seasons(league: str, wanted: list[int]) -> list[int]:
+    """The requested seasons, minus the ones a benchmark must not draw from.
+
+    Two filters: seasons the league played irregularly, and anything before the
+    league's earliest usable year. Applied here rather than at each call site
+    so a league added later cannot be quietly benchmarked against a COVID year.
+    """
+    excluded = irregular_seasons(league)
+    floor = EARLIEST_SEASON.get(league, 0)
+    return [s for s in wanted if s not in excluded and s >= floor]
+
+
+def describe_exclusions(league: str, seasons: list[int]) -> list[str]:
+    """Human-readable notes for whichever excluded seasons were requested."""
+    excluded = {s.season: s for s in IRREGULAR_SEASONS if s.league == league}
+    notes = []
+    for season in seasons:
+        entry = excluded.get(season)
+        if entry is None:
+            continue
+        # Tennis is excluded by calendar rather than game count, so it carries
+        # no game totals; printing "0 of 0 games" would read as a data error.
+        count = (
+            f"{entry.games} of {entry.standard_games} games, "
+            if entry.standard_games
+            else ""
+        )
+        notes.append(f"{season} excluded: {count}{entry.reason}")
+    return notes
+
+
+def factor_for(league: str) -> float:
+    """Scaling factor for a league, 1.0 when its schedule is unchanged."""
+    change = SCHEDULE_CHANGES.get(league)
+    return change.factor if change else 1.0
+
+
+def scale_benchmarks(benchmarks, league: str, column: str = "benchmark"):
+    """Scale a league's benchmarks to the current schedule length.
+
+    For leagues whose scoring is entirely counting stats -- which is every player
+    benchmark we compute -- the whole benchmark scales.
+    """
+    factor = factor_for(league)
+    if factor == 1.0:
+        return benchmarks
+    out = benchmarks.copy()
+    out[column] = (out[column] * factor).round(4)
+    out["schedule_factor"] = factor
+    return out
