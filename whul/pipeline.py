@@ -94,15 +94,47 @@ def cumulative_scores(store: Store, season: str, through: date | str) -> pd.Data
     the series as cumulative -- differencing it is how a trade splits a slot.
     """
     frame = store.query(
-        "SELECT asset_id, as_of AS date, scaled_score AS score "
-        "FROM daily_scores WHERE season = ? AND as_of <= ? "
-        "ORDER BY asset_id, as_of",
+        "SELECT d.asset_id, d.as_of AS date, d.scaled_score AS score, a.league "
+        "FROM daily_scores d LEFT JOIN assets a ON a.asset_id = d.asset_id "
+        "WHERE d.season = ? AND d.as_of <= ? "
+        "ORDER BY d.asset_id, d.as_of",
         (season, _as_text(through)),
     )
     if frame.empty:
         return frame
     frame["date"] = pd.to_datetime(frame["date"]).dt.date
-    return frame
+    return _from_league_start(frame)
+
+
+def _from_league_start(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop scores dated before their league's results start counting.
+
+    Ingest already refuses to record them, so this only ever catches rows
+    written under an older rule -- but that is the case that matters, because
+    ``backfill`` rebuilds the standings from ``daily_scores`` rather than from
+    ``raw_stats``. A row recorded before a start date moved is not recomputed
+    by anything; without this it scores forever.
+
+    That is how MLS clubs drafted for 2027 kept their 2026 points after the
+    start date was corrected: the ingest stopped recording them, a backfill ran
+    clean, and Vancouver still read ten.
+
+    An asset with no league is kept. A missing row in ``assets`` is a different
+    fault, and silently dropping its score would hide it.
+    """
+    from whul.config.league import season_start
+
+    if "league" not in frame.columns:
+        return frame
+    leagues = frame["league"].fillna("")
+    starts = {
+        league: season_start(league) for league in leagues.unique() if league
+    }
+    keep = [
+        not league or day >= starts[league]
+        for league, day in zip(leagues, frame["date"])
+    ]
+    return frame[keep].drop(columns=["league"]).reset_index(drop=True)
 
 
 def roll_up(

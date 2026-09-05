@@ -260,3 +260,46 @@ def test_the_progression_is_ordered_for_plotting(league):
     run(store)
     series = pipeline.progression(store, SEASON)
     assert list(series["as_of"]) == sorted(series["as_of"])
+
+
+def test_a_score_from_before_its_league_started_never_reaches_a_standing():
+    """Ingest refuses to record one, so this only catches rows written under an
+    older rule -- which is the case that matters. ``backfill`` rebuilds the
+    standings from ``daily_scores`` rather than from ``raw_stats``, so nothing
+    recomputes a row already written: MLS clubs drafted for 2027 kept their
+    2026 points after the start date was corrected, the ingest stopped
+    recording them, a backfill ran clean, and Vancouver still read ten."""
+    import pandas as pd
+
+    from whul import pipeline
+
+    frame = pd.DataFrame([
+        # Recorded when MLS had no start date, from the 2026 season.
+        {"asset_id": "mls1", "date": date(2026, 9, 5), "score": 10.08,
+         "league": "MLS"},
+        {"asset_id": "mls1", "date": date(2027, 3, 8), "score": 4.0,
+         "league": "MLS"},
+        {"asset_id": "epl1", "date": date(2026, 9, 5), "score": 42.0,
+         "league": "Premier League"},
+    ])
+    kept = pipeline._from_league_start(frame)
+    assert list(zip(kept["asset_id"], kept["date"])) == [
+        ("mls1", date(2027, 3, 8)),
+        ("epl1", date(2026, 9, 5)),
+    ]
+    assert "league" not in kept.columns
+
+
+def test_a_score_whose_asset_is_missing_a_league_is_kept():
+    """The join is a LEFT one, so a score with no matching asset row arrives
+    with a null league. That is a different fault, and dropping the score
+    silently would hide it rather than report it."""
+    import pandas as pd
+
+    from whul import pipeline
+
+    frame = pd.DataFrame([
+        {"asset_id": "ghost", "date": date(2026, 9, 5), "score": 7.0,
+         "league": None},
+    ])
+    assert list(pipeline._from_league_start(frame)["asset_id"]) == ["ghost"]

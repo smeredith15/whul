@@ -219,9 +219,31 @@ def test_a_league_with_no_start_of_its_own_uses_the_league_years():
 
 
 def test_every_league_start_falls_in_this_league_year():
-    """A typo in the month here silently drops or admits weeks of results."""
+    """A typo in the month here silently drops or admits weeks of results.
+
+    Bounded from both ends, but not symmetrically. A league may open a little
+    *before* the year does -- La Liga and the PGA both do -- and never long
+    before, which is what a wrong year looks like. Lateness is bounded by the
+    year's end instead of by a window around its start, because a league picked
+    for a season that opens mid-year is legitimately months late: MLS and the
+    NWSL were drafted for 2027 while their 2026 seasons were being played.
+    """
     from whul.config.league import LEAGUE_START, SEASON
 
     for league, day in LEAGUE_START.items():
         assert SEASON.start.year - 1 <= day.year <= SEASON.start.year + 1, league
-        assert abs((day - SEASON.start).days) <= 45, (league, day)
+        assert (SEASON.start - day).days <= 45, (league, day)
+        assert day <= SEASON.end, (league, day)
+
+
+def test_a_league_drafted_for_next_calendar_year_asks_for_nothing_yet():
+    """MLS and the NWSL are the case the bound above is loosened for, so the
+    loosening is pinned to what it buys: today they fetch no season at all, so
+    a club picked for 2027 cannot be paid for a 2026 match."""
+    from datetime import date
+
+    from whul.benchmark_sources import SOURCES
+
+    for key in ("mls", "nwsl"):
+        assert SOURCES[key].seasons_for(date(2026, 9, 5)) == []
+        assert SOURCES[key].seasons_for(date(2027, 3, 15)) == [2027]

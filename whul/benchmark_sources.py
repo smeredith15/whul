@@ -387,7 +387,16 @@ def _soccer_players():
     def load(seasons):
         frames = []
         for category, key in PLAYER_LEAGUES.items():
-            frame = espn_soccer.load_players(key, list(seasons))
+            # One league at a time, because they fail one at a time. A 403 on
+            # the Premier League's club list used to raise straight out of here
+            # and take the other five leagues with it -- thirty-two players
+            # scoring nothing over one refused request.
+            try:
+                frame = espn_soccer.load_players(key, list(seasons))
+            except Exception as exc:  # noqa: BLE001 -- one league, not all six
+                print(f"  {key}: could not pull ({type(exc).__name__}: {exc}); "
+                      f"{category} scores none and the rest continue", flush=True)
+                continue
             if frame is None or frame.empty:
                 print(f"  {key}: no players returned, so {category} scores none",
                       flush=True)

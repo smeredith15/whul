@@ -117,6 +117,18 @@ LEAGUE_START: dict[str, date] = {
     # starts on -- La Liga's -- which is the earliest a WHUL result exists at
     # all.
     "MLB": date(2026, 8, 15),
+    # MLS and NWSL were drafted for their **2027** seasons. Their 2026 seasons
+    # are running right now, and without a start date every 2026 result counts:
+    # Vancouver was credited with ten points and Nashville eight for matches
+    # played in a season nobody picked.
+    #
+    # There is no fixture to anchor on -- the 2027 calendars are not out, and
+    # MLS is moving to a summer-spring shape that year -- so this is the first
+    # day that can only belong to 2027. MLS's play-offs finish in early
+    # December and the NWSL championship in November, so nothing real falls
+    # between New Year and whenever the openers land.
+    "MLS": date(2027, 1, 1),
+    "NWSL": date(2027, 1, 1),
 }
 
 

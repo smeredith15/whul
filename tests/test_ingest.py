@@ -481,12 +481,34 @@ def test_a_late_baseline_is_reported_rather_than_used(store):
     assert any("recorded but not subtracted" in p for p in report.problems)
 
 
-def test_a_league_year_spanning_two_feed_seasons_is_summed_not_split(store):
-    """MLS runs inside a calendar year, so a league year opening in August
-    holds a club through the tail of one season and the front of the next. The
-    feed files those halves separately. Left split they are two feed rows for
-    one roster slot, which the resolver holds back as ambiguous -- the club
-    would score nothing at all."""
+def test_two_feed_seasons_for_one_slot_are_summed_not_split():
+    """A league year can hold a club through the tail of one calendar-year
+    season and the front of the next, and the feed files those halves
+    separately. Left split they are two feed rows for one roster slot, which
+    the resolver holds back as ambiguous -- the club would score nothing at
+    all.
+
+    Tested on the function rather than through a league, because no league
+    currently spans two feed seasons: MLS did, and its results now start in
+    2027, which leaves it one season. The machinery is still right and still
+    has to work the next time a league year straddles one.
+    """
+    both = pd.DataFrame([
+        {"team": "Inter Miami", "league": "MLS", "season": 2026,
+         "matches_played": 8, "total_points": 30.0},
+        {"team": "Inter Miami", "league": "MLS", "season": 2027,
+         "matches_played": 5, "total_points": 18.0},
+    ])
+    summed = ingest._across_feed_seasons(both)
+    assert len(summed) == 1
+    assert summed.iloc[0]["total_points"] == 48.0
+    assert summed.iloc[0]["matches_played"] == 13
+
+
+def test_mls_scores_only_the_season_it_was_drafted_for(store):
+    """The clubs were picked for 2027 and the 2026 season is being played now.
+    Both halves used to be summed into one total, which paid a manager for a
+    season nobody drafted -- Vancouver ten points, Nashville eight."""
     source = source_over(
         [{"team": "Inter Miami", "league": "MLS", "season": 2026,
           "date": "2026-09-01", "matches_played": 8, "total_points": 30.0},
@@ -498,16 +520,28 @@ def test_a_league_year_spanning_two_feed_seasons_is_summed_not_split(store):
     rostered(store, "Inter Miami", league="MLS", asset_type="Team")
     report = ingest.ingest(store, source, "2026-27", date(2027, 3, 15), verbose=False)
 
-    assert report.pulled == 1
     assert report.matched == 1
     assert not report.resolution.ambiguous
-    held = store.query(
-        "SELECT stats FROM raw_stats WHERE league = 'MLS'"
-    )
     import json
-    figures = json.loads(held.loc[0, "stats"])
-    assert figures["total_points"] == 48.0
-    assert figures["matches_played"] == 13
+    figures = json.loads(store.query(
+        "SELECT stats FROM raw_stats WHERE league = 'MLS'").loc[0, "stats"])
+    assert figures["total_points"] == 18.0
+    assert figures["matches_played"] == 5
+
+
+def test_mls_scores_nothing_before_its_own_season_opens(store):
+    """Which is the state today: the 2026 season is in progress, the 2027 one
+    has not started, and the right number for every MLS club is zero."""
+    source = source_over(
+        [{"team": "Inter Miami", "league": "MLS", "season": 2026,
+          "date": "2026-09-01", "matches_played": 8, "total_points": 30.0}],
+        key="mls", league="MLS", asset_type="Team",
+        seasons_for=lambda day: [2026],
+    )
+    rostered(store, "Inter Miami", league="MLS", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 5), verbose=False)
+    assert report.scored == 0
+    assert store.query("SELECT * FROM raw_stats WHERE league = 'MLS'").empty
 
 
 def test_one_feed_season_is_left_exactly_as_it_came(store):
@@ -656,3 +690,31 @@ def test_uncovered_tells_a_gap_from_an_omission():
     missed = ingest.uncovered(store, "2026-27", resolve(["nfl"]))
     assert list(missed["league"]) == ["Men's Intl Soccer"]
     assert missed["source"].iloc[0] == ""
+
+
+def test_mls_results_from_the_season_nobody_drafted_do_not_count():
+    """MLS and NWSL were drafted for 2027. Their 2026 seasons are running now,
+    and without a start date every 2026 match counted -- Vancouver was credited
+    with ten points and Nashville eight for a season nobody picked."""
+    from whul.config.league import season_start
+
+    assert season_start("MLS").year == 2027
+    assert season_start("NWSL").year == 2027
+
+    raw = pd.DataFrame([
+        {"team": "Vancouver Whitecaps", "date": "2026-09-05", "points": 10},
+        {"team": "Vancouver Whitecaps", "date": "2027-03-06", "points": 3},
+    ])
+    kept = ingest._from_season_start(raw, "MLS")
+    assert list(kept["date"]) == ["2027-03-06"]
+
+
+def test_the_european_leagues_still_start_in_august():
+    """The 2027 start is MLS and NWSL's alone -- a league drafted for the
+    season now being played must not be pushed into next year with them."""
+    raw = pd.DataFrame([
+        {"team": "Arsenal", "date": "2026-08-14"},   # before the opener
+        {"team": "Arsenal", "date": "2026-09-05"},   # this season
+    ])
+    kept = ingest._from_season_start(raw, "Premier League")
+    assert list(kept["date"]) == ["2026-09-05"]

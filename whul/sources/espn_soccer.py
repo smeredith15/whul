@@ -98,9 +98,15 @@ def season_matches(league: str, season: int, said: str) -> bool:
 
 
 def _get(url: str, params: dict, session=None) -> dict:
+    """Fetch, with the request shape that is known to work unattended.
+
+    No custom User-Agent. ``whul.sources.espn`` sends none and is pulled from
+    GitHub Actions every night without trouble; this module sent one and drew a
+    403 from the same runner on the same host. That is one difference fewer,
+    not a proven cause -- but the module that works is the one worth copying.
+    """
     getter = session.get if session is not None else requests.get
-    response = getter(url, params=params, timeout=TIMEOUT,
-                      headers={"User-Agent": "whul-fantasy/0.1"})
+    response = getter(url, params=params, timeout=TIMEOUT)
     response.raise_for_status()
     payload = response.json()
     time.sleep(REQUEST_PAUSE)
@@ -225,11 +231,8 @@ def load_squad(
     return pd.DataFrame(rows)
 
 
-def team_ids(league: str, season: int, session=None) -> dict[str, str]:
-    """``{club: espn id}`` for one league and season."""
-    sport, path = LEAGUE_PATHS[league]
-    payload = _get(f"{BASE}/{sport}/{path}/teams",
-                   {"season": roster_season(league, season)}, session)
+def _clubs_in(payload: dict) -> dict[str, str]:
+    """``{club: espn id}`` out of a teams payload."""
     out = {}
     try:
         entries = payload["sports"][0]["leagues"][0]["teams"]
@@ -240,6 +243,54 @@ def team_ids(league: str, season: int, session=None) -> dict[str, str]:
         if team.get("id") and team.get("displayName"):
             out[str(team["displayName"])] = str(team["id"])
     return out
+
+
+def team_ids(
+    league: str, season: int, session=None, note: list | None = None
+) -> dict[str, str]:
+    """``{club: espn id}`` for one league and season.
+
+    Never raises. A league whose club list cannot be fetched is one league that
+    scores nothing, and the five others in the same run should not go with it --
+    which is exactly what happened when a 403 on the Premier League's club list
+    took every club soccer player down with it.
+
+    Two request shapes, because a 403 does not say what it objects to. If the
+    seasoned request is refused, the bare one is tried: it answers with the
+    *current* club list, which for the season in progress is the same list and
+    for a past season is not. That substitution is reported rather than made
+    quietly -- promotion and relegation mean a bare list would attribute the
+    wrong clubs to an older season, which matters for a benchmark and not at
+    all for tonight's results.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    url = f"{BASE}/{sport}/{path}/teams"
+    asked = roster_season(league, season)
+    said: list[str] = []
+    for params in ({"season": asked}, {}):
+        try:
+            clubs = _clubs_in(_get(url, params, session))
+        except Exception as exc:  # noqa: BLE001 -- one league, not the run
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            shape = f"season={asked}" if params else "no season"
+            said.append(f"{shape}: {type(exc).__name__} {status}")
+            continue
+        if not clubs:
+            said.append(f"{'season=' + str(asked) if params else 'no season'}: "
+                        f"answered, but listed no clubs")
+            continue
+        if not params:
+            said.append(
+                f"the {asked} club list was refused, so this is the current "
+                f"one -- right for a season in progress, and wrong by however "
+                f"many clubs were promoted or relegated for an older one"
+            )
+        if note is not None:
+            note.extend(said)
+        return clubs
+    if note is not None:
+        note.extend(said)
+    return {}
 
 
 def load_players(
@@ -257,7 +308,11 @@ def load_players(
     session = session or requests.Session()
     frames = []
     for season in seasons:
-        clubs = team_ids(league, season, session)
+        why: list[str] = []
+        clubs = team_ids(league, season, session, note=why)
+        if verbose:
+            for line in why:
+                print(f"    {league} {season}: {line}", flush=True)
         if not clubs:
             if verbose:
                 print(f"  {league} {season}: no clubs listed, so no players",
