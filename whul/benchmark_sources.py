@@ -207,15 +207,39 @@ def _prorated(scored, league: str, columns: list[str] | None = None):
 
 
 def _mlb_teams():
+    """Whole contract years, for the benchmark.
+
+    The divisions are fetched alongside the schedule because a division title
+    is worth five points and cannot be read off a schedule -- a schedule says
+    who a club played, not who it was competing with for a title. Missing them
+    would not fail: it would quietly set the bar five points low for every club
+    that won one, which is exactly the kind of scale error a frozen benchmark
+    then carries all season. So it is checked rather than defaulted.
+    """
     from whul.scoring import mlb
     from whul.sources import mlb as source
 
+    held: dict[str, object] = {}
+
     # The contract engine pairs consecutive seasons, so each scored season needs
     # the one after it to exist in the frame.
-    return (
-        lambda seasons: source.load_schedule(sorted(set(seasons) | {max(seasons) + 1})),
-        mlb.score_teams,
-    )
+    def load(seasons):
+        wanted = sorted(set(seasons) | {max(seasons) + 1})
+        held["divisions"] = source.load_divisions(wanted)
+        return source.load_schedule(wanted)
+
+    def score(raw):
+        divisions = held.get("divisions")
+        if divisions is None or getattr(divisions, "empty", True):
+            raise RuntimeError(
+                "MLB divisions could not be read, and a division title is worth "
+                "5 points. Computing the benchmark without them would set the "
+                "bar low for every club that won one, and the frozen scale would "
+                "carry that all season. Check statsapi.mlb.com/api/v1/teams."
+            )
+        return mlb.score_teams(raw, divisions=divisions)
+
+    return load, score
 
 
 def _mlb_teams_live():

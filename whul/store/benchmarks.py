@@ -156,6 +156,75 @@ def extend(
     return get_version(store, version)
 
 
+def _free_version_id(store: Store, season: str) -> str:
+    """A version id nothing is using yet.
+
+    Ids carry a timestamp to the second, and a derive that lands in the same
+    second as the version it copies would produce that same id -- whereupon the
+    upsert would overwrite the source's row and set ``frozen_at`` to NULL,
+    silently unfreezing the scale the standings are measured against. Rare, and
+    catastrophic when it happens, which is the combination worth ruling out
+    rather than hoping about.
+    """
+    base = make_version_id(season)
+    version, attempt = base, 1
+    while get_version(store, version) is not None:
+        attempt += 1
+        version = f"{base}-{attempt}"
+    return version
+
+
+def derive(
+    store: Store, source: str, season: str | None = None, notes: str = ""
+) -> str:
+    """Start a new unfrozen version holding everything an existing one holds.
+
+    A frozen scale is never edited, so correcting one league's benchmark means a
+    new version -- and a new version has to cover the whole roster or the freeze
+    is refused, which would mean recomputing twenty leagues to change one. Some
+    of those are date-walked and take hours, so in practice the correction does
+    not get made.
+
+    Copying the rows first makes it cheap: derive, recompute the one league into
+    it, compare, freeze. The copied rows carry the seasons they were drawn from,
+    because that is still true of them -- what changed is the one group that was
+    recomputed, and ``benchmarks compare`` is what shows which.
+
+    The provenance goes in the notes rather than being left to memory. Anyone
+    reading the frozen scale later should be able to see that most of it was
+    inherited unchanged.
+    """
+    origin = get_version(store, source)
+    if origin is None:
+        raise ValueError(f"no benchmark version {source!r}")
+
+    rows = store.query(
+        "SELECT asset_type, norm_key, benchmark, pool_size, seasons "
+        "FROM benchmarks WHERE version = ?",
+        (source,),
+    )
+    if rows.empty:
+        raise ValueError(f"benchmark version {source!r} holds no benchmarks")
+
+    season = season or origin.season
+    version = _free_version_id(store, season)
+    provenance = f"derived from {source}"
+    store.upsert(
+        "benchmark_versions",
+        [{
+            "version": version, "season": season, "quantile": origin.quantile,
+            "managers": origin.managers, "computed_at": _now(), "frozen_at": None,
+            "notes": f"{provenance}; {notes}" if notes else provenance,
+        }],
+        keys=("version",),
+    )
+    store.insert_frame(
+        "benchmarks", rows.assign(version=version),
+        keys=("version", "asset_type", "norm_key"),
+    )
+    return version
+
+
 def freeze(store: Store, version: str, notes: str = "") -> BenchmarkVersion:
     """Adopt a version as the one standings are scored against.
 

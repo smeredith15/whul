@@ -716,3 +716,91 @@ def test_recomputing_a_league_supersedes_it_in_the_notes():
     assert merged.count("PGA players") == 1
     assert "2021-22 to 2025-26" in merged
     assert "NFL players 2021-2025" in merged
+
+
+# --- correcting one league in a scale already in force ----------------------
+
+def test_deriving_copies_a_frozen_scale_into_a_draft(store):
+    """A frozen scale is never edited, and a new one has to cover the whole
+    roster or the freeze is refused. Without this, correcting one league means
+    recomputing twenty -- some of them date-walked and hours long -- so in
+    practice the correction does not get made."""
+    frozen = benchmarks.save(
+        store,
+        [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False),
+         benchmarks.compute(
+             "NHL", *fake_league(400, league="NHL", role=""), latest=2025, verbose=False
+         )],
+        "2026-27",
+    )
+    bm.freeze(store, frozen)
+
+    draft = bm.derive(store, frozen, notes="NHL rule corrected")
+    assert draft != frozen
+    assert bm.get_version(store, draft).frozen_at is None
+    before, after = bm.load(store, frozen), bm.load(store, draft)
+    assert set(after["norm_key"]) == set(before["norm_key"]) == {"NFL_QB", "NHL"}
+    assert list(after.sort_values("norm_key")["benchmark"]) == \
+        list(before.sort_values("norm_key")["benchmark"])
+
+
+def test_a_derived_version_says_where_it_came_from(store):
+    """Most of the scale was inherited unchanged, and someone reading it later
+    should be able to see that rather than take it on trust."""
+    frozen = benchmarks.save(
+        store, [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False)],
+        "2026-27",
+    )
+    draft = bm.derive(store, frozen, notes="MLB division rule corrected")
+    notes = bm.get_version(store, draft).notes
+    assert frozen in notes
+    assert "MLB division rule corrected" in notes
+
+
+def test_one_league_recomputed_into_a_derived_version_leaves_the_rest_alone(store):
+    """The whole point: the corrected group moves and nothing else does."""
+    frozen = benchmarks.save(
+        store,
+        [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False),
+         benchmarks.compute(
+             "NHL", *fake_league(400, league="NHL", role=""), latest=2025, verbose=False
+         )],
+        "2026-27",
+    )
+    bm.freeze(store, frozen)
+    draft = bm.derive(store, frozen)
+    benchmarks.extend(
+        store,
+        [benchmarks.compute(
+            "NHL", *fake_league(150, league="NHL", role=""),
+            latest=2025, verbose=False,
+        )],
+        draft,
+    )
+
+    before = bm.load(store, frozen).set_index("norm_key")["benchmark"]
+    after = bm.load(store, draft).set_index("norm_key")["benchmark"]
+    assert after["NFL_QB"] == before["NFL_QB"]
+    assert after["NHL"] != before["NHL"]
+
+
+def test_deriving_from_a_version_that_does_not_exist_says_so(store):
+    with pytest.raises(ValueError, match="no benchmark version"):
+        bm.derive(store, "2026-27-nonexistent")
+
+
+def test_a_derived_version_never_overwrites_the_one_it_copies(store):
+    """Version ids carry a timestamp to the second, so a derive in the same
+    second as its source would land on the source's own id -- and the upsert
+    would clear its frozen_at, quietly unfreezing the scale the standings are
+    measured against."""
+    frozen = benchmarks.save(
+        store, [benchmarks.compute("NFL", *fake_league(400), latest=2025, verbose=False)],
+        "2026-27",
+    )
+    bm.freeze(store, frozen)
+
+    drafts = [bm.derive(store, frozen) for _ in range(3)]
+    assert len(set(drafts)) == 3
+    assert frozen not in drafts
+    assert bm.get_version(store, frozen).is_frozen

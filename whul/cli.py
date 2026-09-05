@@ -1071,6 +1071,31 @@ def cmd_benchmarks_coverage(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_benchmarks_derive(args: argparse.Namespace) -> int:
+    """Start a draft from an existing scale, so one league can be corrected."""
+    from whul.store import benchmarks as store_benchmarks
+
+    store = _benchmark_store(args)
+    try:
+        version = store_benchmarks.derive(
+            store, args.version, season=args.season, notes=args.notes
+        )
+    except ValueError as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
+
+    rows = store.query(
+        "SELECT COUNT(*) AS n FROM benchmarks WHERE version = ?", (version,)
+    )
+    print(f"\n  {version} holds {int(rows.loc[0, 'n'])} benchmark(s), copied from "
+          f"{args.version}.")
+    print(f"  Nothing is frozen. Recompute the group(s) that changed into it:\n")
+    print(f"    python -m whul.cli benchmarks compute <league> --into {version} --save")
+    print(f"    python -m whul.cli benchmarks compare {args.version} {version}")
+    print(f"    python -m whul.cli benchmarks freeze {version}\n")
+    return 0
+
+
 def cmd_benchmarks_freeze(args: argparse.Namespace) -> int:
     """Adopt a version. After this, changing it means a new version."""
     from whul import benchmarks
@@ -1611,6 +1636,18 @@ def main(argv: list[str] | None = None) -> int:
     bench_cover.add_argument("version")
     bench_cover.add_argument("--season", default="2026-27", help="season whose roster to check")
     bench_cover.set_defaults(func=cmd_benchmarks_coverage)
+
+    bench_derive = _with_db(bench_sub.add_parser(
+        "derive",
+        help="start a draft holding everything an existing version holds, so one "
+             "league can be recomputed without redoing the other nineteen",
+    ))
+    bench_derive.add_argument("version", help="the version to copy from, usually the frozen one")
+    bench_derive.add_argument(
+        "--season", help="season the new version is for (default: the source's)",
+    )
+    bench_derive.add_argument("--notes", default="", help="why this version exists")
+    bench_derive.set_defaults(func=cmd_benchmarks_derive)
 
     bench_freeze = _with_db(bench_sub.add_parser("freeze", help="adopt a version as the scale"))
     bench_freeze.add_argument("version")
