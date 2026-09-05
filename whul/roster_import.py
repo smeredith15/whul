@@ -50,6 +50,10 @@ COLUMNS = {
 #: What counts as "no pick yet" in a spreadsheet cell.
 BLANK = {"", "-", "--", "n/a", "na", "none", "tbd", "empty", "nan", "null"}
 
+#: Marks an occupancy as this import's own, so a re-import may take it back
+#: while leaving a dated trade from the admin page untouched.
+IMPORT_NOTE = "draft"
+
 
 @dataclass
 class ImportReport:
@@ -64,6 +68,13 @@ class ImportReport:
     empty: int = 0
     assets: int = 0
     problems: list[str] = field(default_factory=list)
+    #: Faults worth seeing that must not stop the import. A structural problem
+    #: -- more picks than the roster allows -- means the sheet cannot be
+    #: written at all. A name collision means one asset is wrong while the
+    #: other 283 are fine, and refusing the lot would quietly freeze the
+    #: nightly roster refresh over it.
+    warnings: list[str] = field(default_factory=list)
+    released: list[str] = field(default_factory=list)
     written: bool = False
 
     def __str__(self) -> str:
@@ -78,6 +89,10 @@ class ImportReport:
         )
         for manager, count in sorted(self.managers.items()):
             lines.append(f"    {manager_name(manager)} ({manager}): {count} picks")
+        for release in self.released:
+            lines.append(f"  - {release}")
+        for warning in self.warnings:
+            lines.append(f"  ? {warning}")
         for problem in self.problems:
             lines.append(f"  ! {problem}")
         lines.append("  written" if self.written else "  dry run -- nothing written")
@@ -224,6 +239,26 @@ def plan(frame: pd.DataFrame, path: str = "") -> tuple[list[dict], ImportReport]
     expected = sum(g.cap for g in active_slots(ALL_SLOTS)) * len(report.managers or {1})
     report.empty += max(0, expected - report.filled - report.empty)
     report.assets = len({p["asset_id"] for p in picks})
+
+    # Two rows landing on one asset id is not a duplicate pick -- it is one
+    # asset in two slots, which scores for both managers. It happens when two
+    # different teams share a name and the league column does not separate
+    # them: Michigan's men's and women's sides were both entered as NCAAM, so
+    # both became `team-ncaam-michigan-wolverines`. Reported rather than merged
+    # or silently split, because only the sheet knows which was meant.
+    seen: dict[str, list[str]] = {}
+    for pick in picks:
+        seen.setdefault(pick["asset_id"], []).append(
+            f"{pick['manager']}/{pick['category']}#{pick['slot_index']}"
+        )
+    for asset_id, where in seen.items():
+        if len(where) > 1:
+            name = next(p["display_name"] for p in picks if p["asset_id"] == asset_id)
+            report.warnings.append(
+                f"{name!r} fills {len(where)} slots at once ({', '.join(where)}) "
+                f"and scores for each -- they share the id {asset_id}, so the "
+                f"league column does not tell them apart"
+            )
     return picks, report
 
 
@@ -274,18 +309,42 @@ def apply(
             (season,),
         ).to_dict("records")
     }
+    # A slot whose draft occupancy has been closed has moved on from the sheet
+    # -- someone released or traded it with a real effective date. Assigning to
+    # it again would not merely add a row: the upsert is keyed on the slot and
+    # the start date, so it would set `end_date` back to NULL and reopen the
+    # occupancy that was deliberately ended. The slot would then have two open
+    # at once, which is the overlap the rollup warns about, and the trade would
+    # be quietly undone by the next nightly run.
+    moved_on = set(store.query(
+        "SELECT o.slot_id FROM slot_occupancy o "
+        "JOIN roster_slots s ON s.slot_id = o.slot_id "
+        "WHERE s.season = ? AND o.note = ? AND o.end_date IS NOT NULL",
+        (season, IMPORT_NOTE),
+    )["slot_id"]) if picks else set()
+
     written = 0
+    held: set[tuple[str, str]] = set()
     for pick in picks:
         slot_id = slots.get(
             (pick["manager"], pick["asset_type"], pick["category"], pick["slot_index"])
         )
+        if slot_id in moved_on:
+            continue
         if slot_id:
             rosters.assign(
                 store, slot_id, pick["asset_id"], start,
-                note="draft", cost=pick.get("cost"),
+                note=IMPORT_NOTE, cost=pick.get("cost"),
             )
+            held.add((slot_id, pick["asset_id"]))
             written += 1
-    return written
+
+    # Assigning is not enough on its own. A pick moving to another slot leaves
+    # the old occupancy open, so the asset sits in two slots and scores for
+    # both managers -- which is what a trade entered by editing the sheet did:
+    # Shai Gilgeous-Alexander counted for LS and JM at once.
+    dropped = rosters.drop_unlisted(store, season, held, IMPORT_NOTE)
+    return written, dropped
 
 
 def run(
@@ -300,6 +359,10 @@ def run(
     frame = read_sheet(path, sheet)
     picks, report = plan(frame, str(path))
     if picks and not dry_run and not report.problems:
-        apply(store, picks, season)
+        _, dropped = apply(store, picks, season)
+        report.released = [
+            f"{slot} no longer holds {asset}; the sheet moved it" 
+            for slot, asset in dropped
+        ]
         report.written = True
     return report

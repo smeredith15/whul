@@ -77,6 +77,73 @@ def release(store: Store, slot_id: str, end: date | str) -> int:
     return cursor.rowcount
 
 
+def double_rostered(store: Store, season: str) -> pd.DataFrame:
+    """Assets sitting in more than one open slot at once.
+
+    The mirror of ``overlaps``, and the one that actually happened. That check
+    asks whether a slot has two occupants; this asks whether an occupant has
+    two slots, which is what a trade recorded on one side only looks like --
+    the player scores for both managers, and every total that includes him is
+    too high.
+    """
+    rows = store.query(
+        "SELECT o.asset_id, a.display_name, s.manager_id, s.category, "
+        "       s.slot_index, o.slot_id, o.note "
+        "FROM slot_occupancy o "
+        "JOIN roster_slots s ON s.slot_id = o.slot_id "
+        "LEFT JOIN assets a ON a.asset_id = o.asset_id "
+        "WHERE s.season = ? AND o.end_date IS NULL "
+        "ORDER BY o.asset_id, s.manager_id, s.slot_index",
+        (season,),
+    )
+    if rows.empty:
+        return rows
+    held = rows.groupby("asset_id")["slot_id"].transform("size")
+    return rows[held > 1].reset_index(drop=True)
+
+
+def drop_unlisted(
+    store: Store, season: str, keep: set[tuple[str, str]], note: str
+) -> list[tuple[str, str]]:
+    """Remove ``note`` occupancies the roster sheet no longer supports.
+
+    The sheet carries no dates -- every pick is written from the season's
+    start -- so it describes the whole season rather than a moment in it. That
+    makes it the truth about who holds what, and an occupancy it stopped naming
+    is one the import itself wrote and should now take back.
+
+    Scoped to its own ``note`` so a trade entered with a real effective date is
+    left alone. Otherwise the nightly re-import would silently undo every
+    correction made through the admin page, which is worse than the fault this
+    fixes.
+
+    Returns what it removed, so the caller can say so rather than doing it
+    quietly.
+    """
+    open_rows = store.query(
+        "SELECT o.slot_id, o.asset_id FROM slot_occupancy o "
+        "JOIN roster_slots s ON s.slot_id = o.slot_id "
+        "WHERE s.season = ? AND o.end_date IS NULL AND o.note = ?",
+        (season, note),
+    )
+    if open_rows.empty:
+        return []
+    stale = [
+        (row.slot_id, row.asset_id)
+        for row in open_rows.itertuples()
+        if (row.slot_id, row.asset_id) not in keep
+    ]
+    if not stale:
+        return []
+    with store.transaction() as conn:
+        conn.executemany(
+            "DELETE FROM slot_occupancy WHERE slot_id = ? AND asset_id = ? "
+            "AND end_date IS NULL AND note = ?",
+            [(slot, asset, note) for slot, asset in stale],
+        )
+    return stale
+
+
 def trade(
     store: Store,
     out_slot: str,

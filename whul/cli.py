@@ -630,6 +630,15 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         warnings = set(report.warnings)
         produced = bool(report.managers)
 
+    # A backfill prints only its last day, so warnings raised on any other day
+    # reached nobody -- they were gathered into a set and dropped on the floor.
+    # An asset in two slots, scoring for two managers, is raised on the first.
+    # The single-day path needs none of this: its own report is printed whole.
+    if args.backfill and warnings:
+        print("\n  Worth a look:")
+        for warning in sorted(warnings):
+            print(f"    ! {warning}")
+
     stale = store.stale_sources(_date.today())
     if not stale.empty:
         print("\n  Sources that have stopped updating:")
