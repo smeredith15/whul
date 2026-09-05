@@ -110,6 +110,27 @@ def _empty_role_frame() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype="object") for c in EMPTY_ROLE_COLUMNS})
 
 
+def _appeared(work: pd.DataFrame, stats: tuple[str, ...]) -> pd.Series:
+    """Did this player take the field at all inside the window?
+
+    The distinction the scoring turns on is between a bad outing and no outing.
+    A bad one counts, negative and all: two innings for five hits and two home
+    runs is something that happened, and dropping it would make a wrecked start
+    free -- a two-way player's secondary role could then only ever help him.
+    Over a season nobody finishes a role in the red, so this only ever bites on
+    a short window, which is exactly where a single start is most of the sample.
+
+    No outing is not a bad outing. A row of zeroes means the player did not
+    pitch, and carrying it would make him two-way on the strength of a game he
+    never appeared in.
+    """
+    played = pd.to_numeric(work.get("games"), errors="coerce").fillna(0) > 0
+    for name in stats:
+        if name in work.columns:
+            played |= pd.to_numeric(work[name], errors="coerce").fillna(0) != 0
+    return played
+
+
 def _carry_advanced_share(work: pd.DataFrame, df: pd.DataFrame) -> None:
     """Keep the note saying the run values were shared out, not measured.
 
@@ -165,7 +186,7 @@ def score_batters(df: pd.DataFrame, include_advanced: bool | None = None) -> pd.
     if advanced:
         work["role_points"] += work["offense"] * OFFENSE_FACTOR + work["defense"] * DEFENSE_FACTOR
     work["role"] = "Batter"
-    return work[work["role_points"] > 0].reset_index(drop=True)
+    return work[_appeared(work, tuple(BATTER_WEIGHTS))].reset_index(drop=True)
 
 
 def score_pitchers(df: pd.DataFrame, include_advanced: bool | None = None) -> pd.DataFrame:
@@ -201,7 +222,7 @@ def score_pitchers(df: pd.DataFrame, include_advanced: bool | None = None) -> pd
     if advanced:
         work["role_points"] += work["war"] * WAR_FACTOR * 10
     work["role"] = "Pitcher"
-    return work[work["role_points"] > 0].reset_index(drop=True)
+    return work[_appeared(work, tuple(PITCHER_WEIGHTS))].reset_index(drop=True)
 
 
 def score_players(

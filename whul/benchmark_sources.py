@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from typing import Callable
 
 import pandas as pd
@@ -363,17 +364,125 @@ def _ncaa_live(key: str, category: str):
 
 
 def _soccer_players():
-    """Club soccer players, from FBref's season stats.
+    """Club soccer players, from ESPN team rosters.
 
-    One pull covers six leagues and each is normalized against itself, the way
-    a Premier League pick is measured against the Premier League rather than
-    against a pooled European field. The scorer already reads FBref's own
-    column names, so nothing is translated between them.
+    FBref is gone rather than pending: it answers 403 to a datacenter address
+    and to a laptop alike, and the nightly pull runs on GitHub Actions anyway.
+    Its column names were what the scorer read, which is why it was chosen --
+    and that turned out to be the wrong thing to choose on.
+
+    ESPN answers from both. Three of its shapes were probed before this was
+    written: league statistics is one request a league-season but carries no
+    cards and no starts; match summaries carry everything at 380; the roster
+    sits between at 21, with every figure the scoring needs except minutes,
+    which it does not need -- starts is appearances minus substitute
+    appearances, and that is the path the scorer already documents.
+
+    Each league is normalized against itself, so a Premier League pick is
+    measured against the Premier League rather than a pooled European field.
     """
     from whul.scoring import soccer
-    from whul.sources import fbref
+    from whul.sources import espn_soccer
 
-    return lambda seasons: fbref.load_players(seasons), soccer.score_players
+    def load(seasons):
+        frames = []
+        for category, key in PLAYER_LEAGUES.items():
+            frame = espn_soccer.load_players(key, list(seasons))
+            if frame is None or frame.empty:
+                print(f"  {key}: no players returned, so {category} scores none",
+                      flush=True)
+                continue
+            _check_season_convention(key, frame)
+            frames.append(frame.assign(league=category))
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    return load, soccer.score_players
+
+
+#: Which ESPN league key serves each scored club-soccer category. Declared
+#: rather than inverted from SOCCER_CATEGORIES so a league can be left out
+#: deliberately -- the NWSL has no rostered players.
+PLAYER_LEAGUES = {
+    "Premier League": "epl", "La Liga": "laliga", "Serie A": "seriea",
+    "Bundesliga": "bundesliga", "Ligue 1": "ligue1", "MLS": "mls",
+}
+
+
+def _check_season_convention(key: str, frame) -> None:
+    """Say whether the feed answered with the season we meant.
+
+    ESPN names a soccer season for the year it starts and we name it for the
+    year it ends, so every European league is translated on the way out. This
+    reads the label back and checks the translation landed.
+
+    The first version of this accepted a label beginning with either the year
+    asked for or the year before it -- which accepts both conventions and so
+    detects neither. It passed silently on the very shift it was written to
+    find, and the only reason the shift was visible at all is that this
+    function also prints the labels. It prints them still.
+
+    Reported, not raised. A label ESPN stops sending is not a reason to lose a
+    league.
+    """
+    from whul.sources.espn_soccer import roster_season, season_matches
+
+    if "season_said" not in frame.columns or "season" not in frame.columns:
+        return
+    pairs = sorted({(int(a), str(b)) for a, b in
+                    zip(frame["season"], frame["season_said"]) if str(b)})
+    if not pairs:
+        print(f"  {key}: the feed did not say which season it answered with, so "
+              f"the year could be off by one with nothing to show it", flush=True)
+        return
+
+    for ours, said in pairs[:3]:
+        print(f"  {key}: our {ours} -> asked {roster_season(key, ours)}, "
+              f"feed says {said}", flush=True)
+    wrong = [f"our {o} got {s}" for o, s in pairs if not season_matches(key, o, s)]
+    if wrong:
+        print(f"  {key}: !! the feed answered with a different season than the "
+              f"one meant ({'; '.join(wrong[:3])}). Every figure would be from "
+              f"the wrong year, and every one of them a real footballer's real "
+              f"season.", flush=True)
+
+
+def _uefa_season(season: int) -> str:
+    """The UEFA season a domestic one earns a place in.
+
+    A campaign labelled 2027 is 2026-27, played out by May 2027, and what it
+    earns is a place in the 2027-28 competitions. Getting this backwards would
+    award last year's qualification to this year's finish, and both are real
+    numbers so nothing would look wrong.
+    """
+    return f"{season}-{(season + 1) % 100:02d}"
+
+
+@lru_cache(maxsize=None)
+def _uefa_entrants(season: int):
+    """Who entered Europe off the season labelled ``season``, as a frame.
+
+    Cached because six leagues each want the same three articles, and the API
+    is asked politely -- one request a second. Empty where the season has not
+    settled yet: the article for a competition that has not been drawn has no
+    participants, which is not a failure, it is May not having happened.
+    """
+    import pandas as pd
+
+    from whul.sources import wikipedia
+
+    rows = []
+    for competition in wikipedia.COMPETITION_TITLES:
+        try:
+            entrants = wikipedia.load_entrants(competition, _uefa_season(season))
+        except Exception as exc:  # noqa: BLE001 -- one competition must not stop the rest
+            print(f"  UEFA entry: {competition} {_uefa_season(season)} unavailable "
+                  f"({type(exc).__name__}), so no club is credited a place in it",
+                  flush=True)
+            continue
+        for club, entry_round in entrants.items():
+            rows.append({"team": club, "season": season,
+                         "competition": competition, "entry_round": entry_round})
+    return pd.DataFrame(rows, columns=["team", "season", "competition", "entry_round"])
 
 
 def _soccer(key: str, category: str):
@@ -391,6 +500,8 @@ def _soccer(key: str, category: str):
         from whul.scoring import soccer
         from whul.sources import espn
 
+        held: dict[str, object] = {}
+
         def load(seasons):
             matches = espn.load_soccer_matches(key, seasons)
             if matches.empty:
@@ -405,9 +516,30 @@ def _soccer(key: str, category: str):
                     f"will include every opponent it met",
                     flush=True,
                 )
+            held["entry"] = pd.concat(
+                [_uefa_entrants(int(year)) for year in sorted(set(seasons))],
+                ignore_index=True,
+            )
             return matches.assign(league=category)
 
-        return load, soccer.score_teams
+        def score(matches):
+            entry = held.get("entry")
+            scored = soccer.score_teams(matches, uefa_entry=entry)
+            missed = soccer.unmatched_uefa_entry(scored, entry)
+            if missed:
+                # A name that does not match costs the club up to twelve points
+                # and reads as nothing at all.
+                print(
+                    f"  {key}: {len(missed)} European entrant(s) look like one of "
+                    f"this league's clubs but matched none. The nearest club is "
+                    f"named so a false alarm is obvious:",
+                    flush=True,
+                )
+                for name, season, near in missed[:10]:
+                    print(f"      {name} ({season})  nearest: {near}", flush=True)
+            return scored
+
+        return load, score
 
     return build
 
@@ -615,7 +747,7 @@ SOURCES: dict[str, Source] = _register(
            produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
                      "Ligue 1", "MLS"),
            seasons_for=_espn_seasons("epl", "Premier League"),
-           note="FBref Big 5 in one request per season, plus MLS; "
+           note="ESPN team rosters, 21 requests a league-season; "
                 "six benchmarks, each league against itself"),
 )
 

@@ -187,3 +187,57 @@ def bye_credit(tier: Tier, legs: int = LEGS_PER_KNOCKOUT_TIE) -> int:
     a bye earns first-round credit only on winning the second-round match.
     """
     return WIN_POINTS.get(tier, 0) * legs
+
+
+# --- European entry -------------------------------------------------------
+#: What reaching a European competition is worth, before a ball is kicked in it.
+#:
+#: A domestic season earns a place in Europe, and that place is the biggest
+#: outcome of the season short of the title -- but nothing in a club's own
+#: results says it got one. It depends on where everyone else finished, on both
+#: cup winners, on the cascade when a cup winner has already qualified, and on
+#: an allocation that moves with the UEFA coefficients. So it is read from the
+#: published participant list rather than derived. See ``whul.sources.wikipedia``.
+#:
+#: Sized against the club benchmarks, which run 158-227 for a season: reaching
+#: the Champions League is about 6% of a benchmark year, in line with what
+#: terminal achievements are worth elsewhere in the league -- an NCAAF playoff
+#: appearance is 4.6% of its benchmark, an MLB division title 1.6%.
+#:
+#: The 12/8/4 ladder is deliberately wider than the 5/4/4/3 win ladder. The gap
+#: between reaching the Champions League and reaching the Conference League is
+#: far larger than the gap between a win in each.
+UEFA_LEAGUE_PHASE_POINTS: dict[str, float] = {
+    "Champions League": 12.0,
+    "Europa League": 8.0,
+    "Conference League": 4.0,
+}
+
+#: Entering before the league phase, which is a place in a draw rather than in
+#: the competition. Discounted for the two senior competitions, where the tie is
+#: a real contest and losing it drops the club a tier -- a Ligue 1 fourth-placed
+#: side entering the Champions League third qualifying round may end up in the
+#: Europa League instead.
+#:
+#: Not discounted for the Conference League, and that is not an oversight: the
+#: play-off round *is* how a club from a top-five league enters it, against
+#: opposition it is overwhelmingly expected to beat. Halving it would price a
+#: near-certainty as a coin toss.
+UEFA_QUALIFYING_DISCOUNT: dict[str, float] = {
+    "Champions League": 0.5,
+    "Europa League": 0.5,
+    "Conference League": 1.0,
+}
+
+#: The entry round that means the competition proper.
+UEFA_LEAGUE_PHASE = "League phase"
+
+
+def uefa_entry_points(competition: str, entry_round: str) -> float:
+    """Points for entering a European competition at a given round."""
+    full = UEFA_LEAGUE_PHASE_POINTS.get(str(competition))
+    if full is None:
+        return 0.0
+    if str(entry_round).strip() == UEFA_LEAGUE_PHASE:
+        return full
+    return full * UEFA_QUALIFYING_DISCOUNT.get(str(competition), 0.5)

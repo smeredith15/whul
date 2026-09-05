@@ -21,6 +21,8 @@ could not match, by name.
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -84,11 +86,13 @@ def ingest(
         )
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
+        _record_nothing(store, source, as_of, report)
         return report
     if scored is None or scored.empty:
         report.problems.append(
             notes[0] if notes else "the source has no results yet for this season"
         )
+        _record_nothing(store, source, as_of, report)
         return report
     report.pulled = len(scored)
 
@@ -107,6 +111,8 @@ def ingest(
 
     if getattr(source, "cumulative", False):
         mine = _against_the_league_year(store, mine, source, season, as_of, report)
+
+    _report_shrinkage(store, mine, source, season, as_of, report)
 
     # Raw first, and unconditionally. A benchmark can be computed next week;
     # a rolling feed's earlier weeks cannot be fetched back.
@@ -148,6 +154,93 @@ def ingest(
         store, placed, season, as_of, version.version
     )
     return report
+
+
+#: A windowed total below the last one by more than this is reported. A small
+#: dip is possible where a scorer's inputs are revised; a large one is a feed
+#: that has stopped reaching as far back as it did.
+SHRINKAGE_TOLERANCE = 0.005
+
+
+def _report_shrinkage(
+    store: Store, mine: pd.DataFrame, source, season: str, as_of: date,
+    report: IngestReport,
+) -> None:
+    """Say when an asset's season-to-date total came back smaller than before.
+
+    These totals accumulate over a league year, so within one they can only
+    grow. A drop is not a bad week -- it is the feed no longer reaching as far
+    back as it did, and the score simply gets smaller with nothing raised.
+
+    Tennis is the standing example. It is assembled from three vintages, and
+    the middle one closes the gap between an archive that ends in February and
+    a feed that serves seven days. Lose it and the totals quietly become the
+    last week of the season: a player who won a Masters a fortnight ago is
+    suddenly on nothing, and the standings look like a slump.
+
+    Reported rather than refused. The smaller figure may be the correct one
+    after a correction upstream, and a pipeline that will not record today
+    because yesterday was bigger would be worse than one that says so.
+    """
+    if mine.empty or "total_points" not in mine.columns or "asset_id" not in mine.columns:
+        return
+
+    previous = store.query(
+        "SELECT asset_id, stats FROM raw_stats WHERE league = ? AND source = ? "
+        "AND season = ? AND as_of = (SELECT MAX(as_of) FROM raw_stats "
+        "  WHERE league = ? AND source = ? AND season = ? AND as_of < ?)",
+        (source.league, source.key, season, source.league, source.key, season,
+         as_of.isoformat()),
+    )
+    if previous.empty:
+        return
+
+    was = {}
+    for row in previous.itertuples():
+        try:
+            figures = json.loads(row.stats)
+        except (TypeError, ValueError):
+            continue
+        value = pd.to_numeric(pd.Series([figures.get("total_points")]),
+                              errors="coerce").iloc[0]
+        if pd.notna(value):
+            was[str(row.asset_id)] = float(value)
+
+    shrunk = []
+    for row in mine.itertuples():
+        asset_id = str(getattr(row, "asset_id", ""))
+        before = was.get(asset_id)
+        now = pd.to_numeric(pd.Series([getattr(row, "total_points", None)]),
+                            errors="coerce").iloc[0]
+        if before is None or pd.isna(now):
+            continue
+        if now < before - abs(before) * SHRINKAGE_TOLERANCE:
+            shrunk.append((asset_id, before, float(now)))
+
+    if not shrunk:
+        return
+    names = _names_for(store, [a for a, _, _ in shrunk])
+    worst = sorted(shrunk, key=lambda s: s[2] - s[1])[:5]
+    detail = "; ".join(
+        f"{names.get(a, a)} {b:,.1f} -> {n:,.1f}" for a, b, n in worst
+    )
+    report.problems.append(
+        f"{len(shrunk)} asset(s) came back with a smaller season-to-date total "
+        f"than the last pull, which within a league year should only grow. This "
+        f"is what a feed losing its earlier weeks looks like: {detail}"
+        + (f" (and {len(shrunk) - len(worst)} more)" if len(shrunk) > len(worst) else "")
+    )
+
+
+def _names_for(store: Store, asset_ids: list[str]) -> dict[str, str]:
+    if not asset_ids:
+        return {}
+    marks = ",".join("?" for _ in asset_ids)
+    rows = store.query(
+        f"SELECT asset_id, display_name FROM assets WHERE asset_id IN ({marks})",
+        tuple(asset_ids),
+    )
+    return {str(r.asset_id): str(r.display_name) for r in rows.itertuples()}
 
 
 #: How late a baseline may be taken and still be treated as the league year's
@@ -270,6 +363,56 @@ def _leagues_of(source) -> set[str]:
     return produced | categories | {source.league}
 
 
+def uncovered(store: Store, season: str, sources) -> pd.DataFrame:
+    """Rostered assets no source in this run could have scored.
+
+    ``cmd_ingest`` already names the assets that were asked for and did not
+    match. This is the failure one level up: a league nobody asked for. Every
+    source it was asked to run can succeed, every asset those sources cover
+    can match, and a whole league still scores nothing -- because it was never
+    in the list. That is how thirty-two club soccer players sat at zero
+    through a run that reported no problems at all.
+
+    Groups rather than lists, because the list is the roster and the point is
+    the league. Each group carries the source that would have covered it, so a
+    league left out of tonight's list reads differently from a league nothing
+    can score yet -- the first is a one-word fix, the second is a known gap.
+    """
+    from whul.benchmark_sources import resolve
+
+    rostered = resolver.rostered_assets(store, season)
+    if rostered.empty:
+        return rostered
+
+    covered = {
+        (source.asset_type, league)
+        for source in sources
+        for league in _leagues_of(source)
+    }
+    exists = {
+        (source.asset_type, league): source.key
+        for source in resolve(None)
+        for league in _leagues_of(source)
+    }
+    missed = rostered[[
+        (row.asset_type, row.league) not in covered
+        for row in rostered.itertuples()
+    ]]
+    if missed.empty:
+        return missed
+    grouped = (
+        missed.groupby(["league", "asset_type"], as_index=False)
+        .agg(assets=("display_name", "size"),
+             names=("display_name", lambda names: ", ".join(sorted(names)[:3])))
+        .sort_values(["league", "asset_type"])
+    )
+    grouped["source"] = [
+        exists.get((row.asset_type, row.league), "")
+        for row in grouped.itertuples()
+    ]
+    return grouped
+
+
 #: Columns a raw feed puts an event's date in, in the order worth trying.
 DATE_COLUMNS = ("date", "game_date", "event_date", "match_date", "start_date")
 
@@ -360,6 +503,22 @@ def _pull(
         totals = window.window_totals(rows, [current])
         frames.append(_with_finishes(totals.assign(season=current.label), rows, current))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _record_nothing(store: Store, source, as_of: date, report: IngestReport) -> None:
+    """Leave a trace for a run that recorded no rows.
+
+    ``source_status`` exists because the dangerous scraper failure is not a
+    crash but a feed that quietly stops updating. It was only written on a
+    successful record, so the one case it was built for -- a source that ran and
+    came back with nothing -- left no row at all, and "ran and found nothing"
+    could not be told from "never ran". Eight NCAAF teams sat on zero for a
+    fortnight with nothing in the database to say the league had been tried.
+    """
+    store.record_source_status(
+        source.key, source.league, ok=False, rows=0,
+        message="; ".join(report.problems)[:500],
+    )
 
 
 #: Columns that say *which* asset a row is about, as the several scorers name

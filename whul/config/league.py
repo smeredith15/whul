@@ -87,11 +87,18 @@ SEASON = SeasonWindow(
 #: was already three matchdays old when the WHUL year opened, and those results
 #: belong to this league year because there is no other one they could belong
 #: to. A date *later* excludes something the league considers last season's --
-#: tennis starts on the 23rd so the Cincinnati final does not count twice.
+#: tennis starts the day after the Cincinnati final, which belongs to the
+#: season that had just finished.
+#:
+#: The 24th, not the 23rd. Windows are inclusive at both ends, so a start on
+#: the 23rd *keeps* a final played on the 23rd -- the opposite of what the date
+#: was chosen for, and it paid Gauff and Fils for Masters titles won in the
+#: previous league year. An off-by-one in a boundary date does not look like an
+#: error anywhere: it looks like a good week.
 LEAGUE_START: dict[str, date] = {
-    "ATP": date(2026, 8, 23),
-    "WTA": date(2026, 8, 23),
-    "Tennis": date(2026, 8, 23),
+    "ATP": date(2026, 8, 24),
+    "WTA": date(2026, 8, 24),
+    "Tennis": date(2026, 8, 24),
     "NASCAR": date(2026, 8, 23),
     "PGA": date(2026, 8, 20),
     "Premier League": date(2026, 8, 21),

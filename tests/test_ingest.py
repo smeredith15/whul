@@ -38,6 +38,7 @@ def rostered(store, *names, league="NFL", season="2026-27", asset_type="Player")
     category = {
         "NFL": "NFL", "Tennis": "Tennis", "NCAAF": "NCAAF", "NBA": "NBA",
         "MLS": "Club Soccer Other", "NWSL": "Club Soccer Other",
+        "Men's Intl Soccer": "Intl Soccer", "Women's Intl Soccer": "Intl Soccer",
     }.get(league, "Club Soccer Top 3" if "Premier" in league else "Tennis")
     slots = store.query(
         "SELECT slot_id FROM roster_slots WHERE season = ? AND asset_type = ? "
@@ -544,3 +545,114 @@ def test_a_league_that_has_not_reached_the_year_is_not_fetched(store):
 
     assert asked == []
     assert any("has been played inside this league year yet" in p for p in report.problems)
+
+
+def test_a_shrinking_season_total_is_reported(store):
+    """A season-to-date total accumulates over a league year, so within one it
+    can only grow. A drop is the feed no longer reaching as far back as it did
+    -- tennis assembled from three vintages, losing the middle one -- and the
+    score simply gets smaller with nothing raised."""
+    rostered(store, "Coco Gauff", league="WTA", asset_type="Player")
+
+    def source_at(points):
+        return source_over(
+            [{"player": "Coco Gauff", "league": "WTA", "total_points": points}],
+            key="tennis", league="WTA", asset_type="Player",
+        )
+
+    ingest.ingest(store, source_at(537.5), "2026-27", date(2026, 9, 4), verbose=False)
+    report = ingest.ingest(store, source_at(100.0), "2026-27", date(2026, 9, 5),
+                           verbose=False)
+
+    shrunk = [p for p in report.problems if "smaller season-to-date total" in p]
+    assert shrunk, report.problems
+    assert "Coco Gauff 537.5 -> 100.0" in shrunk[0]
+
+
+def test_a_growing_total_is_not_reported(store):
+    """The ordinary case must stay quiet, or the report is noise."""
+    rostered(store, "Coco Gauff", league="WTA", asset_type="Player")
+
+    def source_at(points):
+        return source_over(
+            [{"player": "Coco Gauff", "league": "WTA", "total_points": points}],
+            key="tennis", league="WTA", asset_type="Player",
+        )
+
+    ingest.ingest(store, source_at(100.0), "2026-27", date(2026, 9, 4), verbose=False)
+    report = ingest.ingest(store, source_at(537.5), "2026-27", date(2026, 9, 5),
+                           verbose=False)
+    assert not [p for p in report.problems if "smaller season-to-date" in p]
+
+
+def test_a_source_that_found_nothing_still_leaves_a_trace(store):
+    """source_status exists because the dangerous scraper failure is not a
+    crash but a feed that quietly stops updating. It was written only on a
+    successful record, so the one case it was built for left no row at all --
+    and eight NCAAF teams sat on zero for a fortnight with nothing in the
+    database to say the league had even been tried."""
+    source = source_over([], key="ncaaf", league="NCAAF", asset_type="Team")
+    rostered(store, "Ohio State Buckeyes", league="NCAAF", asset_type="Team")
+
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 5), verbose=False)
+
+    status = store.query("SELECT * FROM source_status WHERE source = 'ncaaf'")
+    assert len(status) == 1
+    assert int(status.loc[0, "last_ok"]) == 0
+    assert int(status.loc[0, "rows_last_run"]) == 0
+    assert status.loc[0, "message"]
+
+
+def test_a_source_that_raised_leaves_a_trace_too(store):
+    def build():
+        def load(seasons):
+            raise LookupError("none of the rostered teams match ESPN's index")
+        return load, (lambda raw: raw)
+
+    source = FakeSource(key="ncaaf", league="NCAAF", asset_type="Team", build=build)
+    rostered(store, "Ohio State Buckeyes", league="NCAAF", asset_type="Team")
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 5), verbose=False)
+
+    status = store.query("SELECT * FROM source_status WHERE source = 'ncaaf'")
+    assert len(status) == 1 and int(status.loc[0, "last_ok"]) == 0
+    assert "none of the rostered teams" in status.loc[0, "message"]
+    assert any("LookupError" in p for p in report.problems)
+
+
+def test_uncovered_names_a_league_nobody_asked_for():
+    """The failure a league at a time cannot see.
+
+    Every source in the run can succeed and every asset it covers can match,
+    and a whole league still scores nothing -- because it was never in the
+    list. That is how thirty-two club soccer players sat at zero through a
+    nightly run that reported no problems at all.
+    """
+    store = open_store(":memory:")
+    rostered(store, "Josh Allen")
+    rostered(store, "Bukayo Saka", league="Premier League")
+
+    from whul.benchmark_sources import resolve
+
+    missed = ingest.uncovered(store, "2026-27", resolve(["nfl"]))
+    assert list(missed["league"]) == ["Premier League"]
+    assert int(missed["assets"].iloc[0]) == 1
+    # Named, so the fix is one word rather than a hunt.
+    assert missed["source"].iloc[0] == "soccer-players"
+
+    covered = ingest.uncovered(store, "2026-27", resolve(["nfl", "soccer-players"]))
+    assert covered.empty
+
+
+def test_uncovered_tells_a_gap_from_an_omission():
+    """A league left out of tonight's pull is a one-word fix. A league no
+    source can score is a known gap. Reporting them the same way makes the
+    first invisible among the second."""
+    store = open_store(":memory:")
+    rostered(store, "Spain", league="Men's Intl Soccer", asset_type="Team")
+
+    from whul.benchmark_sources import resolve
+
+    missed = ingest.uncovered(store, "2026-27", resolve(["nfl"]))
+    assert list(missed["league"]) == ["Men's Intl Soccer"]
+    assert missed["source"].iloc[0] == ""

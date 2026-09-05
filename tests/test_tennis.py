@@ -458,3 +458,23 @@ def test_the_benchmark_source_does_not():
     ])
     _, score = SOURCES["tennis"].build()
     assert set(score(matches)["result"]) == {"W"}
+
+
+# --- where the league year starts ------------------------------------------
+
+def test_the_league_year_starts_after_the_cincinnati_final():
+    """Windows are inclusive at both ends, so a start on the 23rd keeps a final
+    played on the 23rd -- the opposite of what the date was chosen for. It paid
+    Gauff and Fils for Masters titles won in the season that had just finished,
+    and an off-by-one in a boundary date does not look like an error anywhere:
+    it looks like a good week."""
+    from datetime import date
+
+    from whul.config.league import season_start
+    from whul.scoring import window
+
+    current = window.season_windows(0, start=season_start("ATP"))[-1]
+    assert not current.contains(date(2026, 8, 23)), "the Cincinnati final"
+    assert current.contains(date(2026, 8, 26)), "Winston-Salem is this league year"
+    assert current.contains(date(2026, 8, 31)), "the US Open is this league year"
+    assert season_start("ATP") == season_start("WTA") == season_start("Tennis")

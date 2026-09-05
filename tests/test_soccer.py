@@ -6,6 +6,7 @@ Expected values are computed by hand from Club_Soccer.R.
 import pandas as pd
 import pytest
 
+from whul.scoring import soccer
 from whul.scoring.competition import Tier, bye_credit, classify
 from whul.scoring.soccer import (
     goal_points_for,
@@ -362,6 +363,7 @@ def test_a_leagues_pool_is_its_own_clubs_not_everyone_they_played(monkeypatch):
     ])
     monkeypatch.setattr(espn, "load_soccer_matches", lambda key, seasons: matches)
     monkeypatch.setattr(espn, "load_eligible_teams", lambda key: {"Arsenal"})
+    _no_uefa_lookup(monkeypatch)
 
     load, _ = SOURCES["epl"].build()
     kept = load([2026])
@@ -378,7 +380,236 @@ def test_an_unreadable_team_list_is_announced_not_silently_ignored(monkeypatch, 
     matches = pd.DataFrame([{"team": "Arsenal", "season": 2026}])
     monkeypatch.setattr(espn, "load_soccer_matches", lambda key, seasons: matches)
     monkeypatch.setattr(espn, "load_eligible_teams", lambda key: set())
+    _no_uefa_lookup(monkeypatch)
 
     load, _ = SOURCES["epl"].build()
     assert len(load([2026])) == 1
     assert "every opponent it met" in capsys.readouterr().out
+
+
+def _no_uefa_lookup(monkeypatch):
+    """Stop the club loader fetching participant lists off Wikipedia.
+
+    It catches a missing article and carries on, which is right in production
+    and means a test that reaches the network here passes anyway -- three
+    requests slower and no wiser.
+    """
+    from whul import benchmark_sources
+
+    benchmark_sources._uefa_entrants.cache_clear()
+    monkeypatch.setattr(
+        benchmark_sources, "_uefa_entrants",
+        lambda season: pd.DataFrame(
+            columns=["team", "season", "competition", "entry_round"]),
+    )
+
+# --- the components behind a club total ------------------------------------
+
+def test_a_club_total_carries_the_wins_that_made_it():
+    """Two wins can be nine points or fourteen, and the total alone does not
+    say which. A club on eleven from two wins has not won twice in its league
+    -- the league pays three a win and five at most with both bonuses -- and
+    without the breakdown nobody reading the profile can reach that number."""
+    matches = pd.DataFrame([
+        {"team": "Borussia Dortmund", "league": "Bundesliga", "date": "2026-08-16",
+         "competition": "DFB-Pokal", "goals_for": 4, "goals_against": 0},
+        {"team": "Borussia Dortmund", "league": "Bundesliga", "date": "2026-08-23",
+         "competition": "Bundesliga", "goals_for": 3, "goals_against": 0},
+    ])
+    row = soccer.score_teams(matches).iloc[0]
+
+    assert row["wins"] == 2
+    assert row["wins_domestic_cup"] == 1
+    assert row["wins_league"] == 1
+    assert row["pts_wins"] == 7          # 4 for the cup tie, 3 for the league one
+    assert row["big_margins"] == 2
+    assert row["clean_sheets"] == 2
+    assert row["total_points"] == 11
+    # And the parts must reconstruct the whole, which is the point of storing them.
+    assert (row["pts_wins"] + row["pts_big_margin"] + row["pts_clean_sheet"]
+            + row["bye_points"]) == row["total_points"]
+
+
+def test_a_win_in_europe_is_told_from_a_win_at_home():
+    """The tier premium is what makes gathering every competition worthwhile:
+    restricted to league fixtures every win would be worth three."""
+    matches = pd.DataFrame([
+        {"team": "Arsenal", "league": "Premier League", "date": "2026-09-16",
+         "competition": "UEFA Champions League", "goals_for": 1, "goals_against": 0},
+        {"team": "Arsenal", "league": "Premier League", "date": "2026-09-20",
+         "competition": "Premier League", "goals_for": 1, "goals_against": 0},
+    ])
+    row = soccer.score_teams(matches).iloc[0]
+    assert row["wins_champions_league"] == 1
+    assert row["wins_league"] == 1
+    assert row["pts_wins"] == 8          # 5 + 3
+    assert row["total_points"] == 10     # plus two clean sheets, no big margins
+
+
+# --- a place in Europe ------------------------------------------------------
+
+def entry_row(team, season=2027, competition="Champions League",
+              entry_round="League phase"):
+    return {"team": team, "season": season, "competition": competition,
+            "entry_round": entry_round}
+
+
+def one_win(team="Arsenal", league="Premier League", date="2027-05-10"):
+    return pd.DataFrame([{
+        "team": team, "league": league, "date": date,
+        "competition": league, "goals_for": 2, "goals_against": 0,
+    }])
+
+
+def test_reaching_europe_is_worth_points_a_season_of_wins_does_not_say():
+    """Nothing in a club's own results says it earned a place. Without this the
+    biggest outcome of a domestic season short of the title is worth nothing."""
+    row = soccer.score_teams(
+        one_win(), uefa_entry=pd.DataFrame([entry_row("Arsenal")])
+    ).iloc[0]
+    assert row["uefa_entry"] == "Champions League -- League phase"
+    assert row["pts_uefa_entry"] == 12.0
+    # 3 for the win, 1 for the two-goal margin, 1 for the clean sheet, 12 for Europe
+    assert row["total_points"] == 17.0
+
+
+@pytest.mark.parametrize("competition,entry_round,expected", [
+    ("Champions League", "League phase", 12.0),
+    ("Champions League", "Third qualifying round", 6.0),
+    ("Europa League", "League phase", 8.0),
+    ("Europa League", "Play-off round", 4.0),
+    ("Conference League", "Play-off round", 4.0),
+])
+def test_where_a_club_comes_in_is_what_it_is_worth(competition, entry_round, expected):
+    """A place in the league phase and a place in a qualifying draw are not the
+    same thing, and the participant list states which is which."""
+    row = soccer.score_teams(
+        one_win(),
+        uefa_entry=pd.DataFrame([entry_row("Arsenal", competition=competition,
+                                           entry_round=entry_round)]),
+    ).iloc[0]
+    assert row["pts_uefa_entry"] == expected
+
+
+def test_the_conference_league_play_off_is_not_discounted():
+    """It *is* how a club from a top-five league enters, against opposition it
+    is overwhelmingly expected to beat. Halving it prices a near-certainty as a
+    coin toss."""
+    from whul.scoring.competition import uefa_entry_points
+
+    assert uefa_entry_points("Conference League", "Play-off round") == \
+        uefa_entry_points("Conference League", "League phase")
+    assert uefa_entry_points("Champions League", "Play-off round") < \
+        uefa_entry_points("Champions League", "League phase")
+
+
+def test_a_club_with_no_place_in_europe_is_unaffected():
+    row = soccer.score_teams(one_win(), uefa_entry=pd.DataFrame([
+        entry_row("Liverpool")
+    ])).iloc[0]
+    assert row["uefa_entry"] == "" and row["pts_uefa_entry"] == 0.0
+    assert row["total_points"] == 5.0
+
+
+def test_entry_is_matched_on_a_normalized_name():
+    """The participant list and the match feed do not spell clubs alike."""
+    row = soccer.score_teams(
+        one_win(team="Monaco", league="Ligue 1"),
+        uefa_entry=pd.DataFrame([entry_row("AS Monaco")]),
+    ).iloc[0]
+    assert row["pts_uefa_entry"] == 12.0
+
+
+# Every one of these came out of a live benchmark run and was wrong there
+# first. Four different reasons, none of which the other three fix.
+@pytest.mark.parametrize("entrant,feed,why", [
+    ("Atalanta EL", "Atalanta", "a holder marker left on the name"),
+    ("Union Berlin", "1. FC Union Berlin", "a bare numeral in the feed name"),
+    ("Mainz 05", "Mainz", "a bare numeral in the Wikipedia name"),
+    ("West Ham United", "West Ham", "one name longer than the other"),
+    ("Athletic Bilbao", "Athletic Club", "each has a word the other lacks"),
+    ("Inter Milan", "Internazionale", "no word in common at all"),
+])
+def test_a_club_the_two_sources_spell_differently_still_matches(entrant, feed, why):
+    row = soccer.score_teams(
+        one_win(team=feed), uefa_entry=pd.DataFrame([entry_row(entrant)])
+    ).iloc[0]
+    assert row["pts_uefa_entry"] == 12.0, why
+
+
+def test_inter_milan_is_never_scored_as_ac_milan():
+    """The guard that matters. "Inter Milan" contains every word of "Milan",
+    so a plain subset rule hands Inter's twelve points to AC Milan -- which is
+    worse than giving them to nobody, and would not read as wrong anywhere.
+    Matching requires the two names to start with the same word."""
+    both = pd.DataFrame([
+        {"team": t, "league": "Serie A", "date": "2027-05-10",
+         "competition": "Serie A", "goals_for": 2, "goals_against": 0}
+        for t in ("Milan", "Internazionale")
+    ])
+    out = soccer.score_teams(
+        both, uefa_entry=pd.DataFrame([entry_row("Inter Milan")])
+    ).set_index("team")
+    assert out.loc["Internazionale", "pts_uefa_entry"] == 12.0
+    assert out.loc["Milan", "pts_uefa_entry"] == 0.0
+
+
+def test_a_name_that_did_not_match_names_what_it_came_nearest_to():
+    """A report saying only "Aston Villa did not match" invites a hunt for a
+    Villa that is not there. Naming Villarreal makes the false alarm obvious."""
+    ours = pd.DataFrame([{"team": "Villarreal", "season": 2027}])
+    entry = pd.DataFrame([entry_row("Aston Villa"), entry_row("Slovan Bratislava")])
+    assert soccer.unmatched_uefa_entry(ours, entry) == \
+        [("Aston Villa", 2027, "Villarreal")]
+
+
+@pytest.mark.parametrize("entrant,ours", [
+    ("Dundee United", "Manchester United"),
+    ("Racing Union", "Union Berlin"),
+    ("The New Saints", "Southampton"),
+])
+def test_a_word_too_common_to_identify_a_club_is_not_reported(entrant, ours):
+    """A live run reported forty-seven of these across five leagues. A report
+    nobody reads is worth nothing when the thing it hides is twelve points."""
+    frame = pd.DataFrame([{"team": ours, "season": 2027}])
+    entry = pd.DataFrame([entry_row(entrant)])
+    assert soccer.unmatched_uefa_entry(frame, entry) == []
+
+
+def test_a_different_club_that_shares_a_word_is_not_reported():
+    """Real Betis is not Real Madrid."""
+    ours = pd.DataFrame([{"team": "Real Madrid", "season": 2027}])
+    entry = pd.DataFrame([entry_row("Real Betis")])
+    assert soccer.unmatched_uefa_entry(ours, entry) == []
+
+
+def test_a_domestic_season_earns_a_place_in_the_following_uefa_year():
+    """The 2026-27 campaign, labelled 2027, is played out by May 2027 and earns
+    a place in the 2027-28 competitions. Backwards, this would award last
+    year's qualification to this year's finish -- and both are real numbers, so
+    nothing would look wrong."""
+    from whul.benchmark_sources import _uefa_season
+
+    assert _uefa_season(2027) == "2027-28"
+    # The season the probe was run against: 2025-26 entry was earned in 2024-25,
+    # which this labels 2025.
+    assert _uefa_season(2025) == "2025-26"
+    assert _uefa_season(2029) == "2029-30"
+
+
+def test_a_season_that_has_not_settled_costs_nothing_and_stops_nothing():
+    """Before May the article for a competition that has not been drawn has no
+    participants. That is not a failure, it is the season not having ended, and
+    it must not take the rest of the pull down with it."""
+    from unittest import mock
+
+    from whul import benchmark_sources
+
+    with mock.patch("whul.sources.wikipedia.load_entrants",
+                    side_effect=LookupError("no section headed 'Teams'")):
+        benchmark_sources._uefa_entrants.cache_clear()
+        frame = benchmark_sources._uefa_entrants(2027)
+    benchmark_sources._uefa_entrants.cache_clear()
+
+    assert frame.empty
+    assert list(frame.columns) == ["team", "season", "competition", "entry_round"]

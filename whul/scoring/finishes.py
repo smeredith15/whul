@@ -67,6 +67,18 @@ def tennis_finishes(events: pd.DataFrame) -> pd.DataFrame:
             work[column] = ""
     work["_rank"] = work["round"].map(_round_rank)
 
+    # Winning the final and losing it are both matches in the round "F", so
+    # the furthest round alone cannot tell a champion from a runner-up: Gauff
+    # winning Cincinnati and Pegula losing it both read "Cincinnati 1000 F".
+    # A won final is the title, and the round order already has a rung above F
+    # for it.
+    if "result" in work.columns:
+        won_the_final = (
+            (work["round"].astype(str).str.upper() == "F")
+            & (work["result"].astype(str).str.upper() == "W")
+        )
+        work.loc[won_the_final, "_rank"] = _ROUND_RANK["W"]
+
     grouped = work.groupby(
         ["player", "tournament", "category", "league"], as_index=False
     ).agg(

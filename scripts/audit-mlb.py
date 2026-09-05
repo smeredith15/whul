@@ -99,10 +99,13 @@ TEAM_COMPONENTS = [
     ("pts_playoff", "playoff wins and series", None, False),
 ]
 
-#: A division is won by the team with the most regular-season wins in it, and
-#: only once the season is over. Any division points at all in a season still
-#: being played mean the old league-wide-win-rank rule is still in force.
-DIV_CHAMP_ONLY_WHEN_COMPLETE = True
+#: A division is won by the club with the most regular-season wins in it, and
+#: only once the season is over. Every row this script reads from the live team
+#: source is a window inside a season still being played, so the right number of
+#: division points in all of them is zero. Any others were scored under the old
+#: rule -- the top fifth of the *league* by wins, evaluated on whatever games
+#: were in hand -- and the score in the database predates the fix.
+DIVISION_POINTS_IN_A_LIVE_WINDOW = 0.0
 
 RULE = "-" * 78
 
@@ -133,6 +136,8 @@ class Audit:
         self.version, self.frozen_at = self._frozen_version()
         self.benchmarks = self._benchmarks()
         self.notes: list[tuple[str, str, str]] = []
+        #: manager -> points the standings would move, for scores that count
+        self.standings: dict[str, float] = {}
 
     # -- what we are auditing ------------------------------------------------
 
@@ -168,6 +173,63 @@ class Audit:
             (str(r.asset_type), str(r.norm_key)): r for r in rows.itertuples()
         }
 
+    def absent(self):
+        """Rostered assets with nothing in the feed today.
+
+        The audit walks feed rows, so anyone the feed never named is invisible
+        in it -- and a player on the injured list and a player the feed forgot
+        look exactly alike from inside a list of the ones it did name. Only the
+        roster says who should have been there.
+
+        Split by whether the feed has *ever* named them. One who was being
+        scored and stopped is on the injured list or in the minors, which is
+        ordinary. One who has never appeared across every day the league year
+        has run is a different thing, and the one worth stopping on: he may not
+        have played, or the roster may spell him in a way the feed does not, and
+        the standings show 0.00 either way.
+        """
+        frame = self.store.query(
+            "SELECT a.display_name, a.asset_type, m.display_name AS manager, "
+            "       (SELECT COUNT(*) FROM raw_stats r WHERE r.asset_id = a.asset_id "
+            "         AND r.as_of = ?) AS rows_today, "
+            "       (SELECT COUNT(*) FROM raw_stats r WHERE r.asset_id = a.asset_id) "
+            "         AS rows_ever "
+            "FROM assets a "
+            "JOIN slot_occupancy so USING (asset_id) "
+            "JOIN roster_slots rs USING (slot_id) "
+            "JOIN managers m USING (manager_id) "
+            "WHERE a.league = 'MLB' AND so.end_date IS NULL "
+            "ORDER BY a.asset_type, a.display_name",
+            (self.as_of,),
+        )
+        print(f"\n{RULE}\nROSTERED BUT ABSENT FROM THE FEED\n{RULE}")
+        if frame.empty:
+            print("  nothing rostered in MLB")
+            return
+        missing = frame[frame["rows_today"] == 0]
+        if missing.empty:
+            print(f"  none -- all {len(frame)} rostered asset(s) have a row today")
+            return
+
+        never = missing[missing["rows_ever"] == 0]
+        lapsed = missing[missing["rows_ever"] > 0]
+        print(f"  {len(missing)} of {len(frame)} rostered asset(s) have no row on "
+              f"{self.as_of}, so they score nothing.")
+
+        if not lapsed.empty:
+            print(f"\n  Scored before, not today -- injured, rested or demoted:\n")
+            for row in lapsed.itertuples():
+                print(f"    {str(row.display_name):<24}{str(row.asset_type):<8}"
+                      f"{str(row.manager):<10}seen in {int(row.rows_ever)} earlier pull(s)")
+        if not never.empty:
+            print(f"\n  NEVER seen in this feed, on any day of the league year:\n")
+            for row in never.itertuples():
+                print(f"    {str(row.display_name):<24}{str(row.asset_type):<8}"
+                      f"{str(row.manager):<10}has scored 0.00 every day")
+            print(f"\n  Either he has not played since the league year opened, or "
+                  f"the roster spells\n  him in a way the feed does not. Those look "
+                  f"the same from here and only\n  one is acceptable.")
+
     def rows(self, source: str):
         frame = self.store.query(
             "SELECT rs.asset_id, a.display_name, a.asset_type, rs.stats "
@@ -190,6 +252,20 @@ class Audit:
         if rows.empty:
             return None, None
         return float(rows.iloc[0]["league_points"]), float(rows.iloc[0]["scaled_score"])
+
+    def slot(self, asset_id: str):
+        """The manager holding this asset today, and whether it counts."""
+        rows = self.store.query(
+            "SELECT m.display_name AS manager, rs.category, ss.counts "
+            "FROM slot_scores ss "
+            "JOIN roster_slots rs USING (slot_id) "
+            "JOIN managers m USING (manager_id) "
+            "WHERE ss.asset_id = ? AND ss.as_of = ?",
+            (asset_id, self.as_of),
+        )
+        if rows.empty:
+            return None, False
+        return str(rows.iloc[0]["manager"]), bool(int(rows.iloc[0]["counts"]))
 
     def roster(self, asset_id: str) -> str:
         rows = self.store.query(
@@ -364,23 +440,33 @@ class Audit:
 
             total = 0.0
             flags = []
+            stale = 0.0
             for key, label, each, counting in TEAM_COMPONENTS:
                 if key not in stats:
                     continue
                 points = num(stats.get(key))
+                dropped = 0.0
+                if key == "pts_div_champ" and points != DIVISION_POINTS_IN_A_LIVE_WINDOW:
+                    # Audited against the rule, not against what was stored. A
+                    # score that disagrees is the finding.
+                    dropped = points
+                    stale += points
+                    points = DIVISION_POINTS_IN_A_LIVE_WINDOW
                 total += points
                 # The count the feed saw, recovered from the stored points so
                 # it can be checked against a box score.
+                shown = points + dropped
                 if each:
-                    base = points / factor if counting else points
+                    base = shown / factor if counting else shown
                     count = base / each
                     shown_count = f"{count:,.0f}" if abs(count - round(count)) < 0.01 \
                         else f"{count:,.2f}"
                     shown_each = f"{each:.2f}"
                     shown_base = f"{base:,.2f}"
                 else:
-                    shown_count, shown_each, shown_base = "--", "--", f"{points:,.2f}"
-                shown_pro = f"x {factor:.4f}" if counting else "held"
+                    shown_count, shown_each, shown_base = "--", "--", f"{shown:,.2f}"
+                shown_pro = "DROPPED" if dropped else (
+                    f"x {factor:.4f}" if counting else "held")
                 print(f"    {label:<26}{shown_count:>8}{shown_each:>9}{shown_base:>10}"
                       f"{shown_pro:>12}{points:>11.2f}")
 
@@ -395,20 +481,25 @@ class Audit:
                     "the stored win count disagrees with the stored points",
                     f"reg_wins {reported:,.0f} vs {implied:,.1f} implied",
                 ))
-            if num(stats.get("pts_div_champ")) > 0:
+            if stale:
                 flags.append((
-                    f"scored as a division winner, though no division has been "
-                    f"won on {self.as_of}. A title is an outcome, not a rate: it "
-                    f"does not exist until the season it belongs to has finished",
-                    "+5.00 points",
+                    f"the stored score includes a division title. No division "
+                    f"has been won on {self.as_of} -- a title is an outcome, not "
+                    f"a rate, and does not exist until the season it belongs to "
+                    f"has finished. Scored here without it",
+                    f"stored score carries +{stale:.2f} it should not",
                 ))
 
             stored_total = stats.get("total_points")
-            if stored_total is not None and abs(total - float(stored_total)) > 0.01:
-                flags.append((
-                    "the components do not sum to the stored total",
-                    f"{total:,.2f} vs {float(stored_total):,.2f}",
-                ))
+            if stored_total is not None:
+                # Anything the dropped division points already account for is
+                # the same finding twice; only a remainder is news.
+                unexplained = float(stored_total) - stale - total
+                if abs(unexplained) > 0.01:
+                    flags.append((
+                        "the components do not sum to the stored total",
+                        f"{total + stale:,.2f} vs {float(stored_total):,.2f}",
+                    ))
             scaled = self.normalize(total, "Team", "MLB")
             if scaled is not None:
                 self.verdict(asset_id, name, total, scaled, flags)
@@ -427,9 +518,15 @@ class Audit:
             print(f"\n    CHECK  this script says {scaled:.2f}, the database says "
                   f"{stored_scaled:.2f}   <-- MISMATCH")
             self.notes.append((
-                name, "recomputed and stored scores disagree",
-                f"{scaled:.2f} vs {stored_scaled:.2f}",
+                name, "the stored score does not match the current rules",
+                f"{stored_scaled:.2f} stored, {scaled:.2f} under the rules as they "
+                f"stand -- rerun the pipeline",
             ))
+            manager, counts = self.slot(asset_id)
+            if manager and counts:
+                self.standings[manager] = (
+                    self.standings.get(manager, 0.0) + scaled - stored_scaled
+                )
         else:
             print(f"\n    CHECK  {scaled:.2f} recomputed, {stored_scaled:.2f} stored"
                   f"   -- agrees")
@@ -461,6 +558,14 @@ class Audit:
             for who, detail in whom:
                 print(f"      {who:<24}{detail}")
 
+        if self.standings:
+            print(f"\n{RULE}\nWHAT RERUNNING THE PIPELINE WOULD MOVE\n{RULE}")
+            print("  Counting slots only -- a held asset changes nothing.\n")
+            for manager, delta in sorted(
+                self.standings.items(), key=lambda kv: kv[1]
+            ):
+                print(f"    {manager:<16}{delta:+.2f}")
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -477,6 +582,7 @@ def main():
         audit.players()
     if not args.players_only:
         audit.teams()
+    audit.absent()
     audit.footer()
 
 

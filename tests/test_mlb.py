@@ -72,8 +72,23 @@ def test_at_bats_carry_a_penalty():
     assert low_ab - high_ab == pytest.approx(200.0)
 
 
-def test_non_positive_batters_are_dropped():
-    assert score_batters(pd.DataFrame([batter(AB=500)])).empty
+def test_a_bad_stretch_scores_below_zero_rather_than_vanishing():
+    """500 at bats and nothing to show for them is a real, terrible line. It
+    used to be dropped for being non-positive, which made a wrecked stretch
+    free -- and for a two-way player meant his secondary role could only ever
+    help him. Over a season nobody finishes in the red, so this only bites on a
+    short window, which is where a single start is most of the sample."""
+    out = score_batters(pd.DataFrame([batter(AB=500)]))
+    assert len(out) == 1
+    assert out.loc[0, "role_points"] == pytest.approx(-500.0)
+
+
+def test_a_player_who_did_not_appear_gets_no_row():
+    """No outing is not a bad outing. A row of zeroes means he did not play,
+    and carrying it would make a batter two-way on the strength of a game he
+    never pitched in."""
+    assert score_batters(pd.DataFrame([batter(AB=0, G=0)])).empty
+    assert score_pitchers(pd.DataFrame([pitcher(IP=0, G=0)])).empty
 
 
 # --- pitchers --------------------------------------------------------------

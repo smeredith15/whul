@@ -28,7 +28,7 @@ BRANCH=${BRANCH:-claude/fantasy-league-webapp-dp99e3}
 # leagues are left out because a pull that finds nothing is minutes of
 # requests to learn that nobody played.
 LEAGUES=${LEAGUES:-"nfl nfl-teams tennis pga motorsports mlb mlb-teams \
-ncaaf epl laliga seriea bundesliga ligue1 mls nwsl"}
+ncaaf epl laliga seriea bundesliga ligue1 mls nwsl soccer-players"}
 
 step () { printf '\n\n========== %s ==========\n' "$*"; }
 
@@ -58,7 +58,9 @@ CHECK
 # --- 1. a scale to score against -------------------------------------------
 if [ "${INGEST_ONLY:-}" != "1" ]; then
     VERSION=${1:-}
+    NAMED=1
     if [ -z "$VERSION" ]; then
+        NAMED=0
         # Newest first, so this picks the draft most recently built. The
         # season is matched here because `versions` lists every season it has.
         VERSION=$("$PY" -m whul.cli benchmarks versions \
@@ -80,7 +82,7 @@ if [ "${INGEST_ONLY:-}" != "1" ]; then
     # renders, and the leagues that dropped out simply score nothing. That is
     # how an 18-group version came to be published over a 30-group one.
     set +e
-    "$PY" - "$VERSION" "$SEASON" <<'GUARD'
+    "$PY" - "$VERSION" "$SEASON" "$NAMED" <<'GUARD'
 import sys
 
 from whul import benchmarks
@@ -88,6 +90,7 @@ from whul.store import benchmarks as store_benchmarks
 from whul.store import open_store
 
 version, season = sys.argv[1], sys.argv[2]
+named = sys.argv[3] == "1"
 store = open_store("data/whul.sqlite3")
 
 
@@ -108,11 +111,23 @@ else:
 
 if new < old:
     print()
-    print(f"  !! Freezing {version} would score fewer leagues than the version")
-    print(f"  !! already in force. Nothing would fail -- the leagues that drop")
-    print(f"  !! out simply score nothing, on a page that still renders.")
-    print(f"  !! Add the missing leagues to it, or name the version you meant.")
-    raise SystemExit(1)
+    print(f"  Freezing {version} would score fewer leagues than the version")
+    print(f"  already in force. Nothing would fail -- the leagues that drop out")
+    print(f"  simply score nothing, on a page that still renders.")
+    if named:
+        print()
+        print(f"  !! You named this version, so this stops here rather than")
+        print(f"  !! quietly adopting something else. Name the one you meant.")
+        raise SystemExit(1)
+    # Nobody named it: this is the newest *draft*, which after a freeze by hand
+    # is whatever was left over -- an older, thinner version that was never
+    # meant to be adopted. The scale in force is the better one, so keep it and
+    # get on with the deploy. Refusing to publish a downgrade should not also
+    # refuse to publish today's results.
+    print()
+    print(f"  Nothing named it, so it is the newest draft left over after a")
+    print(f"  freeze by hand. Keeping {active.version} and skipping the freeze.")
+    raise SystemExit(3)
 
 # `benchmarks freeze` refuses a version with rostered assets it cannot score,
 # which is right for a first freeze and wrong for every one after: the gaps --
@@ -125,18 +140,22 @@ if new < old:
 # first freeze is left to refuse and be decided deliberately.
 raise SystemExit(2 if active else 0)
 GUARD
+    FREEZE=1
     case $? in
         0) FORCE="" ;;
         2) FORCE="--force" ;;
+        3) FREEZE=0 ;;
         *) set -e; exit 1 ;;
     esac
     set -e
 
+    if [ "$FREEZE" = "1" ]; then
     step "freezing $VERSION"
     # Frozen, not edited ever after: the standings point at this, and a scale
     # that moves under them rewrites history silently.
     # shellcheck disable=SC2086 -- FORCE is a flag or empty, deliberately unquoted
     "$PY" -m whul.cli benchmarks freeze "$VERSION" $FORCE || exit 1
+    fi
 fi
 
 # --- 2. today's results ----------------------------------------------------
