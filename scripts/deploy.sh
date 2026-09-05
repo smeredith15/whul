@@ -246,12 +246,14 @@ if [ "$pushed" != "1" ]; then
     exit 1
 fi
 
+# Unquoted, because $SEASON and $LEAGUES below are meant to expand -- which
+# also means backticks would run as commands, so the branch name is plain.
 cat <<NEXT
 
 
 ========== published ==========
 
-The database is on the `data` branch. To put it on the web, run the
+The database is on the data branch. To put it on the web, run the
 "Publish standings" workflow:
 
     https://github.com/smeredith15/whul/actions/workflows/publish.yml
