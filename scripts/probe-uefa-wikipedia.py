@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
-"""Can Wikipedia tell us who qualified for each UEFA competition?
+"""Who entered each UEFA competition, and at which round?
 
-Nothing is scored off this yet. The point is to see the shape of the answer
-before an adapter is written against a guess -- which is how an FBref adapter
-got written and then met a 403.
+Entry is worth points and cannot be scraped from fixtures -- it depends on
+final league positions, both cup winners, the cascade when a cup winner has
+already qualified, and a coefficient allocation that moves every year. The
+participant list is the outcome rather than the working, so it is read instead
+of derived.
+
+Only entry. Where a club got to once it was in is the daily scraper's business.
 
     python scripts/probe-uefa-wikipedia.py                  # a finished season
     python scripts/probe-uefa-wikipedia.py --season 2027-28
-    python scripts/probe-uefa-wikipedia.py --dump "Champions League"
+    python scripts/probe-uefa-wikipedia.py --dump           # the raw table too
 
-The default is a season already played, deliberately: its tables are complete
-and you can check the output against what you remember. A future season's page
-carries rows naming a slot rather than a club -- "Qualifying round winner" --
-and telling those apart is one of the things this is here to test.
-
-It asks four questions, in the order they fail:
-
-    1. does the article have a section naming the teams?
-    2. does that section hold a table pandas can read?
-    3. do clubs come out of it, with how each qualified?
-    4. do the three competitions hold 36 clubs each, and no club twice?
-
-Everything found is printed before it is judged, so a parse that fails is still
-worth reading: the section headings and table columns printed here are what an
-adapter has to be written against.
+The default is a season already played, whose table is complete and which you
+can check against what you remember. A future season's page carries rows naming
+a slot rather than a club, and telling those apart is part of what is tested.
 """
 
 from __future__ import annotations
@@ -42,7 +34,7 @@ from whul.sources import wikipedia  # noqa: E402
 RULE = "-" * 78
 
 
-def probe_one(competition: str, season: str, dump: str, session) -> dict[str, str]:
+def probe_one(competition: str, season: str, dump: bool, session) -> dict[str, str]:
     title = wikipedia.title_for(competition, season)
     print(f"\n{RULE}\n{competition}  --  {title}\n{RULE}")
 
@@ -52,58 +44,47 @@ def probe_one(competition: str, season: str, dump: str, session) -> dict[str, st
         print(f"  could not read the article: {type(exc).__name__}: {exc}")
         return {}
 
-    wanted = wikipedia.matching_sections(found)
-    print(f"  {len(found)} section(s); {len(wanted)} might name the teams:")
-    for section in wanted:
-        print(f"    [{section.get('index')}] {section.get('line')}")
-    if not wanted:
-        print("    None matched. Every heading, so a pattern can be added:")
-        for section in found[:40]:
-            print(f"      [{section.get('index')}] {section.get('line')}")
+    section = wikipedia.teams_section(found)
+    if section is None:
+        print(f"  no section headed exactly 'Teams'. Every heading, so the")
+        print(f"  pattern can be corrected rather than guessed at:")
+        for other in found[:40]:
+            print(f"    [{other.get('index')}] {other.get('line')}")
         return {}
+    print(f"  section [{section.get('index')}] Teams, of {len(found)} in the "
+          f"article")
 
-    clubs: dict[str, str] = {}
-    placeholders: list[str] = []
-    for section in wanted:
-        index, line = str(section.get("index")), str(section.get("line"))
-        try:
-            tables = wikipedia.section_tables(title, index, session)
-        except Exception as exc:  # noqa: BLE001
-            print(f"\n  section [{index}] {line}: FAILED "
-                  f"{type(exc).__name__}: {exc}")
+    tables = wikipedia.section_tables(title, str(section.get("index")), session)
+    entrants: dict[str, str] = {}
+    for number, frame in enumerate(tables):
+        print(f"    table {number}: {frame.shape[0]} rows x {frame.shape[1]} cols")
+        print(f"      columns: {[str(c) for c in frame.columns]}")
+        if dump:
+            print(frame.head(6).to_string())
+        entrants.update(wikipedia.entrants_from(frame))
+
+    by_round: dict[str, list[str]] = {}
+    for club, entry in entrants.items():
+        by_round.setdefault(entry or "(none)", []).append(club)
+    print(f"\n  {len(entrants)} club(s), by where they came in:")
+    for entry in (*wikipedia.ENTRY_ROUNDS, "(none)"):
+        clubs = sorted(by_round.get(entry, []))
+        if not clubs:
             continue
-        print(f"\n  section [{index}] {line}: {len(tables)} table(s)")
-        for number, frame in enumerate(tables):
-            print(f"    table {number}: {frame.shape[0]} rows x {frame.shape[1]} cols")
-            print(f"      columns: {[str(c) for c in frame.columns]}")
-            entries = wikipedia.clubs_from(frame)
-            real = [(n, h) for n, h in entries if not wikipedia.is_placeholder(n)]
-            holes = [n for n, _ in entries if wikipedia.is_placeholder(n)]
-            placeholders += holes
-            print(f"      -> {len(real)} club(s), {len(holes)} placeholder(s)")
-            if dump and dump.lower() in competition.lower():
-                print(frame.head(8).to_string())
-            for name, how in real[:4]:
-                print(f"         {name:<28}{how[:44]}")
-            if len(real) > 4:
-                print(f"         ... and {len(real) - 4} more")
-            for name, how in real:
-                clubs.setdefault(name, f"{line}: {how}" if how else line)
-
-    print(f"\n  {len(clubs)} distinct club(s) across every table read.")
-    if placeholders:
-        print(f"  {len(placeholders)} placeholder row(s) skipped, e.g. "
-              f"{placeholders[0]!r}")
-    return clubs
+        mark = "  <- direct entry" if entry == wikipedia.DIRECT_ENTRY else ""
+        print(f"\n    {entry} -- {len(clubs)}{mark}")
+        for index in range(0, len(clubs), 3):
+            print("      " + "".join(f"{c[:24]:<26}" for c in clubs[index:index + 3]))
+    return entrants
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--season", default="2025-26",
                     help="the UEFA season, e.g. 2027-28. Default is a finished "
-                         "one, whose tables are complete")
-    ap.add_argument("--dump", default="",
-                    help="print the head of every table for one competition")
+                         "one, whose table is complete")
+    ap.add_argument("--dump", action="store_true",
+                    help="print the head of each table as well")
     args = ap.parse_args()
 
     if importlib.util.find_spec("lxml") is None:
@@ -114,9 +95,10 @@ def main():
         sys.exit(f"--season should look like 2027-28, not {args.season!r}")
 
     print(RULE)
-    print(f"UEFA qualification probe -- {args.season}")
+    print(f"UEFA entry probe -- {args.season}")
     print(f"  en.wikipedia.org through the MediaWiki API, "
           f"{wikipedia.PAUSE:.0f}s between requests")
+    print(f"  reading the 'Teams' section only -- entry, never results")
     print(RULE)
 
     session = requests.Session()
@@ -127,13 +109,12 @@ def main():
 
     print(f"\n{RULE}\nDOES IT HOLD TOGETHER?\n{RULE}")
     for competition, clubs in entrants.items():
-        mark = "ok" if len(clubs) >= wikipedia.LEAGUE_PHASE_SIZE else "SHORT"
-        print(f"  {competition:<20}{len(clubs):>4} club(s)   {mark}")
+        direct = sum(1 for r in clubs.values() if r == wikipedia.DIRECT_ENTRY)
+        print(f"  {competition:<20}{len(clubs):>4} club(s), {direct:>3} straight "
+              f"into the league phase")
 
-    total = sum(len(c) for c in entrants.values())
-    if not total:
-        print("\n  Nothing was read, so there is nothing to cross-check. The "
-              "section\n  headings above are the useful part.")
+    if not any(entrants.values()):
+        print("\n  Nothing was read. The headings above are the useful part.")
         return 1
 
     problems = wikipedia.check(entrants)
@@ -141,13 +122,13 @@ def main():
         print()
         for problem in problems[:12]:
             print(f"  - {problem}")
-        print("\n  Something is off. That is the useful outcome: the headings and")
-        print("  columns above are what an adapter has to be written against.")
         return 1
 
-    print(f"\n  {total} club(s) in total, none in two competitions.")
-    print("  The shape holds. Paste this back and the adapter can be written")
-    print("  against a structure that has actually been seen.")
+    print(f"\n  Every entry round is one the scorer understands, and no league")
+    print(f"  phase admits more clubs directly than it holds.")
+    print(f"\n  A club in two competitions is not checked and must not be: one")
+    print(f"  knocked out of Champions League qualifying transfers into the")
+    print(f"  Europa League and belongs in both articles.")
     return 0
 
 

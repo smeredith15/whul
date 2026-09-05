@@ -1,25 +1,33 @@
-"""Reading UEFA qualification off Wikipedia.
+"""Reading UEFA entry off Wikipedia.
 
-Which clubs qualified for the Champions League, the Europa League and the
-Conference League is the one thing in club soccer that cannot be derived from
-match results. It depends on final league positions, on who won each domestic
-cup, and on a cascade when a cup winner has already qualified by position --
-and on top of that, how many places each league gets moves every year with the
-UEFA coefficients.
+Which clubs entered the Champions League, the Europa League and the Conference
+League -- and at which round -- is the one thing in club soccer that cannot be
+derived from match results. It needs final league positions, both domestic cup
+winners, the cascade when a cup winner has already qualified by position, and
+the per-season coefficient allocation deciding how many places each league
+gets. Four rules, each of which could be modelled and got wrong, and the last
+one moves every year so it goes stale in silence.
 
-Every one of those is a rule that could be modelled and got wrong. The
-participant list is the *outcome*, published as a table, and reading it
-sidesteps all of them: whoever won the extra place is simply in the list.
+The participant list is the outcome rather than the working. Reading it makes
+all four disappear: whoever won the extra place is simply in the list.
 
-**This is not a nightly feed.** Qualification is settled once, when the domestic
-seasons end in May, and the scoring reads a dated record rather than a live
-page -- so a later edit to Wikipedia can never move a score that was already
-published. See ``admin_overrides`` in the schema, which exists for exactly this.
+**Only entry, never results.** Where a club got to once it was in is the daily
+scraper's business, and it already does that. This answers one question -- who
+entered what, and at which round -- because entry is worth points and cannot be
+scraped from fixtures.
 
-The API is used rather than the rendered page: ``action=parse`` is documented
-and stable, ``prop=sections`` finds the right part of a long article by name,
-and fetching one section at a time avoids guessing which of twenty tables on
-the page is the participants.
+The article's "Teams" section holds a single table shaped like this::
+
+    Entry round   Entry round.1   Teams    Teams.1   Teams.2   Teams.3
+    League phase                  Club A   Club B    Club C    Club D
+
+Clubs run four across, which is the detail worth stating: reading the first
+column only returns roughly a quarter of them and looks like a full answer.
+
+Nothing else in the article is read. The "Association team allocation" section
+has its own ``Teams`` column holding a *count*, and the qualifying and league
+phase sections hold results -- where a club knocked out of one competition
+appears again in another, which is correct football and a wrong answer here.
 """
 
 from __future__ import annotations
@@ -50,36 +58,64 @@ COMPETITION_TITLES = {
     "Conference League": "{first}{dash}{second} UEFA Conference League",
 }
 
-#: Sections that might name the participants. Every match is read, not just the
-#: first: the league phase and the qualifying rounds are in different sections
-#: and the scoring needs both, because direct entry and a place in a qualifying
-#: draw are not worth the same.
-SECTION_PATTERNS = (
-    re.compile(r"^teams$", re.IGNORECASE),
-    re.compile(r"qualified teams", re.IGNORECASE),
-    re.compile(r"^association team allocation$", re.IGNORECASE),
-    re.compile(r"^league phase$", re.IGNORECASE),
-    re.compile(r"qualifying round", re.IGNORECASE),
-)
+#: The one section worth reading. Anchored, so it cannot also match
+#: "Qualified teams" elsewhere in a long article.
+TEAMS_SECTION = re.compile(r"^teams$", re.IGNORECASE)
 
-#: How many clubs a league phase holds since the 2024-25 reform. A parse that
-#: returns some other number found the wrong table, and saying so is better than
-#: scoring thirty-four clubs.
+#: Club columns are ``Teams``, ``Teams.1``, ``Teams.2``, ``Teams.3`` -- pandas
+#: numbers repeated headers. Anchored so ``Teams entering in this round``, a
+#: summary column elsewhere in the article, cannot match.
+CLUB_COLUMN = re.compile(r"^teams(\.\d+)?$", re.IGNORECASE)
+ENTRY_COLUMN = re.compile(r"^entry round(\.\d+)?$", re.IGNORECASE)
+
+#: Where a club comes into the competition. This *is* the scoring distinction:
+#: a place in the league phase and a place in a qualifying draw are not worth
+#: the same. Anything outside this vocabulary means the table changed shape and
+#: is reported rather than guessed at.
+ENTRY_ROUNDS = (
+    "League phase",
+    "Play-off round",
+    "Third qualifying round",
+    "Second qualifying round",
+    "First qualifying round",
+    "Preliminary round",
+)
+DIRECT_ENTRY = "League phase"
+
+#: A league phase holds this many clubs, of which some arrive through
+#: qualifying -- so the direct entrants are fewer, never more.
 LEAGUE_PHASE_SIZE = 36
 
-TEAM_HEADERS = re.compile(r"team|club", re.IGNORECASE)
-METHOD_HEADERS = re.compile(r"qualif|method|via|entry", re.IGNORECASE)
+#: Superscript markers Wikipedia appends to a club in these tables. Stripped by
+#: exact match only: a trailing pair of capitals is not safely removable when
+#: AZ, PSV and RFS are clubs.
+MARKERS = ("TH", "CW", "UCL", "UEL", "UECL")
 
-#: A row naming a slot rather than a club, which is what an article carries
-#: before qualifying has been played. Matching one to a club would invent a
-#: qualification out of a placeholder.
+#: Text in a club cell that names a slot rather than a club, which is what an
+#: article carries before qualifying has been played.
 PLACEHOLDER = re.compile(
-    r"winner|loser|runner|qualif|play-?off|tbd|to be determined|\bvs\.?\b",
+    r"winner|loser|runner|qualif|play-?off|tbd|to be determined|\bvs\.?\b|"
+    r"^\d+\s|champions from|teams? from|associations",
     re.IGNORECASE,
 )
 
-#: Text that is a column heading repeated in the body, not a club.
-NOT_A_CLUB = {"", "nan", "team", "club", "association", "country"}
+NOT_A_CLUB = {"", "nan", "team", "teams", "club", "association", "country"}
+
+
+def _is_a_count(name: str) -> bool:
+    """A cell holding only a number is a count, not a club.
+
+    The allocation table has its own ``Teams`` column saying how many places
+    each association gets, and reading it produced clubs called "4", "3", "2"
+    and "0". Only the section headed exactly "Teams" is read, which should stop
+    that table reaching here at all -- this is the second line, because the
+    first one is a heading that Wikipedia could rename.
+
+    Careful about what a club is allowed to look like: "1. FC Köln" and "TSG
+    1899 Hoffenheim" both carry digits, so the test is that there is nothing
+    else in the cell.
+    """
+    return name.replace(".", "").replace(",", "").replace(" ", "").isdigit()
 
 
 def title_for(competition: str, season: str) -> str:
@@ -91,49 +127,57 @@ def title_for(competition: str, season: str) -> str:
 
 
 def clean(value) -> str:
-    """A club name without Wikipedia's footnote markers or parentheticals.
+    """A club name without Wikipedia's footnotes, parentheticals or markers.
 
-    ``Manchester City (holders)[a]`` is Manchester City. Left as it comes, the
-    name would match nothing on the roster and the club would silently score no
-    qualification at all.
+    ``Paris Saint-Germain TH`` is Paris Saint-Germain; ``Manchester City
+    (holders)[a]`` is Manchester City. Left as they come, neither matches
+    anything on a roster, and the club silently scores no entry at all.
     """
     text = re.sub(r"\[[^\]]*\]", "", str(value))
     text = re.sub(r"\(.*?\)", "", text)
-    return " ".join(text.split()).strip()
+    text = " ".join(text.split()).strip()
+    for marker in MARKERS:
+        if text.endswith(f" {marker}"):
+            text = text[: -len(marker)].strip()
+    return text
 
 
 def is_placeholder(name: str) -> bool:
     return bool(PLACEHOLDER.search(name))
 
 
-def clubs_from(frame: pd.DataFrame) -> list[tuple[str, str]]:
-    """``(club, how it qualified)`` from one participants table.
+def entrants_from(frame: pd.DataFrame) -> dict[str, str]:
+    """``{club: entry round}`` from the Teams table.
 
-    The method column is a bonus rather than a requirement: it is what lets a
-    reader check that a club listed under the Champions League really did
-    finish where the table says. Tables without one still yield their clubs.
+    Every column named ``Teams`` is read, not only the first. They run four
+    across, so reading one returns a quarter of the field and looks complete.
     """
     if frame is None or frame.empty:
-        return []
+        return {}
     columns = [str(c) for c in frame.columns]
-    team_col = next((c for c in columns if TEAM_HEADERS.search(c)), None)
-    method_col = next((c for c in columns if METHOD_HEADERS.search(c)), None)
-    if team_col is None:
-        team_col = columns[0] if columns else None
-    if team_col is None:
-        return []
+    club_cols = [c for c in columns if CLUB_COLUMN.match(c)]
+    entry_cols = [c for c in columns if ENTRY_COLUMN.match(c)]
+    if not club_cols:
+        return {}
 
-    out: list[tuple[str, str]] = []
+    out: dict[str, str] = {}
     for _, row in frame.iterrows():
-        name = clean(row.get(team_col, ""))
-        if name.lower() in NOT_A_CLUB:
-            continue
-        how = clean(row.get(method_col, "")) if method_col else ""
-        out.append((name, how))
+        entry = ""
+        for column in entry_cols:
+            value = clean(row.get(column, ""))
+            if value and value.lower() not in NOT_A_CLUB:
+                entry = value
+                break
+        for column in club_cols:
+            name = clean(row.get(column, ""))
+            if (not name or name.lower() in NOT_A_CLUB or _is_a_count(name)
+                    or is_placeholder(name)):
+                continue
+            out.setdefault(name, entry)
     return out
 
 
-def _api(params: dict, session: requests.Session | None = None) -> dict:
+def _api(params: dict, session=None) -> dict:
     getter = session.get if session is not None else requests.get
     response = getter(
         API, params={**params, "format": "json", "formatversion": 2},
@@ -153,6 +197,14 @@ def sections(title: str, session=None) -> list[dict]:
     return payload.get("parse", {}).get("sections", [])
 
 
+def teams_section(found: list[dict]) -> dict | None:
+    """The one section that names the participants, if the article has it."""
+    for section in found:
+        if TEAMS_SECTION.match(str(section.get("line", "")).strip()):
+            return section
+    return None
+
+
 def section_tables(title: str, index: str, session=None) -> list[pd.DataFrame]:
     """Every table in one section of an article."""
     payload = _api(
@@ -163,43 +215,62 @@ def section_tables(title: str, index: str, session=None) -> list[pd.DataFrame]:
     try:
         # A bare string is read as a *filename* by pandas 3, so this must be
         # wrapped: without it every table raises FileNotFoundError and the
-        # article reads as unparseable.
+        # article reads as unparseable, with the network the obvious suspect.
         return pd.read_html(StringIO(html))
     except ValueError:
         return []
 
 
-def matching_sections(found: list[dict]) -> list[dict]:
-    """The sections whose heading suggests they name the participants."""
-    return [
-        section for section in found
-        if any(p.search(str(section.get("line", ""))) for p in SECTION_PATTERNS)
-    ]
+def load_entrants(competition: str, season: str, session=None) -> dict[str, str]:
+    """``{club: entry round}`` for one competition and season."""
+    title = title_for(competition, season)
+    section = teams_section(sections(title, session))
+    if section is None:
+        raise LookupError(
+            f"{title} has no section headed 'Teams'. The article changed shape, "
+            f"and guessing which other section holds the participants is how a "
+            f"coefficient table gets read as a club list."
+        )
+    entrants: dict[str, str] = {}
+    for frame in section_tables(title, str(section.get("index")), session):
+        entrants.update(entrants_from(frame))
+    return entrants
 
 
 def check(entrants: dict[str, dict[str, str]]) -> list[str]:
-    """What is wrong with a set of three participant lists, if anything.
+    """What is wrong with a set of participant lists, if anything.
 
-    Two checks, both cheap and both strong. A league phase holds exactly
-    thirty-six clubs, so any other number means the wrong table was read. And a
-    club plays in one competition, so a name in two lists means the parse has
-    merged something.
+    Deliberately not a disjointness test. A club knocked out of the Champions
+    League qualifying rounds transfers into the Europa League and belongs in
+    both articles, which is correct football and would fail such a check every
+    season.
+
+    What must hold is that every entry round is one this understands -- an
+    unrecognised one means the table changed shape -- and that no competition
+    admits more clubs directly to its league phase than the league phase holds.
     """
     problems = []
     for competition, clubs in entrants.items():
-        if len(clubs) < LEAGUE_PHASE_SIZE:
+        if not clubs:
+            problems.append(f"{competition}: no clubs read at all")
+            continue
+        unknown = sorted({r for r in clubs.values() if r and r not in ENTRY_ROUNDS})
+        if unknown:
             problems.append(
-                f"{competition}: {len(clubs)} club(s), but a league phase holds "
-                f"{LEAGUE_PHASE_SIZE}. The wrong table was read, or the season "
-                f"is not settled yet."
+                f"{competition}: entry round(s) this does not recognise: "
+                f"{', '.join(unknown)}. The table changed shape."
             )
-    everywhere: dict[str, list[str]] = {}
-    for competition, clubs in entrants.items():
-        for club in clubs:
-            everywhere.setdefault(club, []).append(competition)
-    for club, where in everywhere.items():
-        if len(where) > 1:
+        blank = [c for c, r in clubs.items() if not r]
+        if blank:
             problems.append(
-                f"{club} appears in {' and '.join(where)}, and a club plays in one"
+                f"{competition}: {len(blank)} club(s) with no entry round, "
+                f"e.g. {blank[0]}. Entry round is the scoring distinction, so a "
+                f"club without one cannot be scored."
+            )
+        direct = [c for c, r in clubs.items() if r == DIRECT_ENTRY]
+        if len(direct) > LEAGUE_PHASE_SIZE:
+            problems.append(
+                f"{competition}: {len(direct)} clubs entering directly at the "
+                f"league phase, which holds {LEAGUE_PHASE_SIZE}."
             )
     return problems
