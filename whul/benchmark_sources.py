@@ -364,17 +364,84 @@ def _ncaa_live(key: str, category: str):
 
 
 def _soccer_players():
-    """Club soccer players, from FBref's season stats.
+    """Club soccer players, from ESPN team rosters.
 
-    One pull covers six leagues and each is normalized against itself, the way
-    a Premier League pick is measured against the Premier League rather than
-    against a pooled European field. The scorer already reads FBref's own
-    column names, so nothing is translated between them.
+    FBref is gone rather than pending: it answers 403 to a datacenter address
+    and to a laptop alike, and the nightly pull runs on GitHub Actions anyway.
+    Its column names were what the scorer read, which is why it was chosen --
+    and that turned out to be the wrong thing to choose on.
+
+    ESPN answers from both. Three of its shapes were probed before this was
+    written: league statistics is one request a league-season but carries no
+    cards and no starts; match summaries carry everything at 380; the roster
+    sits between at 21, with every figure the scoring needs except minutes,
+    which it does not need -- starts is appearances minus substitute
+    appearances, and that is the path the scorer already documents.
+
+    Each league is normalized against itself, so a Premier League pick is
+    measured against the Premier League rather than a pooled European field.
     """
     from whul.scoring import soccer
-    from whul.sources import fbref
+    from whul.sources import espn_soccer
 
-    return lambda seasons: fbref.load_players(seasons), soccer.score_players
+    def load(seasons):
+        frames = []
+        for category, key in PLAYER_LEAGUES.items():
+            frame = espn_soccer.load_players(key, list(seasons))
+            if frame is None or frame.empty:
+                print(f"  {key}: no players returned, so {category} scores none",
+                      flush=True)
+                continue
+            _check_season_convention(key, frame)
+            frames.append(frame.assign(league=category))
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    return load, soccer.score_players
+
+
+#: Which ESPN league key serves each scored club-soccer category. Declared
+#: rather than inverted from SOCCER_CATEGORIES so a league can be left out
+#: deliberately -- the NWSL has no rostered players.
+PLAYER_LEAGUES = {
+    "Premier League": "epl", "La Liga": "laliga", "Serie A": "seriea",
+    "Bundesliga": "bundesliga", "Ligue 1": "ligue1", "MLS": "mls",
+}
+
+
+def _check_season_convention(key: str, frame) -> None:
+    """Say whether ESPN numbers a season the way we do.
+
+    We name 2026-27 for the year it ends, 2027. ESPN may name it for the year
+    it starts. A one-year shift would fill every benchmark season with the
+    wrong year's football, and every figure would still be a real footballer's
+    real season -- so nothing would read as wrong anywhere.
+
+    The feed states which season it answered with, so this compares rather than
+    deduces. I could argue the numbers either way and did: Raya's 38 then 37
+    appearances read as one pair of seasons, Saka's 25 with six goals and ten
+    assists as another.
+
+    Reported, not raised. A label ESPN stops sending is not a reason to lose a
+    league, and the first run settles the convention.
+    """
+    if "season_said" not in frame.columns or "season" not in frame.columns:
+        return
+    pairs = sorted({(int(a), str(b)) for a, b in
+                    zip(frame["season"], frame["season_said"]) if str(b)})
+    if not pairs:
+        print(f"  {key}: the feed did not say which season it answered with, so "
+              f"the year could be off by one with nothing to show it", flush=True)
+        return
+    for asked, said in pairs[:3]:
+        print(f"  {key}: asked season {asked}, feed says {said}", flush=True)
+    # Ours ends in the year asked for, so 2025 is 2024-25 and a label starting
+    # 2025 or 2024 lines up. Anything else is a different convention.
+    wrong = [f"asked {a}, got {b}" for a, b in pairs
+             if not (b.startswith(str(a)) or b.startswith(str(a - 1)))]
+    if wrong:
+        print(f"  {key}: !! the feed's season labels do not line up with ours "
+              f"({'; '.join(wrong[:3])}). Every historical figure would be from "
+              f"the wrong year.", flush=True)
 
 
 def _uefa_season(season: int) -> str:
@@ -678,7 +745,7 @@ SOURCES: dict[str, Source] = _register(
            produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
                      "Ligue 1", "MLS"),
            seasons_for=_espn_seasons("epl", "Premier League"),
-           note="FBref Big 5 in one request per season, plus MLS; "
+           note="ESPN team rosters, 21 requests a league-season; "
                 "six benchmarks, each league against itself"),
 )
 

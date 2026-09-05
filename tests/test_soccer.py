@@ -363,6 +363,7 @@ def test_a_leagues_pool_is_its_own_clubs_not_everyone_they_played(monkeypatch):
     ])
     monkeypatch.setattr(espn, "load_soccer_matches", lambda key, seasons: matches)
     monkeypatch.setattr(espn, "load_eligible_teams", lambda key: {"Arsenal"})
+    _no_uefa_lookup(monkeypatch)
 
     load, _ = SOURCES["epl"].build()
     kept = load([2026])
@@ -379,11 +380,28 @@ def test_an_unreadable_team_list_is_announced_not_silently_ignored(monkeypatch, 
     matches = pd.DataFrame([{"team": "Arsenal", "season": 2026}])
     monkeypatch.setattr(espn, "load_soccer_matches", lambda key, seasons: matches)
     monkeypatch.setattr(espn, "load_eligible_teams", lambda key: set())
+    _no_uefa_lookup(monkeypatch)
 
     load, _ = SOURCES["epl"].build()
     assert len(load([2026])) == 1
     assert "every opponent it met" in capsys.readouterr().out
 
+
+def _no_uefa_lookup(monkeypatch):
+    """Stop the club loader fetching participant lists off Wikipedia.
+
+    It catches a missing article and carries on, which is right in production
+    and means a test that reaches the network here passes anyway -- three
+    requests slower and no wiser.
+    """
+    from whul import benchmark_sources
+
+    benchmark_sources._uefa_entrants.cache_clear()
+    monkeypatch.setattr(
+        benchmark_sources, "_uefa_entrants",
+        lambda season: pd.DataFrame(
+            columns=["team", "season", "competition", "entry_round"]),
+    )
 
 # --- the components behind a club total ------------------------------------
 

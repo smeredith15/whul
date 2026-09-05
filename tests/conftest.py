@@ -57,3 +57,44 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         f"environment is stale -- most likely it was built before these were "
         f"added.\n\nReinstall, then re-run:\n\n    {fix}\n"
     )
+
+
+# --- the network -----------------------------------------------------------
+#
+# Every feed this project reads is unreachable from the environment it is
+# developed in, so a test that quietly makes a request does not fail. It
+# succeeds a little more slowly, and the assertion it was meant to make against
+# real data is never made.
+#
+# That happened. Adding European entry to the club soccer loader made two
+# existing tests fetch three Wikipedia articles apiece; they still passed,
+# because the loader catches a missing article and carries on -- right in
+# production, and exactly what hides it here.
+
+import socket  # noqa: E402
+
+_connect = socket.socket.connect
+_connect_ex = socket.socket.connect_ex
+
+
+@pytest.fixture(autouse=True)
+def no_network(request):
+    """A socket is an error unless the test is marked ``network``."""
+    if request.node.get_closest_marker("network"):
+        yield
+        return
+
+    def refuse(self, address, *args, **kwargs):
+        raise AssertionError(
+            f"this test opened a network connection to {address}. Feeds are "
+            f"stubbed in tests -- mark it @pytest.mark.network if the request "
+            f"is the point of it."
+        )
+
+    socket.socket.connect = refuse
+    socket.socket.connect_ex = refuse
+    try:
+        yield
+    finally:
+        socket.socket.connect = _connect
+        socket.socket.connect_ex = _connect_ex

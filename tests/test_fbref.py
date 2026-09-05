@@ -147,7 +147,10 @@ def test_the_scorer_reads_this_frame_without_translation():
 
 
 def test_the_source_is_registered_for_every_club_league_rostered():
-    """Six leagues have rostered players and one pull serves all of them."""
+    """Six leagues have rostered players. FBref served all of them in one
+    request, which is why it was chosen; it answers 403 to every address we
+    have, so the source is now ESPN's rosters at 21 requests a league-season.
+    What has to stay true is the coverage."""
     from whul.benchmark_sources import SOURCES
 
     source = SOURCES["soccer-players"]
