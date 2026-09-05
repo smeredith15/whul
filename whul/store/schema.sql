@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS raw_stats (
 CREATE INDEX IF NOT EXISTS raw_stats_day_idx ON raw_stats (season, as_of);
 CREATE INDEX IF NOT EXISTS raw_stats_league_idx ON raw_stats (league, season, as_of);
 
+-- What a cumulative feed already read before the league year opened.
+--
+-- Most feeds report season to date and will not serve a date range, so the
+-- share of a season that belongs to this league year cannot be asked for. It
+-- can be subtracted: record the figures once, on the first day an asset is
+-- rostered, and every later pull minus that baseline is what was earned since.
+--
+-- Written once and never updated. A baseline that moved would silently rewrite
+-- every score derived from it, and the whole point is that it is the fixed
+-- point the subtraction is against. `captured_for` is the date the baseline is
+-- meant to represent -- the league year's start -- which is not always the day
+-- it was taken, and the difference is what says how much of the year the
+-- subtraction cannot account for.
+CREATE TABLE IF NOT EXISTS stat_baselines (
+    asset_id     TEXT NOT NULL REFERENCES assets (asset_id),
+    season       TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    feed_season  INTEGER NOT NULL,
+    captured_at  TEXT NOT NULL,
+    captured_for TEXT NOT NULL,
+    stats        TEXT NOT NULL,
+    PRIMARY KEY (asset_id, season, source, feed_season)
+);
+
 -- What each source last managed to fetch. The dangerous scraper failure is not
 -- a crash but a feed that quietly stops updating: the standings freeze and
 -- still look plausible. This is what makes that visible.

@@ -423,3 +423,57 @@ def test_completed_rows_that_score_nothing_are_the_scorers_to_explain():
     kept = pd.DataFrame([{"game_date": "2026-09-01", "completed": True}] * 3)
     note = _why_nothing_scored(kept, kept)
     assert "the scorer's to explain" in note
+
+
+def test_a_cumulative_source_is_differenced_and_summed(store):
+    """The whole design in one pass: a feed that reports season to date, a
+    league year that spans two of them, and a score that is what the player
+    earned inside it."""
+    from datetime import timedelta
+
+    from whul.config.league import season_start
+    from whul.store import baselines as baseline_store
+
+    rostered(store, "Pete Crow-Armstrong")
+    frozen_benchmark(store)
+
+    rows = [{"player": "Pete Crow-Armstrong", "league": "NFL", "role": "QB",
+             "season": 2026, "total_points": 400.0}]
+    source = source_over(rows)
+    source.cumulative = True
+
+    opens = season_start("NFL")
+    # Day one: the baseline is taken, so nothing has been earned yet.
+    ingest.ingest(store, source, "2026-27", opens, verbose=False)
+    held = baseline_store.load(store, "2026-27", "nfl", 2026)
+    assert held["a0"]["total_points"] == 400.0
+
+    # `captured_at` is wall-clock, and this test's league year opened months
+    # ago. Stamp it as though the run really had happened on the day, which is
+    # what a season starting under this code would do.
+    store.conn.execute(
+        "UPDATE stat_baselines SET captured_at = ?", (f"{opens.isoformat()}T09:00:00",))
+    store.conn.commit()
+
+    # Later, on a bigger season-to-date figure, the contribution is the growth.
+    rows[0]["total_points"] = 520.0
+    later = source_over(rows)
+    later.cumulative = True
+    ingest.ingest(store, later, "2026-27", opens + timedelta(days=20), verbose=False)
+
+    stats = store.query("SELECT stats FROM raw_stats ORDER BY as_of DESC")
+    assert "120" in stats.loc[0, "stats"], "520 season-to-date minus a 400 baseline"
+
+
+def test_a_late_baseline_is_reported_rather_than_used(store):
+    """Subtracting one taken weeks in would credit a manager with none of what
+    their player did in between, and the standings would just look low."""
+    rostered(store, "Pete Crow-Armstrong")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Pete Crow-Armstrong", "league": "NFL", "role": "QB",
+         "season": 2026, "total_points": 400.0}])
+    source.cumulative = True
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 20), verbose=False)
+    assert any("recorded but not subtracted" in p for p in report.problems)

@@ -56,6 +56,11 @@ class Source:
     #: history comes from. Tennis history is a static snapshot and the live feed
     #: is a rolling fortnight; neither can do the other's job.
     live: Callable[[], tuple[Callable, Callable]] | None = None
+    #: True where the feed reports season to date and will not serve a date
+    #: range. The share belonging to this league year is then recovered by
+    #: subtracting a baseline taken when the year opened, and the calendar
+    #: seasons the year spans are summed. See ``whul.store.baselines``.
+    cumulative: bool = False
     #: Run over the scored, normalized rows before they are recorded, for a
     #: scorer that emits several rows per asset on purpose. MLB scores a player
     #: once as a batter and once as a pitcher -- the two are normalized against
@@ -129,6 +134,19 @@ def _mlb_two_way(scored):
     return mlb.combine_two_way(scored)
 
 
+def _league_year_seasons(as_of: date) -> list[int]:
+    """Both calendar seasons a league year touches, up to today.
+
+    A league year opening in August covers the tail of one season and the front
+    of the next. Asking only for the calendar year would, from January, drop
+    everything a player did in the autumn -- silently, because a full season of
+    the new year is a perfectly plausible-looking answer.
+    """
+    from whul.config.league import SEASON
+
+    return sorted({SEASON.start.year, as_of.year})
+
+
 def _mlb_players_live():
     """The season since the league year opened, not the whole season.
 
@@ -136,15 +154,21 @@ def _mlb_players_live():
     seasons too, which looked consistent and was not: four months of every
     player's total were earned before anyone drafted him.
     """
-    from whul.config.league import season_start
+    from whul.config.league import SEASON, season_start
     from whul.scoring import mlb
     from whul.sources import mlb as source
 
     def load(seasons):
-        since = season_start("MLB")
-        batters = source.load_batters(seasons, since=since).assign(_phase="bat")
-        pitchers = source.load_pitchers(seasons, since=since).assign(_phase="pit")
-        frames = [f for f in (batters, pitchers) if not f.empty]
+        # The window only applies to the season the league year opened inside.
+        # A season that begins *within* the league year is wholly inside it, so
+        # asking for it from 15 August would cut off its April.
+        opened = SEASON.start.year
+        frames = []
+        for year in seasons:
+            since = season_start("MLB") if year == opened else None
+            frames.append(source.load_batters([year], since=since).assign(_phase="bat"))
+            frames.append(source.load_pitchers([year], since=since).assign(_phase="pit"))
+        frames = [f for f in frames if f is not None and not f.empty]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def score(raw):
@@ -466,10 +490,12 @@ SOURCES: dict[str, Source] = _register(
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified"),
     Source("mlb", "MLB", "Player", _mlb_players, live=_mlb_players_live,
-           post_normalize=_mlb_two_way,
+           post_normalize=_mlb_two_way, cumulative=True,
+           seasons_for=_league_year_seasons,
            note="FanGraphs leaderboards; one row per player-role, folded after "
                 "normalization by the two-way rule"),
     Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
+           seasons_for=_league_year_seasons,
            note="a live contract year is scored on the half already played"),
     Source("nba", "NBA", "Player", _nba_players,
            note="ESPN box scores, one date at a time -- slow to backfill"),

@@ -105,6 +105,9 @@ def ingest(
         return report
     resolver.save_aliases(store, source.key, resolution.matched)
 
+    if getattr(source, "cumulative", False):
+        mine = _against_the_league_year(store, mine, source, season, as_of, report)
+
     # Raw first, and unconditionally. A benchmark can be computed next week;
     # a rolling feed's earlier weeks cannot be fetched back.
     report.recorded = store.record_stats(
@@ -145,6 +148,75 @@ def ingest(
         store, placed, season, as_of, version.version
     )
     return report
+
+
+#: How late a baseline may be taken and still be treated as the league year's
+#: opening state. A night's lag is a cron that ran after midnight; three weeks
+#: is a feature added mid-season, and subtracting that would credit a manager
+#: with none of what their player did in the meantime.
+BASELINE_GRACE_DAYS = 2
+
+
+def _against_the_league_year(
+    store: Store, mine: pd.DataFrame, source, season: str, as_of: date,
+    report: IngestReport,
+) -> pd.DataFrame:
+    """Turn season-to-date figures into what was earned inside the league year.
+
+    Recorded once per asset per feed season, then subtracted from every pull
+    after -- which is exact, and needs nothing from a feed that will not serve
+    a date range. The calendar seasons a league year spans are then summed, so
+    a player held across the turn of the year is scored once rather than twice
+    against a benchmark drawn from whole years.
+
+    A baseline taken late is kept but not used. It is still the honest record
+    of when the differencing became possible, and using it would quietly credit
+    a manager with nothing their player did before it was taken.
+    """
+    from whul.config.league import season_start
+    from whul.store import baselines as baseline_store
+
+    if mine.empty or "season" not in mine.columns:
+        return mine
+
+    opens = season_start(source.league)
+    late = 0
+    for feed_season, block in mine.groupby("season"):
+        for row in block.to_dict("records"):
+            asset_id = str(row.get("asset_id", ""))
+            if not asset_id:
+                continue
+            figures = {k: v for k, v in row.items() if k != "asset_id"}
+            baseline_store.record(
+                store, asset_id, season, source.key, int(feed_season),
+                figures, opens.isoformat(),
+            )
+
+        held = baseline_store.usable(
+            store, season, source.key, int(feed_season), opens,
+            grace_days=BASELINE_GRACE_DAYS,
+        )
+        if held:
+            mine = _replace_block(
+                mine, feed_season, baseline_store.subtract(block, held)
+            )
+        elif baseline_store.load(store, season, source.key, int(feed_season)):
+            late += 1
+
+    if late:
+        report.problems.append(
+            f"the {source.league} baseline was taken after this league year "
+            f"opened on {opens}, so it is recorded but not subtracted; the "
+            f"figures are still season-to-date for that stretch"
+        )
+
+    return baseline_store.combine_seasons(mine, ["asset_id", "role"])
+
+
+def _replace_block(frame: pd.DataFrame, feed_season, replacement: pd.DataFrame):
+    """Swap one feed season's rows for their differenced selves."""
+    rest = frame[frame["season"] != feed_season]
+    return pd.concat([rest, replacement], ignore_index=True)
 
 
 def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
