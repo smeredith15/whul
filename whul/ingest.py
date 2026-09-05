@@ -77,13 +77,18 @@ def ingest(
         report.problems.append("nothing rostered in this league; skipped")
         return report
 
+    notes: list[str] = []
     try:
-        scored = _pull(source, as_of, verbose, names=list(assets["display_name"]))
+        scored = _pull(
+            source, as_of, verbose, names=list(assets["display_name"]), notes=notes
+        )
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
         return report
     if scored is None or scored.empty:
-        report.problems.append("the source has no results yet for this season")
+        report.problems.append(
+            notes[0] if notes else "the source has no results yet for this season"
+        )
         return report
     report.pulled = len(scored)
 
@@ -99,6 +104,9 @@ def ingest(
         report.problems.append("no rostered asset matched a feed row")
         return report
     resolver.save_aliases(store, source.key, resolution.matched)
+
+    if getattr(source, "cumulative", False):
+        mine = _against_the_league_year(store, mine, source, season, as_of, report)
 
     # Raw first, and unconditionally. A benchmark can be computed next week;
     # a rolling feed's earlier weeks cannot be fetched back.
@@ -142,6 +150,109 @@ def ingest(
     return report
 
 
+#: How late a baseline may be taken and still be treated as the league year's
+#: opening state. A night's lag is a cron that ran after midnight; three weeks
+#: is a feature added mid-season, and subtracting that would credit a manager
+#: with none of what their player did in the meantime.
+BASELINE_GRACE_DAYS = 2
+
+
+def _against_the_league_year(
+    store: Store, mine: pd.DataFrame, source, season: str, as_of: date,
+    report: IngestReport,
+) -> pd.DataFrame:
+    """Turn season-to-date figures into what was earned inside the league year.
+
+    Recorded once per asset per feed season, then subtracted from every pull
+    after -- which is exact, and needs nothing from a feed that will not serve
+    a date range. The calendar seasons a league year spans are then summed, so
+    a player held across the turn of the year is scored once rather than twice
+    against a benchmark drawn from whole years.
+
+    A baseline taken late is kept but not used. It is still the honest record
+    of when the differencing became possible, and using it would quietly credit
+    a manager with nothing their player did before it was taken.
+    """
+    from whul.config.league import season_start
+    from whul.store import baselines as baseline_store
+
+    if mine.empty or "season" not in mine.columns:
+        return mine
+
+    opens = season_start(source.league)
+    late = 0
+    for feed_season, block in mine.groupby("season"):
+        for row in block.to_dict("records"):
+            asset_id = str(row.get("asset_id", ""))
+            if not asset_id:
+                continue
+            figures = {k: v for k, v in row.items() if k != "asset_id"}
+            baseline_store.record(
+                store, asset_id, season, source.key, int(feed_season),
+                figures, opens.isoformat(),
+            )
+
+        held = baseline_store.usable(
+            store, season, source.key, int(feed_season), opens,
+            grace_days=BASELINE_GRACE_DAYS,
+        )
+        if held:
+            mine = _replace_block(
+                mine, feed_season, baseline_store.subtract(block, held)
+            )
+        elif baseline_store.load(store, season, source.key, int(feed_season)):
+            late += 1
+
+    if late:
+        report.problems.append(
+            f"the {source.league} baseline was taken after this league year "
+            f"opened on {opens}, so it is recorded but not subtracted; the "
+            f"figures are still season-to-date for that stretch"
+        )
+
+    return baseline_store.combine_seasons(mine, ["asset_id", "role"])
+
+
+def _replace_block(frame: pd.DataFrame, feed_season, replacement: pd.DataFrame):
+    """Swap one feed season's rows for their differenced selves."""
+    rest = frame[frame["season"] != feed_season]
+    return pd.concat([rest, replacement], ignore_index=True)
+
+
+def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
+    """What arrived, when a full fetch scored nothing.
+
+    Three things look identical from the outside -- a feed with nothing in it,
+    a feed whose rows all fall before the league year opened, and a schedule of
+    fixtures nobody has played. Only the last is normal, and it is the one that
+    reads most like a broken adapter.
+    """
+    if kept.empty:
+        return (
+            f"the feed returned {len(raw):,} row(s), but all of them fall "
+            f"before this league's results start counting"
+        )
+
+    played = kept
+    if "completed" in kept.columns:
+        played = kept[kept["completed"].fillna(False).astype(bool)]
+    if played.empty:
+        upcoming = ""
+        column = next((c for c in DATE_COLUMNS if c in kept.columns), None)
+        if column is not None:
+            days = pd.to_datetime(kept[column], errors="coerce")
+            if days.notna().any():
+                upcoming = f"; the first is {days.min().date()}"
+        return (
+            f"{len(kept):,} fixture(s) scheduled, none played yet{upcoming}. "
+            f"This is a season that has not started, not a feed that is broken."
+        )
+    return (
+        f"{len(played):,} completed row(s) arrived but none of them scored, "
+        f"which is the scorer's to explain rather than the feed's"
+    )
+
+
 def _leagues_of(source) -> set[str]:
     """Roster league labels a source can score.
 
@@ -183,15 +294,34 @@ def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
 
 
 def _pull(
-    source, as_of: date, verbose: bool, names: list[str] | None = None
+    source, as_of: date, verbose: bool, names: list[str] | None = None,
+    notes: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Season-to-date totals for one league, however that league counts them."""
+    """Season-to-date totals for one league, however that league counts them.
+
+    ``notes`` collects anything the caller should say about an empty result. A
+    feed that returned a full fixture list none of which has been played is not
+    the same as a feed that returned nothing, and reporting both as "no results
+    yet" has twice sent someone looking for a bug in a league that simply has
+    not kicked off.
+    """
     from whul.config.league import season_start
     from whul.scoring import window
 
     live = source.live is not None
     load, score = (source.live or source.build)()
     seasons = source.seasons_for(as_of) if source.seasons_for else [as_of.year]
+    if source.seasons_for and not seasons:
+        # No season of this league falls inside the league year so far. Asking
+        # the feed anyway would get an empty answer that reads exactly like a
+        # broken adapter, so say the true thing instead of fetching nothing.
+        if notes is not None:
+            notes.append(
+                f"no {source.league} season has been played inside this "
+                f"league year yet (it opened {season_start(source.league)}); "
+                f"nothing to pull"
+            )
+        return pd.DataFrame()
     # A roster-scoped loader is asked only for what the roster holds, which for
     # a team league is eight requests rather than a season of dates.
     fetch = (
@@ -203,7 +333,13 @@ def _pull(
         raw = fetch(seasons)
         if raw is None or raw.empty:
             return pd.DataFrame()
-        return score(_from_season_start(raw, source.league))
+        kept = _from_season_start(raw, source.league)
+        scored = score(kept)
+        if (scored is None or scored.empty) and notes is not None:
+            notes.append(_why_nothing_scored(raw, kept))
+        if not getattr(source, "cumulative", False):
+            scored = _across_feed_seasons(scored)
+        return scored
 
     # A continuously running sport accrues over the league year, not the
     # calendar one, so its live total is summed over the same window its
@@ -224,6 +360,43 @@ def _pull(
         totals = window.window_totals(rows, [current])
         frames.append(_with_finishes(totals.assign(season=current.label), rows, current))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+#: Columns that say *which* asset a row is about, as the several scorers name
+#: them. Anything else numeric is a quantity, and quantities are what add.
+IDENTITY_COLUMNS = (
+    "league", "team", "team_name", "club", "player", "player_id", "role",
+    "_phase",
+)
+
+
+def _across_feed_seasons(scored: pd.DataFrame) -> pd.DataFrame:
+    """Sum the feed's seasons into the one league year that spans them.
+
+    A league year opening in August catches the tail of an MLS season and the
+    front of the next, and the same is true of any league in the year's closing
+    weeks. The feed reports those halves separately, and the manager held the
+    club through both, so they are added.
+
+    Before resolution rather than after, because a club that arrives as two
+    rows is *ambiguous* to the resolver -- two feed rows for one roster slot --
+    and would be held back and score nothing at all. The season split is an
+    artefact of how the feed files results, not two different clubs.
+
+    Cumulative sources are the exception and are summed later: their halves
+    have to be differenced against a baseline first, which needs the asset id
+    resolution has not attached yet.
+    """
+    from whul.store import baselines as baseline_store
+
+    if scored is None or scored.empty or "season" not in scored.columns:
+        return scored
+    if scored["season"].nunique() <= 1:
+        return scored
+    keys = [c for c in IDENTITY_COLUMNS if c in scored.columns]
+    if not keys:
+        return scored
+    return baseline_store.combine_seasons(scored, keys)
 
 
 def _with_finishes(totals: pd.DataFrame, events: pd.DataFrame, current) -> pd.DataFrame:

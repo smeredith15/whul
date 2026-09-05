@@ -714,3 +714,22 @@ def test_a_progression_line_is_addressable_by_manager():
         [charts.Series("Avery", 1, [1.0, 2.0])],
     )
     assert svg.count('data-manager="Avery"') >= 3
+
+
+def test_a_shared_out_run_value_says_so():
+    """A run value that looks measured and is not is the kind of number
+    somebody checks against Baseball Reference and cannot find."""
+    from whul.site.build import _scaling_notes, _stat_lines
+
+    notes = _scaling_notes({"advanced_share": 0.13})
+    assert len(notes) == 1
+    assert "13%" in notes[0]
+    assert "shared out" in notes[0]
+    # And the share itself is not a statistic in the table.
+    assert "Advanced share" not in dict(_stat_lines({"advanced_share": 0.13}))
+
+
+def test_a_full_season_share_says_nothing():
+    from whul.site.build import _scaling_notes
+
+    assert _scaling_notes({"advanced_share": 1.0}) == []

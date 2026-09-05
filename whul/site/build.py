@@ -166,7 +166,7 @@ STAT_SKIP = {
     "asset_id", "league", "season", "as_of", "source", "phase", "fetched_at",
     "player", "team", "team_name", "display_name", "athlete", "driver",
     "finishes", "norm_key", "asset_type", "role_count", "contract_year",
-    "proration_factor", "schedule_factor", "scaled_score",
+    "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
 }
 
 #: Raw column names read as debug output. These are what they mean.
@@ -247,6 +247,16 @@ def _scaling_notes(row: dict) -> list[str]:
             f"league year covers a shorter window than the seasons the benchmark "
             f"was drawn from. One-off achievements are not scaled."
         )
+    share = row.get("advanced_share")
+    if isinstance(share, (int, float)) and share == share and 0 <= share < 1:
+        out.append(
+            f"Offense, Defense and WAR are shared out across this player's games "
+            f"in the window ({share:.0%} of their season so far). The feed "
+            f"reports them for the season to date only, and a season of run "
+            f"values added to a few weeks of hits would overstate them several "
+            f"times over."
+        )
+
     factor = row.get("schedule_factor")
     if isinstance(factor, (int, float)) and factor and factor == factor and factor != 1.0:
         out.append(

@@ -27,6 +27,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from whul.sources import season_window
+
 BASE = "https://site.api.espn.com/apis/site/v2/sports"
 CACHE = Path("data/cache/espn")
 REQUEST_PAUSE = 0.4  # be a considerate client; ESPN publishes no rate limit
@@ -192,6 +194,21 @@ def season_dates(season: int, league: str = "nba") -> list[date]:
     if end < start:
         return []
     return [start + timedelta(days=n) for n in range((end - start).days + 1)]
+
+
+def season_span(season: int, league: str) -> tuple[date, date]:
+    """A season's first and last day, uncapped by today.
+
+    ``season_dates`` stops at today, which is right for walking dates and wrong
+    for asking whether a season overlaps a league year: a season still to come
+    would look like it did not exist.
+    """
+    return season_window.span(SEASON_WINDOWS[league], season)
+
+
+def seasons_overlapping(league: str, first: date, last: date) -> list[int]:
+    """Every season label this feed numbers with play inside a span."""
+    return season_window.overlapping(SEASON_WINDOWS[league], first, last)
 
 
 def season_label(league: str, day: date) -> int:

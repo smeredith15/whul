@@ -32,6 +32,29 @@ ncaaf epl laliga seriea bundesliga ligue1 mls nwsl"}
 
 step () { printf '\n\n========== %s ==========\n' "$*"; }
 
+# Which code this is. Three times now a deploy has run against a checkout that
+# was behind the branch, and each time it took reconstructing a score by hand to
+# notice -- the output of an old pipeline looks exactly like the output of a new
+# one, only wrong. Printed first so it is at the top of the log.
+step "the code this deploy is running"
+git --no-pager log --oneline -1
+BEHIND=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
+if [ "${BEHIND:-0}" -gt 0 ]; then
+    echo
+    echo "!! This checkout is $BEHIND commit(s) behind $(git rev-parse --abbrev-ref @{u})."
+    echo "!! Deploying it would publish standings computed by superseded code."
+    echo "!! Run: git pull"
+    exit 1
+fi
+"$PY" - <<'CHECK'
+from whul.config.league import SEASON, season_start
+from whul.scoring.proration import built_in_rule
+rule = built_in_rule("MLB", SEASON.label)
+print(f"  season      {SEASON.label}")
+print(f"  MLB starts  {season_start('MLB')}")
+print(f"  proration   {'x%.3f' % rule.factor if rule else 'none'}")
+CHECK
+
 # --- 1. a scale to score against -------------------------------------------
 if [ "${INGEST_ONLY:-}" != "1" ]; then
     VERSION=${1:-}
@@ -52,10 +75,68 @@ if [ "${INGEST_ONLY:-}" != "1" ]; then
     step "what this scale covers"
     "$PY" -m whul.cli benchmarks coverage "$VERSION" --season "$SEASON"
 
+    # A scale that covers less than the one already in force is a regression,
+    # and it does not announce itself: the standings still build, the page still
+    # renders, and the leagues that dropped out simply score nothing. That is
+    # how an 18-group version came to be published over a 30-group one.
+    set +e
+    "$PY" - "$VERSION" "$SEASON" <<'GUARD'
+import sys
+
+from whul import benchmarks
+from whul.store import benchmarks as store_benchmarks
+from whul.store import open_store
+
+version, season = sys.argv[1], sys.argv[2]
+store = open_store("data/whul.sqlite3")
+
+
+def covered(label):
+    table = benchmarks.coverage(store, label, season)
+    if table.empty or "covered" not in table.columns:
+        return 0
+    return int(table["covered"].astype(bool).sum())
+
+
+new = covered(version)
+active = store_benchmarks.active_version(store, season)
+old = covered(active.version) if active else 0
+if active:
+    print(f"  {active.version} covers {old} pair(s); {version} covers {new}")
+else:
+    print(f"  nothing frozen yet; {version} covers {new} league/type pair(s)")
+
+if new < old:
+    print()
+    print(f"  !! Freezing {version} would score fewer leagues than the version")
+    print(f"  !! already in force. Nothing would fail -- the leagues that drop")
+    print(f"  !! out simply score nothing, on a page that still renders.")
+    print(f"  !! Add the missing leagues to it, or name the version you meant.")
+    raise SystemExit(1)
+
+# `benchmarks freeze` refuses a version with rostered assets it cannot score,
+# which is right for a first freeze and wrong for every one after: the gaps --
+# club soccer players with no reachable source, international soccer awaiting a
+# scoring decision -- are known, and already accepted in the version this
+# replaces. Exit 2 says "carry the accepted gaps over"; it is safe precisely
+# because the check above established that no league is being dropped, and the
+# About page names whatever stays uncovered so nobody reads the standings as
+# complete. With nothing frozen yet there is nothing to have accepted, so the
+# first freeze is left to refuse and be decided deliberately.
+raise SystemExit(2 if active else 0)
+GUARD
+    case $? in
+        0) FORCE="" ;;
+        2) FORCE="--force" ;;
+        *) set -e; exit 1 ;;
+    esac
+    set -e
+
     step "freezing $VERSION"
     # Frozen, not edited ever after: the standings point at this, and a scale
     # that moves under them rewrites history silently.
-    "$PY" -m whul.cli benchmarks freeze "$VERSION" || exit 1
+    # shellcheck disable=SC2086 -- FORCE is a flag or empty, deliberately unquoted
+    "$PY" -m whul.cli benchmarks freeze "$VERSION" $FORCE || exit 1
 fi
 
 # --- 2. today's results ----------------------------------------------------
@@ -103,24 +184,76 @@ rm -f "$INDEX"
 COMMIT=$(git commit-tree "$TREE" \
     -m "Database after $(date -u +%Y-%m-%dT%H:%M:%SZ)") || exit 1
 
+# An inherited credential helper that is broken -- an editor's, whose socket has
+# gone -- does not fail over to asking: it errors, git falls back to anonymous,
+# and the push is refused with no prompt. An empty `-c credential.helper=` is
+# the documented way to clear the inherited list, so what follows is the only
+# helper in play.
+#
+# With GITHUB_TOKEN set, the token is read from the environment by a helper
+# rather than put in the remote URL, so it never appears in the command line,
+# in `git remote -v`, or in an error message that echoes the URL back.
+AUTH=(-c credential.helper=)
+if [ -n "${GITHUB_TOKEN:-}" ]; then
+    AUTH+=(-c "credential.helper=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f")
+fi
+
 pushed=0
 for wait in 2 4 8 16; do
-    if git push -f origin "$COMMIT:refs/heads/data"; then pushed=1; break; fi
+    OUT=$(git "${AUTH[@]}" push -f origin "$COMMIT:refs/heads/data" 2>&1) && { pushed=1; break; }
+    echo "$OUT"
+    # A refused credential is not a blip. Retrying it four times just prints the
+    # same failure four times and buries the one line that says what to do.
+    if printf '%s' "$OUT" | grep -qiE 'Authentication failed|could not read Username|no anonymous write|invalid credentials'; then
+        cat <<'AUTH'
+
+Git could not authenticate, so the retries are pointless -- this is a
+credential problem, not a network one. Everything before this step worked:
+the scale is frozen, the standings are rolled up, and the site is built in
+./site, which you can read right now with
+
+    python -m http.server -d site 8000
+
+To finish, git needs to be able to push. Two ways, quickest first:
+
+  1. Give it a token directly. It is read from the environment, so it never
+     reaches the command line, the remote URL, or an error message:
+
+         read -rsp "GitHub token: " GITHUB_TOKEN; echo
+         export GITHUB_TOKEN
+         INGEST_ONLY=1 ./scripts/deploy.sh
+
+     The token needs Contents: read and write on this repository. `read -rs`
+     keeps it off the screen and out of shell history.
+
+  2. Or fix the editor's helper: reload the window (Command Palette ->
+     "Developer: Reload Window") and open a fresh terminal.
+
+  INGEST_ONLY=1 skips straight past the freeze, which has already happened.
+
+AUTH
+        exit 1
+    fi
     echo "push failed; retrying in ${wait}s"
     sleep "$wait"
 done
 
 if [ "$pushed" != "1" ]; then
-    echo "Could not push the database. The site was built locally at ./site"
+    echo
+    echo "Could not push the database after four attempts. The site was built"
+    echo "locally at ./site, and nothing before this step was lost -- re-run"
+    echo "with INGEST_ONLY=1 once the push works."
     exit 1
 fi
 
+# Unquoted, because $SEASON and $LEAGUES below are meant to expand -- which
+# also means backticks would run as commands, so the branch name is plain.
 cat <<NEXT
 
 
 ========== published ==========
 
-The database is on the `data` branch. To put it on the web, run the
+The database is on the data branch. To put it on the web, run the
 "Publish standings" workflow:
 
     https://github.com/smeredith15/whul/actions/workflows/publish.yml

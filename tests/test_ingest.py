@@ -35,9 +35,10 @@ def store():
 def rostered(store, *names, league="NFL", season="2026-27", asset_type="Player"):
     rosters.add_manager(store, "TG")
     rosters.create_slots(store, "TG", season)
-    category = {"NFL": "NFL", "Tennis": "Tennis", "NCAAF": "NCAAF"}.get(
-        league, "Club Soccer Top 3" if "Premier" in league else "Tennis"
-    )
+    category = {
+        "NFL": "NFL", "Tennis": "Tennis", "NCAAF": "NCAAF", "NBA": "NBA",
+        "MLS": "Club Soccer Other", "NWSL": "Club Soccer Other",
+    }.get(league, "Club Soccer Top 3" if "Premier" in league else "Tennis")
     slots = store.query(
         "SELECT slot_id FROM roster_slots WHERE season = ? AND asset_type = ? "
         "AND category = ?",
@@ -377,3 +378,169 @@ def test_the_mlb_source_declares_the_fold():
 
     assert SOURCES["mlb"].post_normalize is not None
     assert SOURCES["nfl"].post_normalize is None
+
+
+# --- why nothing scored -------------------------------------------------------
+
+def test_a_schedule_nobody_has_played_says_so(store):
+    """Three things look identical from the outside: a feed with nothing in it,
+    a feed whose rows all predate the league year, and a full fixture list
+    nobody has played. Only the last is normal, and it reads most like a broken
+    adapter -- which is what sent someone hunting for a bug in a college
+    football season that had not kicked off."""
+    rostered(store, "Ohio State Buckeyes", league="NCAAF", asset_type="Team")
+    fixtures = pd.DataFrame([
+        {"team": "Ohio State Buckeyes", "league": "NCAAF",
+         "game_date": "2026-09-05", "completed": False},
+        {"team": "Ohio State Buckeyes", "league": "NCAAF",
+         "game_date": "2026-09-12", "completed": False},
+    ])
+    source = FakeSource(
+        key="ncaaf", league="NCAAF", asset_type="Team",
+        # The scorer keeps completed games only, so an unplayed slate scores
+        # nothing -- which is exactly what a real one does.
+        build=lambda: (lambda seasons: fixtures, lambda raw: pd.DataFrame()),
+    )
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert "2 fixture(s) scheduled, none played yet" in report.problems[0]
+    assert "2026-09-05" in report.problems[0]
+    assert "not a feed that is broken" in report.problems[0]
+
+
+def test_rows_that_all_predate_the_league_year_say_that_instead(store):
+    from whul.ingest import _why_nothing_scored
+
+    raw = pd.DataFrame([{"game_date": "2026-07-01", "completed": True}] * 5)
+    note = _why_nothing_scored(raw, raw.iloc[0:0])
+    assert "5 row(s)" in note
+    assert "before this league's results start counting" in note
+
+
+def test_completed_rows_that_score_nothing_are_the_scorers_to_explain():
+    """Not the feed's. The distinction is what says where to look."""
+    from whul.ingest import _why_nothing_scored
+
+    kept = pd.DataFrame([{"game_date": "2026-09-01", "completed": True}] * 3)
+    note = _why_nothing_scored(kept, kept)
+    assert "the scorer's to explain" in note
+
+
+def test_a_cumulative_source_is_differenced_and_summed(store):
+    """The whole design in one pass: a feed that reports season to date, a
+    league year that spans two of them, and a score that is what the player
+    earned inside it."""
+    from datetime import timedelta
+
+    from whul.config.league import season_start
+    from whul.store import baselines as baseline_store
+
+    rostered(store, "Pete Crow-Armstrong")
+    frozen_benchmark(store)
+
+    rows = [{"player": "Pete Crow-Armstrong", "league": "NFL", "role": "QB",
+             "season": 2026, "total_points": 400.0}]
+    source = source_over(rows)
+    source.cumulative = True
+
+    opens = season_start("NFL")
+    # Day one: the baseline is taken, so nothing has been earned yet.
+    ingest.ingest(store, source, "2026-27", opens, verbose=False)
+    held = baseline_store.load(store, "2026-27", "nfl", 2026)
+    assert held["a0"]["total_points"] == 400.0
+
+    # `captured_at` is wall-clock, and this test's league year opened months
+    # ago. Stamp it as though the run really had happened on the day, which is
+    # what a season starting under this code would do.
+    store.conn.execute(
+        "UPDATE stat_baselines SET captured_at = ?", (f"{opens.isoformat()}T09:00:00",))
+    store.conn.commit()
+
+    # Later, on a bigger season-to-date figure, the contribution is the growth.
+    rows[0]["total_points"] = 520.0
+    later = source_over(rows)
+    later.cumulative = True
+    ingest.ingest(store, later, "2026-27", opens + timedelta(days=20), verbose=False)
+
+    stats = store.query("SELECT stats FROM raw_stats ORDER BY as_of DESC")
+    assert "120" in stats.loc[0, "stats"], "520 season-to-date minus a 400 baseline"
+
+
+def test_a_late_baseline_is_reported_rather_than_used(store):
+    """Subtracting one taken weeks in would credit a manager with none of what
+    their player did in between, and the standings would just look low."""
+    rostered(store, "Pete Crow-Armstrong")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Pete Crow-Armstrong", "league": "NFL", "role": "QB",
+         "season": 2026, "total_points": 400.0}])
+    source.cumulative = True
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 20), verbose=False)
+    assert any("recorded but not subtracted" in p for p in report.problems)
+
+
+def test_a_league_year_spanning_two_feed_seasons_is_summed_not_split(store):
+    """MLS runs inside a calendar year, so a league year opening in August
+    holds a club through the tail of one season and the front of the next. The
+    feed files those halves separately. Left split they are two feed rows for
+    one roster slot, which the resolver holds back as ambiguous -- the club
+    would score nothing at all."""
+    source = source_over(
+        [{"team": "Inter Miami", "league": "MLS", "season": 2026,
+          "date": "2026-09-01", "matches_played": 8, "total_points": 30.0},
+         {"team": "Inter Miami", "league": "MLS", "season": 2027,
+          "date": "2027-03-08", "matches_played": 5, "total_points": 18.0}],
+        key="mls", league="MLS", asset_type="Team",
+        seasons_for=lambda day: [2026, 2027],
+    )
+    rostered(store, "Inter Miami", league="MLS", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2027, 3, 15), verbose=False)
+
+    assert report.pulled == 1
+    assert report.matched == 1
+    assert not report.resolution.ambiguous
+    held = store.query(
+        "SELECT stats FROM raw_stats WHERE league = 'MLS'"
+    )
+    import json
+    figures = json.loads(held.loc[0, "stats"])
+    assert figures["total_points"] == 48.0
+    assert figures["matches_played"] == 13
+
+
+def test_one_feed_season_is_left_exactly_as_it_came(store):
+    """The summing must not fire on the ordinary case. A single season's rows
+    pass through untouched, including a club that legitimately has one row."""
+    source = source_over(
+        [{"team": "Arsenal", "league": "Premier League", "season": 2027,
+          "date": "2026-08-22", "total_points": 40.0}],
+        key="epl", league="Premier League", asset_type="Team",
+        seasons_for=lambda day: [2027],
+    )
+    rostered(store, "Arsenal", league="Premier League", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert report.pulled == 1
+
+
+def test_a_league_that_has_not_reached_the_year_is_not_fetched(store):
+    """The NBA has not tipped off when the league year opens in August. An
+    empty season list is the true answer, and pulling anyway would return an
+    empty frame that reads exactly like a broken adapter."""
+    asked = []
+
+    def build():
+        def load(seasons):
+            asked.append(list(seasons))
+            return pd.DataFrame()
+        return load, (lambda raw: raw)
+
+    source = FakeSource(
+        key="nba-teams", league="NBA", asset_type="Team",
+        build=build, seasons_for=lambda day: [],
+    )
+    rostered(store, "Boston Celtics", league="NBA", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 5), verbose=False)
+
+    assert asked == []
+    assert any("has been played inside this league year yet" in p for p in report.problems)
