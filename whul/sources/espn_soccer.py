@@ -198,8 +198,11 @@ def load_squad(
     rows = []
     for athlete in _athletes(payload):
         stats = _stats(athlete)
-        if not stats:
-            continue
+        # A squad player with no statistics block has not appeared. He is still
+        # emitted, as zeroes, because "in the squad and yet to play" and "the
+        # feed does not know this name" are different problems with different
+        # fixes -- and dropping him makes them read identically. He scores
+        # nothing either way, and sorts below everyone in a benchmark pool.
         appearances = stats.get(".".join(STAT_PATHS["appearances"]), 0.0)
         sub_ins = stats.get(".".join(STAT_PATHS["sub_ins"]), 0.0)
         rows.append({
@@ -262,12 +265,28 @@ def load_players(
             continue
         if verbose:
             print(f"  {league} {season}: {len(clubs)} club(s) ...", flush=True)
+        failed = []
         for club, team_id in clubs.items():
             try:
                 frames.append(load_squad(league, team_id, season, session))
             except Exception as exc:  # noqa: BLE001 -- one club, not the league
-                if verbose:
-                    print(f"    {club} failed: {type(exc).__name__}", flush=True)
+                failed.append((club, type(exc).__name__))
+        if not verbose or not failed:
+            continue
+        # Every club failing is one fact, not thirty. Thirty lines of HTTPError
+        # read like a broken adapter; what they actually mean is that a season
+        # has not been played, and the endpoint says so by 404ing every roster
+        # in it while still listing the clubs.
+        if len(failed) == len(clubs):
+            print(f"    every club failed ({failed[0][1]}). ESPN lists the clubs "
+                  f"for {roster_season(league, season)} but has no roster in it, "
+                  f"which is what a season nobody has played looks like.",
+                  flush=True)
+        else:
+            for club, kind in failed[:8]:
+                print(f"    {club} failed: {kind}", flush=True)
+            if len(failed) > 8:
+                print(f"    ... and {len(failed) - 8} more", flush=True)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)

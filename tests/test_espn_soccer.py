@@ -113,14 +113,21 @@ def test_a_goalkeepers_extra_category_does_not_shift_the_others(monkeypatch):
     assert row["matches"] == 1 and row["goals"] == 0 and row["position"] == "G"
 
 
-def test_a_player_who_never_appeared_is_left_out(monkeypatch):
-    """Nine of Arsenal's thirty-six carried no statistics block. Nothing to
-    report is not the same as a row of zeroes claiming a season."""
-    assert "Never Played" not in set(squad(monkeypatch)["player"])
+def test_a_player_who_never_appeared_is_kept_as_a_zero(monkeypatch):
+    """Nine of Arsenal's thirty-six carried no statistics block. Leaving them
+    out made "in the squad, yet to play" indistinguishable from "the feed does
+    not know this name", and the first live run reported both as "no feed row"
+    -- Musiala injured, and four MLS players whose season had not started.
+
+    They are different problems with different fixes, so they read differently
+    now. Both still score nothing."""
+    assert "Never Played" in set(squad(monkeypatch)["player"])
 
 
 def test_athletes_are_found_though_soccer_groups_them_by_position(monkeypatch):
-    assert len(squad(monkeypatch)) == 2
+    """Three groups, one athlete each: a defender, a keeper, and a squad player
+    yet to appear."""
+    assert len(squad(monkeypatch)) == 3
 
 
 # --- the season the feed thinks it answered with ---------------------------
@@ -149,12 +156,24 @@ def test_the_season_label_is_read_wherever_it_is(block, expected):
     {"athletes": []},
     {"athletes": [{"items": []}]},
     {},
+])
+def test_a_payload_with_no_athletes_yields_nothing(monkeypatch, payload):
+    assert squad(monkeypatch, payload).empty
+
+
+@pytest.mark.parametrize("payload", [
     {"athletes": [{"items": [{"displayName": "X", "statistics": ["oddly a list"]}]}]},
     {"athletes": [{"items": [{"displayName": "Y", "statistics": {"splits": None}}]}]},
+    {"athletes": [{"items": [{"displayName": "Z", "statistics": 42}]}]},
 ])
-def test_an_unexpected_payload_yields_nothing_rather_than_raising(monkeypatch, payload):
-    """One club must not take a league down with it."""
-    assert squad(monkeypatch, payload).empty
+def test_a_statistics_block_this_cannot_read_does_not_raise(monkeypatch, payload):
+    """One club must not take a league down with it. The player comes through
+    on zeroes, which is what an unreadable block and an absent one both mean
+    here -- there is no way to tell them apart, and inventing a difference
+    would be worse than treating them alike."""
+    out = squad(monkeypatch, payload)
+    assert len(out) == 1
+    assert out.iloc[0]["matches"] == 0 and out.iloc[0]["goals"] == 0
 
 
 def test_a_club_that_fails_costs_that_club_only(monkeypatch):
@@ -295,3 +314,64 @@ def test_a_shifted_season_is_announced(capsys):
     benchmark_sources._check_season_convention(
         "epl", pd.DataFrame([{"season": 2027, "season_said": "2026-27 EPL"}]))
     assert "different season" not in capsys.readouterr().out
+
+
+# --- yet to play, against not known --------------------------------------
+
+def test_a_squad_player_who_has_not_appeared_is_a_zero_not_an_absence(monkeypatch):
+    """Dropping him made "in the squad, yet to play" read identically to "the
+    feed does not know this name" -- different problems with different fixes,
+    and the run reported both as "no feed row". Musiala and Balogun were the
+    first two."""
+    payload = {**ROSTER, "athletes": [{"items": [TIMBER, BENCHED]}]}
+    out = squad(monkeypatch, payload).set_index("player")
+    assert "Never Played" in out.index
+    row = out.loc["Never Played"]
+    assert row["matches"] == 0 and row["starts"] == 0 and row["goals"] == 0
+
+
+def test_a_player_yet_to_play_scores_nothing(monkeypatch):
+    from whul.scoring import soccer
+
+    payload = {**ROSTER, "athletes": [{"items": [BENCHED]}]}
+    rows = squad(monkeypatch, payload).assign(league="Premier League")
+    assert soccer.score_players(rows).iloc[0]["total_points"] == 0
+
+
+def test_a_whole_league_failing_is_reported_as_one_fact(monkeypatch, capsys):
+    """MLS 2027 has not been played, so ESPN lists its clubs and 404s every
+    roster in it. Thirty lines of HTTPError read like a broken adapter."""
+    from whul.sources import espn_soccer as source
+
+    monkeypatch.setattr(source, "team_ids",
+                        lambda league, season, session=None:
+                        {f"Club {i}": str(i) for i in range(30)})
+
+    def gone(league, team_id, season, session=None):
+        raise RuntimeError("404")
+
+    monkeypatch.setattr(source, "load_squad", gone)
+    assert source.load_players("mls", [2027]).empty
+    out = capsys.readouterr().out
+    assert "every club failed" in out
+    assert "season nobody has played" in out
+    assert out.count("failed") == 1
+
+
+def test_some_clubs_failing_still_names_them(monkeypatch, capsys):
+    """One club down is a different thing from a season that does not exist,
+    and the club is worth naming."""
+    from whul.sources import espn_soccer as source
+
+    monkeypatch.setattr(source, "team_ids",
+                        lambda league, season, session=None: {"A": "1", "B": "2"})
+
+    def flaky(league, team_id, season, session=None):
+        if team_id == "1":
+            raise RuntimeError("gateway timeout")
+        return pd.DataFrame([{"player": "Someone"}])
+
+    monkeypatch.setattr(source, "load_squad", flaky)
+    source.load_players("epl", [2027])
+    out = capsys.readouterr().out
+    assert "A failed" in out and "every club failed" not in out
