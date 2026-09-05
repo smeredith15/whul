@@ -46,6 +46,61 @@ if [ "${BEHIND:-0}" -gt 0 ]; then
     echo "!! Run: git pull"
     exit 1
 fi
+# And which database. The last step force-pushes the local file over the `data`
+# branch, and the nightly workflow writes that branch too -- so a local copy
+# that has not been refreshed since the workflow last ran would silently throw
+# away every day it recorded in between. The code check above catches a stale
+# checkout; this catches a stale database, which looks identical afterwards.
+step "the database this deploy would publish"
+if git fetch --quiet origin data 2>/dev/null && \
+   git cat-file -e origin/data:data/whul.sqlite3 2>/dev/null; then
+    THEIRS=$(mktemp) || exit 1
+    git show origin/data:data/whul.sqlite3 > "$THEIRS" || exit 1
+    "$PY" - "$THEIRS" data/whul.sqlite3 "$SEASON" <<'DBCHECK'
+import sqlite3
+import sys
+
+theirs, ours, season = sys.argv[1], sys.argv[2], sys.argv[3]
+
+
+def days(path):
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        return {r[0] for r in db.execute(
+            "SELECT DISTINCT as_of FROM daily_scores WHERE season = ?", (season,))}
+    except sqlite3.Error:
+        return set()
+
+
+here, there = days(ours), days(theirs)
+missing = sorted(there - here)
+print(f"  local {len(here)} day(s), data branch {len(there)}")
+if not missing:
+    print("  nothing on the branch that is not here; safe to publish over it")
+    raise SystemExit(0)
+shown = ", ".join(missing[:6]) + (" ..." if len(missing) > 6 else "")
+print()
+print(f"  !! The data branch has {len(missing)} day(s) this copy does not: {shown}")
+print("  !! Publishing would force-push over them and they are not recomputable")
+print("  !! -- a feed reports today, not last Tuesday.")
+print()
+print("  Refresh this copy first, keeping whatever you computed here:")
+print()
+print("      git fetch origin data")
+print("      git show origin/data:data/whul.sqlite3 > data/whul.sqlite3")
+print()
+print("  A benchmark draft computed locally lives in this file and would be")
+print("  lost by that. Freeze and publish it BEFORE refreshing, or recompute")
+print("  it after -- `benchmarks versions` says whether you have one.")
+raise SystemExit(1)
+DBCHECK
+    rc=$?
+    rm -f "$THEIRS"
+    [ "$rc" -ne 0 ] && exit 1
+else
+    echo "  no data branch yet, or it carries no database -- nothing to lose"
+fi
+
 "$PY" - <<'CHECK'
 from whul.config.league import SEASON, season_start
 from whul.scoring.proration import built_in_rule
