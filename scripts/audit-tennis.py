@@ -83,6 +83,116 @@ INTERNATIONAL_PER_WIN = 50.0
 RULE = "-" * 78
 
 
+#: How many times a round is played on the way to the title. One, everywhere
+#: except the Tour Finals, where the round robin is three matches -- so its
+#: column does not sum to the face value and is not supposed to. Getting this
+#: wrong made the check report the table as broken when the check was.
+ROUND_MATCHES = {"RR": 3}
+
+#: What a champion is worth at each tier. Each column, with a round counted as
+#: many times as it is played, must come to this. It is the arithmetic check
+#: that the table is right rather than merely self-consistent.
+FACE_VALUE = {
+    "GS": 2000, "M1000_128": 1000, "M1000_64": 1000,
+    "A500_32": 500, "A500_64": 500, "A250_32": 250, "A250_64": 250,
+    "FINALS": 1500,
+}
+
+TIER_NAMES = {
+    "GS": "Grand Slam",
+    "M1000_128": "Masters 1000, 96-draw (128 bracket)",
+    "M1000_64": "Masters 1000, 56-draw (64 bracket)",
+    "A500_32": "ATP/WTA 500, 32-draw",
+    "A500_64": "ATP/WTA 500, 48-draw (64 bracket)",
+    "A250_32": "ATP/WTA 250, 32-draw",
+    "A250_64": "ATP/WTA 250, 48-draw (64 bracket)",
+    "FINALS": "Tour Finals (round robin, then knockout)",
+}
+
+
+def show_rules():
+    """Print the whole scoring system, and check it against itself."""
+    print(RULE)
+    print("TENNIS SCORING, AS THIS SCRIPT UNDERSTANDS IT")
+    print(RULE)
+    print("""
+  Only wins score. A loss is worth nothing, and is recorded only so a player
+  who went out in the first round reads as having played rather than as absent.
+
+  A win pays the ATP ranking points for the round it was won in -- the same
+  table for both tours. The figures below are INCREMENTS, not totals: winning
+  the fourth round pays what reaching the quarter-final adds, so a champion's
+  total is the whole column added up.
+""")
+    columns = [t for t in TIER_NAMES if t in WIN_POINTS]
+    rounds = [r for r in ROUND_ORDER if r != "W"]
+    width = 11
+    print(f"    {'round':<7}" + "".join(f"{t:>{width}}" for t in columns))
+    for round_name in rounds:
+        cells = "".join(
+            f"{WIN_POINTS[t].get(round_name, ''):>{width}}" if WIN_POINTS[t].get(round_name)
+            else f"{'-':>{width}}"
+            for t in columns
+        )
+        print(f"    {round_name:<7}{cells}")
+    print(f"    {'-' * (7 + width * len(columns))}")
+    def champion(tier: str) -> float:
+        return sum(points * ROUND_MATCHES.get(r, 1)
+                   for r, points in WIN_POINTS[tier].items())
+
+    totals = "".join(f"{champion(t):>{width},.0f}" for t in columns)
+    print(f"    {'CHAMPION':<7}{totals}")
+    checks = "".join(
+        f"{('ok' if abs(champion(t) - FACE_VALUE[t]) < 0.01 else 'WRONG'):>{width}}"
+        for t in columns
+    )
+    print(f"    {'vs face':<7}{checks}")
+    print(f"\n    The Tour Finals round robin is three matches, so its column is"
+          f"\n    counted three times over: 3 x 200 + 400 + 500 = 1,500.")
+    print()
+    for key in columns:
+        print(f"      {key:<12}{TIER_NAMES[key]}")
+
+    print(f"""
+  STRAIGHT SETS
+    A win in straight sets is worth more the more sets it skipped, because
+    that is what it saved:
+
+      best of five, won in three   x {BONUS_BEST_OF_FIVE}    (two sets skipped)
+      best of three, won in two    x {BONUS_BEST_OF_THREE}   (one set skipped)
+
+    Only ATP main-draw matches at a Grand Slam are best of five. The WTA plays
+    best of three everywhere, and no other tier plays five on either tour.
+
+  BYES
+    A bye is the absence of a result in the preceding round -- not a flag in
+    the feed, which is why it also covers a 96-draw where 32 seeds skip the
+    opening round without a bye ever being recorded. Per ATP rules the skipped
+    round's points come with the next win, so a seed's first win at a 96-draw
+    Masters pays R64 (20) plus the R128 bye credit (30) = 50, putting them on
+    the same 1000 as an unseeded champion who played every round.
+
+  TEAM EVENTS
+    Davis Cup, Billie Jean King Cup and the United Cup pay a flat {INTERNATIONAL_PER_WIN:.0f}
+    per win. Their ties are not knockout rounds in the sense the table assumes
+    and their draws are not comparable to a tour event's.
+
+  QUALIFYING
+    Never scored. Qualifying rounds are recognised only so they can be dropped
+    rather than falling through to a main-draw round.
+
+  WHAT THIS SCRIPT CANNOT CHECK
+    The stored finish keeps the round reached and the points, not the match
+    scores or the draw size -- so it cannot verify a straight-sets bonus or a
+    bye credit directly. It checks the range those can produce: the floor is
+    every round before this one won with no bonus, the ceiling is that round
+    won too and every win in straight sets. A total outside the range is wrong;
+    one inside it is consistent with the rules but not proof of them.
+""")
+
+
+
+
 def parse_label(label: str):
     """``ATP US Open Grand Slam R32`` -> tour, tournament, tier key, round."""
     text = str(label).strip()
@@ -183,7 +293,20 @@ class Audit:
 
     def opens(self, tour):
         from whul.config.league import season_start
-        return season_start(tour)
+        return season_start(tour or "Tennis")
+
+    def in_window(self, tour, finishes):
+        """Only what falls inside the league year as it is defined *now*.
+
+        Audited against the rule rather than against what the pipeline last
+        wrote. The boundary moved -- windows are inclusive at both ends, so a
+        start on the 23rd was keeping a Cincinnati final played on the 23rd,
+        which belongs to the season that had just finished -- and a stored total
+        computed under the old date is stale, not wrong arithmetic.
+        """
+        opens = self.opens(tour).isoformat()
+        inside = [f for f in finishes if str(f.get("date", ""))[:10] >= opens]
+        return inside, [f for f in finishes if f not in inside]
 
     def rows(self):
         frame = self.store.query(
@@ -248,7 +371,12 @@ class Audit:
                 "from before the roster was reimported", "",
             ))
 
-        finishes = stats.get("finishes") or []
+        finishes, before = self.in_window(tour, stats.get("finishes") or [])
+        for finish in before:
+            print(f"\n  excluded, played before the league year opened "
+                  f"{self.opens(tour)}:")
+            print(f"    {str(finish.get('date'))[:10]}  {finish.get('label')}"
+                  f"  ({float(finish.get('points') or 0):,.1f} points)")
         if not finishes:
             print("\n  no tournaments inside the league year yet")
             return
@@ -279,10 +407,19 @@ class Audit:
 
         stored_total = stats.get("total_points")
         if stored_total is not None and abs(total - float(stored_total)) > 0.01:
-            flags.append((
-                "the finishes do not sum to the stored total",
-                f"{total:,.1f} vs {float(stored_total):,.1f}",
-            ))
+            excluded = sum(float(f.get("points") or 0) for f in before)
+            if before and abs(total + excluded - float(stored_total)) < 0.01:
+                flags.append((
+                    "the stored score predates the league year's start moving to "
+                    f"{self.opens(tour)}; rerunning the pipeline restates it",
+                    f"{float(stored_total):,.1f} stored, {total:,.1f} under the "
+                    f"boundary as it stands",
+                ))
+            else:
+                flags.append((
+                    "the finishes do not sum to the stored total",
+                    f"{total:,.1f} vs {float(stored_total):,.1f}",
+                ))
 
         flags += self.check_shrinkage(asset_id, total)
         scaled = self.normalize(total, tour)
@@ -423,9 +560,11 @@ class Audit:
         seen: dict[str, list[tuple[str, float, int, int]]] = {}
         for row in frame.itertuples():
             stats = json.loads(row.stats)
+            inside, _ = self.in_window(str(stats.get("league", "")),
+                                       stats.get("finishes") or [])
             seen.setdefault(str(row.display_name), []).append((
-                str(row.asset_id), float(stats.get("total_points") or 0.0),
-                len(stats.get("finishes") or []), int(row.in_a_slot),
+                str(row.asset_id), sum(float(f.get("points") or 0) for f in inside),
+                len(inside), int(row.in_a_slot),
             ))
 
         doubled = {n: v for n, v in seen.items() if len(v) > 1}
@@ -435,8 +574,9 @@ class Audit:
 
         disagree = {n: v for n, v in doubled.items()
                     if len({round(t, 2) for _, t, _, _ in v}) > 1}
-        print(f"  {len(doubled)} player(s) have more than one asset scoring today. "
-              f"{len(disagree)} disagree.\n")
+        print(f"  {len(doubled)} player(s) have more than one asset scoring today, "
+              f"{len(disagree)} of them\n  differently once the league year's own "
+              f"boundary is applied.\n")
         for name, entries in sorted(doubled.items()):
             if name not in disagree:
                 continue
@@ -515,7 +655,13 @@ def main():
     ap.add_argument("--as-of", default=None)
     ap.add_argument("--tour", default=None, choices=["ATP", "WTA", "atp", "wta"])
     ap.add_argument("--player", default=None)
+    ap.add_argument("--rules", action="store_true",
+                    help="print the scoring system and stop")
     args = ap.parse_args()
+
+    if args.rules:
+        show_rules()
+        return
 
     audit = Audit(args.db, args.as_of, args.tour, args.player)
     audit.header()
