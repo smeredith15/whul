@@ -186,13 +186,48 @@ COMMIT=$(git commit-tree "$TREE" \
 
 pushed=0
 for wait in 2 4 8 16; do
-    if git push -f origin "$COMMIT:refs/heads/data"; then pushed=1; break; fi
+    OUT=$(git push -f origin "$COMMIT:refs/heads/data" 2>&1) && { pushed=1; break; }
+    echo "$OUT"
+    # A refused credential is not a blip. Retrying it four times just prints the
+    # same failure four times and buries the one line that says what to do.
+    if printf '%s' "$OUT" | grep -qiE 'Authentication failed|could not read Username|no anonymous write|invalid credentials'; then
+        cat <<'AUTH'
+
+Git could not authenticate, so the retries are pointless -- this is a
+credential problem, not a network one. Everything before this step worked:
+the scale is frozen, the standings are rolled up, and the site is built in
+./site, which you can read right now with
+
+    python -m http.server -d site 8000
+
+To finish, git needs to be able to push. Two ways, quickest first:
+
+  1. If this is a VS Code / Code OSS terminal and the error mentions a
+     vscode-git socket, its credential helper has gone stale. Reload the
+     window (Command Palette -> "Developer: Reload Window"), open a fresh
+     terminal, and run this script again.
+
+  2. Otherwise use a personal access token with Contents: read and write on
+     this repository. Held in memory for an hour, never written to disk:
+
+         git config --global credential.helper 'cache --timeout=3600'
+         git push origin HEAD          # username, then the token as password
+
+     Then re-run this script. `INGEST_ONLY=1 ./scripts/deploy.sh` skips
+     straight past the freeze, which has already happened.
+
+AUTH
+        exit 1
+    fi
     echo "push failed; retrying in ${wait}s"
     sleep "$wait"
 done
 
 if [ "$pushed" != "1" ]; then
-    echo "Could not push the database. The site was built locally at ./site"
+    echo
+    echo "Could not push the database after four attempts. The site was built"
+    echo "locally at ./site, and nothing before this step was lost -- re-run"
+    echo "with INGEST_ONLY=1 once the push works."
     exit 1
 fi
 
