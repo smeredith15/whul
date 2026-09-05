@@ -140,13 +140,17 @@ def combine_seasons(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
         else:
             numeric.append(column)
 
-    summed = frame.groupby(present, as_index=False)[numeric].sum(min_count=1) \
+    # ``dropna=False``: a blank conference or a missing role is a key value
+    # like any other, and dropping those rows would lose the asset entirely.
+    summed = frame.groupby(present, as_index=False, dropna=False)[numeric] \
+        .sum(min_count=1) \
         if numeric else frame[present].drop_duplicates()
     if carried:
         # The first value wins for anything that does not add: a name is the
-        # same in both halves, and a season number is deliberately dropped --
-        # the row now spans two of them and naming one would be a lie.
-        first = frame.groupby(present, as_index=False)[carried].first()
+        # same in both halves, and a season number keeps the earlier of the two
+        # -- the row now spans both, and the earlier one is where the league
+        # year's share of this asset started.
+        first = frame.groupby(present, as_index=False, dropna=False)[carried].first()
         summed = summed.merge(first, on=present, how="left")
     return summed.reset_index(drop=True)
 

@@ -460,12 +460,65 @@ def _tennis_players():
     return lambda seasons: snapshot.load_matches(seasons), tennis.match_events
 
 
-def _espn_seasons(key: str):
-    """This feed numbers some seasons by the year they end in."""
+#: How the feeds that are not ESPN number their seasons, for the leagues whose
+#: play crosses new year. Without these the season asked for is the calendar
+#: year, which is the right answer for only part of the league year:
+#:
+#:   NFL  -- nflverse names a season for the year it starts, so from January
+#:           the calendar year asks for *next* season and the playoffs and the
+#:           Super Bowl return nothing.
+#:   NHL  -- the API names a season for the year it ends, so from the league
+#:           year's opening until December the calendar year asks for the
+#:           season that just finished. Its summaries are aggregates with no
+#:           date on them, so nothing downstream would drop them: every player
+#:           would be credited with a complete previous season.
+#:
+#: Both are silent. One understates, the other overstates, and neither raises.
+FEED_WINDOWS: dict[str, tuple[tuple[int, int], tuple[int, int], str]] = {
+    # From August so the preseason weeks nflverse already publishes are inside
+    # the window, rather than the league reading as "not started" in late August.
+    "nfl": ((8, 1), (2, 20), "starts"),
+    "nhl": ((10, 1), (6, 30), "ends"),
+}
+
+
+def _feed_seasons(feed: str, league: str):
+    """Every season a non-ESPN feed numbers that the league year touches."""
     def seasons(day: date) -> list[int]:
+        from whul.config.league import SEASON, season_start
+        from whul.sources import season_window
+
+        return season_window.overlapping(
+            FEED_WINDOWS[feed], season_start(league), min(day, SEASON.end)
+        )
+
+    return seasons
+
+
+def _espn_seasons(key: str, league: str = ""):
+    """Every season this feed numbers that the league year touches.
+
+    Usually one: a season running August to May sits inside a league year that
+    does the same. Two for the leagues playing inside a calendar year -- MLS
+    and the NWSL -- whose league year catches the tail of one season and the
+    front of the next, and two again for any league in the last weeks of the
+    year, when the next season has kicked off before the year is out. Computed
+    from the season windows rather than listed, so a league added later is
+    right without anyone remembering this.
+
+    An empty list is a real answer: the league has not played inside this
+    league year yet. It is not the same as a feed with nothing in it, and
+    ``_pull`` says which.
+    """
+    def seasons(day: date) -> list[int]:
+        from whul.config.league import SEASON, season_start
         from whul.sources import espn
 
-        return [espn.season_label(key, day)]
+        # The league's own start where it has one, because a competition that
+        # was already under way when the year opened counts from its own first
+        # matchday -- and a season may overlap only that earlier stretch.
+        opens = season_start(league) if league else SEASON.start
+        return espn.seasons_overlapping(key, opens, min(day, SEASON.end))
 
     return seasons
 
@@ -487,8 +540,10 @@ def _register(*sources: Source) -> dict[str, Source]:
 
 SOURCES: dict[str, Source] = _register(
     Source("nfl", "NFL", "Player", _nfl_players, reliability="verified",
+           seasons_for=_feed_seasons("nfl", "NFL"),
            note="nflverse release parquet; the only source reachable without a proxy"),
-    Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified"),
+    Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified",
+           seasons_for=_feed_seasons("nfl", "NFL")),
     Source("mlb", "MLB", "Player", _mlb_players, live=_mlb_players_live,
            post_normalize=_mlb_two_way, cumulative=True,
            seasons_for=_league_year_seasons,
@@ -498,13 +553,16 @@ SOURCES: dict[str, Source] = _register(
            seasons_for=_league_year_seasons,
            note="a live contract year is scored on the half already played"),
     Source("nba", "NBA", "Player", _nba_players,
+           seasons_for=_espn_seasons("nba", "NBA"),
            note="ESPN box scores, one date at a time -- slow to backfill"),
     Source("nba-teams", "NBA", "Team", _nba_teams,
-           seasons_for=_espn_seasons("nba"),
+           seasons_for=_espn_seasons("nba", "NBA"),
            note="ESPN scoreboard; hoopR's archive stops at 2023"),
     Source("nhl", "NHL", "Player", _nhl_players, scale_for="NHL",
+           seasons_for=_feed_seasons("nhl", "NHL"),
            note="82-game history lifted to the 84-game 2026-27 season"),
-    Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL"),
+    Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL",
+           seasons_for=_feed_seasons("nhl", "NHL")),
     Source("pga", "PGA", "Player", _pga_players, windowed=True),
     Source("motorsports", "Motorsports", "Player", _motorsports_players, windowed=True,
            produces=("F1", "NASCAR"),
@@ -515,18 +573,24 @@ SOURCES: dict[str, Source] = _register(
     *[
         Source(key, category, "Team", _ncaa(key, category),
                live=_ncaa_live(key, category), roster_scoped=True,
-               seasons_for=_espn_seasons(key))
+               seasons_for=_espn_seasons(key, category))
         for key, category in NCAA_CATEGORIES.items()
     ],
     *[
         Source(key, category, "Team", _soccer(key, category),
-               seasons_for=_espn_seasons(key))
+               seasons_for=_espn_seasons(key, category))
         for key, category in SOCCER_CATEGORIES.items()
     ],
+    # The seasons asked for are the European shape only. MLS runs inside a
+    # calendar year and so spans two of them, but this source is a season
+    # aggregate with no per-match date, so asking for both would add a whole
+    # season that falls outside the league year rather than the share of it
+    # that belongs here. Overstating is worse than the gap, so the MLS half
+    # waits for a dated source -- which this one needs anyway, being 403.
     Source("soccer-players", "Club Soccer", "Player", _soccer_players,
            produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
                      "Ligue 1", "MLS"),
-           seasons_for=_espn_seasons("epl"),
+           seasons_for=_espn_seasons("epl", "Premier League"),
            note="FBref Big 5 in one request per season, plus MLS; "
                 "six benchmarks, each league against itself"),
 )

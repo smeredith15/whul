@@ -311,6 +311,17 @@ def _pull(
     live = source.live is not None
     load, score = (source.live or source.build)()
     seasons = source.seasons_for(as_of) if source.seasons_for else [as_of.year]
+    if source.seasons_for and not seasons:
+        # No season of this league falls inside the league year so far. Asking
+        # the feed anyway would get an empty answer that reads exactly like a
+        # broken adapter, so say the true thing instead of fetching nothing.
+        if notes is not None:
+            notes.append(
+                f"no {source.league} season has been played inside this "
+                f"league year yet (it opened {season_start(source.league)}); "
+                f"nothing to pull"
+            )
+        return pd.DataFrame()
     # A roster-scoped loader is asked only for what the roster holds, which for
     # a team league is eight requests rather than a season of dates.
     fetch = (
@@ -326,6 +337,8 @@ def _pull(
         scored = score(kept)
         if (scored is None or scored.empty) and notes is not None:
             notes.append(_why_nothing_scored(raw, kept))
+        if not getattr(source, "cumulative", False):
+            scored = _across_feed_seasons(scored)
         return scored
 
     # A continuously running sport accrues over the league year, not the
@@ -347,6 +360,43 @@ def _pull(
         totals = window.window_totals(rows, [current])
         frames.append(_with_finishes(totals.assign(season=current.label), rows, current))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+#: Columns that say *which* asset a row is about, as the several scorers name
+#: them. Anything else numeric is a quantity, and quantities are what add.
+IDENTITY_COLUMNS = (
+    "league", "team", "team_name", "club", "player", "player_id", "role",
+    "_phase",
+)
+
+
+def _across_feed_seasons(scored: pd.DataFrame) -> pd.DataFrame:
+    """Sum the feed's seasons into the one league year that spans them.
+
+    A league year opening in August catches the tail of an MLS season and the
+    front of the next, and the same is true of any league in the year's closing
+    weeks. The feed reports those halves separately, and the manager held the
+    club through both, so they are added.
+
+    Before resolution rather than after, because a club that arrives as two
+    rows is *ambiguous* to the resolver -- two feed rows for one roster slot --
+    and would be held back and score nothing at all. The season split is an
+    artefact of how the feed files results, not two different clubs.
+
+    Cumulative sources are the exception and are summed later: their halves
+    have to be differenced against a baseline first, which needs the asset id
+    resolution has not attached yet.
+    """
+    from whul.store import baselines as baseline_store
+
+    if scored is None or scored.empty or "season" not in scored.columns:
+        return scored
+    if scored["season"].nunique() <= 1:
+        return scored
+    keys = [c for c in IDENTITY_COLUMNS if c in scored.columns]
+    if not keys:
+        return scored
+    return baseline_store.combine_seasons(scored, keys)
 
 
 def _with_finishes(totals: pd.DataFrame, events: pd.DataFrame, current) -> pd.DataFrame:

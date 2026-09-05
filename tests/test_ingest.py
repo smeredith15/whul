@@ -35,9 +35,10 @@ def store():
 def rostered(store, *names, league="NFL", season="2026-27", asset_type="Player"):
     rosters.add_manager(store, "TG")
     rosters.create_slots(store, "TG", season)
-    category = {"NFL": "NFL", "Tennis": "Tennis", "NCAAF": "NCAAF"}.get(
-        league, "Club Soccer Top 3" if "Premier" in league else "Tennis"
-    )
+    category = {
+        "NFL": "NFL", "Tennis": "Tennis", "NCAAF": "NCAAF", "NBA": "NBA",
+        "MLS": "Club Soccer Other", "NWSL": "Club Soccer Other",
+    }.get(league, "Club Soccer Top 3" if "Premier" in league else "Tennis")
     slots = store.query(
         "SELECT slot_id FROM roster_slots WHERE season = ? AND asset_type = ? "
         "AND category = ?",
@@ -477,3 +478,69 @@ def test_a_late_baseline_is_reported_rather_than_used(store):
 
     report = ingest.ingest(store, source, "2026-27", date(2026, 9, 20), verbose=False)
     assert any("recorded but not subtracted" in p for p in report.problems)
+
+
+def test_a_league_year_spanning_two_feed_seasons_is_summed_not_split(store):
+    """MLS runs inside a calendar year, so a league year opening in August
+    holds a club through the tail of one season and the front of the next. The
+    feed files those halves separately. Left split they are two feed rows for
+    one roster slot, which the resolver holds back as ambiguous -- the club
+    would score nothing at all."""
+    source = source_over(
+        [{"team": "Inter Miami", "league": "MLS", "season": 2026,
+          "date": "2026-09-01", "matches_played": 8, "total_points": 30.0},
+         {"team": "Inter Miami", "league": "MLS", "season": 2027,
+          "date": "2027-03-08", "matches_played": 5, "total_points": 18.0}],
+        key="mls", league="MLS", asset_type="Team",
+        seasons_for=lambda day: [2026, 2027],
+    )
+    rostered(store, "Inter Miami", league="MLS", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2027, 3, 15), verbose=False)
+
+    assert report.pulled == 1
+    assert report.matched == 1
+    assert not report.resolution.ambiguous
+    held = store.query(
+        "SELECT stats FROM raw_stats WHERE league = 'MLS'"
+    )
+    import json
+    figures = json.loads(held.loc[0, "stats"])
+    assert figures["total_points"] == 48.0
+    assert figures["matches_played"] == 13
+
+
+def test_one_feed_season_is_left_exactly_as_it_came(store):
+    """The summing must not fire on the ordinary case. A single season's rows
+    pass through untouched, including a club that legitimately has one row."""
+    source = source_over(
+        [{"team": "Arsenal", "league": "Premier League", "season": 2027,
+          "date": "2026-08-22", "total_points": 40.0}],
+        key="epl", league="Premier League", asset_type="Team",
+        seasons_for=lambda day: [2027],
+    )
+    rostered(store, "Arsenal", league="Premier League", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert report.pulled == 1
+
+
+def test_a_league_that_has_not_reached_the_year_is_not_fetched(store):
+    """The NBA has not tipped off when the league year opens in August. An
+    empty season list is the true answer, and pulling anyway would return an
+    empty frame that reads exactly like a broken adapter."""
+    asked = []
+
+    def build():
+        def load(seasons):
+            asked.append(list(seasons))
+            return pd.DataFrame()
+        return load, (lambda raw: raw)
+
+    source = FakeSource(
+        key="nba-teams", league="NBA", asset_type="Team",
+        build=build, seasons_for=lambda day: [],
+    )
+    rostered(store, "Boston Celtics", league="NBA", asset_type="Team")
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 5), verbose=False)
+
+    assert asked == []
+    assert any("has been played inside this league year yet" in p for p in report.problems)
