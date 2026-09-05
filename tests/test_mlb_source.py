@@ -411,27 +411,105 @@ def test_a_range_that_was_applied_passes():
     mlb._check_range_applied(ranged, whole, "hitting", date(2026, 8, 15))
 
 
-def test_the_advanced_figures_cover_the_same_span(monkeypatch):
-    """WAR is itself a season total. A whole season of it added to six weeks of
-    hits would weight one player's WAR as heavily as another's whole summer."""
+def test_the_advanced_figures_are_cut_to_the_window(monkeypatch):
+    """WAR and the run-value components accumulate with playing time, so a
+    season of them added to three weeks of hits weights one player's whole
+    summer as heavily as another's fortnight. That is how a three-week Offense
+    of 49.5 -- a league-leading season -- reached a profile."""
     from datetime import date
 
     import pandas as pd
 
     from whul.sources import mlb
 
-    asked = []
-    monkeypatch.setattr(mlb, "load_players_since",
-                        lambda s, g, since, until=None: pd.DataFrame(
-                            {"player_id": [1], "season": [s], "gamesPlayed": [20]}))
+    ranged = pd.DataFrame([
+        {"player_id": "1", "season": 2026, "gamesPlayed": 18},
+        {"player_id": "2", "season": 2026, "gamesPlayed": 2},
+    ])
+    whole = pd.DataFrame([
+        {"player_id": "1", "season": 2026, "gamesPlayed": 140},
+        {"player_id": "2", "season": 2026, "gamesPlayed": 130},
+    ])
+    # As the feed serves them: Off and Def are summed from these.
+    saber = pd.DataFrame([
+        {"player_id": "1", "batting": 45.0, "baseRunning": 4.5,
+         "fielding": 18.0, "positional": 4.5},
+        {"player_id": "2", "batting": 28.0, "baseRunning": 2.0,
+         "fielding": 8.0, "positional": 2.0},
+    ])
 
-    def saber(season, group="hitting", since=None, until=None):
-        asked.append(since)
-        return pd.DataFrame()
+    monkeypatch.setattr(mlb, "load_stats_api_players",
+                        lambda s, g, since=None, until=None: ranged if since else whole)
+    monkeypatch.setattr(mlb, "load_sabermetrics", lambda s, g="hitting": saber)
 
-    monkeypatch.setattr(mlb, "load_sabermetrics", saber)
-    mlb._merge_counting_and_advanced(2026, "hitting", date(2026, 8, 15))
-    assert asked == [date(2026, 8, 15)]
+    out = mlb._merge_counting_and_advanced(2026, "hitting", date(2026, 8, 15))
+    by_id = out.set_index("player_id")
+
+    # 18 of 140 games: a bit under a seventh of what he has earned.
+    assert by_id.loc["1", "Off"] == pytest.approx(49.5 * 18 / 140)
+    assert by_id.loc["1", "Def"] == pytest.approx(22.5 * 18 / 140)
+    # And the player who was hurt for the window keeps almost none of his.
+    assert by_id.loc["2", "Off"] == pytest.approx(30.0 * 2 / 130)
+
+
+def test_the_share_is_per_player_not_one_factor_for_the_league():
+    """A regular who played every game of the window should carry most of what
+    he earned; someone injured through it should carry almost none. One factor
+    for both hands the injured player the healthy one's runs."""
+    import pandas as pd
+
+    from whul.sources import mlb
+
+    ranged = pd.DataFrame([{"player_id": "a", "gamesPlayed": 20},
+                           {"player_id": "b", "gamesPlayed": 0}])
+    whole = pd.DataFrame([{"player_id": "a", "gamesPlayed": 100},
+                          {"player_id": "b", "gamesPlayed": 100}])
+    saber = pd.DataFrame([{"player_id": "a", "Off": 50.0},
+                          {"player_id": "b", "Off": 50.0}])
+
+    out = mlb._share_of_season(saber, ranged, whole).set_index("player_id")
+    assert out.loc["a", "Off"] == pytest.approx(10.0)
+    assert out.loc["b", "Off"] == pytest.approx(0.0)
+
+
+def test_a_share_never_exceeds_the_whole():
+    """A window cannot contain more of a season than the season has."""
+    import pandas as pd
+
+    from whul.sources import mlb
+
+    ranged = pd.DataFrame([{"player_id": "a", "gamesPlayed": 120}])
+    whole = pd.DataFrame([{"player_id": "a", "gamesPlayed": 100}])
+    saber = pd.DataFrame([{"player_id": "a", "Off": 50.0}])
+    out = mlb._share_of_season(saber, ranged, whole)
+    assert out.loc[0, "Off"] == pytest.approx(50.0)
+
+
+def test_the_share_is_carried_so_a_profile_can_say_so():
+    """A run value that looks measured and is not is the kind of number
+    somebody checks against Baseball Reference and cannot find."""
+    import pandas as pd
+
+    from whul.sources import mlb
+
+    out = mlb._share_of_season(
+        pd.DataFrame([{"player_id": "a", "Off": 50.0}]),
+        pd.DataFrame([{"player_id": "a", "gamesPlayed": 25}]),
+        pd.DataFrame([{"player_id": "a", "gamesPlayed": 100}]),
+    )
+    assert out.loc[0, "advanced_share"] == pytest.approx(0.25)
+
+
+def test_a_whole_season_pull_shares_out_nothing():
+    """Only a window needs narrowing; a full season is already the span."""
+    import pandas as pd
+
+    from whul.sources import mlb
+
+    saber = pd.DataFrame([{"player_id": "a", "Off": 50.0}])
+    out = mlb._share_of_season(saber, pd.DataFrame(), None)
+    assert out.loc[0, "Off"] == pytest.approx(50.0)
+    assert "advanced_share" not in out.columns
 
 
 def test_the_mlb_source_has_a_live_builder_distinct_from_its_history():

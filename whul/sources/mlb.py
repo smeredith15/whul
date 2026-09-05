@@ -272,14 +272,21 @@ def _merge_counting_and_advanced(
     entirely: FanGraphs blocks datacenter IPs, so it was never going to serve a
     production scraper.
     """
-    counting = (
-        load_players_since(season, group, since) if since
-        else load_stats_api_players(season, group)
-    )
+    whole = None
+    if since:
+        counting = load_stats_api_players(season, group, since=since)
+        whole = load_stats_api_players(season, group)
+        _check_range_applied(counting, whole, group, since)
+    else:
+        counting = load_stats_api_players(season, group)
+
     # The advanced figures have to cover the same span as the counting ones. WAR
-    # is itself a season total, and a whole season of it added to six weeks of
-    # hits would weight one player's WAR as heavily as another's whole summer.
-    saber = load_sabermetrics(season, group, since=since)
+    # and the run-value components accumulate with playing time, so a season of
+    # them added to three weeks of hits weights one player's whole summer as
+    # heavily as another's fortnight. The sabermetrics stat type has no
+    # date-ranged form -- it answers with the season to date whatever dates it
+    # is given -- so they are shared out across the player's own games instead.
+    saber = load_sabermetrics(season, group)
     if counting.empty:
         return counting
 
@@ -290,7 +297,8 @@ def _merge_counting_and_advanced(
         else:
             keep = ["player_id", "war"]
         keep = [c for c in keep if c in saber.columns]
-        counting = counting.merge(saber[keep], on="player_id", how="left")
+        saber = _share_of_season(saber[keep], counting, whole)
+        counting = counting.merge(saber, on="player_id", how="left")
 
     for column in ("Off", "Def", "war"):
         if column in counting.columns:
@@ -396,10 +404,56 @@ def innings_to_float(value) -> float:
         return 0.0
 
 
-def load_sabermetrics(
-    season: int, group: str = "hitting", since: date | None = None,
-    until: date | None = None,
+#: Advanced columns that accumulate with playing time, and so are shared out
+#: across a window rather than taken whole.
+ACCUMULATING = ("Off", "Def", "war")
+
+
+def _share_of_season(
+    saber: pd.DataFrame, ranged: pd.DataFrame, whole: pd.DataFrame | None
 ) -> pd.DataFrame:
+    """Cut each player's accumulated run values down to the window's games.
+
+    Per player, not by one league-wide factor: a regular who has played every
+    game of the window should carry most of what he has earned, and someone who
+    was injured for it should carry almost none. Their shares of a season are
+    nothing alike, and one factor for both would hand the injured player the
+    healthy one's runs.
+
+    An even rate across a player's own games is an approximation -- three good
+    weeks and three poor ones are not the same three weeks -- but it is the
+    closest thing available from a feed that will not serve the range, and it
+    is bounded by what the player actually did.
+    """
+    if whole is None or saber.empty:
+        return saber
+
+    column = "gamesPlayed"
+    if column not in ranged.columns or column not in whole.columns:
+        return saber
+
+    def games(frame):
+        return (
+            frame.assign(_g=pd.to_numeric(frame[column], errors="coerce").fillna(0.0))
+            .groupby("player_id")["_g"].max()
+        )
+
+    played, total = games(ranged), games(whole)
+    share = (played / total.where(total > 0)).clip(upper=1.0).fillna(0.0)
+
+    out = saber.copy()
+    factor = out["player_id"].map(share).fillna(0.0)
+    for name in ACCUMULATING:
+        if name in out.columns:
+            out[name] = pd.to_numeric(out[name], errors="coerce").fillna(0.0) * factor
+    # Carried through so the profile can say the figure was shared out rather
+    # than measured -- a run value that looks measured and is not is the kind
+    # of number somebody checks against Baseball Reference and cannot find.
+    out["advanced_share"] = factor.round(4)
+    return out
+
+
+def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:
     """Advanced metrics from the MLB Stats API.
 
     Worth trying before conceding the FanGraphs terms: this is the same host that
@@ -409,22 +463,17 @@ def load_sabermetrics(
     models -- so adopting them is a scoring decision, but a far smaller one than
     dropping the components entirely.
     """
-    common = {
-        "group": group, "season": season,
-        "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
-    }
-    if since is None:
-        params = {"stats": "sabermetrics", **common}
-        cache_key = f"statsapi/saber_{group}_{season}"
-    else:
-        end = until or date.today()
-        params = {
-            "stats": "sabermetrics", **common,
-            "startDate": since.isoformat(), "endDate": end.isoformat(),
-        }
-        cache_key = (f"statsapi/saber_{group}_{season}_"
-                     f"{since.isoformat()}_{end.isoformat()}")
-    payload = _get(f"{STATS_API}/stats", params, cache_key=cache_key)
+    # No date range: this stat type answers with the season to date whatever
+    # dates it is given, and passing them only made it look as though it did
+    # not. `_share_of_season` is what narrows these to a window.
+    payload = _get(
+        f"{STATS_API}/stats",
+        {
+            "stats": "sabermetrics", "group": group, "season": season,
+            "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
+        },
+        cache_key=f"statsapi/saber_{group}_{season}",
+    )
     rows: list[dict] = []
     for split_group in payload.get("stats", []):
         for split in split_group.get("splits", []):
