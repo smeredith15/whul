@@ -5,6 +5,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from whul import roster_import
 from whul.roster_import import apply, plan, run
 from whul.store import open_store, rosters
 
@@ -202,3 +203,114 @@ def test_a_missing_file_says_where_to_put_one():
     store = open_store(":memory:")
     with pytest.raises(FileNotFoundError, match="--path"):
         run(store, SEASON, path=Path("/nonexistent/draft.xlsx"))
+
+
+def _sheet(rows):
+    return pd.DataFrame(
+        rows, columns=["Manager", "Asset_Type", "Name", "League", "Category"]
+    )
+
+
+def test_a_pick_that_moved_stops_scoring_for_its_old_manager():
+    """The shape the live roster was actually in. LS held three NBA players and
+    now holds two, so slot 3 is not in the sheet at all and nothing overwrote
+    it -- Shai Gilgeous-Alexander stayed open there while also being assigned
+    to JM, and scored for both managers.
+
+    A same-slot swap corrects itself, because the occupancy is keyed on the
+    slot and the season's start. It is the slot that falls off the end of a
+    shortened list that keeps its occupant.
+    """
+    from whul.store import open_store, rosters
+
+    store = open_store(":memory:")
+    picks, _ = roster_import.plan(_sheet([
+        ["LS", "Player", "Jalen Brunson", "NBA", "NBA"],
+        ["LS", "Player", "Luka Doncic", "NBA", "NBA"],
+        ["LS", "Player", "Shai Gilgeous-Alexander", "NBA", "NBA"],
+    ]))
+    roster_import.apply(store, picks, "2026-27")
+
+    picks, _ = roster_import.plan(_sheet([
+        ["LS", "Player", "Jalen Brunson", "NBA", "NBA"],
+        ["LS", "Player", "Luka Doncic", "NBA", "NBA"],
+        ["JM", "Player", "Shai Gilgeous-Alexander", "NBA", "NBA"],
+    ]))
+    written, dropped = roster_import.apply(store, picks, "2026-27")
+
+    assert written == 3
+    assert len(dropped) == 1  # LS's now-orphaned third slot
+    assert rosters.double_rostered(store, "2026-27").empty
+    where = store.query(
+        "SELECT s.manager_id FROM slot_occupancy o "
+        "JOIN roster_slots s ON s.slot_id = o.slot_id "
+        "WHERE o.asset_id = 'player-nba-shai-gilgeous-alexander' "
+        "AND o.end_date IS NULL"
+    )
+    assert list(where["manager_id"]) == ["JM"]
+
+
+def test_re_importing_an_unchanged_sheet_takes_nothing_back():
+    """The cleanup must fire on a move and never on an ordinary nightly run,
+    which re-imports the same sheet every time."""
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+    picks, _ = roster_import.plan(_sheet([
+        ["LS", "Player", "Jalen Brunson", "NBA", "NBA"],
+        ["JM", "Player", "Jayson Tatum", "NBA", "NBA"],
+    ]))
+    roster_import.apply(store, picks, "2026-27")
+    assert roster_import.apply(store, picks, "2026-27")[1] == []
+
+
+def test_a_dated_trade_survives_the_nightly_re_import():
+    """The import may take back only what it wrote. A trade entered through the
+    admin page carries its own note and effective date, and re-importing a
+    sheet that predates it must not quietly undo the correction."""
+    from datetime import date
+
+    from whul.store import open_store, rosters
+
+    store = open_store(":memory:")
+    picks, _ = roster_import.plan(_sheet([
+        ["LS", "Player", "Anthony Edwards", "NBA", "NBA"],
+    ]))
+    roster_import.apply(store, picks, "2026-27")
+    store.upsert("assets", [{
+        "asset_id": "player-nba-someone-else", "asset_type": "Player",
+        "display_name": "Someone Else", "league": "NBA", "role": "",
+        "norm_key": "NBA", "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    slot = store.query(
+        "SELECT slot_id FROM roster_slots WHERE manager_id = 'LS' "
+        "AND category = 'NBA' AND asset_type = 'Player' AND slot_index = 1"
+    ).loc[0, "slot_id"]
+    rosters.release(store, slot, date(2026, 10, 1))
+    rosters.assign(store, slot, "player-nba-someone-else", date(2026, 10, 2),
+                   note="trade")
+
+    # The same sheet again: it still names Edwards, who is no longer there.
+    roster_import.apply(store, picks, "2026-27")
+
+    kept = store.query(
+        "SELECT asset_id, note FROM slot_occupancy WHERE slot_id = ? "
+        "AND end_date IS NULL", (slot,))
+    assert list(kept["asset_id"]) == ["player-nba-someone-else"]
+    assert list(kept["note"]) == ["trade"]
+
+
+def test_two_teams_sharing_a_name_are_reported_rather_than_merged():
+    """Michigan's men's and women's sides were both entered as NCAAM, so both
+    became one asset filling two managers' slots and scoring for each. Only the
+    sheet knows which was meant, so this is said rather than guessed -- and it
+    does not block the other 283 picks."""
+    report = roster_import.plan(_sheet([
+        ["SS", "Team", "Michigan Wolverines", "NCAAM", "NCAAM"],
+        ["JM", "Team", "Michigan Wolverines", "NCAAM", "NCAAW"],
+    ]))[1]
+    assert report.problems == []
+    assert len(report.warnings) == 1
+    assert "fills 2 slots at once" in report.warnings[0]
+    assert "SS/NCAAM#1" in report.warnings[0]
+    assert "JM/NCAAW#1" in report.warnings[0]

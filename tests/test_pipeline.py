@@ -303,3 +303,42 @@ def test_a_score_whose_asset_is_missing_a_league_is_kept():
          "league": None},
     ])
     assert list(pipeline._from_league_start(frame)["asset_id"]) == ["ghost"]
+
+
+def test_the_rollup_reports_an_asset_in_two_slots():
+    """The mirror of the overlap check, and the one that actually happened:
+    that asks whether a slot has two occupants, this whether an occupant has
+    two slots. Four assets were in this state before anything looked, each
+    scoring for two managers at once."""
+    from whul import pipeline
+    from whul.store import open_store, rosters
+
+    store = open_store(":memory:")
+    for manager in ("LS", "JM"):
+        rosters.add_manager(store, manager)
+        rosters.create_slots(store, manager, "2026-27")
+    store.upsert("assets", [{
+        "asset_id": "p1", "asset_type": "Player", "display_name": "Traded Away",
+        "league": "NBA", "role": "", "norm_key": "NBA", "active": 1,
+        "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    slots = store.query(
+        "SELECT slot_id, manager_id FROM roster_slots WHERE season = '2026-27' "
+        "AND category = 'NBA' AND asset_type = 'Player' AND slot_index = 1")
+    for row in slots.itertuples():
+        rosters.assign(store, row.slot_id, "p1", date(2026, 8, 21), note="draft")
+
+    warnings = pipeline._double_rostered_warnings(store, "2026-27")
+    assert len(warnings) == 1
+    assert "Traded Away is in 2 slots at once" in warnings[0]
+    assert "JM/NBA#1" in warnings[0] and "LS/NBA#1" in warnings[0]
+
+
+def test_a_clean_roster_reports_nothing():
+    from whul import pipeline
+    from whul.store import open_store, rosters
+
+    store = open_store(":memory:")
+    rosters.add_manager(store, "LS")
+    rosters.create_slots(store, "LS", "2026-27")
+    assert pipeline._double_rostered_warnings(store, "2026-27") == []

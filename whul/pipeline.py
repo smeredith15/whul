@@ -87,6 +87,33 @@ def write_daily_scores(
     )
 
 
+def _double_rostered_warnings(store: Store, season: str) -> list[str]:
+    """One asset in two open slots -- the other way round from ``overlaps``.
+
+    That check asks whether a slot has two occupants. This asks whether an
+    occupant has two slots, which is what a trade recorded on one side only
+    looks like: the asset scores for both managers and every total containing
+    it is too high. Four assets were in this state before anything looked.
+
+    Checked here rather than only at import, because it does not matter how the
+    roster got that way -- an edited sheet, a half-finished trade, a name two
+    teams share -- and the standings are the last place it can be caught before
+    they are published.
+    """
+    held = rosters.double_rostered(store, season)
+    if held.empty:
+        return []
+    lines = []
+    for asset_id, rows in held.groupby("asset_id", sort=True):
+        name = next((n for n in rows["display_name"] if n), asset_id)
+        where = ", ".join(
+            f"{r.manager_id}/{r.category}#{r.slot_index}" for r in rows.itertuples()
+        )
+        lines.append(f"{name} is in {len(rows)} slots at once and scores for "
+                     f"each: {where}")
+    return lines
+
+
 def cumulative_scores(store: Store, season: str, through: date | str) -> pd.DataFrame:
     """Every asset's score series up to a day, shaped for the rollup.
 
@@ -182,6 +209,7 @@ def roll_up(
                 f"{len(clashes)} slot(s) with overlapping occupancy: "
                 f"{', '.join(clashes['slot_id'].head(5))}"
             )
+        report.warnings.extend(_double_rostered_warnings(store, season))
 
     if scores is None:
         cumulative = cumulative_scores(store, season, as_of)
@@ -271,7 +299,12 @@ def backfill(
     if not days:
         return []
 
+    # Both roster faults are properties of the roster rather than of any one
+    # day, so they are checked once here and attached to the first report --
+    # `roll_up` is called with check_overlaps=False below, which would
+    # otherwise repeat them three hundred times or, as it did, skip them.
     clashes = rosters.overlaps(store, season)
+    doubled = _double_rostered_warnings(store, season)
 
     # Load the whole season's scores once and index them once. Re-querying and
     # re-grouping per day made a backfill quadratic in season length: the frame
@@ -287,11 +320,13 @@ def backfill(
             store, season, day, check_overlaps=False,
             slots=slots, scores=scores, asset_count=assets,
         )
-        if not clashes.empty and day == days[0]:
-            report.warnings.append(
-                f"{len(clashes)} slot(s) with overlapping occupancy: "
-                f"{', '.join(clashes['slot_id'].head(5))}"
-            )
+        if day == days[0]:
+            if not clashes.empty:
+                report.warnings.append(
+                    f"{len(clashes)} slot(s) with overlapping occupancy: "
+                    f"{', '.join(clashes['slot_id'].head(5))}"
+                )
+            report.warnings.extend(doubled)
         reports.append(report)
         if verbose and (report.warnings or day == days[-1]):
             print(report, flush=True)
