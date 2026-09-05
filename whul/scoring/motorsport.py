@@ -129,8 +129,29 @@ def f1_events(results: pd.DataFrame) -> pd.DataFrame:
                 results, ["race", "race_name", "event", "event_name", "tournament"]),
         }
     )
+    # A sprint is its own race with its own, smaller points table. The feed
+    # files it as a separate row and says which it is; without carrying that,
+    # a weekend with a sprint reads as one driver finishing 2nd and 4th in the
+    # same Grand Prix -- a flat contradiction on the profile page -- and a
+    # sprint whose points the feed did not report would be paid on the Grand
+    # Prix table, which is roughly three times too much.
+    sprint = (
+        results["is_sprint"].fillna(False).astype(bool).to_numpy()
+        if "is_sprint" in results.columns
+        else [False] * len(work)
+    )
+    work["is_sprint"] = sprint
+    work["tournament"] = [
+        f"{name} Sprint" if is_sprint else name
+        for name, is_sprint in zip(work["tournament"], sprint)
+    ]
+
     reported = resolve_num(results, ["points"], default=float("nan")).reindex(work.index)
-    computed = work["finish"].map(lambda f: f1_points(f))
+    computed = pd.Series(
+        [f1_points(place, sprint=is_sprint)
+         for place, is_sprint in zip(work["finish"], sprint)],
+        index=work.index,
+    )
     work["event_points"] = reported.fillna(computed)
     work["league"] = "F1"
     work["role"] = "Driver"

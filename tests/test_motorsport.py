@@ -4,7 +4,9 @@ Expected values follow NASCAR.R and the Formula 1 championship table.
 """
 
 import pandas as pd
+import pytest
 
+from whul.scoring import motorsport
 from whul.normalize import assign_norm_key
 from whul.scoring.motorsport import (
     NASCAR_MIN_RACES,
@@ -123,3 +125,51 @@ def test_empty_input_is_empty_output():
     assert score_players(pd.DataFrame(), pd.DataFrame()).empty
     assert score_nascar(pd.DataFrame()).empty
     assert score_f1(pd.DataFrame()).empty
+
+
+# --- a sprint is its own race ----------------------------------------------
+
+def test_a_sprint_is_labelled_as_one():
+    """The feed files a sprint as a separate row and says which it is. Dropping
+    that made a sprint weekend read as one driver finishing 2nd and 4th in the
+    same Grand Prix -- a flat contradiction on the profile page, and the kind of
+    thing that makes a reader doubt everything else on it."""
+    races = pd.DataFrame([
+        {"driver_name": "Antonelli", "season": 2026, "position": 2,
+         "date": "2026-08-23", "race": "Dutch Grand Prix", "points": 18.0,
+         "is_sprint": False},
+        {"driver_name": "Antonelli", "season": 2026, "position": 4,
+         "date": "2026-08-23", "race": "Dutch Grand Prix", "points": 5.0,
+         "is_sprint": True},
+    ])
+    out = motorsport.f1_events(races)
+    assert list(out["tournament"]) == ["Dutch Grand Prix", "Dutch Grand Prix Sprint"]
+    assert out["event_points"].sum() == pytest.approx(23.0)
+
+
+def test_an_unpriced_sprint_falls_back_to_the_sprint_table():
+    """The feed's own points are used where it reports them. Where it does not,
+    the fallback used to reach for the Grand Prix table whatever the race was --
+    paying a sprint 4th 12 points instead of 5, about three times over."""
+    races = pd.DataFrame([
+        {"driver_name": "Antonelli", "season": 2026, "position": 4,
+         "date": "2026-08-23", "race": "Dutch Grand Prix", "points": None,
+         "is_sprint": True},
+        {"driver_name": "Verstappen", "season": 2026, "position": 4,
+         "date": "2026-08-23", "race": "Dutch Grand Prix", "points": None,
+         "is_sprint": False},
+    ])
+    out = motorsport.f1_events(races).set_index("player")
+    assert out.loc["Antonelli", "event_points"] == pytest.approx(5.0)
+    assert out.loc["Verstappen", "event_points"] == pytest.approx(12.0)
+
+
+def test_a_feed_without_a_sprint_column_still_scores():
+    """Older seasons have no sprints at all, and the column may be absent."""
+    races = pd.DataFrame([
+        {"driver_name": "Hamilton", "season": 2019, "position": 1,
+         "date": "2019-07-14", "race": "British Grand Prix", "points": 25.0},
+    ])
+    out = motorsport.f1_events(races)
+    assert out.loc[0, "tournament"] == "British Grand Prix"
+    assert not out.loc[0, "is_sprint"]
