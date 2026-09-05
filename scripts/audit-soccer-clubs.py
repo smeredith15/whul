@@ -10,12 +10,12 @@ club's total is rebuilt from the figures stored in ``raw_stats``.
     python scripts/audit-soccer-clubs.py --league "Premier League"
     python scripts/audit-soccer-clubs.py --team Arsenal
 
-A club scores only for winning, and a win is worth what the competition it
-happened in is worth. That is the whole difficulty: two wins can be nine points
-or fourteen, and the total alone does not say which. Where the stored row
-carries the breakdown this script checks it exactly. Where it does not -- rows
-written before the scorer emitted one -- it checks the range instead, and says
-that is what it did.
+A club scores for how each match ended, at what the competition it happened in
+is worth. That is the whole difficulty: two wins can be nine points or fourteen,
+and the total alone does not say which -- and now a club with no wins at all can
+still have points. Where the stored row carries the breakdown this script checks
+it exactly. Where it does not -- rows written before the scorer emitted one -- it
+checks the range instead, and says that is what it did.
 """
 
 from __future__ import annotations
@@ -57,6 +57,36 @@ BIG_MARGIN = 2
 PTS_BIG_MARGIN = 1
 PTS_CLEAN_SHEET = 1
 
+#: What each ending is worth on the league scale, before the competition
+#: premium. The tier values above are quoted for a win, so the premium is that
+#: value over a league win -- x3/3, x4/3, x5/3.
+LEAGUE_WIN = TIER_POINTS["league"]
+OUTCOME_SHARE = {
+    "win": 3.0,
+    "shootout_win": 2.0,
+    "draw": 1.0,
+    "shootout_loss": 1.0,
+    "loss": 0.0,
+}
+OUTCOME_NAMES = {
+    "win": "won",
+    "shootout_win": "won on penalties",
+    "draw": "drawn",
+    "shootout_loss": "lost on penalties",
+    "loss": "lost",
+}
+#: Endings other than a win, which is broken out per competition on its own.
+#: The stored column names are spelled out rather than pluralised in code:
+#: "shootout_loss" + "s" is not "shootout_losses", and a name built that way
+#: reads as a missing column, which is a component silently dropped from the
+#: rebuild rather than an error.
+OTHER_ENDINGS = ("shootout_win", "draw", "shootout_loss")
+ENDING_COLUMNS = {
+    "shootout_win": ("shootout_wins", "pts_shootout_wins"),
+    "draw": ("draws", "pts_draws"),
+    "shootout_loss": ("shootout_losses", "pts_shootout_losses"),
+}
+
 #: A place in Europe, earned by where the club finished at home. Read from the
 #: published participant list rather than derived: nothing in a club's own
 #: results says it got one.
@@ -83,10 +113,17 @@ def show_rules():
     print("EUROPEAN CLUB SCORING, AS THIS SCRIPT UNDERSTANDS IT")
     print(RULE)
     print("""
-  A club scores only for winning. A draw and a loss are both worth nothing, so
-  the league table a club is actually in has no bearing on its score.
+  A club scores for how a match ended. On the league scale:
 
-  A win is worth what the competition it happened in is worth:
+    3   won
+    2   won on penalties -- the match itself was drawn
+    1   drawn
+    1   lost on penalties -- the side that loses a shootout drew the match
+    0   lost
+
+  A win in a dearer competition is worth more, and so is a draw in one: the
+  tier value below is what a *win* pays, and every other ending is that value
+  scaled -- x3/3, x4/3, x5/3.
 """)
     for tier, points in sorted(TIER_POINTS.items(), key=lambda kv: -kv[1]):
         print(f"    {points:>2}   {TIER_NAMES[tier]}")
@@ -97,7 +134,9 @@ def show_rules():
     +{PTS_CLEAN_SHEET}   conceding nothing
 
   So a win is worth between {MIN_PER_WIN} and {MAX_PER_WIN} points, and two wins can be anything
-  from {MIN_PER_WIN * 2} to {MAX_PER_WIN * 2}. This is why a total on its own cannot be checked.
+  from {MIN_PER_WIN * 2} to {MAX_PER_WIN * 2}. This is why a total on its own cannot be checked -- and a club
+  with no wins is no longer a club with no points, so the win count cannot
+  bound a total either.
 
   READING EVERY COMPETITION IS WHAT MAKES THE TIERS MEAN ANYTHING
     Restricted to league fixtures every win would be worth three, and the
@@ -231,8 +270,16 @@ class Audit:
                  if f"wins_{t}" in stats}
         detailed = bool(tiers) and "pts_wins" in stats
 
-        print(f"\n  {played:.0f} match(es) that count, {wins:.0f} won. "
-              f"A draw and a loss are worth nothing.")
+        endings = {
+            ending: float(stats.get(ENDING_COLUMNS[ending][0]) or 0)
+            for ending in OTHER_ENDINGS
+        }
+        losses = float(stats.get("losses") or 0)
+        print(f"\n  {played:.0f} match(es) that count: {wins:.0f} won, "
+              f"{endings['draw']:.0f} drawn, "
+              f"{endings['shootout_win']:.0f} won and "
+              f"{endings['shootout_loss']:.0f} lost on penalties, "
+              f"{losses:.0f} lost.")
 
         if detailed:
             print(f"\n    {'where the win happened':<34}{'wins':>6}{'x each':>9}"
@@ -246,6 +293,27 @@ class Audit:
                 total += earned
                 print(f"    {TIER_NAMES[tier][:33]:<34}{won:>6.0f}{points:>9}"
                       f"{earned:>11.2f}")
+            # The endings other than a win are stored as one figure each rather
+            # than split by competition, so they cannot be rebuilt exactly --
+            # but they can be bounded, which is still an independent check: a
+            # draw pays between its league value and that value times 5/3.
+            for ending in OTHER_ENDINGS:
+                count = endings[ending]
+                stored = float(stats.get(ENDING_COLUMNS[ending][1]) or 0.0)
+                if not count and not stored:
+                    continue
+                share = OUTCOME_SHARE[ending]
+                low = count * share
+                high = count * share * max(TIER_POINTS.values()) / LEAGUE_WIN
+                total += stored
+                print(f"    {OUTCOME_NAMES[ending][:33]:<34}{count:>6.0f}"
+                      f"{share:>9.0f}{stored:>11.2f}")
+                if not (low - 0.01 <= stored <= high + 0.01):
+                    flags.append((
+                        f"points for matches {OUTCOME_NAMES[ending]} are outside "
+                        f"what that many can be worth",
+                        f"{stored:,.2f} against a range of {low:,.2f}-{high:,.2f}",
+                    ))
             big = float(stats.get("big_margins") or 0)
             clean = float(stats.get("clean_sheets") or 0)
             total += big * PTS_BIG_MARGIN + clean * PTS_CLEAN_SHEET
@@ -279,11 +347,19 @@ class Audit:
                     f"{wins:.0f} win(s), all domestic",
                 ))
         else:
-            low, high = wins * MIN_PER_WIN, wins * MAX_PER_WIN
+            # Every match that counts is worth something unless it was lost, so
+            # the floor is what the wins alone pay and the ceiling is every
+            # remaining match having been drawn in the dearest competition.
+            # Wide, but it is a bound rather than nothing -- and unlike the old
+            # one it does not call a club with points and no wins an error.
+            drawable = max(played - wins, 0.0)
+            low = wins * MIN_PER_WIN
+            high = (wins * MAX_PER_WIN
+                    + drawable * max(TIER_POINTS.values()) / LEAGUE_WIN)
             total = stored_total
             print(f"\n    This row carries no breakdown, so the total cannot be")
-            print(f"    rebuilt -- only bounded. {wins:.0f} win(s) is worth between")
-            print(f"    {low:,.0f} and {high:,.0f} points.")
+            print(f"    rebuilt -- only bounded. {wins:.0f} win(s) and {drawable:.0f} other")
+            print(f"    match(es) is worth between {low:,.0f} and {high:,.0f} points.")
             print(f"    {'stored total':<34}{'':>6}{'':>9}{stored_total:>11.2f}")
             # A league win is worth at most 5 with both bonuses, so a total above
             # that many is proof that some win happened somewhere dearer -- a cup
@@ -299,14 +375,14 @@ class Audit:
 
             if not (low - 0.01 <= stored_total <= high + 0.01):
                 flags.append((
-                    "the total is outside what this many wins can be worth",
+                    "the total is outside what these matches can be worth",
                     f"{stored_total:,.2f} against a range of {low:,.0f}-{high:,.0f}",
                 ))
             else:
                 flags.append((
                     "no per-competition breakdown stored, so the total was bounded "
                     "rather than checked. Rerunning the pipeline records one",
-                    f"{wins:.0f} win(s) -> {low:,.0f}-{high:,.0f}, stored "
+                    f"{wins:.0f} win(s) of {played:.0f} -> {low:,.0f}-{high:,.0f}, stored "
                     f"{stored_total:,.2f}"
                     + (" (some outside the league)"
                        if wins and stored_total > league_only_max + 0.01 else ""),

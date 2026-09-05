@@ -753,3 +753,51 @@ def test_one_unknown_team_among_several_does_not_raise(monkeypatch):
         "ncaaf", [2026], ["Ohio State", "Bogus Team"], verbose=False
     )
     assert len(out) == 1
+
+
+SHOOTOUT_EVENT = {
+    "league": {"name": "Emirates FA Cup"},
+    "competitions": [
+        {
+            "status": {"type": {"completed": True}},
+            "notes": [{"headline": "Final"}],
+            "competitors": [
+                {"homeAway": "home", "score": "1", "shootoutScore": "4",
+                 "team": {"displayName": "Crystal Palace"}},
+                {"homeAway": "away", "score": "1", "shootoutScore": "2",
+                 "team": {"displayName": "Manchester City"}},
+            ],
+        }
+    ],
+}
+
+
+def test_a_shootout_reaches_the_scorer_as_a_shootout():
+    """ESPN carries the penalties beside the score rather than inside it, which
+    is the only reason a shootout is recoverable: both sides finish level, so
+    the scoreline alone cannot say a tie was settled."""
+    rows = espn._soccer_rows(SHOOTOUT_EVENT, "facup", date(2025, 5, 17))
+    palace = next(r for r in rows if r["team"] == "Crystal Palace")
+    city = next(r for r in rows if r["team"] == "Manchester City")
+    assert palace["goals_for"] == 1.0 and palace["goals_against"] == 1.0
+    assert palace["shootout_for"] == 4.0 and palace["shootout_against"] == 2.0
+    assert city["shootout_for"] == 2.0 and city["shootout_against"] == 4.0
+
+    import pandas as pd
+
+    from whul.scoring.soccer import score_team_matches
+
+    # The league label is attached downstream, when the rows are filtered back
+    # to the clubs that belong to one.
+    scored = score_team_matches(pd.DataFrame(rows).assign(league="Premier League"))
+    by_team = dict(zip(scored["team"], scored["outcome"]))
+    assert by_team["Crystal Palace"] == "shootout_win"
+    assert by_team["Manchester City"] == "shootout_loss"
+
+
+def test_a_match_with_no_shootout_reports_zero_rather_than_nothing():
+    """Absent is not the same as unknown here: no shootout means no penalties
+    scored, and zero on both sides reads as the draw or win it actually was."""
+    rows = espn._soccer_rows(SOCCER_EVENT, "ucl", date(2026, 10, 22))
+    assert all(r["shootout_for"] == 0.0 and r["shootout_against"] == 0.0
+               for r in rows)

@@ -49,6 +49,44 @@ WIN_POINTS: dict[Tier, int] = {
     Tier.QUALIFYING: 0,
 }
 
+class Outcome(str, Enum):
+    """How a match ended, for the side being scored."""
+
+    WIN = "win"
+    SHOOTOUT_WIN = "shootout_win"
+    DRAW = "draw"
+    SHOOTOUT_LOSS = "shootout_loss"
+    LOSS = "loss"
+
+
+#: The scale the shares below are quoted on -- a league win, the baseline
+#: competition. Every other tier is this scaled up.
+LEAGUE_WIN = 3
+
+#: What each ending is worth *in league points*, before the competition
+#: premium. A win is the full three; a shootout win two, since the ninety
+#: minutes were drawn and only the shootout separated them; a draw one; a
+#: shootout loss the same one, because the side that loses on penalties drew
+#: the match it played. A loss is nothing.
+OUTCOME_SHARE: dict[Outcome, float] = {
+    Outcome.WIN: 3.0,
+    Outcome.SHOOTOUT_WIN: 2.0,
+    Outcome.DRAW: 1.0,
+    Outcome.SHOOTOUT_LOSS: 1.0,
+    Outcome.LOSS: 0.0,
+}
+
+
+def outcome_points(outcome: Outcome | str, win_points: int | float) -> float:
+    """What an ending is worth in the competition it happened in.
+
+    The tier premium is a multiplier on the league scale rather than a separate
+    table, so ``x3/3``, ``x4/3``, ``x5/3`` -- a Champions League win is five,
+    exactly as before, and a Champions League draw is five thirds.
+    """
+    return OUTCOME_SHARE[Outcome(outcome)] * win_points / LEAGUE_WIN
+
+
 #: Tested before anything else: a qualifying tie carries its competition's name,
 #: so "Champions League Qualifying" must not read as the Champions League.
 #:

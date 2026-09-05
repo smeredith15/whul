@@ -770,6 +770,24 @@ def _soccer_rows(
     if home_goals is None or away_goals is None:
         return []
 
+    def shootout(entry: dict) -> float:
+        """Penalties scored in a shootout, or zero where there was none.
+
+        ESPN carries this beside the score rather than inside it, which is what
+        makes a shootout recoverable at all -- a feed that folded the penalties
+        into ``score`` would report a drawn tie as a win and there would be
+        nothing here to tell the difference. Zero for both sides is the honest
+        reading of a match that did not go to penalties.
+        """
+        for key in ("shootoutScore", "shootout_score", "penaltyScore"):
+            value = entry.get(key)
+            if value not in (None, ""):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
     # The round name matters: it distinguishes a qualifying tie from the
     # competition proper, and the knockout play-off from either.
     name = league_name or (event.get("league") or {}).get("name", "") or competition
@@ -789,6 +807,8 @@ def _soccer_rows(
             "competition_key": competition,
             "goals_for": score(side),
             "goals_against": score(other),
+            "shootout_for": shootout(side),
+            "shootout_against": shootout(other),
         })
     return rows
 

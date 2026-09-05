@@ -18,9 +18,10 @@ from whul.scoring.soccer import (
 
 
 def match(team="Arsenal", gf=0, ga=0, comp="Premier League",
-          date="2026-09-15", league="Premier League"):
+          date="2026-09-15", league="Premier League", so_for=0, so_against=0):
     return {"team": team, "league": league, "date": date,
-            "competition": comp, "goals_for": gf, "goals_against": ga}
+            "competition": comp, "goals_for": gf, "goals_against": ga,
+            "shootout_for": so_for, "shootout_against": so_against}
 
 
 # --- competition classification --------------------------------------------
@@ -78,10 +79,107 @@ def test_a_bye_scores_as_a_swept_tie():
 
 # --- team scoring ----------------------------------------------------------
 
-def test_only_wins_score():
-    rows = pd.DataFrame([match(gf=1, ga=1), match(gf=0, ga=2), match(gf=1, ga=0)])
+def test_every_ending_is_worth_something_except_a_loss():
+    """3 for a win, 2 for a shootout win, 1 for a draw or a shootout loss.
+
+    A draw used to be worth exactly a loss, which made a side that drew half
+    its league season indistinguishable from one that lost the same matches.
+    """
+    rows = pd.DataFrame([
+        match(gf=1, ga=0),                        # win
+        match(gf=1, ga=1, so_for=4, so_against=2),  # shootout win
+        match(gf=1, ga=1),                        # draw
+        match(gf=1, ga=1, so_for=2, so_against=4),  # shootout loss
+        match(gf=0, ga=2),                        # loss
+    ])
     out = score_team_matches(rows)
-    assert list(out["match_points"]) == [0, 0, 3 + 1]  # win, clean sheet, margin 1
+    assert list(out["outcome"]) == [
+        "win", "shootout_win", "draw", "shootout_loss", "loss"
+    ]
+    # The league is the baseline, so the shares are the points.
+    assert list(out["outcome_points"]) == [3, 2, 1, 1, 0]
+    # Only the win carries a clean sheet: the rest were not won in normal time.
+    assert list(out["match_points"]) == [3 + 1, 2, 1, 1, 0]
+
+
+def test_the_competition_scales_every_ending_not_only_the_win():
+    """x3/3, x4/3, x5/3. A Champions League draw is worth more than a league
+    draw for the same reason a Champions League win is worth more."""
+    rows = pd.DataFrame([
+        match(gf=1, ga=1, comp="Premier League"),
+        match(gf=1, ga=1, comp="Emirates FA Cup"),
+        match(gf=1, ga=1, comp="UEFA Champions League"),
+    ])
+    points = list(score_team_matches(rows)["match_points"])
+    assert points == pytest.approx([1.0, 4 / 3, 5 / 3])
+
+
+def test_a_shootout_win_is_not_a_win():
+    """It pays two thirds of one, and neither bonus.
+
+    The match itself was drawn: there is no margin to be big, and a side that
+    conceded nothing in normal time did not keep a clean sheet in a tie it
+    needed penalties to settle. Scoring it as a win would also make it beat a
+    2-0, which is the wrong way round.
+    """
+    rows = pd.DataFrame([
+        match(gf=0, ga=0, so_for=5, so_against=4),
+        match(gf=2, ga=0),
+    ])
+    out = score_team_matches(rows)
+    shootout, won = out.iloc[0], out.iloc[1]
+    assert not shootout["is_win"]
+    assert shootout["match_points"] == 2
+    assert won["match_points"] == 3 + 1 + 1
+    assert shootout["match_points"] < won["match_points"]
+
+
+def test_a_level_score_with_no_shootout_is_a_draw():
+    """A feed that reports no shootout must not invent one. Both sides at zero
+    is how a match that never went to penalties arrives, and it has to read as
+    the draw it was rather than a tie somebody won."""
+    rows = pd.DataFrame([match(gf=1, ga=1, so_for=0, so_against=0)])
+    assert score_team_matches(rows).iloc[0]["outcome"] == "draw"
+
+
+def test_a_feed_with_no_shootout_columns_at_all_still_scores():
+    """The columns are optional: MLS and NWSL feeds carry no shootout field,
+    and an older cached frame predates it."""
+    rows = pd.DataFrame([{
+        "team": "Arsenal", "league": "Premier League", "date": "2026-09-15",
+        "competition": "Premier League", "goals_for": 1, "goals_against": 1,
+    }])
+    out = score_team_matches(rows)
+    assert out.iloc[0]["outcome"] == "draw"
+    assert out.iloc[0]["match_points"] == 1
+
+
+def test_a_shootout_never_overrides_a_decided_match():
+    """Consulted only on a level score. A feed that put something odd in the
+    shootout field cannot turn a 2-0 into a loss."""
+    rows = pd.DataFrame([match(gf=2, ga=0, so_for=0, so_against=9)])
+    assert score_team_matches(rows).iloc[0]["outcome"] == "win"
+
+
+def test_a_club_total_says_how_each_ending_contributed():
+    """A total can no longer be bounded by the win count, so the profile has to
+    carry the endings that made it."""
+    rows = pd.DataFrame([
+        match(gf=1, ga=0),
+        match(gf=1, ga=1),
+        match(gf=1, ga=1, so_for=3, so_against=1),
+        match(gf=0, ga=1),
+    ])
+    row = score_teams(rows).iloc[0]
+    assert (row["wins"], row["draws"], row["shootout_wins"],
+            row["shootout_losses"], row["losses"]) == (1, 1, 1, 0, 1)
+    assert row["pts_wins"] == 3
+    assert row["pts_draws"] == 1
+    assert row["pts_shootout_wins"] == 2
+    rebuilt = (row["pts_wins"] + row["pts_shootout_wins"] + row["pts_draws"]
+               + row["pts_shootout_losses"]
+               + row["big_margins"] + row["clean_sheets"])
+    assert rebuilt == pytest.approx(row["total_points"])
 
 
 def test_margin_and_clean_sheet_bonuses():
@@ -613,3 +711,16 @@ def test_a_season_that_has_not_settled_costs_nothing_and_stops_nothing():
 
     assert frame.empty
     assert list(frame.columns) == ["team", "season", "competition", "entry_round"]
+
+
+def test_a_feed_that_stopped_supplying_goals_fails_loudly():
+    """It used to be safe to default them: with no goals every match read 0-0,
+    every club scored nothing, and a table of zeros is unmissable. Now a level
+    score is worth a point, so the same failure would pay every club for a
+    season of draws and look entirely plausible."""
+    rows = pd.DataFrame([{
+        "team": "Arsenal", "league": "Premier League", "date": "2026-09-15",
+        "competition": "Premier League", "scored": 2, "conceded": 1,
+    }])
+    with pytest.raises(KeyError, match="goals_for"):
+        score_team_matches(rows)

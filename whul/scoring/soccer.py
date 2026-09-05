@@ -1,8 +1,10 @@
 """Club soccer scoring -- port of Club_Soccer.R.
 
-Teams score only for winning, at a value that depends on where the win happened
-(see ``whul.scoring.competition``), plus a point for a two-goal margin and a
-point for a clean sheet.
+Teams score for how a match ended -- a win, a shootout win, a draw or a shootout
+loss are worth 3, 2, 1 and 1 on the league scale, and a loss nothing -- times
+what the competition it happened in is worth (see ``whul.scoring.competition``).
+A regulation win also earns a point for a two-goal margin and a point for a
+clean sheet; a shootout win earns neither, the match having been drawn.
 
 Players score appearance points, goals weighted by position, assists, and card
 penalties.
@@ -22,7 +24,8 @@ import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
 from whul.scoring.competition import (
-    Tier, bye_credit, classify, classify_key, uefa_entry_points,
+    Outcome, Tier, bye_credit, classify, classify_key, outcome_points,
+    uefa_entry_points,
 )
 
 # --- teams ----------------------------------------------------------------
@@ -106,11 +109,31 @@ def appearance_points_from_season(starts: pd.Series, matches: pd.Series) -> pd.S
     return starts * PTS_FULL_APPEARANCE + substitute * PTS_SHORT_APPEARANCE
 
 
+def _outcome(margin: float, shootout_for: float, shootout_against: float) -> str:
+    """How the match ended for this side.
+
+    A shootout is only ever consulted on a level score, which is the only way
+    one can happen. That ordering also makes a feed that folds the shootout
+    into the score harmless to the *decided* matches: it can misread a tie, but
+    it cannot turn a 2-0 into anything else.
+    """
+    if margin > 0:
+        return Outcome.WIN.value
+    if margin < 0:
+        return Outcome.LOSS.value
+    if shootout_for > shootout_against:
+        return Outcome.SHOOTOUT_WIN.value
+    if shootout_for < shootout_against:
+        return Outcome.SHOOTOUT_LOSS.value
+    return Outcome.DRAW.value
+
+
 def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
     """Per-match team points.
 
     Expects one row per team per match: ``team``, ``league``, ``date``,
-    ``competition``, ``goals_for``, ``goals_against``.
+    ``competition``, ``goals_for``, ``goals_against``, and optionally
+    ``shootout_for`` and ``shootout_against`` for a tie decided on penalties.
     """
     if matches is None or matches.empty:
         return pd.DataFrame()
@@ -122,8 +145,21 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
             "date": resolve_str(matches, ["date", "game_date"], required=True),
             "competition": resolve_str(matches, ["competition", "comp"]).fillna(""),
             "competition_key": resolve_str(matches, ["competition_key"]).fillna(""),
-            "goals_for": resolve_num(matches, ["goals_for", "gf"]),
-            "goals_against": resolve_num(matches, ["goals_against", "ga"]),
+            # Required, now that a level score is worth something. Defaulted,
+            # a feed that renamed its goals column would report every match as
+            # 0-0 -- which used to mean every club scored nothing, obvious at a
+            # glance, and now means every club is paid for a season of draws.
+            "goals_for": resolve_num(matches, ["goals_for", "gf"], required=True),
+            "goals_against": resolve_num(
+                matches, ["goals_against", "ga"], required=True),
+            # Absent for all but a handful of cup ties, and absent entirely
+            # from a feed that does not report one. Zero on both sides is the
+            # right reading of "no shootout": a shootout nobody scored in does
+            # not exist, so it cannot be confused with one.
+            "shootout_for": resolve_num(
+                matches, ["shootout_for", "penalties_for", "so_for"]),
+            "shootout_against": resolve_num(
+                matches, ["shootout_against", "penalties_against", "so_against"]),
         }
     )
     # Prefer the feed's own key: we chose it when making the request, so unlike a
@@ -142,14 +178,27 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
 
     work["season"] = season_for(work["date"], work["league"])
     work["margin"] = work["goals_for"] - work["goals_against"]
-    work["is_win"] = work["margin"] > 0
+    work["outcome"] = [
+        _outcome(margin, so_for, so_against)
+        for margin, so_for, so_against in zip(
+            work["margin"], work["shootout_for"], work["shootout_against"]
+        )
+    ]
+    # A regulation win, which is what the two bonuses are gated on. A shootout
+    # win is deliberately not one: the match itself was drawn, so there is no
+    # margin to be big and no clean sheet to keep.
+    work["is_win"] = work["outcome"] == Outcome.WIN.value
     work["base_points"] = [
         (classify_key(key, label) if key else classify(label)).win_points
         for key, label in zip(work["competition_key"], work["competition"])
     ]
 
+    work["outcome_points"] = [
+        outcome_points(outcome, base)
+        for outcome, base in zip(work["outcome"], work["base_points"])
+    ]
     work["match_points"] = (
-        work["is_win"] * work["base_points"]
+        work["outcome_points"]
         + (work["is_win"] & (work["margin"] >= BIG_MARGIN)) * PTS_BIG_MARGIN
         + (work["is_win"] & (work["goals_against"] == 0)) * PTS_CLEAN_SHEET
     )
@@ -184,14 +233,29 @@ def score_teams(
     # classifier could not place falls through to the league and pays three
     # instead of five, and that is invisible in a total.
     scored = scored.copy()
-    scored["win_points"] = scored["is_win"] * scored["base_points"]
     scored["big_margin"] = scored["is_win"] & (scored["margin"] >= BIG_MARGIN)
     scored["clean_sheet"] = scored["is_win"] & (scored["goals_against"] == 0)
+    # One count and one points column per ending, so a total can be rebuilt
+    # from the profile. A draw is worth a third of a win, so a club with no
+    # wins is no longer a club with no points, and a total read on its own can
+    # no longer be bounded by the win count alone.
+    for outcome in Outcome:
+        scored[outcome.value] = scored["outcome"] == outcome.value
+        scored[f"pts_{outcome.value}"] = (
+            scored[outcome.value] * scored["outcome_points"]
+        )
 
     totals = scored.groupby(["league", "team", "season"], as_index=False).agg(
         matches_played=("match_points", "size"),
-        wins=("is_win", "sum"),
-        pts_wins=("win_points", "sum"),
+        wins=("win", "sum"),
+        shootout_wins=("shootout_win", "sum"),
+        draws=("draw", "sum"),
+        shootout_losses=("shootout_loss", "sum"),
+        losses=("loss", "sum"),
+        pts_wins=("pts_win", "sum"),
+        pts_shootout_wins=("pts_shootout_win", "sum"),
+        pts_draws=("pts_draw", "sum"),
+        pts_shootout_losses=("pts_shootout_loss", "sum"),
         big_margins=("big_margin", "sum"),
         clean_sheets=("clean_sheet", "sum"),
         total_points=("match_points", "sum"),
