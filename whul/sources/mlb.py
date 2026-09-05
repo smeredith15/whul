@@ -406,6 +406,30 @@ def innings_to_float(value) -> float:
 
 #: Advanced columns that accumulate with playing time, and so are shared out
 #: across a window rather than taken whole.
+#:
+#: Three sources were tried for these over a real date range, and all three
+#: failed. Recorded here so the ground is not covered again:
+#:
+#:   MLB Stats API   The counting stats take byDateRange and it is verified on
+#:                   every pull. The `sabermetrics` type does not: it answers
+#:                   with the season to date whatever dates it is given.
+#:   Baseball Savant Reachable, and its leaderboards ignore every date
+#:                   parameter -- five spellings tried, byte-identical whole
+#:                   seasons each time. The pitch-level search does take a
+#:                   range, but summing delta_run_exp gives batting run value
+#:                   alone: base running, fielding, the positional adjustment
+#:                   and WAR are separate models absent from pitch data. About
+#:                   1,100 requests for half of Off and none of Def.
+#:   FanGraphs       Publishes all three natively and takes a range at
+#:                   month=1000, and answers 403 to a datacenter address. The
+#:                   nightly job runs on GitHub Actions, so it can never be the
+#:                   live source whatever a workstation can reach.
+#:
+#: A source only one machine can reach could still serve the *benchmark*, which
+#: is computed once and frozen. It would be the wrong thing to do: the live
+#: figures would keep coming from the Stats API's reconstruction of these
+#: metrics while the bar came from FanGraphs' own, and a bar and a figure on
+#: two different constructions is the error this share-out exists to avoid.
 ACCUMULATING = ("Off", "Def", "war")
 
 
