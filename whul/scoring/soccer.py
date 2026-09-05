@@ -3,8 +3,9 @@
 Teams score for how a match ended -- a win, a shootout win, a draw or a shootout
 loss are worth 3, 2, 1 and 1 on the league scale, and a loss nothing -- times
 what the competition it happened in is worth (see ``whul.scoring.competition``).
-A regulation win also earns a point for a two-goal margin and a point for a
-clean sheet; a shootout win earns neither, the match having been drawn.
+Conceding nothing earns a point however the match ended, so a goalless draw is
+worth more than a 1-1. Winning by two goals or more earns another, which only a
+win can: a drawn match has no margin to be big.
 
 Players score appearance points, goals weighted by position, assists, and card
 penalties.
@@ -197,10 +198,16 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
         outcome_points(outcome, base)
         for outcome, base in zip(work["outcome"], work["base_points"])
     ]
+    # A clean sheet is conceding nothing, whatever the match ended as. Only the
+    # margin bonus is a win's alone -- a drawn match has no margin to be big.
+    # Nothing is given away by not gating this on the result: a side that
+    # conceded nothing cannot have lost in normal time, so the bonus reaches
+    # exactly wins to nil and goalless draws, penalties or no penalties.
+    work["clean_sheet"] = work["goals_against"] == 0
     work["match_points"] = (
         work["outcome_points"]
         + (work["is_win"] & (work["margin"] >= BIG_MARGIN)) * PTS_BIG_MARGIN
-        + (work["is_win"] & (work["goals_against"] == 0)) * PTS_CLEAN_SHEET
+        + work["clean_sheet"] * PTS_CLEAN_SHEET
     )
     return work
 
@@ -234,7 +241,6 @@ def score_teams(
     # instead of five, and that is invisible in a total.
     scored = scored.copy()
     scored["big_margin"] = scored["is_win"] & (scored["margin"] >= BIG_MARGIN)
-    scored["clean_sheet"] = scored["is_win"] & (scored["goals_against"] == 0)
     # One count and one points column per ending, so a total can be rebuilt
     # from the profile. A draw is worth a third of a win, so a club with no
     # wins is no longer a club with no points, and a total read on its own can

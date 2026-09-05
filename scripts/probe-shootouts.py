@@ -2,31 +2,36 @@
 """Does ESPN say a cup tie went to penalties, and where does it put the score?
 
 A shootout win is worth two thirds of a win and a shootout loss a third, so the
-scorer now needs to tell a shootout from a draw. Nothing in a scoreline says
-which: both sides finish level either way. The adapter reads ``shootoutScore``
-off each competitor -- this asks whether that key is really there, and what it
-holds, before the scoring is trusted.
+scorer needs to tell a shootout from a draw. Nothing in a scoreline says which:
+both sides finish level either way.
+
+Answered on 2025-05 for the Copa del Rey final of 2024, which ESPN returned as
+
+    Athletic Club   {"score": "1", "shootoutScore": 4}
+    Mallorca        {"score": "1", "shootoutScore": 2}
+
+So the penalties sit *beside* the score in ``shootoutScore``, not inside it,
+and the key is absent entirely -- not zero -- on a match that did not go to
+penalties. It also arrives as a number where ``score`` is a string. The adapter
+reads all three of those correctly. This script re-checks that, because it is
+the assumption the whole shootout rule rests on.
 
 Run it from a machine that can reach site.api.espn.com:
 
     python scripts/probe-shootouts.py
-    python scripts/probe-shootouts.py --date 2025-05-17 --league facup
+    python scripts/probe-shootouts.py --league facup --date 2022-05-14
 
-Two failures it is looking for, and they fail in opposite directions:
+Each tie below is one that really was decided on penalties, with the score it
+really finished at, so the check is an exact comparison rather than a guess.
+An earlier version of this list had three finals in it that were won in normal
+time; the probe dutifully reported them as not-shootouts and the list was
+wrong, not the feed. If you add a tie here, check the result first.
 
-* **No shootout field at all.** Then a shootout is indistinguishable from a
-  draw, both sides score a draw's points, and the winner is underpaid. Visible
-  here as a level match with no shootout key on either competitor.
-
-* **The penalties folded into ``score``.** Then a 1-1 that finished 4-2 on
-  penalties arrives as a 4-2 win -- worth a full win, a two-goal margin bonus,
-  and a loss for a side that did not lose. Far worse than the first, and
-  invisible in a total. Visible here as a level-looking tie whose scores are
-  not level, or as a ``score`` that matches the shootout rather than the goals.
-
-The dates below are finals that went to penalties. A date with no shootout on
-it proves nothing either way, so the probe says so rather than reporting a
-clean run.
+The failure that matters most is the one the Copa del Rey answer rules out:
+penalties folded into ``score``. A 1-1 that finished 4-2 would arrive as a 4-2
+win -- a full win, a two-goal margin bonus, and a loss recorded against a side
+that did not lose. It is worse than finding no shootout field at all, because
+that one merely underpays a winner, and this one is invisible in a total.
 """
 
 from __future__ import annotations
@@ -39,17 +44,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-#: Ties known to have been decided on penalties: (league key, date, what it was).
-#: Each is a final, so it is on the date given and not moved.
+#: Ties decided on penalties, with what they actually finished at:
+#: (league key, date, what it was, goals, penalties) from the home side's view.
+#: Two of the three are goalless, which is also the case the clean-sheet rule
+#: turns on -- a 0-0 shootout earns the point whoever wins the penalties.
 KNOWN_SHOOTOUTS = [
-    ("facup", date(2025, 5, 17), "FA Cup final"),
-    ("copadelrey", date(2024, 4, 6), "Copa del Rey final"),
-    ("coppaitalia", date(2024, 5, 15), "Coppa Italia final"),
-    ("uel", date(2024, 5, 22), "Europa League final"),
+    ("copadelrey", date(2024, 4, 6), "Copa del Rey final", (1, 1), (4, 2)),
+    ("facup", date(2022, 5, 14), "FA Cup final", (0, 0), (6, 5)),
+    ("efl_cup", date(2022, 2, 27), "EFL Cup final", (0, 0), (11, 10)),
 ]
 
 
-def competitor_keys(entry: dict) -> dict:
+def scoring_keys(entry: dict) -> dict:
     """Everything on a competitor that could be carrying a shootout score."""
     return {
         key: value for key, value in entry.items()
@@ -59,8 +65,8 @@ def competitor_keys(entry: dict) -> dict:
     }
 
 
-def report_event(event: dict, label: str) -> bool:
-    """Print one match's scoring fields. True if it looks like a shootout."""
+def check(event: dict, label: str, goals=None, penalties=None) -> bool:
+    """Print one match's scoring fields, and say whether it read correctly."""
     from whul.sources.espn import _competitor, _soccer_rows
 
     inner = (event.get("competitions") or [{}])[0]
@@ -69,34 +75,44 @@ def report_event(event: dict, label: str) -> bool:
         print("    competitors missing -- cannot read this event")
         return False
 
-    name = (event.get("name") or "").strip()
-    print(f"\n  {label}: {name}")
+    print(f"\n  {label}: {(event.get('name') or '').strip()}")
     for side, entry in (("home", home), ("away", away)):
         team = (entry.get("team") or {}).get("displayName", "?")
-        print(f"    {side:<5}{team:<28}{json.dumps(competitor_keys(entry))}")
+        print(f"    {side:<5}{team:<28}{json.dumps(scoring_keys(entry))}")
 
     rows = _soccer_rows(event, "", date.today(), "")
     if not rows:
         print("    the adapter dropped this event (not completed?)")
         return False
     row = rows[0]
-    print(f"    adapter reads: goals {row['goals_for']:.0f}-{row['goals_against']:.0f}"
-          f", shootout {row['shootout_for']:.0f}-{row['shootout_against']:.0f}")
+    read_goals = (row["goals_for"], row["goals_against"])
+    read_pens = (row["shootout_for"], row["shootout_against"])
+    print(f"    adapter reads: goals {read_goals[0]:.0f}-{read_goals[1]:.0f}"
+          f", shootout {read_pens[0]:.0f}-{read_pens[1]:.0f}")
 
-    level = row["goals_for"] == row["goals_against"]
-    shootout = row["shootout_for"] != row["shootout_against"]
-    if level and shootout:
-        print("    -> reads as a shootout. This is the answer we want.")
-        return True
-    if level and not shootout:
-        print("    -> reads as a DRAW. Either this tie did not go to penalties,")
-        print("       or the shootout is somewhere the adapter is not looking:")
-        print("       compare the keys printed above against what it reads.")
+    if goals is None:
+        # Ad-hoc date: nothing to compare against, so only describe.
+        if read_goals[0] == read_goals[1] and read_pens[0] != read_pens[1]:
+            print("    -> a shootout, read as one.")
+            return True
+        print("    -> not read as a shootout. That is correct for a tie won in")
+        print("       normal time, and wrong only if this one was drawn.")
         return False
-    print("    -> NOT level. If this tie was drawn in normal time, the penalties")
-    print("       have been folded into `score` -- the dangerous case, because")
-    print("       it pays a full win and a margin bonus for a drawn match.")
-    return False
+
+    # The home side's figures, since that is the row taken above.
+    if read_goals != tuple(float(g) for g in goals):
+        print(f"    -> WRONG. It finished {goals[0]}-{goals[1]}. Penalties folded")
+        print("       into `score` would look exactly like this, and would pay a")
+        print("       full win and a margin bonus for a drawn match.")
+        return False
+    if read_pens != tuple(float(p) for p in penalties):
+        print(f"    -> WRONG. The shootout was {penalties[0]}-{penalties[1]},"
+              f" read as {read_pens[0]:.0f}-{read_pens[1]:.0f}.")
+        print("       A shootout read as a draw underpays whoever won it.")
+        return False
+    print(f"    -> correct: {goals[0]}-{goals[1]}, "
+          f"{penalties[0]}-{penalties[1]} on penalties.")
+    return True
 
 
 def main() -> int:
@@ -107,8 +123,9 @@ def main() -> int:
 
     from whul.sources.espn import scoreboard
 
-    if args.league and args.date:
-        wanted = [(args.league, date.fromisoformat(args.date), "requested")]
+    ad_hoc = bool(args.league and args.date)
+    if ad_hoc:
+        wanted = [(args.league, date.fromisoformat(args.date), "requested", None, None)]
     elif args.league or args.date:
         print("--league and --date go together.", file=sys.stderr)
         return 2
@@ -116,8 +133,8 @@ def main() -> int:
         wanted = KNOWN_SHOOTOUTS
 
     print(__doc__.split("Run it")[0].strip())
-    found = 0
-    for league, day, label in wanted:
+    checked = passed = 0
+    for league, day, label, goals, penalties in wanted:
         print(f"\n{'=' * 68}\n{league} {day}  ({label})")
         try:
             board = scoreboard(league, day)
@@ -129,19 +146,25 @@ def main() -> int:
         if not events:
             print("  no events on this date -- nothing to read")
             continue
+        # A final is the only tie on its date, but a league key can return a
+        # full card, so check them all and count only the ones that matched.
         for event in events:
-            if report_event(event, label):
-                found += 1
+            checked += 1
+            if check(event, label, goals, penalties):
+                passed += 1
 
     print(f"\n{'=' * 68}")
-    if found:
-        print(f"{found} tie(s) read as a shootout. The adapter is reading the right")
-        print("key, and a shootout win can be told from a draw.")
+    if ad_hoc:
+        print(f"{passed} of {checked} event(s) on that date read as a shootout.")
+        return 0 if passed else 1
+    if passed == len(wanted):
+        print(f"All {passed} known shootout(s) read exactly right: the penalties")
+        print("are beside the score, not inside it, and the adapter finds them.")
         return 0
-    print("No tie on these dates read as a shootout.")
-    print("That is not a pass. Either the dates returned nothing, or the")
-    print("shootout is not where the adapter looks -- read the printed keys")
-    print("above and say which one holds the penalties.")
+    print(f"{passed} of {len(wanted)} known shootout(s) read correctly.")
+    print("Read the printed keys above before trusting the shootout rule --")
+    print("either the tie is not where this script says it is, or the feed")
+    print("has changed where it puts the penalties.")
     return 1
 
 

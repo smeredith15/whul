@@ -115,15 +115,13 @@ def test_the_competition_scales_every_ending_not_only_the_win():
 
 
 def test_a_shootout_win_is_not_a_win():
-    """It pays two thirds of one, and neither bonus.
+    """It pays two thirds of one, and never the margin bonus.
 
-    The match itself was drawn: there is no margin to be big, and a side that
-    conceded nothing in normal time did not keep a clean sheet in a tie it
-    needed penalties to settle. Scoring it as a win would also make it beat a
-    2-0, which is the wrong way round.
+    The match itself was drawn, so there is no margin to be big. Scoring it as
+    a win would also make it beat a 2-0, which is the wrong way round.
     """
     rows = pd.DataFrame([
-        match(gf=0, ga=0, so_for=5, so_against=4),
+        match(gf=1, ga=1, so_for=5, so_against=4),
         match(gf=2, ga=0),
     ])
     out = score_team_matches(rows)
@@ -132,6 +130,43 @@ def test_a_shootout_win_is_not_a_win():
     assert shootout["match_points"] == 2
     assert won["match_points"] == 3 + 1 + 1
     assert shootout["match_points"] < won["match_points"]
+
+
+def test_conceding_nothing_pays_however_the_match_ended():
+    """A goalless draw is worth more than a 1-1, and a side that kept a clean
+    sheet through a shootout kept one whether it won the shootout or lost it.
+
+    Gating this on the result made a 0-0 identical to a 1-1, which reads the
+    bonus as a reward for winning rather than for defending.
+    """
+    rows = pd.DataFrame([
+        match(gf=0, ga=0),                          # goalless draw
+        match(gf=0, ga=0, so_for=5, so_against=4),  # 0-0, won on penalties
+        match(gf=0, ga=0, so_for=4, so_against=5),  # 0-0, lost on penalties
+        match(gf=1, ga=1),                          # scoring draw, no bonus
+    ])
+    out = score_team_matches(rows)
+    assert list(out["clean_sheet"]) == [True, True, True, False]
+    assert list(out["match_points"]) == [1 + 1, 2 + 1, 1 + 1, 1]
+
+
+def test_the_margin_bonus_stays_a_wins_alone():
+    """Unlike the clean sheet. A drawn match has no margin to be big, so there
+    is nothing to relax -- but a 3-0 is still a win by two."""
+    rows = pd.DataFrame([match(gf=3, ga=0), match(gf=0, ga=0)])
+    # 3 + margin + clean sheet, against 1 + clean sheet only.
+    assert list(score_team_matches(rows)["match_points"]) == [5, 2]
+
+
+def test_a_side_that_conceded_nothing_cannot_have_lost():
+    """Which is why the clean sheet needs no result gate. If this ever fails,
+    the goals columns have been read the wrong way round."""
+    rows = pd.DataFrame([
+        match(gf=g, ga=0) for g in (0, 1, 5)
+    ])
+    out = score_team_matches(rows)
+    assert set(out["outcome"]) <= {"win", "draw", "shootout_win", "shootout_loss"}
+    assert all(out["clean_sheet"])
 
 
 def test_a_level_score_with_no_shootout_is_a_draw():

@@ -756,16 +756,19 @@ def test_one_unknown_team_among_several_does_not_raise(monkeypatch):
 
 
 SHOOTOUT_EVENT = {
-    "league": {"name": "Emirates FA Cup"},
+    "league": {"name": "Copa del Rey"},
     "competitions": [
         {
             "status": {"type": {"completed": True}},
             "notes": [{"headline": "Final"}],
             "competitors": [
-                {"homeAway": "home", "score": "1", "shootoutScore": "4",
-                 "team": {"displayName": "Crystal Palace"}},
-                {"homeAway": "away", "score": "1", "shootoutScore": "2",
-                 "team": {"displayName": "Manchester City"}},
+                # The shapes the feed really uses, confirmed against the 2024
+                # Copa del Rey final: the score is a string and the shootout a
+                # number, and they sit beside each other rather than folded.
+                {"homeAway": "home", "score": "1", "shootoutScore": 4,
+                 "winner": True, "team": {"displayName": "Athletic Club"}},
+                {"homeAway": "away", "score": "1", "shootoutScore": 2,
+                 "winner": False, "team": {"displayName": "Mallorca"}},
             ],
         }
     ],
@@ -776,12 +779,12 @@ def test_a_shootout_reaches_the_scorer_as_a_shootout():
     """ESPN carries the penalties beside the score rather than inside it, which
     is the only reason a shootout is recoverable: both sides finish level, so
     the scoreline alone cannot say a tie was settled."""
-    rows = espn._soccer_rows(SHOOTOUT_EVENT, "facup", date(2025, 5, 17))
-    palace = next(r for r in rows if r["team"] == "Crystal Palace")
-    city = next(r for r in rows if r["team"] == "Manchester City")
-    assert palace["goals_for"] == 1.0 and palace["goals_against"] == 1.0
-    assert palace["shootout_for"] == 4.0 and palace["shootout_against"] == 2.0
-    assert city["shootout_for"] == 2.0 and city["shootout_against"] == 4.0
+    rows = espn._soccer_rows(SHOOTOUT_EVENT, "copadelrey", date(2024, 4, 6))
+    athletic = next(r for r in rows if r["team"] == "Athletic Club")
+    mallorca = next(r for r in rows if r["team"] == "Mallorca")
+    assert athletic["goals_for"] == 1.0 and athletic["goals_against"] == 1.0
+    assert athletic["shootout_for"] == 4.0 and athletic["shootout_against"] == 2.0
+    assert mallorca["shootout_for"] == 2.0 and mallorca["shootout_against"] == 4.0
 
     import pandas as pd
 
@@ -791,8 +794,8 @@ def test_a_shootout_reaches_the_scorer_as_a_shootout():
     # to the clubs that belong to one.
     scored = score_team_matches(pd.DataFrame(rows).assign(league="Premier League"))
     by_team = dict(zip(scored["team"], scored["outcome"]))
-    assert by_team["Crystal Palace"] == "shootout_win"
-    assert by_team["Manchester City"] == "shootout_loss"
+    assert by_team["Athletic Club"] == "shootout_win"
+    assert by_team["Mallorca"] == "shootout_loss"
 
 
 def test_a_match_with_no_shootout_reports_zero_rather_than_nothing():

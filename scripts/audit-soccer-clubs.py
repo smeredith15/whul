@@ -128,10 +128,16 @@ def show_rules():
     for tier, points in sorted(TIER_POINTS.items(), key=lambda kv: -kv[1]):
         print(f"    {points:>2}   {TIER_NAMES[tier]}")
     print(f"""
+  Plus, whatever the match ended as:
+
+    +{PTS_CLEAN_SHEET}   conceding nothing -- so a goalless draw beats a 1-1, and a side
+         that kept a clean sheet through a shootout keeps the point
+         whether it won the shootout or lost it
+
   Plus, on a win only:
 
-    +{PTS_BIG_MARGIN}   winning by {BIG_MARGIN} goals or more
-    +{PTS_CLEAN_SHEET}   conceding nothing
+    +{PTS_BIG_MARGIN}   winning by {BIG_MARGIN} goals or more. Only a win can: a drawn match
+         has no margin to be big
 
   So a win is worth between {MIN_PER_WIN} and {MAX_PER_WIN} points, and two wins can be anything
   from {MIN_PER_WIN * 2} to {MAX_PER_WIN * 2}. This is why a total on its own cannot be checked -- and a club
@@ -305,6 +311,8 @@ class Audit:
                 share = OUTCOME_SHARE[ending]
                 low = count * share
                 high = count * share * max(TIER_POINTS.values()) / LEAGUE_WIN
+                # The clean sheet is counted on its own line below, not folded
+                # into the ending's points, so the bound stays the ending alone.
                 total += stored
                 print(f"    {OUTCOME_NAMES[ending][:33]:<34}{count:>6.0f}"
                       f"{share:>9.0f}{stored:>11.2f}")
@@ -319,8 +327,18 @@ class Audit:
             total += big * PTS_BIG_MARGIN + clean * PTS_CLEAN_SHEET
             print(f"    {'won by ' + str(BIG_MARGIN) + '+ goals':<34}{big:>6.0f}"
                   f"{PTS_BIG_MARGIN:>9}{big * PTS_BIG_MARGIN:>11.2f}")
-            print(f"    {'conceded nothing':<34}{clean:>6.0f}"
+            print(f"    {'conceded nothing (any result)':<34}{clean:>6.0f}"
                   f"{PTS_CLEAN_SHEET:>9}{clean * PTS_CLEAN_SHEET:>11.2f}")
+            # A clean sheet cannot be kept in a match that was lost, so more of
+            # them than the club has non-losses means the goals have been read
+            # the wrong way round somewhere.
+            not_lost = played - losses
+            if clean > not_lost + 0.01:
+                flags.append((
+                    "more clean sheets than matches the club did not lose, which "
+                    "is impossible -- a side that concedes nothing cannot lose",
+                    f"{clean:.0f} clean sheet(s), {not_lost:.0f} match(es) not lost",
+                ))
             entry = str(stats.get("uefa_entry") or "")
             entry_points = float(stats.get("pts_uefa_entry") or 0.0)
             if entry or entry_points:
@@ -354,8 +372,11 @@ class Audit:
             # one it does not call a club with points and no wins an error.
             drawable = max(played - wins, 0.0)
             low = wins * MIN_PER_WIN
+            # The dearest a non-win can be: drawn in the dearest competition,
+            # goalless, so it carries the clean sheet too.
             high = (wins * MAX_PER_WIN
-                    + drawable * max(TIER_POINTS.values()) / LEAGUE_WIN)
+                    + drawable * (max(TIER_POINTS.values()) / LEAGUE_WIN
+                                  + PTS_CLEAN_SHEET))
             total = stored_total
             print(f"\n    This row carries no breakdown, so the total cannot be")
             print(f"    rebuilt -- only bounded. {wins:.0f} win(s) and {drawable:.0f} other")
