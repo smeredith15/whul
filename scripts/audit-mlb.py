@@ -99,10 +99,13 @@ TEAM_COMPONENTS = [
     ("pts_playoff", "playoff wins and series", None, False),
 ]
 
-#: A division is won by the team with the most regular-season wins in it, and
-#: only once the season is over. Any division points at all in a season still
-#: being played mean the old league-wide-win-rank rule is still in force.
-DIV_CHAMP_ONLY_WHEN_COMPLETE = True
+#: A division is won by the club with the most regular-season wins in it, and
+#: only once the season is over. Every row this script reads from the live team
+#: source is a window inside a season still being played, so the right number of
+#: division points in all of them is zero. Any others were scored under the old
+#: rule -- the top fifth of the *league* by wins, evaluated on whatever games
+#: were in hand -- and the score in the database predates the fix.
+DIVISION_POINTS_IN_A_LIVE_WINDOW = 0.0
 
 RULE = "-" * 78
 
@@ -133,6 +136,8 @@ class Audit:
         self.version, self.frozen_at = self._frozen_version()
         self.benchmarks = self._benchmarks()
         self.notes: list[tuple[str, str, str]] = []
+        #: manager -> points the standings would move, for scores that count
+        self.standings: dict[str, float] = {}
 
     # -- what we are auditing ------------------------------------------------
 
@@ -190,6 +195,20 @@ class Audit:
         if rows.empty:
             return None, None
         return float(rows.iloc[0]["league_points"]), float(rows.iloc[0]["scaled_score"])
+
+    def slot(self, asset_id: str):
+        """The manager holding this asset today, and whether it counts."""
+        rows = self.store.query(
+            "SELECT m.display_name AS manager, rs.category, ss.counts "
+            "FROM slot_scores ss "
+            "JOIN roster_slots rs USING (slot_id) "
+            "JOIN managers m USING (manager_id) "
+            "WHERE ss.asset_id = ? AND ss.as_of = ?",
+            (asset_id, self.as_of),
+        )
+        if rows.empty:
+            return None, False
+        return str(rows.iloc[0]["manager"]), bool(int(rows.iloc[0]["counts"]))
 
     def roster(self, asset_id: str) -> str:
         rows = self.store.query(
@@ -364,23 +383,33 @@ class Audit:
 
             total = 0.0
             flags = []
+            stale = 0.0
             for key, label, each, counting in TEAM_COMPONENTS:
                 if key not in stats:
                     continue
                 points = num(stats.get(key))
+                dropped = 0.0
+                if key == "pts_div_champ" and points != DIVISION_POINTS_IN_A_LIVE_WINDOW:
+                    # Audited against the rule, not against what was stored. A
+                    # score that disagrees is the finding.
+                    dropped = points
+                    stale += points
+                    points = DIVISION_POINTS_IN_A_LIVE_WINDOW
                 total += points
                 # The count the feed saw, recovered from the stored points so
                 # it can be checked against a box score.
+                shown = points + dropped
                 if each:
-                    base = points / factor if counting else points
+                    base = shown / factor if counting else shown
                     count = base / each
                     shown_count = f"{count:,.0f}" if abs(count - round(count)) < 0.01 \
                         else f"{count:,.2f}"
                     shown_each = f"{each:.2f}"
                     shown_base = f"{base:,.2f}"
                 else:
-                    shown_count, shown_each, shown_base = "--", "--", f"{points:,.2f}"
-                shown_pro = f"x {factor:.4f}" if counting else "held"
+                    shown_count, shown_each, shown_base = "--", "--", f"{shown:,.2f}"
+                shown_pro = "DROPPED" if dropped else (
+                    f"x {factor:.4f}" if counting else "held")
                 print(f"    {label:<26}{shown_count:>8}{shown_each:>9}{shown_base:>10}"
                       f"{shown_pro:>12}{points:>11.2f}")
 
@@ -395,20 +424,25 @@ class Audit:
                     "the stored win count disagrees with the stored points",
                     f"reg_wins {reported:,.0f} vs {implied:,.1f} implied",
                 ))
-            if num(stats.get("pts_div_champ")) > 0:
+            if stale:
                 flags.append((
-                    f"scored as a division winner, though no division has been "
-                    f"won on {self.as_of}. A title is an outcome, not a rate: it "
-                    f"does not exist until the season it belongs to has finished",
-                    "+5.00 points",
+                    f"the stored score includes a division title. No division "
+                    f"has been won on {self.as_of} -- a title is an outcome, not "
+                    f"a rate, and does not exist until the season it belongs to "
+                    f"has finished. Scored here without it",
+                    f"stored score carries +{stale:.2f} it should not",
                 ))
 
             stored_total = stats.get("total_points")
-            if stored_total is not None and abs(total - float(stored_total)) > 0.01:
-                flags.append((
-                    "the components do not sum to the stored total",
-                    f"{total:,.2f} vs {float(stored_total):,.2f}",
-                ))
+            if stored_total is not None:
+                # Anything the dropped division points already account for is
+                # the same finding twice; only a remainder is news.
+                unexplained = float(stored_total) - stale - total
+                if abs(unexplained) > 0.01:
+                    flags.append((
+                        "the components do not sum to the stored total",
+                        f"{total + stale:,.2f} vs {float(stored_total):,.2f}",
+                    ))
             scaled = self.normalize(total, "Team", "MLB")
             if scaled is not None:
                 self.verdict(asset_id, name, total, scaled, flags)
@@ -427,9 +461,15 @@ class Audit:
             print(f"\n    CHECK  this script says {scaled:.2f}, the database says "
                   f"{stored_scaled:.2f}   <-- MISMATCH")
             self.notes.append((
-                name, "recomputed and stored scores disagree",
-                f"{scaled:.2f} vs {stored_scaled:.2f}",
+                name, "the stored score does not match the current rules",
+                f"{stored_scaled:.2f} stored, {scaled:.2f} under the rules as they "
+                f"stand -- rerun the pipeline",
             ))
+            manager, counts = self.slot(asset_id)
+            if manager and counts:
+                self.standings[manager] = (
+                    self.standings.get(manager, 0.0) + scaled - stored_scaled
+                )
         else:
             print(f"\n    CHECK  {scaled:.2f} recomputed, {stored_scaled:.2f} stored"
                   f"   -- agrees")
@@ -460,6 +500,14 @@ class Audit:
             print(f"    {len(whom)} affected:")
             for who, detail in whom:
                 print(f"      {who:<24}{detail}")
+
+        if self.standings:
+            print(f"\n{RULE}\nWHAT RERUNNING THE PIPELINE WOULD MOVE\n{RULE}")
+            print("  Counting slots only -- a held asset changes nothing.\n")
+            for manager, delta in sorted(
+                self.standings.items(), key=lambda kv: kv[1]
+            ):
+                print(f"    {manager:<16}{delta:+.2f}")
 
 
 def main():
