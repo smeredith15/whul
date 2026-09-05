@@ -502,22 +502,64 @@ def test_entry_is_matched_on_a_normalized_name():
     assert row["pts_uefa_entry"] == 12.0
 
 
-def test_a_name_that_did_not_match_is_named_rather_than_lost():
-    """A miss costs up to twelve points and reads as nothing at all. Only names
-    that look like one of ours are reported -- the participant list holds every
-    club in Europe and listing them all would bury the one that matters."""
-    ours = pd.DataFrame([{"team": "Internazionale", "season": 2027}])
-    entry = pd.DataFrame([
-        entry_row("Inter Milan"),
-        entry_row("Bodø/Glimt"),
-        entry_row("Slovan Bratislava"),
+# Every one of these came out of a live benchmark run and was wrong there
+# first. Four different reasons, none of which the other three fix.
+@pytest.mark.parametrize("entrant,feed,why", [
+    ("Atalanta EL", "Atalanta", "a holder marker left on the name"),
+    ("Union Berlin", "1. FC Union Berlin", "a bare numeral in the feed name"),
+    ("Mainz 05", "Mainz", "a bare numeral in the Wikipedia name"),
+    ("West Ham United", "West Ham", "one name longer than the other"),
+    ("Athletic Bilbao", "Athletic Club", "each has a word the other lacks"),
+    ("Inter Milan", "Internazionale", "no word in common at all"),
+])
+def test_a_club_the_two_sources_spell_differently_still_matches(entrant, feed, why):
+    row = soccer.score_teams(
+        one_win(team=feed), uefa_entry=pd.DataFrame([entry_row(entrant)])
+    ).iloc[0]
+    assert row["pts_uefa_entry"] == 12.0, why
+
+
+def test_inter_milan_is_never_scored_as_ac_milan():
+    """The guard that matters. "Inter Milan" contains every word of "Milan",
+    so a plain subset rule hands Inter's twelve points to AC Milan -- which is
+    worse than giving them to nobody, and would not read as wrong anywhere.
+    Matching requires the two names to start with the same word."""
+    both = pd.DataFrame([
+        {"team": t, "league": "Serie A", "date": "2027-05-10",
+         "competition": "Serie A", "goals_for": 2, "goals_against": 0}
+        for t in ("Milan", "Internazionale")
     ])
-    assert soccer.unmatched_uefa_entry(ours, entry) == [("Inter Milan", 2027)]
+    out = soccer.score_teams(
+        both, uefa_entry=pd.DataFrame([entry_row("Inter Milan")])
+    ).set_index("team")
+    assert out.loc["Internazionale", "pts_uefa_entry"] == 12.0
+    assert out.loc["Milan", "pts_uefa_entry"] == 0.0
+
+
+def test_a_name_that_did_not_match_names_what_it_came_nearest_to():
+    """A report saying only "Aston Villa did not match" invites a hunt for a
+    Villa that is not there. Naming Villarreal makes the false alarm obvious."""
+    ours = pd.DataFrame([{"team": "Villarreal", "season": 2027}])
+    entry = pd.DataFrame([entry_row("Aston Villa"), entry_row("Slovan Bratislava")])
+    assert soccer.unmatched_uefa_entry(ours, entry) == \
+        [("Aston Villa", 2027, "Villarreal")]
+
+
+@pytest.mark.parametrize("entrant,ours", [
+    ("Dundee United", "Manchester United"),
+    ("Racing Union", "Union Berlin"),
+    ("The New Saints", "Southampton"),
+])
+def test_a_word_too_common_to_identify_a_club_is_not_reported(entrant, ours):
+    """A live run reported forty-seven of these across five leagues. A report
+    nobody reads is worth nothing when the thing it hides is twelve points."""
+    frame = pd.DataFrame([{"team": ours, "season": 2027}])
+    entry = pd.DataFrame([entry_row(entrant)])
+    assert soccer.unmatched_uefa_entry(frame, entry) == []
 
 
 def test_a_different_club_that_shares_a_word_is_not_reported():
-    """Real Betis is not Real Madrid, and a report full of those is a report
-    nobody reads."""
+    """Real Betis is not Real Madrid."""
     ours = pd.DataFrame([{"team": "Real Madrid", "season": 2027}])
     entry = pd.DataFrame([entry_row("Real Betis")])
     assert soccer.unmatched_uefa_entry(ours, entry) == []

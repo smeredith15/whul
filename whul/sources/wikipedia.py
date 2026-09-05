@@ -53,9 +53,17 @@ TIMEOUT = 30
 DASH = "–"
 
 COMPETITION_TITLES = {
-    "Champions League": "{first}{dash}{second} UEFA Champions League",
-    "Europa League": "{first}{dash}{second} UEFA Europa League",
-    "Conference League": "{first}{dash}{second} UEFA Conference League",
+    "Champions League": ("{first}{dash}{second} UEFA Champions League",),
+    "Europa League": ("{first}{dash}{second} UEFA Europa League",),
+    # The Conference League was called the Europa Conference League until
+    # 2024-25. Only the newer title was tried, so three seasons of it were
+    # missing from the benchmark pool -- and the only reason that was visible
+    # is that a wrong article title 404s. Had they merely renamed a section it
+    # would have returned nothing and said nothing.
+    "Conference League": (
+        "{first}{dash}{second} UEFA Conference League",
+        "{first}{dash}{second} UEFA Europa Conference League",
+    ),
 }
 
 #: The one section worth reading. Anchored, so it cannot also match
@@ -90,6 +98,10 @@ LEAGUE_PHASE_SIZE = 36
 #: exact match only: a trailing run of capitals is not safely removable when AZ,
 #: PSV, RFS and FCSB are clubs.
 #:
+#: EL and CL mark a club that came in as the holder of that competition --
+#: "Atalanta EL" is Atalanta, in as Europa League winners. Same class as EPS and
+#: found the same way: in a live run, on a name that then matched nothing.
+#:
 #: EPS is the European Performance Spot -- the extra Champions League place the
 #: two best-performing associations earn each year. It is exactly the moving
 #: allocation that reading the participant list was meant to avoid modelling,
@@ -97,7 +109,7 @@ LEAGUE_PHASE_SIZE = 36
 #: those places in 2025-26. Without it here, both names reach the roster with
 #: " EPS" attached, match nothing, and score no entry at all -- twelve points
 #: each, in silence.
-MARKERS = ("TH", "CW", "EPS", "UCL", "UEL", "UECL")
+MARKERS = ("TH", "CW", "EPS", "CL", "EL", "ECL", "UCL", "UEL", "UECL")
 
 #: Text in a club cell that names a slot rather than a club, which is what an
 #: article carries before qualifying has been played.
@@ -126,12 +138,18 @@ def _is_a_count(name: str) -> bool:
     return name.replace(".", "").replace(",", "").replace(" ", "").isdigit()
 
 
-def title_for(competition: str, season: str) -> str:
-    """``("Champions League", "2027-28")`` -> the article title."""
+def titles_for(competition: str, season: str) -> list[str]:
+    """Every article title a competition has gone by, newest naming first."""
     first, second = season.replace(DASH, "-").split("-")
-    return COMPETITION_TITLES[competition].format(
-        first=int(first), second=f"{int(second):02d}", dash=DASH
-    )
+    return [
+        pattern.format(first=int(first), second=f"{int(second):02d}", dash=DASH)
+        for pattern in COMPETITION_TITLES[competition]
+    ]
+
+
+def title_for(competition: str, season: str) -> str:
+    """The current article title for a competition and season."""
+    return titles_for(competition, season)[0]
 
 
 def clean(value) -> str:
@@ -230,14 +248,28 @@ def section_tables(title: str, index: str, session=None) -> list[pd.DataFrame]:
 
 
 def load_entrants(competition: str, season: str, session=None) -> dict[str, str]:
-    """``{club: entry round}`` for one competition and season."""
-    title = title_for(competition, season)
-    section = teams_section(sections(title, session))
+    """``{club: entry round}`` for one competition and season.
+
+    Tries each name the competition has gone by. A renaming looks exactly like
+    a missing season otherwise, and quietly costs the pool every club that
+    entered under the old name.
+    """
+    title, section, failures = None, None, []
+    for candidate in titles_for(competition, season):
+        try:
+            section = teams_section(sections(candidate, session))
+        except Exception as exc:  # noqa: BLE001 -- try the next name it went by
+            failures.append(f"{candidate}: {type(exc).__name__}")
+            continue
+        if section is not None:
+            title = candidate
+            break
+        failures.append(f"{candidate}: no section headed 'Teams'")
     if section is None:
         raise LookupError(
-            f"{title} has no section headed 'Teams'. The article changed shape, "
-            f"and guessing which other section holds the participants is how a "
-            f"coefficient table gets read as a club list."
+            f"no participants for {competition} {season} under any name it has "
+            f"gone by -- {'; '.join(failures)}. Guessing which other section "
+            f"holds them is how a coefficient table gets read as a club list."
         )
     entrants: dict[str, str] = {}
     for frame in section_tables(title, str(section.get("index")), session):

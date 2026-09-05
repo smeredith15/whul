@@ -236,3 +236,22 @@ def test_the_extra_place_marker_is_stripped(name, club):
     run on Newcastle and Villarreal, and left in the name it would have cost
     both clubs twelve points without anything reading as wrong."""
     assert wikipedia.clean(name) == club
+
+
+def test_the_conference_league_is_tried_under_both_its_names():
+    """It was the Europa Conference League until 2024-25. Only the newer title
+    was tried, so three seasons of it were missing from the benchmark pool --
+    and the only reason that was visible is that a wrong title 404s."""
+    titles = wikipedia.titles_for("Conference League", "2022-23")
+    assert titles == ["2022–23 UEFA Conference League",
+                      "2022–23 UEFA Europa Conference League"]
+
+
+@pytest.mark.parametrize("name,club", [
+    ("Atalanta EL", "Atalanta"),
+    ("Milan CL", "Milan"),
+    ("Chelsea ECL", "Chelsea"),
+])
+def test_a_holders_marker_is_stripped(name, club):
+    """EL and CL mark a club in as the holder of that competition."""
+    assert wikipedia.clean(name) == club

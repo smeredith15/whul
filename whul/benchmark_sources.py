@@ -462,10 +462,12 @@ def _soccer(key: str, category: str):
                 # and reads as nothing at all.
                 print(
                     f"  {key}: {len(missed)} European entrant(s) look like one of "
-                    f"this league's clubs but matched none: "
-                    + ", ".join(f"{n} ({s})" for n, s in missed[:8]),
+                    f"this league's clubs but matched none. The nearest club is "
+                    f"named so a false alarm is obvious:",
                     flush=True,
                 )
+                for name, season, near in missed[:10]:
+                    print(f"      {name} ({season})  nearest: {near}", flush=True)
             return scored
 
         return load, score
