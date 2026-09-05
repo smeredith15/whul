@@ -387,10 +387,48 @@ def test_a_division_title_goes_to_the_most_wins_in_that_division():
     assert out.loc["SFG", "is_division_champ"] == 0
 
 
-def test_clubs_tied_for_a_division_lead_both_take_it():
-    """MLB settles a tie with a game or head-to-head record, neither of which
-    a schedule alone reconstructs. Awarding it to nobody would be further from
-    the truth than awarding it to both."""
+def test_a_division_tie_is_broken_on_head_to_head():
+    """MLB's first tiebreaker, and the schedule already says who won those
+    games. Both clubs finish on 3 wins; NYY took two of the three they played
+    against each other."""
+    sched = pd.DataFrame(
+        [game("NYY", "BOS", 5, 1)] * 2       # NYY 2-1 head to head
+        + [game("BOS", "NYY", 5, 1)]
+        + [game("NYY", "TOR", 5, 1)]         # each pads to 3 wins elsewhere
+        + [game("BOS", "TOR", 5, 1)] * 2
+    )
+    out = summarize_teams(sched, divisions_of("NYY", "BOS", "TOR")).set_index("team")
+    assert out.loc["NYY", "reg_wins"] == out.loc["BOS", "reg_wins"] == 3
+    assert out.loc["NYY", "is_division_champ"] == 1
+    assert out.loc["BOS", "is_division_champ"] == 0
+
+
+def test_the_second_tiebreaker_is_a_rate_not_a_count():
+    """Level on wins and level head to head, so it falls to record inside the
+    division -- where an unbalanced schedule gives the two clubs a different
+    number of chances. BOS has *more* division wins (4 to 3) and a worse record
+    (.571 to .750), and counting wins alone would hand it to the club that
+    simply played more."""
+    sched = pd.DataFrame(
+        [game("NYY", "BOS", 5, 1), game("BOS", "NYY", 5, 1)]   # split 1-1
+        + [game("NYY", "TOR", 5, 1)] * 2                       # NYY 3-1 in division
+        + [game("BOS", "TOR", 5, 1)] * 2                       # BOS 4-3 in division
+        + [game("TOR", "BOS", 5, 1)]
+        + [game("BOS", "BAL", 5, 1), game("BAL", "BOS", 5, 1)]
+        + [game("NYY", "HOU", 5, 1)]                           # HOU is outside it
+    )
+    out = summarize_teams(
+        sched, divisions_of("NYY", "BOS", "TOR", "BAL")
+    ).set_index("team")
+    assert out.loc["NYY", "reg_wins"] == out.loc["BOS", "reg_wins"] == 4
+    assert out.loc["NYY", "is_division_champ"] == 1
+    assert out.loc["BOS", "is_division_champ"] == 0
+
+
+def test_clubs_level_after_every_tiebreaker_take_it_together():
+    """Two clubs that split their season series and finished level in the
+    division have not been separated by anything that happened on a field.
+    Picking one would be inventing a result rather than reading one."""
     sched = pd.DataFrame([game("NYY", "BOS", 5, 1), game("BOS", "NYY", 5, 1)])
     out = summarize_teams(sched, divisions_of("NYY", "BOS")).set_index("team")
     assert out.loc["NYY", "is_division_champ"] == 1

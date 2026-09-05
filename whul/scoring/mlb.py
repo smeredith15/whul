@@ -85,12 +85,13 @@ PTS_SERIES = {"wc": 5, "lds": 6, "lcs": 7, "ws": 8}
 #: hand, so four clubs were being paid for titles in the first three weeks of a
 #: league year, mid-pennant-race.
 #:
-#: Ties take the title together. MLB settles them with a tiebreaker game or by
-#: head-to-head record, neither of which is reconstructable from a schedule
-#: alone, and awarding it to nobody would be further from the truth than
-#: awarding it to both. Ties for a division lead are rare enough that the
-#: benchmark barely moves either way.
-TIED_DIVISION_LEADERS_SHARE = False
+#: A tie for the lead is broken the way MLB breaks one: head-to-head record
+#: first, then record inside the division. Both are in the schedule already --
+#: it says who played whom and who won -- so this needs no source beyond the one
+#: the wins were counted from. Clubs still level after both take the title
+#: together, which is rare and is the honest answer when the games say nothing
+#: more.
+TIEBREAKERS = ("head to head", "within the division")
 
 GAME_TYPE_REGULAR = "R"
 GAME_TYPE_WC = "F"
@@ -268,8 +269,8 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
     if schedule is None or schedule.empty:
         return pd.DataFrame(
             {c: pd.Series(dtype="object")
-             for c in ("season", "game_type", "team", "runs_for", "runs_against",
-                       "margin", "is_win", "is_reg")}
+             for c in ("season", "game_type", "team", "opponent", "runs_for",
+                       "runs_against", "margin", "is_win", "is_reg")}
         )
     base = pd.DataFrame(
         {
@@ -291,6 +292,9 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
                     "season": base["season"],
                     "game_type": base["game_type"],
                     "team": base[f"{side}_team"],
+                    # Kept so a division tie can be broken on head-to-head
+                    # record, which is what MLB itself breaks one on.
+                    "opponent": base[f"{other}_team"],
                     "runs_for": base[f"{side}_score"],
                     "runs_against": base[f"{other}_score"],
                 }
@@ -353,14 +357,20 @@ def summarize_teams(
     summary["playoff_game_wins"] = (
         summary["wc_wins"] + summary["lds_wins"] + summary["lcs_wins"] + summary["ws_wins"]
     )
-    summary["is_division_champ"] = _division_champs(summary, divisions)
+    summary["is_division_champ"] = _division_champs(summary, divisions, games)
     return summary
 
 
 def _division_champs(
-    summary: pd.DataFrame, divisions: pd.DataFrame | None
+    summary: pd.DataFrame,
+    divisions: pd.DataFrame | None,
+    games: pd.DataFrame | None = None,
 ) -> pd.Series:
-    """Most regular-season wins inside each division, per season.
+    """The club atop each division, per season.
+
+    Most regular-season wins in the division, with a tie broken on head-to-head
+    record and then on record inside the division -- MLB's own order, and both
+    computable from the schedule the wins were counted from.
 
     Returns zeroes where the divisions are not known. A season's champions can
     only be read off a completed season, so a caller scoring games in progress
@@ -386,14 +396,73 @@ def _division_champs(
         lookup[["season", "team", "division"]], on=["season", "team"], how="left"
     )
     placed["reg_wins"] = pd.to_numeric(summary["reg_wins"], errors="coerce").to_numpy()
+    placed.index = summary.index
 
     known = placed["division"].notna()
     if not known.any():
         return zero
-    best = placed[known].groupby(["season", "division"])["reg_wins"].transform("max")
+
     champ = zero.copy()
-    champ.loc[placed.index[known][placed.loc[known, "reg_wins"] == best]] = 1
+    for (season, division), block in placed[known].groupby(["season", "division"]):
+        leaders = block.index[block["reg_wins"] == block["reg_wins"].max()]
+        if len(leaders) > 1:
+            leaders = _break_the_tie(
+                placed.loc[leaders], placed[known], games, season, division
+            )
+        champ.loc[leaders] = 1
     return champ
+
+
+def _break_the_tie(
+    tied: pd.DataFrame,
+    placed: pd.DataFrame,
+    games: pd.DataFrame | None,
+    season,
+    division: str,
+) -> pd.Index:
+    """MLB's tiebreakers, applied in order, until one club is left.
+
+    Head-to-head first: the record between the tied clubs only. Then record
+    against the whole division. Win *rate* rather than wins at each step,
+    because an unbalanced schedule does not give two clubs the same number of
+    chances, and counting wins alone would hand it to whoever played more.
+
+    Whatever survives both is returned as it stands. Two clubs that split their
+    season series and finished level in the division have not been separated by
+    anything that happened on a field, and picking one would be inventing a
+    result rather than reading one.
+    """
+    if games is None or games.empty or "opponent" not in games.columns:
+        return tied.index
+
+    season_games = games[
+        (pd.to_numeric(games["season"], errors="coerce") == season)
+        & games["is_reg"].fillna(False).astype(bool)
+    ]
+    if season_games.empty:
+        return tied.index
+
+    contenders = list(tied["team"])
+    in_division = set(placed.loc[placed["division"] == division, "team"])
+
+    for opponents in (set(contenders), in_division):
+        rate = {}
+        for team in contenders:
+            met = season_games[
+                (season_games["team"] == team)
+                & season_games["opponent"].isin(opponents - {team})
+            ]
+            if met.empty:
+                continue
+            rate[team] = met["is_win"].astype(bool).mean()
+        if len(rate) < len(contenders) or not rate:
+            continue
+        best = max(rate.values())
+        contenders = [t for t in contenders if rate[t] == best]
+        if len(contenders) == 1:
+            break
+
+    return tied.index[tied["team"].isin(contenders)]
 
 
 def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
