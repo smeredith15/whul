@@ -77,13 +77,18 @@ def ingest(
         report.problems.append("nothing rostered in this league; skipped")
         return report
 
+    notes: list[str] = []
     try:
-        scored = _pull(source, as_of, verbose, names=list(assets["display_name"]))
+        scored = _pull(
+            source, as_of, verbose, names=list(assets["display_name"]), notes=notes
+        )
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
         return report
     if scored is None or scored.empty:
-        report.problems.append("the source has no results yet for this season")
+        report.problems.append(
+            notes[0] if notes else "the source has no results yet for this season"
+        )
         return report
     report.pulled = len(scored)
 
@@ -142,6 +147,40 @@ def ingest(
     return report
 
 
+def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
+    """What arrived, when a full fetch scored nothing.
+
+    Three things look identical from the outside -- a feed with nothing in it,
+    a feed whose rows all fall before the league year opened, and a schedule of
+    fixtures nobody has played. Only the last is normal, and it is the one that
+    reads most like a broken adapter.
+    """
+    if kept.empty:
+        return (
+            f"the feed returned {len(raw):,} row(s), but all of them fall "
+            f"before this league's results start counting"
+        )
+
+    played = kept
+    if "completed" in kept.columns:
+        played = kept[kept["completed"].fillna(False).astype(bool)]
+    if played.empty:
+        upcoming = ""
+        column = next((c for c in DATE_COLUMNS if c in kept.columns), None)
+        if column is not None:
+            days = pd.to_datetime(kept[column], errors="coerce")
+            if days.notna().any():
+                upcoming = f"; the first is {days.min().date()}"
+        return (
+            f"{len(kept):,} fixture(s) scheduled, none played yet{upcoming}. "
+            f"This is a season that has not started, not a feed that is broken."
+        )
+    return (
+        f"{len(played):,} completed row(s) arrived but none of them scored, "
+        f"which is the scorer's to explain rather than the feed's"
+    )
+
+
 def _leagues_of(source) -> set[str]:
     """Roster league labels a source can score.
 
@@ -183,9 +222,17 @@ def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
 
 
 def _pull(
-    source, as_of: date, verbose: bool, names: list[str] | None = None
+    source, as_of: date, verbose: bool, names: list[str] | None = None,
+    notes: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Season-to-date totals for one league, however that league counts them."""
+    """Season-to-date totals for one league, however that league counts them.
+
+    ``notes`` collects anything the caller should say about an empty result. A
+    feed that returned a full fixture list none of which has been played is not
+    the same as a feed that returned nothing, and reporting both as "no results
+    yet" has twice sent someone looking for a bug in a league that simply has
+    not kicked off.
+    """
     from whul.config.league import season_start
     from whul.scoring import window
 
@@ -203,7 +250,11 @@ def _pull(
         raw = fetch(seasons)
         if raw is None or raw.empty:
             return pd.DataFrame()
-        return score(_from_season_start(raw, source.league))
+        kept = _from_season_start(raw, source.league)
+        scored = score(kept)
+        if (scored is None or scored.empty) and notes is not None:
+            notes.append(_why_nothing_scored(raw, kept))
+        return scored
 
     # A continuously running sport accrues over the league year, not the
     # calendar one, so its live total is summed over the same window its

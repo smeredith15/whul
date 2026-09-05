@@ -377,3 +377,49 @@ def test_the_mlb_source_declares_the_fold():
 
     assert SOURCES["mlb"].post_normalize is not None
     assert SOURCES["nfl"].post_normalize is None
+
+
+# --- why nothing scored -------------------------------------------------------
+
+def test_a_schedule_nobody_has_played_says_so(store):
+    """Three things look identical from the outside: a feed with nothing in it,
+    a feed whose rows all predate the league year, and a full fixture list
+    nobody has played. Only the last is normal, and it reads most like a broken
+    adapter -- which is what sent someone hunting for a bug in a college
+    football season that had not kicked off."""
+    rostered(store, "Ohio State Buckeyes", league="NCAAF", asset_type="Team")
+    fixtures = pd.DataFrame([
+        {"team": "Ohio State Buckeyes", "league": "NCAAF",
+         "game_date": "2026-09-05", "completed": False},
+        {"team": "Ohio State Buckeyes", "league": "NCAAF",
+         "game_date": "2026-09-12", "completed": False},
+    ])
+    source = FakeSource(
+        key="ncaaf", league="NCAAF", asset_type="Team",
+        # The scorer keeps completed games only, so an unplayed slate scores
+        # nothing -- which is exactly what a real one does.
+        build=lambda: (lambda seasons: fixtures, lambda raw: pd.DataFrame()),
+    )
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+    assert "2 fixture(s) scheduled, none played yet" in report.problems[0]
+    assert "2026-09-05" in report.problems[0]
+    assert "not a feed that is broken" in report.problems[0]
+
+
+def test_rows_that_all_predate_the_league_year_say_that_instead(store):
+    from whul.ingest import _why_nothing_scored
+
+    raw = pd.DataFrame([{"game_date": "2026-07-01", "completed": True}] * 5)
+    note = _why_nothing_scored(raw, raw.iloc[0:0])
+    assert "5 row(s)" in note
+    assert "before this league's results start counting" in note
+
+
+def test_completed_rows_that_score_nothing_are_the_scorers_to_explain():
+    """Not the feed's. The distinction is what says where to look."""
+    from whul.ingest import _why_nothing_scored
+
+    kept = pd.DataFrame([{"game_date": "2026-09-01", "completed": True}] * 3)
+    note = _why_nothing_scored(kept, kept)
+    assert "the scorer's to explain" in note
