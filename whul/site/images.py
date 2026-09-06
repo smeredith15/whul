@@ -6,8 +6,11 @@ would be both fragile and rude. So the site reads from a directory the league
 fills in at its own pace, and renders a monogram wherever a file is missing.
 
     assets/img/manager/<manager-id>.<ext>   a manager's team photo
-    assets/img/asset/<asset-id>.<ext>       a player or team photo
-    assets/img/badge/<league>.<ext>         a competition or club badge
+    assets/img/asset/<asset-id>.<ext>       a player's headshot or a team logo
+    assets/img/badge/<league-slug>.<ext>    a competition's mark
+    assets/img/club/<club-slug>.<ext>       a club's crest, for a player's corner
+    assets/img/flag/<country-slug>.<ext>    a country's flag, for an athlete's
+    assets/img/shield/<name-slug>.<ext>     a confederation's shield, Olympic rings
 
 Any of jpg, jpeg, png, webp or svg. Names are matched exactly on the id the
 store uses, so adding a photo is dropping in a file -- no manifest to update
@@ -22,6 +25,7 @@ deliberate rather than half-finished.
 from __future__ import annotations
 
 import shutil
+import unicodedata
 from html import escape
 from pathlib import Path
 
@@ -32,16 +36,41 @@ SOURCE_DIR = Path("assets/img")
 OUT_DIR = "img"
 EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".svg")
 
-KINDS = ("manager", "asset", "badge")
+#: Every directory the site reads. `asset` holds the main picture -- a
+#: headshot or a team logo -- and the other three hold whatever goes in its
+#: bottom-right corner, kept apart rather than pooled: "England" is a country
+#: and an international side and a `flag/england.png` that turned out to be a
+#: crest would be found by whichever asked first.
+KINDS = ("manager", "asset", "badge", "club", "flag", "shield")
+
+
+def plain(key: str) -> str:
+    """A key with its accents folded away, for people naming files by hand.
+
+    Asset ids keep the spelling the league drafted -- `kylian-mbappé`, and the
+    id is what the rest of the engine speaks, so it stays. But asking someone to
+    type that as a filename eighty times is asking for a file that looks right
+    and is never found, and the ways to get it wrong (a precomposed é, a
+    combining accent, whatever the file manager does on the way through) all
+    fail identically and silently.
+    """
+    folded = unicodedata.normalize("NFKD", str(key))
+    return "".join(c for c in folded if not unicodedata.combining(c))
 
 
 def find(kind: str, key: str, source: Path | None = None) -> Path | None:
-    """The image file for an id, or None when the league has not supplied one."""
+    """The image file for an id, or None when the league has not supplied one.
+
+    The accent-folded spelling is accepted as well as the exact one, so a file
+    named `kylian-mbappe.png` is found for `kylian-mbappé`. The exact spelling
+    wins where both exist, since that one was deliberate.
+    """
     base = (source or SOURCE_DIR) / kind
-    for extension in EXTENSIONS:
-        candidate = base / f"{key}{extension}"
-        if candidate.exists():
-            return candidate
+    for name in dict.fromkeys((key, plain(key))):
+        for extension in EXTENSIONS:
+            candidate = base / f"{name}{extension}"
+            if candidate.exists():
+                return candidate
     return None
 
 

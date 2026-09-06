@@ -89,6 +89,7 @@ def apply_schema(conn: sqlite3.Connection) -> int:
 #: or an existing database silently stays one version behind.
 ADDED_COLUMNS = (
     ("slot_occupancy", "cost", "REAL"),
+    ("assets", "affiliation", "TEXT NOT NULL DEFAULT ''"),
 )
 
 

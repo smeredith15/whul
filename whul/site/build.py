@@ -102,7 +102,13 @@ def _page(title: str, body: str, active: str, managers: list[str],
 """
 
 
-def _identity(stats: dict, league: str, norm_key: str) -> dict[str, str]:
+#: Roster categories whose picks are individuals rather than club employees.
+#: Their affiliation is a country, and the corner of their picture is a flag.
+INDIVIDUAL_CATEGORIES = {"Tennis", "PGA", "Motorsports", "Olympics"}
+
+
+def _identity(stats: dict, league: str, norm_key: str,
+              affiliation: str = "") -> dict[str, str]:
     """What a player is, out of the day's recorded row.
 
     Three lines, and each is only shown when it says something:
@@ -131,7 +137,11 @@ def _identity(stats: dict, league: str, norm_key: str) -> dict[str, str]:
     group = norm_key.replace("_", " ").strip()
     return {
         "position": first("position", "role"),
-        "team": first("team_name", "team", "club"),
+        # The feed first, then the sheet. The feed is the one that notices a
+        # January transfer; the sheet is the one that knows a golfer is Spanish,
+        # which no feed here carries at all. Neither covers the other's case, so
+        # both are read and the fresher wins where they overlap.
+        "team": first("team_name", "team", "club") or affiliation.strip(),
         "group": "" if group in ("", league) else group,
     }
 
@@ -151,7 +161,8 @@ def asset_profiles(
         (season, str(as_of)),
     ).set_index("asset_id")
     meta = store.query(
-        "SELECT asset_id, display_name, league, role, norm_key, asset_type FROM assets"
+        "SELECT asset_id, display_name, league, role, norm_key, affiliation, "
+        "asset_type FROM assets"
     ).set_index("asset_id")
     stats = store.read_stats(season, as_of)
 
@@ -176,7 +187,8 @@ def asset_profiles(
         league = str(info["league"])
         badge = images.find("badge", _slug(league))
         who = _identity(
-            raw_rows.get(asset_id, {}), league, str(info["norm_key"] or "")
+            raw_rows.get(asset_id, {}), league, str(info["norm_key"] or ""),
+            str(info["affiliation"] or ""),
         )
         out[asset_id] = {
             "name": escape(name),

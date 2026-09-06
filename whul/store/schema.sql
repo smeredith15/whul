@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS assets (
     -- The normalization group, denormalized from league and role so a scoring
     -- change can be traced to the rows it moved.
     norm_key     TEXT NOT NULL DEFAULT '',
+    -- Who the asset belongs to, as the league writes it down: a club for a
+    -- player in a team sport, a country for an individual athlete. One column
+    -- for both because it answers one question -- what goes in the corner of
+    -- this asset's picture -- and which of the two it is follows from the
+    -- roster category, not from a second column somebody has to keep in step.
+    affiliation  TEXT NOT NULL DEFAULT '',
     active       INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT NOT NULL
 );
