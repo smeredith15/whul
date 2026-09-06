@@ -51,6 +51,11 @@ WEB = "https://site.web.api.espn.com/apis/common/v3/sports"
 TIMEOUT = 25
 PAUSE = 0.25          # ESPN publishes no rate limit; be a considerate client
 
+#: At or under this, a 200 is ESPN's generic silhouette rather than a person.
+#: Reported with its actual size, so a threshold that is wrong shows up as a
+#: column of near-identical numbers rather than as a wrong count.
+SILHOUETTE_BYTES = 2000
+
 #: Our league label -> ESPN's (sport, league) path. Only what is rostered.
 #: Deliberately not imported from whul.sources.espn: that map exists to score
 #: results and is missing every league scored from somewhere else, and a probe
@@ -111,27 +116,43 @@ class Checker:
 
     def __init__(self, session: requests.Session) -> None:
         self.session = session
-        self.seen: dict[str, bool] = {}
+        self.seen: dict[str, str] = {}
         self.calls = 0
 
-    def ok(self, url: str) -> bool:
+    def why(self, url: str) -> str:
+        """"ok", or a short reason it is not.
+
+        The reason is the point. "45 headshots missing" reads as a task list of
+        forty-five files to find; "45 ids resolved and ESPN serves a silhouette
+        for each" reads as ESPN not having them, which is a different problem
+        with a different answer. The first run of this could not tell those
+        apart and neither could anyone reading it.
+        """
         if not url:
-            return False
+            return "nothing to check"
         if url in self.seen:
             return self.seen[url]
         try:
             reply = self.session.head(url, timeout=TIMEOUT, allow_redirects=True)
-            # ESPN answers 200 with a 1x1 "no photo" silhouette for some
-            # athletes rather than 404ing, and that is a miss dressed as a hit.
-            # Judged on size: a real headshot is tens of kilobytes.
             length = int(reply.headers.get("content-length") or 0)
-            good = reply.status_code == 200 and length > 2000
-        except Exception:
-            good = False
-        self.seen[url] = good
+            if reply.status_code != 200:
+                answer = f"HTTP {reply.status_code}"
+            elif length <= SILHOUETTE_BYTES:
+                # ESPN answers 200 with a generic silhouette rather than 404ing
+                # for an athlete it has no photograph of, and that is a miss
+                # dressed as a hit. A real headshot is tens of kilobytes.
+                answer = f"placeholder ({length}b)"
+            else:
+                answer = "ok"
+        except Exception as exc:
+            answer = type(exc).__name__
+        self.seen[url] = answer
         self.calls += 1
         time.sleep(PAUSE)
-        return good
+        return answer
+
+    def ok(self, url: str) -> bool:
+        return self.why(url) == "ok"
 
 
 def get(session: requests.Session, url: str, params: dict | None = None):
@@ -262,22 +283,47 @@ HEADSHOT = "https://a.espncdn.com/i/headshots/soccer/players/full/{id}.png"
 #: first version read only that and reported nought out of twenty-four, which
 #: is what a wrong lookup and an absent image look like alike. Trying several
 #: and naming the winner is how the next run gets to stop guessing.
-def league_logo_candidates(league: str, payload: dict) -> list[tuple[str, str]]:
+def league_logo_candidates(session: requests.Session, league: str) -> list[tuple[str, str]]:
+    """Everywhere a competition's mark might be, best first.
+
+    The first run found six of twenty-four, all from the CDN path keyed on the
+    league slug -- which is to say it works for `nfl`, `nba`, `mlb`, `nhl` and
+    `f1` and for nothing whose slug has a dot in it. Every soccer competition,
+    every college one and both tours came back empty, so the scoreboard is
+    asked as well: it is a different payload from the teams one and carries
+    `leagues[0].logos` where the teams payload does not.
+    """
     sport, key = ESPN_PATH.get(league, ("", ""))
     out: list[tuple[str, str]] = []
-    try:
-        block = payload["sports"][0]["leagues"][0]
-    except (KeyError, IndexError, TypeError):
-        block = {}
-    for logo in (block.get("logos") or []):
-        if isinstance(logo, dict) and logo.get("href"):
-            out.append(("teams payload", str(logo["href"])))
-    if block.get("id"):
-        out.append(("leaguelogos by id",
-                    f"https://a.espncdn.com/i/leaguelogos/{sport}/500/{block['id']}.png"))
-    if key:
-        out.append(("teamlogos/leagues by key",
-                    f"https://a.espncdn.com/i/teamlogos/leagues/500/{key}.png"))
+    if not key:
+        return out
+
+    def block_of(payload: dict) -> dict:
+        try:
+            return payload["sports"][0]["leagues"][0]
+        except (KeyError, IndexError, TypeError):
+            try:
+                return (payload.get("leagues") or [{}])[0]
+            except (AttributeError, IndexError, TypeError):
+                return {}
+
+    teams = block_of(league_payload(session, league))
+    board = block_of(get(session, f"{BASE}/{sport}/{key}/scoreboard") or {})
+    for name, block in (("scoreboard payload", board), ("teams payload", teams)):
+        for logo in (block.get("logos") or []):
+            if isinstance(logo, dict) and logo.get("href"):
+                out.append((name, str(logo["href"])))
+    for block in (board, teams):
+        if block.get("id"):
+            out.append(("leaguelogos by id",
+                        f"https://a.espncdn.com/i/leaguelogos/{sport}/500/"
+                        f"{block['id']}.png"))
+    out.append(("teamlogos/leagues by key",
+                f"https://a.espncdn.com/i/teamlogos/leagues/500/{key}.png"))
+    # ESPN files soccer competitions under a numeric id it does not always
+    # hand back, but it also serves them under the slug with the dot kept.
+    out.append(("leaguelogos by key",
+                f"https://a.espncdn.com/i/leaguelogos/{sport}/500/{key}.png"))
     return out
 
 
@@ -377,18 +423,28 @@ def athlete_flag(session: requests.Session, league: str, athlete_id: str) -> str
         flag = holder.get("flag")
         if isinstance(flag, dict) and flag.get("href"):
             return str(flag["href"])
-        # Some sports file the nationality rather than a rendered flag.
-        for key in ("citizenship", "birthCountry", "country"):
+        # Some sports file the nationality rather than a rendered flag, and
+        # some file it as a bare string.
+        for key in ("citizenship", "birthCountry", "country", "displayCountry",
+                    "birthPlace", "flagUrl"):
             value = holder.get(key)
-            if isinstance(value, dict) and value.get("flag"):
-                inner = value["flag"]
-                if isinstance(inner, dict) and inner.get("href"):
-                    return str(inner["href"])
+            if isinstance(value, str) and value.strip():
+                return f"country:{value.strip()}"
+            if isinstance(value, dict):
+                if isinstance(value.get("flag"), dict) and value["flag"].get("href"):
+                    return str(value["flag"]["href"])
+                for word in ("country", "displayName", "abbreviation"):
+                    if isinstance(value.get(word), str) and value[word].strip():
+                        return f"country:{value[word].strip()}"
     global _FLAG_SHAPE_SHOWN
     if not _FLAG_SHAPE_SHOWN:
         _FLAG_SHAPE_SHOWN = True
-        print(f"    (no flag on the athlete payload; its keys are "
-              f"{sorted(payload)[:16]})", flush=True)
+        # The first run printed the top-level keys, which said only that the
+        # answer was one level down. This prints the level down.
+        inner = payload.get("athlete")
+        print(f"    (no flag found. top level {sorted(payload)[:12]};"
+              f" athlete {sorted(inner)[:24] if isinstance(inner, dict) else inner})",
+              flush=True)
     return ""
 
 
@@ -423,6 +479,8 @@ def main() -> int:
     #: sends someone hunting; one that says "the key path works and the id path
     #: does not" retires a guess.
     winners: dict[str, Counter] = defaultdict(Counter)
+    #: Athlete -> country, where ESPN names the nationality but renders no flag.
+    nations: dict[str, str] = {}
 
     def record(kind: str, key: str, url: str, label: str) -> None:
         tally[kind][1] += 1
@@ -434,15 +492,28 @@ def main() -> int:
 
     def record_first(kind: str, key: str, label: str,
                      candidates: list[tuple[str, str]]) -> None:
-        """The first candidate that answers, and a note of which one it was."""
+        """The first candidate that answers, and a note of which one it was.
+
+        Every candidate is tried before giving up, and the miss carries what
+        each one said. The first version stopped at the first path that
+        produced a URL at all, so a resolved id whose photograph turned out to
+        be a silhouette never fell through to the next path -- and was reported
+        as a name nobody could find.
+        """
         tally[kind][1] += 1
+        reasons = []
         for how, url in candidates:
-            if check.ok(url):
+            if not url:
+                reasons.append(f"{how}: none")
+                continue
+            answer = check.why(url)
+            if answer == "ok":
                 tally[kind][0] += 1
                 found.setdefault(kind, {})[key] = url
                 winners[kind][how] += 1
                 return
-        misses[kind].append(label)
+            reasons.append(f"{how}: {answer}")
+        misses[kind].append(f"{label:<34}{'; '.join(reasons)}")
 
     leagues = sorted({a["league"] for a in assets if a["league"]})
 
@@ -454,7 +525,7 @@ def main() -> int:
     indexes = {league: team_index(session, league) for league in leagues}
     for league in leagues:
         record_first("league logo", league, league,
-                     league_logo_candidates(league, league_payload(session, league)))
+                     league_logo_candidates(session, league))
 
     for asset in assets:
         if asset["type"] != "Team":
@@ -490,18 +561,30 @@ def main() -> int:
         label = f"{asset['name']} ({asset['league']})"
         from_squad = squads.get(asset["league"], {}).get(
             normalize(asset["name"], team=False), "")
-        if from_squad:
-            record_first("headshot", asset["id"], label,
-                         [("club roster page", from_squad)])
-            continue
+        # Search is asked either way, so a squad id whose photograph is a
+        # silhouette still gets a second chance -- and so the report can say
+        # whether a missing headshot is a name nobody matched or a person ESPN
+        # has no picture of.
         who = find_athlete(session, asset["name"], asset["league"])
-        record_first("headshot", asset["id"], label,
-                     [("search", who.get("image", ""))])
+        record_first("headshot", asset["id"], label, [
+            ("club roster page", from_squad),
+            ("search", who.get("image", "")),
+        ])
 
         if asset["category"] in INDIVIDUAL:
-            record("athlete flag", asset["id"],
-                   athlete_flag(session, asset["league"], numeric_id(who)),
-                   label)
+            flag = athlete_flag(session, asset["league"], numeric_id(who))
+            if flag.startswith("country:"):
+                # A nationality rather than a rendered flag. Not a URL and not
+                # a miss either: a flag file keyed on the country is one lookup
+                # away, and knowing the country is the hard half.
+                nations[asset["id"]] = flag.split(":", 1)[1]
+                tally["athlete flag"][1] += 1
+                tally["athlete flag"][0] += 1
+                winners["athlete flag"]["nationality, flag to be drawn"] += 1
+                found.setdefault("athlete nationality", {})[asset["id"]] = \
+                    flag.split(":", 1)[1]
+            else:
+                record("athlete flag", asset["id"], flag, label)
         # A team-sport player's badge is his club's logo, which needs his club.
         # That is recorded against the asset only from the first nightly run
         # after the identity carry landed; until then the club set cannot be
@@ -514,6 +597,13 @@ def main() -> int:
         got, need = tally[kind]
         if need:
             print(f"  {kind:<16}{got:>7}{need:>8}   {need - got}")
+
+    if nations:
+        from collections import Counter as _C
+        listed = ", ".join(f"{c} {n}" for c, n in _C(nations.values()).most_common())
+        print(f"\n  {len(set(nations.values()))} distinct nationalities among "
+              f"{len(nations)} athlete(s): {listed}")
+        print("  A flag file per country, not per athlete.")
 
     for kind, counts in sorted(winners.items()):
         if counts:
