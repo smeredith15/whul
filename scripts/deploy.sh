@@ -213,8 +213,14 @@ if new < old:
 # first freeze is left to refuse and be decided deliberately.
 raise SystemExit(2 if active else 0)
 GUARD
+    # Captured before anything else runs. `$?` is the status of the *last*
+    # command, and an assignment is a command that succeeds -- so reading it
+    # after `FREEZE=1` returned 0 every time, which silently threw the guard's
+    # decision away: --force was never passed and the skip-freeze case never
+    # fired. Every deploy then died at a freeze that had a reason to be forced.
+    GUARDED=$?
     FREEZE=1
-    case $? in
+    case $GUARDED in
         0) FORCE="" ;;
         2) FORCE="--force" ;;
         3) FREEZE=0 ;;
