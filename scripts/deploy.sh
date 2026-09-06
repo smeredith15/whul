@@ -291,6 +291,19 @@ COMMIT=$(git commit-tree "$TREE" \
 # With GITHUB_TOKEN set, the token is read from the environment by a helper
 # rather than put in the remote URL, so it never appears in the command line,
 # in `git remote -v`, or in an error message that echoes the URL back.
+#
+# Clearing `credential.helper` is not enough on its own, which took a refused
+# push to find out. An editor also injects GIT_ASKPASS, pointing at a socket
+# inside its own process -- a different mechanism, untouched by the helper
+# list. When that socket has gone, git does not fall back to asking: the
+# askpass program errors, git goes anonymous, and the push is refused. Clearing
+# it too is what lets the token helper below, or a plain terminal prompt,
+# actually be reached.
+unset GIT_ASKPASS SSH_ASKPASS
+unset VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_EXTRA_ARGS
+unset VSCODE_GIT_IPC_HANDLE
+export GIT_TERMINAL_PROMPT=1
+
 AUTH=(-c credential.helper=)
 if [ -n "${GITHUB_TOKEN:-}" ]; then
     AUTH+=(-c "credential.helper=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f")
