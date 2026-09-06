@@ -759,3 +759,123 @@ def test_the_european_leagues_still_start_in_august():
     ])
     kept = ingest._from_season_start(raw, "Premier League")
     assert list(kept["date"]) == ["2026-09-05"]
+
+
+# --- identity carried through the scorer --------------------------------------
+
+def test_the_scorers_output_gains_the_feeds_team():
+    """Every scorer builds a fresh frame of exactly the columns its arithmetic
+    needs, and a club is not one of them. The site needs it: sixty names on a
+    page are unreadable without saying who plays where, and two players sharing
+    a surname are told apart by their club rather than by their goals."""
+    # The columns are the real ones. ESPN's squad rows carry these; the club
+    # soccer scorer emits these.
+    feed = pd.DataFrame([
+        {"player": "Bukayo Saka", "player_id": "1", "team": "Arsenal",
+         "season": 2027, "position": "F", "goals": 3.0},
+        {"player": "Cole Palmer", "player_id": "2", "team": "Chelsea",
+         "season": 2027, "position": "M", "goals": 2.0},
+    ])
+    scored = pd.DataFrame([
+        {"player": "Bukayo Saka", "league": "Premier League", "season": 2027,
+         "position": "F", "goals": 3.0, "total_points": 41.0},
+        {"player": "Cole Palmer", "league": "Premier League", "season": 2027,
+         "position": "M", "goals": 2.0, "total_points": 33.0},
+    ])
+
+    out = ingest._carry_identity(scored, feed, "Player")
+    assert list(out["team"]) == ["Arsenal", "Chelsea"]
+    assert list(out["total_points"]) == [41.0, 33.0]
+
+
+def test_a_column_the_scorer_produced_is_never_overwritten():
+    """If it did arithmetic on a position, its answer is the considered one."""
+    feed = pd.DataFrame([{"player": "A", "position": "FW", "team": "X"}])
+    scored = pd.DataFrame([{"player": "A", "position": "F", "total_points": 1.0}])
+
+    out = ingest._carry_identity(scored, feed, "Player")
+    assert list(out["position"]) == ["F"]
+    assert list(out["team"]) == ["X"]
+
+
+def test_a_two_way_player_takes_the_first_of_his_rows():
+    """MLB files Ohtani once as a batter and once as a pitcher. Same person,
+    same club, and the fold downstream puts the two rows back together."""
+    feed = pd.DataFrame([
+        {"player": "Shohei Ohtani", "role": "Batter", "team": "Dodgers"},
+        {"player": "Shohei Ohtani", "role": "Pitcher", "team": "Dodgers"},
+    ])
+    scored = pd.DataFrame([{"player": "Shohei Ohtani", "total_points": 90.0}])
+
+    out = ingest._carry_identity(scored, feed, "Player")
+    assert len(out) == 1
+    assert out.loc[0, "team"] == "Dodgers"
+
+
+def test_identity_is_dropped_rather_than_doubling_a_total():
+    """A merge that changes the row count has matched one scored row to several
+    feed rows, and downstream that is a doubled score. No club is worth that."""
+    feed = pd.DataFrame([
+        {"player": "A", "team": "X"}, {"player": "A", "team": "Y"},
+    ])
+    scored = pd.DataFrame([{"player": "A", "total_points": 10.0}])
+
+    # Forced past the de-duplication, which is what would otherwise prevent it.
+    original = pd.DataFrame.drop_duplicates
+    try:
+        pd.DataFrame.drop_duplicates = lambda self, *a, **k: self
+        out = ingest._carry_identity(scored, feed, "Player")
+    finally:
+        pd.DataFrame.drop_duplicates = original
+    assert len(out) == 1
+    assert "team" not in out.columns
+    assert out.loc[0, "total_points"] == 10.0
+
+
+def test_a_feed_with_no_name_column_in_common_is_left_alone():
+    feed = pd.DataFrame([{"athlete": "A", "team": "X"}])
+    scored = pd.DataFrame([{"player": "A", "total_points": 1.0}])
+
+    out = ingest._carry_identity(scored, feed, "Player")
+    assert "team" not in out.columns
+
+
+def test_the_team_reaches_the_recorded_stats(store):
+    """End to end, through the seam that drops it: a loader that knows the club,
+    a scorer that does not carry it, and a recorded row that has it."""
+    rostered(store, "Bukayo Saka")
+    frozen_benchmark(store)
+
+    def build():
+        def load(seasons):
+            return pd.DataFrame([{
+                "player": "Bukayo Saka", "league": "NFL", "team": "Arsenal",
+                "position": "F", "season": 2026, "goals": 3.0,
+            }])
+
+        def score(raw):
+            # What every scorer does: a fresh frame of what the arithmetic needs.
+            return pd.DataFrame({
+                "player": raw["player"], "league": raw["league"],
+                "season": raw["season"], "total_points": raw["goals"] * 5,
+            })
+
+        return load, score
+
+    report = ingest.ingest(
+        store, FakeSource(build=build), "2026-27", date(2026, 9, 20), verbose=False
+    )
+    assert report.recorded == 1
+    stats = store.query("SELECT stats FROM raw_stats")
+    assert '"team": "Arsenal"' in stats.loc[0, "stats"]
+    assert '"position": "F"' in stats.loc[0, "stats"]
+
+
+def test_the_two_identity_lists_stay_apart():
+    """One is the keys a multi-season sum groups by; the other is what the site
+    shows. They were briefly the same name, the later definition won, and the
+    carry read the wrong list -- a position went missing with nothing raised.
+    """
+    assert ingest.CARRIED_IDENTITY != ingest.IDENTITY_COLUMNS
+    assert "position" in ingest.CARRIED_IDENTITY
+    assert "position" not in ingest.IDENTITY_COLUMNS

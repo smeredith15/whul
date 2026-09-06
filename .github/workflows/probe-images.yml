@@ -1,0 +1,76 @@
+# Ask ESPN which of the league's images it has, and print what it does not.
+#
+# A button rather than a schedule. This answers a question that is asked once
+# per decision -- "how much of this would I have to find myself" -- and the
+# answer only changes when the roster does.
+#
+# It runs here rather than on a laptop for one reason: the agent sandbox this
+# repository is developed in answers 403 to every outbound CONNECT, so every
+# image check fails identically there and the report reads as "ESPN has
+# nothing". This runner can reach ESPN. A wrong answer that looks like a
+# confident one is the failure worth spending a workflow to avoid.
+#
+# Nothing is written. No image is downloaded, the database is read-only, and
+# the data branch is not touched.
+
+name: Probe images
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to probe"
+        default: "2026-27"
+      limit:
+        description: >-
+          Stop after this many assets. 0 is all of them (about 600 requests
+          and five minutes). Set it to 20 for a quick check that the shapes
+          ESPN returns are still the ones the script reads.
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth 1
+            git checkout origin/data -- data/whul.sqlite3
+          else
+            echo "No data branch, so there is no roster to probe."
+            exit 1
+          fi
+
+      - name: Probe
+        run: |
+          python scripts/probe-images.py \
+            --db data/whul.sqlite3 \
+            --season "${{ inputs.season || '2026-27' }}" \
+            --limit "${{ inputs.limit || '0' }}" \
+            --json image-urls.json \
+            | tee probe-images.txt
+
+      # The report is the point and it is in the log, but the JSON is what a
+      # later fetch step would read, and a log is a poor place to keep it.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-probe
+          path: |
+            probe-images.txt
+            image-urls.json
+          if-no-files-found: warn

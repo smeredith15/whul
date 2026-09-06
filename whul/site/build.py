@@ -102,6 +102,40 @@ def _page(title: str, body: str, active: str, managers: list[str],
 """
 
 
+def _identity(stats: dict, league: str, norm_key: str) -> dict[str, str]:
+    """What a player is, out of the day's recorded row.
+
+    Three lines, and each is only shown when it says something:
+
+    ``position``  what the player plays -- "F", "Batter", "Driver". The feed
+                  calls it ``position`` where it has one and ``role`` where the
+                  distinction is the sport itself, and either answers the
+                  question a reader is asking.
+    ``team``      the club or franchise. This is what tells two players with one
+                  surname apart, which no amount of statistics does.
+    ``group``     the benchmark group the 0-100 was measured against, which is
+                  the position group where a sport has them. Suppressed when it
+                  merely repeats the league: an italic line reading "Premier
+                  League" under a line reading "Premier League" is furniture.
+    """
+    def first(*names: str) -> str:
+        for name in names:
+            value = stats.get(name)
+            if value is None or value != value:      # NaN
+                continue
+            text = str(value).strip()
+            if text and text.lower() not in ("nan", "none"):
+                return text
+        return ""
+
+    group = norm_key.replace("_", " ").strip()
+    return {
+        "position": first("position", "role"),
+        "team": first("team_name", "team", "club"),
+        "group": "" if group in ("", league) else group,
+    }
+
+
 def asset_profiles(
     store: Store, season: str, as_of, wanted: set[str], depth: int = 0
 ) -> dict[str, dict]:
@@ -117,19 +151,21 @@ def asset_profiles(
         (season, str(as_of)),
     ).set_index("asset_id")
     meta = store.query(
-        "SELECT asset_id, display_name, league, role, asset_type FROM assets"
+        "SELECT asset_id, display_name, league, role, norm_key, asset_type FROM assets"
     ).set_index("asset_id")
     stats = store.read_stats(season, as_of)
 
     lines: dict[str, list[tuple[str, str]]] = {}
     finishes: dict[str, list[dict]] = {}
     notes: dict[str, list[str]] = {}
+    raw_rows: dict[str, dict] = {}
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
             finishes[asset_id] = _finish_list(row)
             notes[asset_id] = _scaling_notes(row)
             lines[asset_id] = _stat_lines(row)
+            raw_rows[asset_id] = row
 
     out: dict[str, dict] = {}
     for asset_id in sorted(wanted):
@@ -139,9 +175,19 @@ def asset_profiles(
         name = str(info["display_name"])
         league = str(info["league"])
         badge = images.find("badge", _slug(league))
+        who = _identity(
+            raw_rows.get(asset_id, {}), league, str(info["norm_key"] or "")
+        )
         out[asset_id] = {
             "name": escape(name),
             "meta": escape(f"{league} · {info['asset_type']}"),
+            # Each on its own, as well as in the line the window prints. A
+            # table cell shows the position and the club and not the rest, and
+            # splitting a formatted string back up to get at them is how the
+            # two drift apart.
+            "position": escape(who["position"]),
+            "team": escape(who["team"]),
+            "group": escape(who["group"]),
             # Kept apart from `meta` as well as in it: the chart labels a bar
             # with the kind alone, and splitting a formatted string back up to
             # get at it is how the two drift.
@@ -170,6 +216,9 @@ STAT_SKIP = {
     "player", "team", "team_name", "display_name", "athlete", "driver",
     "finishes", "norm_key", "asset_type", "role_count", "contract_year",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
+    # Shown as identity, above the figures. Left here as well they read as a
+    # statistic -- "Position  F" in a column of goals and assists.
+    "position", "role",
 }
 
 #: Raw column names read as debug output. These are what they mean.
@@ -269,20 +318,47 @@ def _scaling_notes(row: dict) -> list[str]:
     return out
 
 
-def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0) -> str:
-    """A name that opens its profile.
+def _identity_lines(profile: dict | None, *tail: str) -> str:
+    """The grey lines under a name: what they play, where, and against what.
+
+    ``tail`` is whatever the caller wants on the end of the first line -- the
+    league, usually, which a roster table already says in its own column and a
+    results table does not.
+
+    Empty parts are dropped rather than left as stray separators. Most of these
+    are empty most of the season: a league that has not started has recorded no
+    row, so there is no position and no club to show, and a page of names each
+    followed by " · " would look broken rather than early.
+    """
+    if not profile:
+        return ""
+    parts = [p for p in (profile.get("position", ""), profile.get("team", ""),
+                         *tail) if p]
+    out = f'<span class="idl">{" · ".join(parts)}</span>' if parts else ""
+    group = profile.get("group", "")
+    return out + (f'<em class="grp">{group}</em>' if group else "")
+
+
+def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0,
+                  profile: dict | None = None) -> str:
+    """A name that opens its profile, with what the name is underneath it.
 
     ``counts`` dims the row but does not strike the name. A benched slot's
     *score* is what is set aside; the player is not crossed out, their
     contribution is -- and a struck name reads like a player who has been
     dropped rather than one whose week was someone else's.
+
+    The position and club go here rather than only in the window because a
+    roster is sixty names and reading it should not need sixty clicks. The
+    window still has all of it, which is what the click is for.
     """
     inner = escape(name)
     return (
         f'<button class="assetlink" data-asset="{escape(asset_id or "")}" '
         f'type="button"><span class="who">'
         f'{images.avatar("asset", asset_id, name, size=26, depth=depth)}'
-        f'<span class="nm">{inner}</span></span></button>'
+        f'<span class="stack"><span class="nm">{inner}</span>'
+        f'{_identity_lines(profile)}</span></span></button>'
     )
 
 
@@ -409,7 +485,8 @@ def _results_table(
             f'<tr data-league="{league}" data-kind="{kind}">'
             f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
             f'{profile["name"]}</button>'
-            f'<span class="rowmeta">{league} · {kind}</span></td>'
+            f'<span class="rowmeta">{_identity_lines(profile, league, kind)}</span>'
+            f'</td>'
             f'<td><span class="who"><i class="swatch" '
             f'style="background: var(--series-{slot})"></i>'
             f'{escape(manager_name(row.manager_id))}</span></td>'
@@ -907,7 +984,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                 rows.append(
                     f"<tr class='{'' if counts else 'bench'}'>"
                     f"<td class='slotname'>{escape(category)}</td>"
-                    f"<td>{_asset_button(asset, name, counts, depth=1)}</td>"
+                    f"<td>{_asset_button(asset, name, counts, depth=1, profile=profile)}</td>"
                     f"<td class='num'>{value}</td></tr>"
                 )
         sections.append(

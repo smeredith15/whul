@@ -412,7 +412,7 @@ DONUT_LABEL_CHARS = 18
 
 #: The same, above and below. A label at twelve or six o'clock sits ten pixels
 #: outside a ring that already reaches within six of the box.
-DONUT_VPAD = 16
+DONUT_VPAD = 26
 
 
 def _arc(cx: float, cy: float, r: float, start: float, end: float) -> str:
@@ -423,6 +423,46 @@ def _arc(cx: float, cy: float, r: float, start: float, end: float) -> str:
     x2, y2 = cx + r * math.cos(end), cy + r * math.sin(end)
     large = 1 if (end - start) > math.pi else 0
     return f"L {x1:.2f} {y1:.2f} A {r:.2f} {r:.2f} 0 {large} 1 {x2:.2f} {y2:.2f}"
+
+
+#: How close two direct labels may sit before one is pushed off the other.
+DONUT_LABEL_GAP = 13
+
+#: How far out a pushed label also moves, to clear the ring it was pushed along.
+DONUT_LABEL_KICK = 12
+
+
+def _spread(placed: list[tuple[float, float, str, str]]) -> list[str]:
+    """Direct labels, moved apart where two of them landed on each other.
+
+    Two small categories beside each other put their labels at nearly the same
+    angle, and the text overlaps into one unreadable word -- "MotorsportsTennis"
+    was the first one to do it. Each side of the ring is walked top to bottom
+    and anything too close to what came before is pushed down past it, which is
+    a smaller lie about where the segment is than the overlap was.
+    """
+    out: list[str] = []
+    for side in ("left", "right"):
+        rows = [p for p in placed
+                if (p[2] == "end") == (side == "left")]
+        rows.sort(key=lambda p: p[1])
+        last = None
+        for x, y, anchor, text in rows:
+            if last is not None and y - last < DONUT_LABEL_GAP:
+                y = last + DONUT_LABEL_GAP
+                # Outward as well as down. A label sits ten pixels off a ring
+                # that curves away from it, so moving one down alone walks it
+                # into the wedges -- "Motorsports" ended up written across the
+                # ring it was naming.
+                x += -DONUT_LABEL_KICK if anchor == "end" else (
+                    DONUT_LABEL_KICK if anchor == "start" else 0)
+            last = y
+            out.append(
+                f'<text x="{x:.1f}" y="{y:.1f}" text-anchor="{anchor}" '
+                f'font-size="10" fill="var(--text-secondary)" '
+                f'dominant-baseline="middle">{escape(text)}</text>'
+            )
+    return out
 
 
 def donut_chart(
@@ -489,16 +529,13 @@ def donut_chart(
         # a legend of six hues beside a ring of six hues is the same information
         # twice.
         mid = angle + span / 2
-        lx = cx + (outer + 10) * math.cos(mid)
-        ly = cy + (outer + 10) * math.sin(mid)
-        anchor = "start" if math.cos(mid) > 0.02 else (
-            "end" if math.cos(mid) < -0.02 else "middle")
-        labels.append(
-            f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" '
-            f'font-size="10" fill="var(--text-secondary)" '
-            f'dominant-baseline="middle">'
-            f'{escape(_fit(category, DONUT_LABEL_CHARS))}</text>'
-        )
+        labels.append((
+            cx + (outer + 10) * math.cos(mid),
+            cy + (outer + 10) * math.sin(mid),
+            "start" if math.cos(mid) > 0.02 else (
+                "end" if math.cos(mid) < -0.02 else "middle"),
+            _fit(category, DONUT_LABEL_CHARS),
+        ))
         rows.append((category, share, fill))
         angle += span
 
@@ -506,6 +543,7 @@ def donut_chart(
     # found by position rather than by matching a swatch to a hue. That is what
     # keeps the figure readable for the pairs the palette separates least: no
     # one has to tell the pink from the orange to read this.
+    labels = _spread(labels)
     share_rows = "".join(
         f"<tr><td><i class='swatch' style='background: {fill}'></i>"
         f"{escape(c)}</td><td class='num'>{v:,.1f}</td>"
@@ -852,11 +890,17 @@ SCRIPT = """\
     var notes = (a.notes || []).map(function (n) {
       return '<p class="note">' + n + '</p>';
     }).join('');
+    // Everything the tables have room for and everything they do not. The
+    // tables show a position and a club; this is where the rest of it is, which
+    // is what a click on a name is for.
+    var who = [a.position, a.team, a.meta].filter(Boolean).join(' \u00b7 ');
     dialog.innerHTML =
       '<button class="close" aria-label="Close">&times;</button>' +
       '<div class="head">' + a.avatar +
         '<div><div class="nm">' + a.name + (a.badge || '') + '</div>' +
-        '<div class="meta">' + a.meta + '</div></div></div>' +
+        '<div class="meta">' + who + '</div>' +
+        (a.group ? '<div class="grp">' + a.group + '</div>' : '') +
+        '</div></div>' +
       (finishes
         ? '<div class="body"><h3>Finishes</h3><table class="finishes"><tbody>' +
           finishes + '</tbody></table></div>'

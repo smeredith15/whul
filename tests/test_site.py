@@ -1092,3 +1092,89 @@ def test_the_note_says_what_the_total_is_missing():
     assert _season_note(2, 4) == "2 of 4 slots in season"
     assert _season_note(4, 4) == "every slot in season"
     assert _season_note(0, 0) == "nothing drafted yet"
+
+
+def test_no_css_escape_is_eaten_by_python_first():
+    """This stylesheet is a Python string, and Python reads a backslash in one
+    long before CSS does. `content: "\\25be"` -- a perfectly good CSS escape for
+    the disclosure triangle -- arrived at the browser as control character 0x15
+    followed by the letters "be", and every figure's arrow read "?be" on the
+    live site for as long as the figures existed."""
+    from whul.site import theme
+
+    for bad in range(0x00, 0x20):
+        if chr(bad) in ("\n", "\t"):
+            continue
+        assert chr(bad) not in theme.STYLESHEET, f"control character {bad:#04x}"
+
+
+# --- what a name is -----------------------------------------------------------
+
+def test_a_position_is_read_from_whichever_word_the_feed_uses():
+    """`position` where a sport has them, `role` where the distinction is the
+    sport itself. Both answer the question a reader is asking."""
+    from whul.site.build import _identity
+
+    assert _identity({"position": "F"}, "Premier League", "")["position"] == "F"
+    assert _identity({"role": "Batter"}, "MLB", "")["position"] == "Batter"
+    # A position the scorer computed wins over a role that merely names the feed.
+    assert _identity({"position": "M", "role": "Outfield"}, "", "")["position"] == "M"
+
+
+def test_a_missing_figure_is_absent_rather_than_the_word_nan():
+    """Most of these are empty most of the season, and a page of names each
+    followed by "nan" reads as broken rather than early."""
+    from whul.site.build import _identity
+
+    who = _identity({"position": float("nan"), "team": "None"}, "NFL", "")
+    assert who["position"] == "" and who["team"] == ""
+
+
+def test_the_group_line_is_dropped_when_it_only_repeats_the_league():
+    """An italic line reading "Premier League" under a line reading "Premier
+    League" is furniture. A soccer player's benchmark group is his league."""
+    from whul.site.build import _identity
+
+    assert _identity({}, "Premier League", "Premier League")["group"] == ""
+    assert _identity({}, "NFL", "NFL_QB")["group"] == "NFL QB"
+
+
+def test_a_name_with_nothing_known_about_it_is_just_a_name():
+    """No stray separators for a league that has not started."""
+    from whul.site.build import _identity_lines
+
+    assert _identity_lines(None) == ""
+    assert _identity_lines({"position": "", "team": "", "group": ""}) == ""
+
+
+def test_the_lines_run_position_then_club_then_whatever_was_asked_for():
+    from whul.site.build import _identity_lines
+
+    html = _identity_lines(
+        {"position": "F", "team": "Arsenal", "group": "NFL QB"}, "Premier League")
+    assert '<span class="idl">F · Arsenal · Premier League</span>' in html
+    assert '<em class="grp">NFL QB</em>' in html
+
+
+def test_a_roster_row_carries_the_position_without_a_click():
+    """Sixty names on a page, and reading it should not need sixty clicks."""
+    from whul.site.build import _asset_button
+
+    html = _asset_button("a1", "Bukayo Saka", profile={
+        "position": "F", "team": "Arsenal", "group": ""})
+    assert "Bukayo Saka" in html and "F · Arsenal" in html
+
+
+def test_the_donut_pushes_two_labels_off_each_other():
+    """Two small categories side by side put their labels at nearly the same
+    angle. "MotorsportsTennis" was the first pair to do it."""
+    from whul.site import charts
+
+    parts = [("Big", [("A", 94.0, "a1")]),
+             ("Motorsports", [("B", 3.0, "a2")]),
+             ("Tennis", [("C", 3.0, "a3")])]
+    ys = [float(m) for m in re.findall(
+        r'<text x="[-\d.]+" y="([-\d.]+)"[^>]*font-size="10"',
+        charts.donut_chart(parts, 100.0))]
+    assert all(abs(a - b) >= charts.DONUT_LABEL_GAP - 0.01
+               for i, a in enumerate(ys) for b in ys[i + 1:])
