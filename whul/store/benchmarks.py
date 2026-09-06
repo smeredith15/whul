@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -118,6 +119,63 @@ def save(
     rows = benchmarks.assign(version=version)
     store.insert_frame("benchmarks", rows, keys=("version", "asset_type", "norm_key"))
     return version
+
+
+def adopt(store: Store, source_db: str, version: str) -> tuple[str, int]:
+    """Copy one benchmark version out of another database, as a draft.
+
+    A scale is computed where the feeds are reachable and a laptop can run for
+    hours; the results it will score live in the database the nightly job owns.
+    Those are different files, and the only bridge was to publish the whole
+    local database over the branch -- which loses every day the job recorded in
+    the meantime, and which is why a computed scale reached the site on none of
+    the first three attempts.
+
+    Arrives unfrozen, like every other way a version arrives. Copying a scale
+    and adopting it stay separate acts.
+    """
+    import sqlite3
+
+    if not Path(source_db).exists():
+        raise ValueError(f"no database at {source_db}")
+    # Read-only, so a mistyped path cannot write a schema into some other file
+    # and so the laptop's copy is untouched by publishing from it.
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row   # as `connect` does; the readers want names
+    try:
+        other = Store(conn)
+        record = get_version(other, version)
+        if record is None:
+            raise ValueError(
+                f"{source_db} has no benchmark version {version!r}. "
+                f"`benchmarks versions --db {source_db}` lists what it does have."
+            )
+        rows = load(other, version)
+    finally:
+        conn.close()
+    if rows.empty:
+        raise ValueError(f"{version!r} exists in {source_db} but holds no benchmarks")
+    if get_version(store, version):
+        raise ValueError(
+            f"{version!r} is already here; nothing to copy. "
+            f"`benchmarks versions` says whether it is frozen."
+        )
+
+    store.upsert(
+        "benchmark_versions",
+        [{
+            "version": version, "season": record.season,
+            "quantile": record.quantile, "managers": record.managers,
+            "computed_at": record.computed_at, "frozen_at": None,
+            "notes": record.notes,
+        }],
+        keys=("version",),
+    )
+    store.insert_frame(
+        "benchmarks", rows.assign(version=version),
+        keys=("version", "asset_type", "norm_key"),
+    )
+    return record.season, len(rows)
 
 
 def extend(

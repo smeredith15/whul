@@ -187,14 +187,12 @@ details.tableview[open] summary { margin-bottom: 8px; }
   text-transform: uppercase; letter-spacing: 0.05em; margin-left: 6px;
   font-style: normal;
 }
-/* The masthead carries the league's full name, and falls back to its initials
-   where there is not room for it -- a narrow phone, mostly. Both are in the
-   markup so the swap needs no script. */
-.masthead h1 .short { display: none; }
-@media (max-width: 640px) {
-  .masthead h1 .full { display: none; }
-  .masthead h1 .short { display: inline; }
-}
+/* The masthead carries the league's full name, at every width. It used to fall
+   back to "WHUL" below 640px, on the theory that a phone had no room for it --
+   but the name is 207px at this size and a 320px phone leaves 280px inside the
+   wrapper, so the fallback fired on every phone ever made and none of them
+   needed it. The initials still title the browser tab, which is the place that
+   really is too narrow. */
 
 /* A collapsible league section. Twenty leagues open at once is a page that is
    long before it is informative. */

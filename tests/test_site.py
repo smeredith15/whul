@@ -567,11 +567,33 @@ def test_a_benched_slot_strikes_the_score_and_not_the_name():
 
 
 def test_the_header_carries_the_leagues_full_name():
-    """"WHUL" is unreadable to anyone outside the league."""
+    """"WHUL" is unreadable to anyone outside the league.
+
+    Asserted on the rendered page rather than on the constant. The constant was
+    right the whole time the header was wrong: the name was in the markup and
+    then hidden by CSS below 640px, so every phone showed the initials and this
+    test passed anyway.
+    """
     from whul.config.league import LEAGUE_ABBR, LEAGUE_NAME
+    from whul.site.build import _page
 
     assert LEAGUE_NAME == "Wolf Hill Uber League"
     assert LEAGUE_ABBR == "WHUL"
+
+    page = _page("Standings", "<p>body</p>", "Standings", [])
+    header = page[page.index("<h1>"):page.index("</h1>")]
+    assert LEAGUE_NAME in header
+    assert LEAGUE_ABBR not in header
+
+
+def test_no_width_hides_the_leagues_name():
+    """The name is 207px at the masthead's 20px, and the narrowest phone still
+    in use leaves 280px inside the wrapper -- so there is no width at which the
+    initials are needed, and no rule may hide it at one."""
+    from whul.site.theme import STYLESHEET
+
+    assert ".masthead h1 .short" not in STYLESHEET
+    assert ".masthead h1 .full" not in STYLESHEET
 
 
 # --- what the profile window says --------------------------------------------
