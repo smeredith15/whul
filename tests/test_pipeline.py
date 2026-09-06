@@ -10,7 +10,14 @@ from whul.store import benchmarks as bm
 from whul.store import open_store, rosters
 
 SEASON = "2026-27"
-DAYS = [date(2026, 9, 1), date(2026, 9, 8), date(2026, 9, 15)]
+#: Three weeks inside the NFL season, which opens on September 10.
+#:
+#: These were the 1st, 8th and 15th, from before the NFL had a start date. The
+#: rollup drops scores dated before their league's season opens, so two thirds
+#: of this fixture's scores stopped existing and every total here read low. The
+#: gaps between the days are what the carry-forward and trade tests turn on,
+#: and those are unchanged.
+DAYS = [date(2026, 9, 15), date(2026, 9, 22), date(2026, 9, 29)]
 LAST = DAYS[-1]
 
 
@@ -99,7 +106,7 @@ def test_re_running_a_day_replaces_its_scores(league):
 def test_the_rollup_writes_a_snapshot_per_day(league):
     store, _, _ = league
     reports = run(store)
-    assert len(reports) == 15, "Sep 1 to Sep 15 inclusive"
+    assert len(reports) == 15, "Sep 15 to Sep 29 inclusive"
     days = store.query(
         "SELECT DISTINCT as_of FROM standings_snapshots WHERE season = ?", (SEASON,)
     )
@@ -123,8 +130,8 @@ def test_a_score_carries_forward_on_a_day_with_no_new_data(league):
     run(store)
     series = pipeline.progression(store, SEASON)
     alice = series[series["manager_id"] == "alice"].set_index("as_of")
-    assert alice.loc[date(2026, 9, 3), "total"] == pytest.approx(25.0)
-    assert alice.loc[date(2026, 9, 10), "total"] == pytest.approx(50.0)
+    assert alice.loc[date(2026, 9, 17), "total"] == pytest.approx(25.0)
+    assert alice.loc[date(2026, 9, 24), "total"] == pytest.approx(50.0)
 
 
 def test_the_snapshot_is_stored_not_derived(league):
@@ -151,14 +158,14 @@ def test_a_trade_splits_a_slot_between_its_owners(league):
     """Points earned before the trade stay with the manager who earned them."""
     store, slots, _ = league
     run(store)
-    rosters.trade(store, slots["alice"], slots["bob"], "qb1", "qb2", date(2026, 9, 9))
+    rosters.trade(store, slots["alice"], slots["bob"], "qb1", "qb2", date(2026, 9, 23))
     run(store)
 
     final = pipeline.progression(store, SEASON)
     final = final[final["as_of"] == LAST].set_index("manager_id")
-    # alice: qb1 through Sep 8 = 50.0, then qb2 from Sep 9 = 60.0 - 40.0 = 20.0
+    # alice: qb1 through Sep 22 = 50.0, then qb2 from Sep 23 = 60.0 - 40.0 = 20.0
     assert final.loc["alice", "total"] == pytest.approx(70.0)
-    # bob: qb2 through Sep 8 = 40.0, then qb1 from Sep 9 = 75.0 - 50.0 = 25.0
+    # bob: qb2 through Sep 22 = 40.0, then qb1 from Sep 23 = 75.0 - 50.0 = 25.0
     assert final.loc["bob", "total"] == pytest.approx(65.0)
 
 
@@ -170,7 +177,7 @@ def test_a_trade_conserves_the_total_between_the_two_managers(league):
     before = pipeline.progression(store, SEASON)
     before_total = before[before["as_of"] == LAST]["total"].sum()
 
-    rosters.trade(store, slots["alice"], slots["bob"], "qb1", "qb2", date(2026, 9, 9))
+    rosters.trade(store, slots["alice"], slots["bob"], "qb1", "qb2", date(2026, 9, 23))
     run(store)
     after = pipeline.progression(store, SEASON)
     assert after[after["as_of"] == LAST]["total"].sum() == pytest.approx(before_total)
@@ -179,13 +186,13 @@ def test_a_trade_conserves_the_total_between_the_two_managers(league):
 def test_a_trade_leaves_no_overlapping_occupancy(league):
     """Two occupants on one slot would count an asset twice."""
     store, slots, _ = league
-    rosters.trade(store, slots["alice"], slots["bob"], "qb1", "qb2", date(2026, 9, 9))
+    rosters.trade(store, slots["alice"], slots["bob"], "qb1", "qb2", date(2026, 9, 23))
     assert rosters.overlaps(store, SEASON).empty
 
 
 def test_an_overlap_is_reported_rather_than_silently_summed(league):
     store, slots, _ = league
-    rosters.assign(store, slots["alice"], "qb2", date(2026, 9, 5))
+    rosters.assign(store, slots["alice"], "qb2", date(2026, 9, 19))
     report = pipeline.roll_up(store, SEASON, LAST)
     assert any("overlapping" in w for w in report.warnings)
 

@@ -1025,3 +1025,70 @@ def test_the_share_table_reads_in_the_order_the_ring_is_drawn():
     html = charts.donut_chart(parts, 100.0)
     table = html[html.index('class="mixtable"'):]
     assert table.index("NFL QB") < table.index("Golf") < table.index("MLB SP")
+
+
+# --- how much of a roster is in season ----------------------------------------
+
+SEASON_BARS = pd.DataFrame([
+    # An injured NFL back: the league has started and the slot is in it.
+    {"asset_id": "n1", "score": 0.0, "counts": True},
+    {"asset_id": "n2", "score": 30.0, "counts": True},
+    # The NBA has not tipped off.
+    {"asset_id": "b1", "score": 0.0, "counts": True},
+    # An international squad, whose tournament has not come round.
+    {"asset_id": "i1", "score": 0.0, "counts": True},
+    # A bench slot, and an undrafted one. Neither is in the counting total.
+    {"asset_id": "n3", "score": 90.0, "counts": False},
+    {"asset_id": "", "score": 0.0, "counts": True},
+])
+SEASON_PROFILES = {
+    "n1": {"name": "A", "league": "NFL"}, "n2": {"name": "B", "league": "NFL"},
+    "b1": {"name": "C", "league": "NBA"}, "i1": {"name": "D", "league": "Men's Intl Soccer"},
+    "n3": {"name": "E", "league": "NFL"},
+}
+
+
+def test_an_injured_player_is_still_in_season():
+    """The badge is asked of the calendar, not of the scores. Counting non-zero
+    scores would file an injury, a benching and a quiet week under "not
+    started", so a manager whose back is hurt would look like one who never
+    drafted a back."""
+    from whul.site.build import _in_season
+
+    live, filled = _in_season(SEASON_BARS, SEASON_PROFILES, date(2026, 9, 15))
+    assert (live, filled) == (2, 4)   # both NFL slots; not the NBA or the squad
+
+
+def test_a_league_that_has_not_started_is_not_counted():
+    from whul.site.build import _in_season
+
+    assert _in_season(SEASON_BARS, SEASON_PROFILES, date(2026, 9, 1))[0] == 0
+    assert _in_season(SEASON_BARS, SEASON_PROFILES, date(2026, 11, 1))[0] == 3
+
+
+def test_a_squad_with_no_start_date_is_read_from_its_score():
+    """Each international squad plays in a different competition on a different
+    calendar, so there is no date the slot begins on. A score is the only
+    evidence there is."""
+    from whul.site.build import _in_season
+
+    bars = SEASON_BARS.copy()
+    bars.loc[bars["asset_id"] == "i1", "score"] = 12.0
+    live, _ = _in_season(bars, SEASON_PROFILES, date(2026, 9, 15))
+    assert live == 3
+
+
+def test_a_bench_or_undrafted_slot_is_not_part_of_the_count():
+    """The badge explains the counting total, so it counts what the total is
+    made of."""
+    from whul.site.build import _in_season
+
+    assert _in_season(SEASON_BARS, SEASON_PROFILES, date(2027, 3, 1))[1] == 4
+
+
+def test_the_note_says_what_the_total_is_missing():
+    from whul.site.build import _season_note
+
+    assert _season_note(2, 4) == "2 of 4 slots in season"
+    assert _season_note(4, 4) == "every slot in season"
+    assert _season_note(0, 0) == "nothing drafted yet"

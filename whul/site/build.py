@@ -323,6 +323,59 @@ def _counting_mix(
     return head + [(charts.DONUT_OTHER, sorted(tail, key=lambda h: -h[1]))]
 
 
+def _season_note(live: int, filled: int) -> str:
+    """What the counting total is missing, said in the tile that shows it.
+
+    A total of 1,900 in September and one of 4,000 in March are not a team
+    improving; they are eleven leagues in season instead of five. The tile
+    printed the date and left the reader to know that.
+    """
+    if not filled:
+        return "nothing drafted yet"
+    if live == filled:
+        return "every slot in season"
+    return f"{live} of {filled} slots in season"
+
+
+def _in_season(
+    mine: pd.DataFrame, profiles: dict[str, dict], day: date
+) -> tuple[int, int]:
+    """How many of a manager's counting slots are in a league that has started.
+
+    Returns ``(in season, filled)``. The difference between the two is what a
+    total is missing today, and it is the whole reason a counting total in
+    September cannot be compared with one in February.
+
+    Asked of the calendar rather than of the scores. A slot whose player is
+    injured, benched, suspended or simply had a quiet week scores zero, and
+    counting non-zero scores would file all of that under "not started" -- so a
+    manager whose NFL back is hurt would look like a manager who has not
+    drafted one. The league has started; the slot is in it; the zero is a
+    result.
+
+    The exception is a slot with no start date to ask about, which today is
+    only the international squads: each plays in a different competition on a
+    different calendar. There a score is the only evidence there is, so a zero
+    is read as "the tournaments have not come round yet" -- the reading this
+    function exists to avoid everywhere else, used here because nothing better
+    exists.
+    """
+    from whul.config.league import in_season as league_in_season
+
+    if mine.empty:
+        return 0, 0
+    filled = mine[mine["counts"].astype(bool) & mine["asset_id"].astype(bool)]
+    if filled.empty:
+        return 0, 0
+
+    live = 0
+    for row in filled.itertuples():
+        profile = profiles.get(str(row.asset_id)) or {}
+        started = league_in_season(str(profile.get("league") or ""), day)
+        live += bool(float(row.score) > 0) if started is None else bool(started)
+    return live, len(filled)
+
+
 def _results_table(
     bars: pd.DataFrame, profiles: dict[str, dict], managers: list[str]
 ) -> str:
@@ -876,6 +929,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
     # under the ring, where it is still read and no longer costs a third of the
     # header.
     mix = _counting_mix(mine, profiles)
+    live, filled = _in_season(mine, profiles, latest)
     still = (
         "Every slot filled." if not empty_slots
         else f"{empty_slots} slot{'' if empty_slots == 1 else 's'} still to draft."
@@ -897,7 +951,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
       {escape(manager_name(manager))}</span></div></div>
   <div class="tile"><div class="label">Counting total</div>
     <div class="value">{total:,.1f}</div>
-    <div class="note">on {latest}</div></div>
+    <div class="note">on {latest} · {_season_note(live, filled)}</div></div>
 </div>{mix_card}"""
     (out / "team" / f"{_slug(manager)}.html").write_text(
         _page(f"{LEAGUE_ABBR} — {manager_name(manager)}", head + "".join(sections) +

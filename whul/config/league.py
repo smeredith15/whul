@@ -95,21 +95,44 @@ SEASON = SeasonWindow(
 #: was chosen for, and it paid Gauff and Fils for Masters titles won in the
 #: previous league year. An off-by-one in a boundary date does not look like an
 #: error anywhere: it looks like a good week.
+#: A league missing from this table has no start date, and ``in_season`` says
+#: so rather than guessing one. Only the international soccer squads are in
+#: that position: each plays in a different competition on a different calendar,
+#: so there is no one date the slot begins on.
 LEAGUE_START: dict[str, date] = {
     "ATP": date(2026, 8, 24),
     "WTA": date(2026, 8, 24),
     "Tennis": date(2026, 8, 24),
     "NASCAR": date(2026, 8, 23),
+    # F1 runs on its own calendar but is continuous in the same sense NASCAR
+    # is, and the summer break puts nothing between the previous league year's
+    # last race and this one's opener. "Motorsports" is the label a driver
+    # carries when the source does not say which series.
+    "F1": date(2026, 8, 23),
+    "Motorsports": date(2026, 8, 23),
     "PGA": date(2026, 8, 20),
+    "NFL": date(2026, 9, 10),
+    "NBA": date(2026, 10, 20),
+    "NHL": date(2026, 9, 29),
+    "NCAAM": date(2026, 11, 10),
+    "NCAAW": date(2026, 11, 1),
+    # Both play inside the league year but on the far side of New Year, which
+    # is why the year here is 2027 and not a typo.
+    "NCAA Softball": date(2027, 2, 5),
+    "NCAA Baseball": date(2027, 2, 19),
     "Premier League": date(2026, 8, 21),
     "Ligue 1": date(2026, 8, 21),
     "Bundesliga": date(2026, 8, 28),
     "La Liga": date(2026, 8, 15),
     "Serie A": date(2026, 8, 22),
-    # ESPN labels Week 1 as August 22 to September 7, so the season's opening
-    # weekend is the 22nd, not the 27th. Starting on the 27th would discard
-    # real Week 1 results from the games played that first weekend.
-    "NCAAF": date(2026, 8, 22),
+    # The 28th is the league's own rule, and it excludes Week 0 on purpose.
+    #
+    # This read 2026-08-22 first, because ESPN labels Week 1 as August 22 to
+    # September 7 and starting later would have discarded games played that
+    # first weekend. Which is true, and is the point: WHUL counts from the 28th,
+    # so the handful of Week 0 games on the 22nd belong to nobody. A feed's idea
+    # of when a season opens is not the league's.
+    "NCAAF": date(2026, 8, 28),
     # Baseball is mid-season when the league year opens and its feed reports
     # season totals, so without a start date a manager is credited with a
     # player's April. There is no baseball event to anchor on the way there is a
@@ -135,6 +158,25 @@ LEAGUE_START: dict[str, date] = {
 def season_start(league: str, default: date | None = None) -> date:
     """The first day a league's results count toward this league year."""
     return LEAGUE_START.get(league, default or SEASON.start)
+
+
+def in_season(league: str, day: date) -> bool | None:
+    """Has this league's season opened by ``day``?
+
+    ``None`` where the league has no start date, which is a third answer and
+    not a no: the caller has to decide what to do about not knowing, and the
+    one thing it must not do is report the slot as out of season. An
+    international squad is the case -- each one plays in a different
+    competition on a different calendar, so there is no date the slot begins
+    on and only a result can say it has.
+
+    Deliberately not ``season_start(league) <= day``. That falls back to the
+    league year's own start, which is in the past, so every unknown league
+    would answer yes -- an NBA slot would read as in season in September if
+    somebody dropped the NBA row.
+    """
+    start = LEAGUE_START.get(league)
+    return None if start is None else start <= day
 
 
 @dataclass(frozen=True)

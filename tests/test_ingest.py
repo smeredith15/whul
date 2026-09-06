@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from whul import benchmarks, ingest
+from whul.config.league import season_start
 from whul.store import benchmarks as bm
 from whul.store import open_store, rosters
 
@@ -477,8 +478,48 @@ def test_a_late_baseline_is_reported_rather_than_used(store):
          "season": 2026, "total_points": 400.0}])
     source.cumulative = True
 
+    # Dated three weeks after the NFL opened, rather than left to the clock.
+    #
+    # `record` stamps captured_at with today and INSERT OR IGNOREs, so a
+    # baseline written here stands and its date is the test's to choose. Leaving
+    # it to the clock made this assert a late baseline only while today happened
+    # to be late enough -- true for a year, and false the day the NFL got a
+    # start date of its own, which moved the cutoff past today and turned a late
+    # baseline into a usable one.
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO stat_baselines (asset_id, season, source, feed_season, "
+            "captured_at, captured_for, stats) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("a0", "2026-27", source.key, 2026, "2026-10-01",
+             str(season_start("NFL")), '{"total_points": 400.0}'),
+        )
+
     report = ingest.ingest(store, source, "2026-27", date(2026, 9, 20), verbose=False)
     assert any("recorded but not subtracted" in p for p in report.problems)
+
+
+def test_a_baseline_taken_on_the_opening_day_is_used(store):
+    """The other side of the same rule, and the reason the one above is not
+    simply "any baseline is late"."""
+    rostered(store, "Pete Crow-Armstrong")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Pete Crow-Armstrong", "league": "NFL", "role": "QB",
+         "season": 2026, "total_points": 520.0}])
+    source.cumulative = True
+
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT INTO stat_baselines (asset_id, season, source, feed_season, "
+            "captured_at, captured_for, stats) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("a0", "2026-27", source.key, 2026, str(season_start("NFL")),
+             str(season_start("NFL")), '{"total_points": 400.0}'),
+        )
+
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 20), verbose=False)
+    assert not any("recorded but not subtracted" in p for p in report.problems)
+    stats = store.query("SELECT stats FROM raw_stats ORDER BY as_of DESC")
+    assert "120" in stats.loc[0, "stats"], "520 season-to-date minus a 400 baseline"
 
 
 def test_two_feed_seasons_for_one_slot_are_summed_not_split():

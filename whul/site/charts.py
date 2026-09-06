@@ -407,7 +407,7 @@ DONUT_MIN_ALPHA = 0.45
 #: label that fits in it. A label sits ten pixels outside the ring and runs
 #: outwards from there, so without a gutter the ends of the words are simply
 #: outside the viewBox -- clipped rather than wrapped, and clipped silently.
-DONUT_GUTTER = 92
+DONUT_GUTTER = 104
 DONUT_LABEL_CHARS = 18
 
 #: The same, above and below. A label at twelve or six o'clock sits ten pixels
