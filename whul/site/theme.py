@@ -218,7 +218,13 @@ details.tableview[open] summary { margin-bottom: 8px; }
 .figure > summary { cursor: pointer; list-style: none; padding: 16px 0;
   display: flex; align-items: center; gap: 8px; }
 .figure > summary::-webkit-details-marker { display: none; }
-.figure > summary::before { content: "\25be"; color: var(--muted);
+/* The literal character, not a CSS escape. This stylesheet is a Python string,
+   and Python reads a backslash-two-five in one as an octal escape long before
+   CSS sees it -- so the perfectly good CSS escape for this triangle reached the
+   browser as control character 0x15 followed by the letters "be", and every
+   figure's disclosure arrow read as tofu and then "be". The test that guards
+   this caught the same mistake a second time, in this very comment. */
+.figure > summary::before { content: "\u25be"; color: var(--muted);
   transition: transform 0.12s ease; }
 .figure:not([open]) > summary::before { transform: rotate(-90deg); }
 .figure > summary h2 { margin: 0; font-size: 1.05rem; }
@@ -285,6 +291,22 @@ button.assetlink {
   color: inherit; cursor: pointer; text-align: left;
 }
 button.assetlink:hover span.nm { text-decoration: underline; text-underline-offset: 3px; }
+
+/* What a name is: position and club under it, and the group it is scored
+   against under that. Stacked rather than run on, because a roster is read down
+   the names and a reader's eye should not have to step over a club to reach the
+   next one. Every part is optional -- most of them are empty until a league
+   starts -- so the block collapses to the name alone. */
+.stack { display: inline-flex; flex-direction: column; gap: 1px; min-width: 0; }
+.stack .nm { line-height: 1.25; }
+.idl, .rowmeta .idl {
+  display: block; color: var(--text-secondary); font-size: 12px; line-height: 1.3;
+}
+.grp {
+  display: block; color: var(--muted); font-size: 11px; font-style: italic;
+  line-height: 1.3;
+}
+#profile .meta + .grp { margin-top: 2px; font-size: 12px; }
 svg .bar { cursor: pointer; }
 svg .bar:hover { opacity: 0.82; }
 

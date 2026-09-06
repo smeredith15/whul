@@ -482,14 +482,15 @@ def _pull(
             notes.append(_why_nothing_scored(raw, kept))
         if not getattr(source, "cumulative", False):
             scored = _across_feed_seasons(scored)
-        return scored
+        return _carry_identity(scored, kept, source.asset_type)
 
     # A continuously running sport accrues over the league year, not the
     # calendar one, so its live total is summed over the same window its
     # benchmark was drawn over -- and over each produced league's own window,
     # since two series sharing a pull need not start on the same day.
     years = sorted({season_start(source.league).year, as_of.year})
-    events = score(fetch(years))
+    fetched = fetch(years)
+    events = _carry_identity(score(fetched), fetched, source.asset_type)
     if events is None or events.empty:
         return pd.DataFrame()
 
@@ -500,9 +501,68 @@ def _pull(
         if rows.empty:
             continue
         current = window.season_windows(0, start=season_start(name))[-1]
-        totals = window.window_totals(rows, [current])
+        totals = _carry_identity(
+            window.window_totals(rows, [current]), rows, source.asset_type
+        )
         frames.append(_with_finishes(totals.assign(season=current.label), rows, current))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+#: What a player is, beyond a name and a total. Carried through from the feed
+#: because a scorer has no use for it and drops it: every one of them builds a
+#: fresh frame of exactly the columns its arithmetic needs, and identity is not
+#: one of them.
+#:
+#: The site wants it. A roster of sixty names is unreadable without saying which
+#: of them is a striker at Villa and which a shortstop for the Athletics -- and
+#: two players sharing a surname are told apart by their club, not by their
+#: goals. It is recorded rather than looked up because there is nowhere to look
+#: it up from: `assets` holds the drafted name and nothing else, and a static
+#: site cannot ask a feed at the moment someone clicks.
+#: Named CARRIED_ rather than IDENTITY_: this module already has an
+#: IDENTITY_COLUMNS, for the keys a multi-season sum groups by, and the two are
+#: different lists for different jobs. Defined under one name they collided
+#: silently -- the later definition won, this function read the group-by keys
+#: instead, and a position went missing with nothing raised anywhere.
+CARRIED_IDENTITY = ("team", "team_name", "position", "role")
+
+
+def _carry_identity(scored: pd.DataFrame, feed: pd.DataFrame,
+                    asset_type: str) -> pd.DataFrame:
+    """Put the feed's identity columns back on the scored rows.
+
+    Joined on the name, which is the same key the resolution downstream matches
+    on -- so a row this cannot place is a row nothing else could have placed
+    either, and it is left without a team rather than given a wrong one.
+
+    A name appearing twice in the feed takes the first, because the duplicate is
+    a two-way player filed once as a batter and once as a pitcher: same person,
+    same club, and the scorer folds the two rows back together later anyway.
+    A column the scorer already produced is never overwritten -- if it did the
+    arithmetic on a position, its answer is the considered one.
+    """
+    from whul.resolve import _name_columns
+
+    if scored is None or scored.empty or feed is None or feed.empty:
+        return scored
+    key, _ = _name_columns(scored, asset_type)
+    if key not in scored.columns or key not in feed.columns:
+        return scored
+
+    wanted = [
+        c for c in CARRIED_IDENTITY
+        if c in feed.columns and c not in scored.columns and c != key
+    ]
+    if not wanted:
+        return scored
+    lookup = feed[[key, *wanted]].drop_duplicates(subset=[key], keep="first")
+    merged = scored.merge(lookup, on=key, how="left")
+    # A merge that changed the row count has matched one scored row to several
+    # feed rows, which would silently double a total downstream. Nothing is
+    # worth that, so the identity is dropped and the figures stand.
+    if len(merged) != len(scored):
+        return scored
+    return merged
 
 
 def _record_nothing(store: Store, source, as_of: date, report: IngestReport) -> None:
