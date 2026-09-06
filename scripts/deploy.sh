@@ -293,12 +293,19 @@ To finish, git needs to be able to push. Two ways, quickest first:
   1. Give it a token directly. It is read from the environment, so it never
      reaches the command line, the remote URL, or an error message:
 
-         read -rsp "GitHub token: " GITHUB_TOKEN; echo
+         printf 'GitHub token: '; stty -echo
+         read -r GITHUB_TOKEN; stty echo; echo
          export GITHUB_TOKEN
          INGEST_ONLY=1 ./scripts/deploy.sh
 
-     The token needs Contents: read and write on this repository. `read -rs`
-     keeps it off the screen and out of shell history.
+     The token needs Contents: read and write on this repository. `stty -echo`
+     keeps it off the screen, and reading it rather than typing it as an
+     argument keeps it out of shell history.
+
+     Spelled this way because it has to work in whatever shell the terminal
+     opened with. `read -rsp` is bash; in zsh -- the default on macOS, and so
+     in an editor's terminal there -- `-p` means "read from the coprocess"
+     rather than "prompt", so that form does not do what it looks like.
 
   2. Or fix the editor's helper: reload the window (Command Palette ->
      "Developer: Reload Window") and open a fresh terminal.
