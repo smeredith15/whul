@@ -361,6 +361,7 @@ def contribution_chart(
                     # "who is this" nor "how are they doing".
                     f'data-manager="{escape(manager)}" data-category="{escape(key)}" '
                     f'data-asset="{escape(asset_id)}" '
+                    f'data-name="{escape(asset_name)}" data-kind="{escape(kind)}" '
                     f'data-value="{score:.1f}"><title>'
                     f'{escape(asset_name or "(empty)")}'
                     f'{" — " + escape(kind) if kind else ""} · '
@@ -549,6 +550,72 @@ SCRIPT = """\
     });
   });
 
+  // --- filtering the results table -------------------------------------
+  // Two independent sets of chips. Within a set the chosen values are OR-ed --
+  // picking two leagues means either -- and the sets are AND-ed together, so
+  // "Player" plus two leagues is the players in those two. Nothing chosen in a
+  // set means that set is not filtering, which is what makes the page useful
+  // before anything is clicked.
+  var picked = {kind: {}, league: {}, scoring: {}};
+  function anyPicked(set) {
+    for (var k in set) if (set[k]) return true;
+    return false;
+  }
+  function applyResultsFilter() {
+    var table = document.getElementById('resultstable');
+    if (!table) return;
+    var shown = 0;
+    table.querySelectorAll('tbody tr').forEach(function (row) {
+      var ok = true;
+      ['kind', 'league'].forEach(function (name) {
+        if (anyPicked(picked[name]) && !picked[name][row.dataset[name]]) ok = false;
+      });
+      if (picked.scoring.yes) {
+        var cell = row.querySelector('[data-score]');
+        if (!cell || Number(cell.dataset.score) <= 0) ok = false;
+      }
+      row.hidden = !ok;
+      if (ok) shown++;
+    });
+    var count = document.querySelector('[data-count]');
+    if (count) {
+      var total = table.querySelectorAll('tbody tr').length;
+      count.textContent = shown === total
+        ? 'Showing every scored asset.'
+        : 'Showing ' + shown + ' of ' + total + '.';
+    }
+  }
+  document.querySelectorAll('.chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      var set = picked[chip.dataset.filter];
+      var value = chip.dataset.value;
+      set[value] = !set[value];
+      chip.setAttribute('aria-pressed', set[value] ? 'true' : 'false');
+      applyResultsFilter();
+    });
+  });
+
+  // Which figures a reader left closed, alongside the league boxes below. A
+  // page of three figures is long, and someone who wants only the table should
+  // not have to scroll past two charts every visit.
+  var FKEY = 'whul.figures';
+  var shut = {};
+  try { shut = JSON.parse(localStorage.getItem(FKEY) || '{}'); } catch (e) {}
+  document.querySelectorAll('details.figure').forEach(function (box) {
+    var name = box.dataset.figure;
+    // An anchor wins over a remembered state: arriving at #everyone and
+    // finding it closed is the one case where the memory is wrong.
+    if (shut[name] && location.hash !== '#' + name) box.open = false;
+    box.addEventListener('toggle', function () {
+      shut[name] = !box.open;
+      try { localStorage.setItem(FKEY, JSON.stringify(shut)); } catch (e) {}
+    });
+  });
+  window.addEventListener('hashchange', function () {
+    var target = document.querySelector(location.hash || '#none');
+    if (target && target.classList.contains('figure')) target.open = true;
+  });
+
   // Which leagues a reader left collapsed. Someone who closes fifteen of them
   // does not want to do it again tomorrow.
   var KEY = 'whul.collapsed';
@@ -565,9 +632,14 @@ SCRIPT = """\
 
   document.querySelectorAll('svg.barchart .bar').forEach(function (bar) {
     bar.addEventListener('mousemove', function (event) {
-      tip.innerHTML = '<div class="tt-date">' + bar.dataset.category + '</div>' +
+      // The name leads. This tooltip overrides the <title> the SVG carries,
+      // so a title that names the asset is no help here -- it showed the slot
+      // key, "Club Soccer Top 3 1", which says nothing about who the bar is.
+      var name = bar.dataset.name || bar.dataset.category;
+      var kind = bar.dataset.kind ? ' · ' + bar.dataset.kind : '';
+      tip.innerHTML = '<div class="tt-date">' + name + kind + '</div>' +
         '<div class="tt-row">' + bar.dataset.manager + '<b>' +
-        Number(bar.dataset.value).toLocaleString(undefined, {maximumFractionDigits: 0}) +
+        Number(bar.dataset.value).toLocaleString(undefined, {maximumFractionDigits: 1}) +
         '</b></div>';
       tip.style.opacity = '1';
       tip.style.left = (event.pageX + 14) + 'px';

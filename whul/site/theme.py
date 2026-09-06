@@ -194,6 +194,45 @@ details.tableview[open] summary { margin-bottom: 8px; }
    needed it. The initials still title the browser tab, which is the place that
    really is too narrow. */
 
+/* --- the results page ---------------------------------------------------- */
+/* A figure is a card that closes. The summary carries the heading rather than
+   sitting above it, so the whole title is the hit target. */
+.figure { background: var(--surface-1); border: 1px solid var(--grid);
+  border-radius: 10px; padding: 0 18px; margin-bottom: 22px; }
+.figure > summary { cursor: pointer; list-style: none; padding: 16px 0;
+  display: flex; align-items: center; gap: 8px; }
+.figure > summary::-webkit-details-marker { display: none; }
+.figure > summary::before { content: "\25be"; color: var(--muted);
+  transition: transform 0.12s ease; }
+.figure:not([open]) > summary::before { transform: rotate(-90deg); }
+.figure > summary h2 { margin: 0; font-size: 1.05rem; }
+.figure > summary:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 2px; border-radius: 6px; }
+.figurebody { padding-bottom: 18px; }
+
+.figureindex { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.jump { font-size: 0.82rem; color: var(--text-secondary);
+  border: 1px solid var(--grid); border-radius: 999px; padding: 4px 12px;
+  text-decoration: none; }
+.jump:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { font: inherit; font-size: 0.78rem; cursor: pointer; padding: 3px 10px;
+  border-radius: 999px; border: 1px solid var(--grid);
+  background: var(--page); color: var(--text-secondary); }
+.chip[aria-pressed="true"] { background: var(--text-primary);
+  border-color: var(--text-primary); color: var(--surface-1); }
+.chip:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+.filtercount { margin: 0 0 10px; }
+
+table.results { width: 100%; }
+table.results .rowmeta { display: block; font-size: 0.74rem; color: var(--muted); }
+.assetlink { font: inherit; background: none; border: 0; padding: 0;
+  color: var(--text-primary); cursor: pointer; text-align: left; }
+.assetlink:hover { text-decoration: underline; text-underline-offset: 3px; }
+.assetlink:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+table.results tr[hidden] { display: none; }
+
 /* A collapsible league section. Twenty leagues open at once is a page that is
    long before it is informative. */
 .leaguebox { border-top: 1px solid var(--grid); }
@@ -211,7 +250,7 @@ details.tableview[open] summary { margin-bottom: 8px; }
 .legend.filterable .legenditem.off { opacity: 0.4;
   text-decoration: line-through; }
 .ghosted { opacity: 0.12; }
-.legend.filterable .legenditem:focus-visible { outline: 2px solid var(--accent);
+.legend.filterable .legenditem:focus-visible { outline: 2px solid var(--series-1);
   outline-offset: 2px; }
 
 .profile h3 { font-size: 0.78rem; text-transform: uppercase;

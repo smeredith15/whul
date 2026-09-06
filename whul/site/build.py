@@ -60,7 +60,8 @@ def _page(title: str, body: str, active: str, managers: list[str],
           depth: int = 0, stamp: str = "", simulated: str | bool = False) -> str:
     """One page's HTML. Depth sets how far up the shared assets are."""
     up = "../" * depth
-    nav = [("index.html", "Standings"), ("about.html", "How scoring works")]
+    nav = [("index.html", "Standings"), ("results.html", "Results"),
+           ("about.html", "How scoring works")]
     current = ' aria-current="page"'
     links = "".join(
         f'<a href="{up}{href}"{current if label == active else ""}>{label}</a>'
@@ -283,6 +284,101 @@ def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0)
         f'{images.avatar("asset", asset_id, name, size=26, depth=depth)}'
         f'<span class="nm">{inner}</span></span></button>'
     )
+
+
+def _results_table(
+    bars: pd.DataFrame, profiles: dict[str, dict], managers: list[str]
+) -> str:
+    """Every scored asset in one table, best first.
+
+    The bar chart answers "how is my roster doing"; this answers "who is doing
+    well", which is a different question and had no page. Sorted by normalized
+    score because that is the only figure comparable across leagues -- a raw
+    total is on a scale that differs per sport.
+
+    Filtered in the browser rather than pre-split: twenty leagues is twenty
+    tables nobody scrolls, and the interesting comparison is usually across two
+    of them rather than within one.
+    """
+    if bars.empty:
+        return '<p class="sub">Nothing scored yet.</p>'
+
+    rows = []
+    leagues: set[str] = set()
+    kinds: set[str] = set()
+    for row in bars.sort_values("score", ascending=False).itertuples():
+        profile = profiles.get(row.asset_id)
+        if not profile:
+            continue
+        league = profile.get("league", "")
+        kind = profile.get("kind", "")
+        leagues.add(league)
+        kinds.add(kind)
+        slot = theme.series_index(managers, row.manager_id) + 1
+        rows.append(
+            f'<tr data-league="{league}" data-kind="{kind}">'
+            f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
+            f'{profile["name"]}</button>'
+            f'<span class="rowmeta">{league} · {kind}</span></td>'
+            f'<td><span class="who"><i class="swatch" '
+            f'style="background: var(--series-{slot})"></i>'
+            f'{escape(manager_name(row.manager_id))}</span></td>'
+            f'<td class="num" data-score="{row.score:.4f}">{row.score:,.1f}</td></tr>'
+        )
+    if not rows:
+        return '<p class="sub">Nothing scored yet.</p>'
+
+    def chips(name: str, values: set[str]) -> str:
+        buttons = "".join(
+            f'<button class="chip" data-filter="{name}" data-value="{escape(v)}" '
+            f'aria-pressed="false">{escape(v)}</button>'
+            for v in sorted(values) if v
+        )
+        return f'<div class="chips" role="group" aria-label="Filter by {name}">{buttons}</div>'
+
+    # Everything is listed, including the assets on nothing yet -- two thirds
+    # of the roster in September, when most leagues have not started. Listing
+    # them is the honest default and burying them is the useful one, so the
+    # toggle is here and off, rather than either being chosen for the reader.
+    scoring_only = (
+        '<div class="chips" role="group" aria-label="Hide unscored">'
+        '<button class="chip" data-filter="scoring" data-value="yes" '
+        'aria-pressed="false">Scoring only</button></div>'
+    )
+    return (
+        f'{chips("kind", kinds)}{chips("league", leagues)}{scoring_only}'
+        '<p class="sub filtercount" data-count>Showing every scored asset.</p>'
+        '<table class="results" id="resultstable">'
+        '<thead><tr><th>Asset</th><th>Owner</th>'
+        '<th class="num">Normalized</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>'
+    )
+
+
+def _figure(anchor: str, title: str, blurb: str, body: str, open_: bool = True) -> str:
+    """One collapsible figure, addressable by anchor.
+
+    Open by default and remembered per reader, like the league boxes: a page of
+    three closed figures makes someone open the one they came for every time,
+    and a page of three open ones is long. Letting them choose once is the only
+    answer that suits both.
+    """
+    return f"""
+<details class="figure" id="{anchor}" data-figure="{anchor}"{" open" if open_ else ""}>
+  <summary><h2>{escape(title)}</h2></summary>
+  <div class="figurebody">
+    <p class="sub">{blurb}</p>
+    {body}
+  </div>
+</details>"""
+
+
+def _figure_index(items: list[tuple[str, str]]) -> str:
+    """Links to the figures below, so the page opens with a way through it."""
+    links = "".join(
+        f'<a class="jump" href="#{anchor}">{escape(label)}</a>' for anchor, label in items
+    )
+    return f'<nav class="figureindex" aria-label="On this page">{links}</nav>'
 
 
 def _profile_payload(profiles: dict[str, dict]) -> str:
@@ -614,22 +710,54 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
                progression_rows, columns=[s.name for s in series])}
 </div>
 
-<div class="card">
-  <h2>Every counting slot</h2>
-  <p class="sub">One section per league, each collapsible. A manager's slots sit
-    together in their own colour, ranked best first, so a category reads as a
-    block. Every bar is a single normalized score, so any two are directly
-    comparable. Click a manager in the key to hide them; click a bar for the
-    player behind it.</p>
-  {charts.legend(slotted, filterable=True)}
-  {charts.slot_sections(slot_rows, slotted, values, depth=slot_depth)}
-  {_table_view("Show as a table", ["Slot"] + [m for m, _ in slotted], bar_rows,
-               columns=[m for m, _ in slotted])}
-</div>
 {_profile_payload(profiles)}
 """
     (out / "index.html").write_text(
         _page(f"{LEAGUE_ABBR} — Standings", body, "Standings", managers,
+              stamp=stamp, simulated=simulated)
+    )
+
+    # --- results ------------------------------------------------------------
+    # The bar chart moves here and the progression is copied. Copied rather
+    # than moved because the standings page is what someone opens to see who is
+    # winning, and the line is the shape of that; the bars are the detail
+    # underneath it, which is what this page is for.
+    progression_figure = _figure(
+        "progression", "Progression",
+        "Total score by day. Hover for every manager on a given date.",
+        f"{charts.legend(slotted, filterable=True)}"
+        f"{charts.progression_chart(days, series)}"
+        + _table_view("Show as a table", ["Date"] + [s.name for s in series],
+                      progression_rows, columns=[s.name for s in series]),
+    )
+    slots_figure = _figure(
+        "slots", "Every counting slot",
+        "One section per league, each collapsible. A manager's slots sit "
+        "together in their own colour, ranked best first, so a category reads "
+        "as a block. Every bar is a single normalized score, so any two are "
+        "directly comparable. Click a manager in the key to hide them; click a "
+        "bar for the asset behind it.",
+        f"{charts.legend(slotted, filterable=True)}"
+        f"{charts.slot_sections(slot_rows, slotted, values, depth=slot_depth)}"
+        + _table_view("Show as a table", ["Slot"] + [m for m, _ in slotted],
+                      bar_rows, columns=[m for m, _ in slotted]),
+    )
+    table_figure = _figure(
+        "everyone", "Every scored asset",
+        "Best first, on the normalized scale -- the only figure comparable "
+        "across leagues. Filter by kind or league; the filters combine. Click "
+        "a name for the stats behind the score.",
+        _results_table(bars, profiles, managers),
+    )
+    results_body = (
+        _figure_index([("progression", "Progression"),
+                       ("slots", "Every counting slot"),
+                       ("everyone", "Every scored asset")])
+        + progression_figure + slots_figure + table_figure
+        + _profile_payload(profiles)
+    )
+    (out / "results.html").write_text(
+        _page(f"{LEAGUE_ABBR} — Results", results_body, "Results", managers,
               stamp=stamp, simulated=simulated)
     )
 

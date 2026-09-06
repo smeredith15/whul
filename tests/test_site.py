@@ -225,10 +225,31 @@ def test_the_standings_table_is_the_default_view(site):
     assert html.index("Standings</h2>") < html.index("Progression</h2>")
 
 
-def test_both_charts_ship_a_table_view(site):
+def test_every_chart_ships_a_table_view(site):
+    """The relief the light-mode contrast warning requires, and what makes a
+    value readable without a hover. The two charts now sit on two pages -- the
+    line on the standings, both on the results -- so the count is per page."""
+    out, _ = site
+    assert (out / "index.html").read_text().count("Show as a table") == 1
+    assert (out / "results.html").read_text().count("Show as a table") == 2
+
+
+def test_the_results_page_carries_both_charts_and_the_table(site):
+    """The bars move here and the line is copied: the standings page is opened
+    to see who is winning, and the line is the shape of that."""
+    out, _ = site
+    html = (out / "results.html").read_text()
+    assert 'id="progression"' in html
+    assert 'id="slots"' in html
+    assert 'id="everyone"' in html
+    assert "linechart" in html and "barchart" in html
+
+
+def test_the_standings_page_keeps_the_line_and_loses_the_bars(site):
     out, _ = site
     html = (out / "index.html").read_text()
-    assert html.count("Show as a table") == 2
+    assert "linechart" in html
+    assert "barchart" not in html
 
 
 def test_a_team_page_shows_the_normalized_score(site):
@@ -799,3 +820,68 @@ def test_a_full_season_share_says_nothing():
     from whul.site.build import _scaling_notes
 
     assert _scaling_notes({"advanced_share": 1.0}) == []
+
+
+# --- the results page ---------------------------------------------------------
+
+import pandas as pd
+
+RESULT_BARS = pd.DataFrame([
+    {"manager_id": "AV", "asset_id": "a1", "score": 40.0},
+    {"manager_id": "BL", "asset_id": "a2", "score": 90.0},
+    {"manager_id": "AV", "asset_id": "a3", "score": 0.0},
+])
+RESULT_PROFILES = {
+    "a1": {"name": "P. Vance", "league": "NFL", "kind": "Player"},
+    "a2": {"name": "Arsenal", "league": "Premier League", "kind": "Team"},
+    "a3": {"name": "Q. Idle", "league": "NBA", "kind": "Player"},
+}
+
+
+def test_the_results_table_leads_with_the_best_score():
+    """The bar chart answers "how is my roster doing"; this answers "who is
+    doing well", which is a different question and had no page."""
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert html.index("Arsenal") < html.index("P. Vance") < html.index("Q. Idle")
+
+
+def test_every_row_carries_what_it_can_be_filtered_by():
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert 'data-league="Premier League" data-kind="Team"' in html
+    assert 'data-filter="kind" data-value="Player"' in html
+    assert 'data-filter="league" data-value="NFL"' in html
+
+
+def test_an_asset_on_nothing_yet_is_listed_rather_than_dropped():
+    """Two thirds of the roster is on nothing in September, when most leagues
+    have not started. Listing them is the honest default; the toggle is what
+    makes the table useful anyway."""
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert "Q. Idle" in html
+    assert 'data-filter="scoring"' in html
+    assert 'data-score="0.0000"' in html
+
+
+def test_a_name_in_the_table_opens_its_profile():
+    """The same hook the bars use, so one handler serves both."""
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert 'class="assetlink" data-asset="a2"' in html
+
+
+def test_a_figure_is_collapsible_and_addressable():
+    """Three figures on one page is long, and someone who wants the table
+    should not scroll past two charts to reach it."""
+    from whul.site.build import _figure, _figure_index
+
+    html = _figure("everyone", "Every scored asset", "Best first.", "<p>x</p>")
+    assert 'id="everyone"' in html and 'data-figure="everyone"' in html
+    assert html.startswith("\n<details") and " open>" in html
+    assert "#everyone" in _figure_index([("everyone", "Every scored asset")])
