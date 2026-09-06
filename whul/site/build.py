@@ -84,10 +84,7 @@ def _page(title: str, body: str, active: str, managers: list[str],
 <body>
 <div class="wrap">
 <header class="masthead">
-  <h1><a href="{up}index.html" style="text-decoration:none">
-    <span class="full">{escape(LEAGUE_NAME)}</span>
-    <span class="short">{escape(LEAGUE_ABBR)}</span>
-  </a></h1>
+  <h1><a href="{up}index.html" style="text-decoration:none">{escape(LEAGUE_NAME)}</a></h1>
   <span class="stamp">{escape(stamp)}</span>
   <nav>{links}{teams}</nav>
 </header>
