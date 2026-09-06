@@ -38,7 +38,7 @@ import json
 import sqlite3
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -162,6 +162,43 @@ def rostered(db: sqlite3.Connection, season: str) -> list[dict]:
     ]
 
 
+def player_clubs(db: sqlite3.Connection, season: str) -> tuple[set[str], int]:
+    """Every club a rostered player is at, and how many need a new logo file.
+
+    A player's corner badge is his club's crest, and most of those clubs are
+    drafted teams already -- the same file, twice. Counting the overlap is the
+    difference between six files and twenty-two.
+
+    Reads the clubs off the recorded stats rather than off a feed, because that
+    is where they are: the ingest carries the club through from the squad now,
+    so a nightly run leaves the answer in the database.
+    """
+    from whul.resolve import normalize_team
+
+    day = db.execute(
+        "SELECT MAX(as_of) FROM raw_stats WHERE season = ?", (season,)
+    ).fetchone()[0]
+    if not day:
+        return set(), 0
+    clubs: set[str] = set()
+    for stats, in db.execute(
+        "SELECT r.stats FROM raw_stats r JOIN assets a ON a.asset_id = r.asset_id "
+        "WHERE r.as_of = ? AND a.asset_type = 'Player'", (day,),
+    ):
+        try:
+            row = json.loads(stats)
+        except (TypeError, ValueError):
+            continue
+        club = row.get("team") or row.get("team_name")
+        if club:
+            clubs.add(str(club))
+    drafted = {
+        normalize_team(str(r[0])) for r in
+        db.execute("SELECT display_name FROM assets WHERE asset_type = 'Team'")
+    }
+    return clubs, sum(1 for c in clubs if normalize_team(c) not in drafted)
+
+
 _PAYLOADS: dict[str, dict] = {}
 
 
@@ -215,14 +252,71 @@ def team_index(session: requests.Session, league: str) -> dict[str, dict]:
     return out
 
 
-def league_logo(session: requests.Session, league: str) -> str:
-    """The competition's own mark, off the same teams payload."""
-    payload = league_payload(session, league)
+#: ESPN's own headshot path, once an athlete id is known. Soccer players are
+#: absent from the search results' image field but present here, which is the
+#: whole reason the squad walk below exists.
+HEADSHOT = "https://a.espncdn.com/i/headshots/soccer/players/full/{id}.png"
+
+#: Candidate homes for a competition's own mark, tried in order. The teams
+#: endpoint carries `leagues[0].logos` for some sports and not others -- the
+#: first version read only that and reported nought out of twenty-four, which
+#: is what a wrong lookup and an absent image look like alike. Trying several
+#: and naming the winner is how the next run gets to stop guessing.
+def league_logo_candidates(league: str, payload: dict) -> list[tuple[str, str]]:
+    sport, key = ESPN_PATH.get(league, ("", ""))
+    out: list[tuple[str, str]] = []
     try:
-        logos = payload["sports"][0]["leagues"][0].get("logos") or []
-        return str((logos[0] or {}).get("href", "")) if logos else ""
-    except (KeyError, IndexError, TypeError, AttributeError):
-        return ""
+        block = payload["sports"][0]["leagues"][0]
+    except (KeyError, IndexError, TypeError):
+        block = {}
+    for logo in (block.get("logos") or []):
+        if isinstance(logo, dict) and logo.get("href"):
+            out.append(("teams payload", str(logo["href"])))
+    if block.get("id"):
+        out.append(("leaguelogos by id",
+                    f"https://a.espncdn.com/i/leaguelogos/{sport}/500/{block['id']}.png"))
+    if key:
+        out.append(("teamlogos/leagues by key",
+                    f"https://a.espncdn.com/i/teamlogos/leagues/500/{key}.png"))
+    return out
+
+
+def squad_headshots(session: requests.Session, league: str,
+                    index: dict[str, dict]) -> dict[str, str]:
+    """``{normalized player name: headshot url}`` for one soccer league.
+
+    One request a club. Expensive, and the only path that works: ESPN's search
+    returns soccer players without an image, so the first run of this probe
+    reported forty-five footballers as having no photograph when every one of
+    them has one on the club's own roster page.
+    """
+    sport, key = ESPN_PATH.get(league, ("", ""))
+    if sport != "soccer":
+        return {}
+    out: dict[str, str] = {}
+    for record in {r["id"]: r for r in index.values() if r.get("id")}.values():
+        payload = get(session, f"{BASE}/{sport}/{key}/teams/{record['id']}/roster")
+        if not payload:
+            continue
+        for athlete in (payload.get("athletes") or []):
+            name = str(athlete.get("displayName") or athlete.get("fullName") or "")
+            ident = str(athlete.get("id") or "")
+            if name and ident:
+                out.setdefault(normalize(name, team=False), HEADSHOT.format(id=ident))
+    return out
+
+
+def numeric_id(record: dict) -> str:
+    """ESPN's numeric athlete id, out of the web link the search returns.
+
+    Search answers with a GUID, and the athlete endpoint wants the number --
+    every one of the forty flag lookups 404'd on a GUID the first time this
+    ran. The number is in the link: .../player/_/id/2452/carlos-alcaraz.
+    """
+    import re
+
+    found = re.search(r"/id/(\d+)", record.get("link", "") or "")
+    return found.group(1) if found else ""
 
 
 def find_athlete(session: requests.Session, name: str, league: str) -> dict:
@@ -259,6 +353,11 @@ def find_athlete(session: requests.Session, name: str, league: str) -> dict:
     return best
 
 
+#: Printed once, the first time an athlete payload carries no flag, so a run
+#: that finds none says what it did find rather than only that it found nothing.
+_FLAG_SHAPE_SHOWN = False
+
+
 def athlete_flag(session: requests.Session, league: str, athlete_id: str) -> str:
     """The country flag ESPN carries for an individual athlete, where it does.
 
@@ -273,9 +372,23 @@ def athlete_flag(session: requests.Session, league: str, athlete_id: str) -> str
     if not payload:
         return ""
     for holder in (payload, payload.get("athlete") or {}):
-        flag = holder.get("flag") if isinstance(holder, dict) else None
+        if not isinstance(holder, dict):
+            continue
+        flag = holder.get("flag")
         if isinstance(flag, dict) and flag.get("href"):
             return str(flag["href"])
+        # Some sports file the nationality rather than a rendered flag.
+        for key in ("citizenship", "birthCountry", "country"):
+            value = holder.get(key)
+            if isinstance(value, dict) and value.get("flag"):
+                inner = value["flag"]
+                if isinstance(inner, dict) and inner.get("href"):
+                    return str(inner["href"])
+    global _FLAG_SHAPE_SHOWN
+    if not _FLAG_SHAPE_SHOWN:
+        _FLAG_SHAPE_SHOWN = True
+        print(f"    (no flag on the athlete payload; its keys are "
+              f"{sorted(payload)[:16]})", flush=True)
     return ""
 
 
@@ -306,6 +419,11 @@ def main() -> int:
     misses: dict[str, list[str]] = defaultdict(list)
     tally: dict[str, list[int]] = defaultdict(lambda: [0, 0])   # [found, needed]
 
+    #: Which candidate answered, per class. A probe that only says "24 missing"
+    #: sends someone hunting; one that says "the key path works and the id path
+    #: does not" retires a guess.
+    winners: dict[str, Counter] = defaultdict(Counter)
+
     def record(kind: str, key: str, url: str, label: str) -> None:
         tally[kind][1] += 1
         if url and check.ok(url):
@@ -313,6 +431,18 @@ def main() -> int:
             found.setdefault(kind, {})[key] = url
         else:
             misses[kind].append(label)
+
+    def record_first(kind: str, key: str, label: str,
+                     candidates: list[tuple[str, str]]) -> None:
+        """The first candidate that answers, and a note of which one it was."""
+        tally[kind][1] += 1
+        for how, url in candidates:
+            if check.ok(url):
+                tally[kind][0] += 1
+                found.setdefault(kind, {})[key] = url
+                winners[kind][how] += 1
+                return
+        misses[kind].append(label)
 
     leagues = sorted({a["league"] for a in assets if a["league"]})
 
@@ -323,8 +453,8 @@ def main() -> int:
     print("Team logos and league logos")
     indexes = {league: team_index(session, league) for league in leagues}
     for league in leagues:
-        url = league_logo(session, league)
-        record("league logo", league, url, league)
+        record_first("league logo", league, league,
+                     league_logo_candidates(league, league_payload(session, league)))
 
     for asset in assets:
         if asset["type"] != "Team":
@@ -339,18 +469,39 @@ def main() -> int:
                f"{asset['name']} ({asset['league']})")
 
     # --- players ------------------------------------------------------------
+    # Footballers first, off their clubs' roster pages. Search knows who they
+    # are and has no photograph of any of them; the roster page has one for
+    # nearly all of them.
+    print("\nSquad photographs, one request a club")
+    # Only where players are actually rostered. The international competitions
+    # are soccer too and hold nothing but squads, and walking their clubs was
+    # forty requests for nobody.
+    with_players = {a["league"] for a in assets if a["type"] == "Player"}
+    squads: dict[str, dict[str, str]] = {}
+    for league in sorted(with_players):
+        if ESPN_PATH.get(league, ("", ""))[0] == "soccer":
+            squads[league] = squad_headshots(session, league, indexes.get(league, {}))
+            print(f"    {league}: {len(squads[league])} player(s) with an id", flush=True)
+
     print("\nHeadshots, and the badge each one wears")
     for asset in assets:
         if asset["type"] != "Player":
             continue
+        label = f"{asset['name']} ({asset['league']})"
+        from_squad = squads.get(asset["league"], {}).get(
+            normalize(asset["name"], team=False), "")
+        if from_squad:
+            record_first("headshot", asset["id"], label,
+                         [("club roster page", from_squad)])
+            continue
         who = find_athlete(session, asset["name"], asset["league"])
-        record("headshot", asset["id"], who.get("image", ""),
-               f"{asset['name']} ({asset['league']})")
+        record_first("headshot", asset["id"], label,
+                     [("search", who.get("image", ""))])
 
         if asset["category"] in INDIVIDUAL:
             record("athlete flag", asset["id"],
-                   athlete_flag(session, asset["league"], who.get("id", "")),
-                   f"{asset['name']} ({asset['league']})")
+                   athlete_flag(session, asset["league"], numeric_id(who)),
+                   label)
         # A team-sport player's badge is his club's logo, which needs his club.
         # That is recorded against the asset only from the first nightly run
         # after the identity carry landed; until then the club set cannot be
@@ -364,14 +515,26 @@ def main() -> int:
         if need:
             print(f"  {kind:<16}{got:>7}{need:>8}   {need - got}")
 
-    squads = sum(1 for a in assets if a["type"] == "Team" and "Intl" in a["category"])
+    for kind, counts in sorted(winners.items()):
+        if counts:
+            how = ", ".join(f"{name} {n}" for name, n in counts.most_common())
+            print(f"    {kind} came from: {how}")
+
+    squad_slots = sum(1 for a in assets
+                      if a["type"] == "Team" and "Intl" in a["category"])
     print(f"\n  Not asked of ESPN, and yours to supply either way:")
     print(f"    confederation shields   {len(CONFEDERATIONS)}   "
-          f"(for {squads} international squad slots)")
+          f"(for {squad_slots} international squad slots)")
     print(f"    Olympic rings           1   (once the Olympic slots are live)")
-    print(f"    club logos for players  ?   one per club a rostered player is at,")
-    print(f"                                countable once a nightly run has")
-    print(f"                                recorded each player's club")
+    clubs, fresh = player_clubs(db, args.season)
+    if clubs:
+        print(f"    club logos for players  {fresh}   {len(clubs)} club(s) hold a "
+              f"rostered player;")
+        print(f"                                {len(clubs) - fresh} of them are "
+              f"drafted teams already")
+    else:
+        print(f"    club logos for players  ?   no nightly run has recorded a "
+              f"player's club yet")
 
     for kind in ("headshot", "team logo", "league logo", "athlete flag"):
         if misses[kind]:
