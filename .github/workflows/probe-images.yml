@@ -1,17 +1,20 @@
-# Ask ESPN which of the league's images it has, and print what it does not.
+# Find the league's images, and optionally fetch them into the repository.
 #
-# A button rather than a schedule. This answers a question that is asked once
-# per decision -- "how much of this would I have to find myself" -- and the
-# answer only changes when the roster does.
+# Two steps that were one question. The probe asks ESPN what it has and writes
+# a manifest; the fetch downloads what the manifest names. They are separate
+# because only the second one writes anything, and a run that is only meant to
+# count should not be able to commit by accident.
 #
 # It runs here rather than on a laptop for one reason: the agent sandbox this
 # repository is developed in answers 403 to every outbound CONNECT, so every
 # image check fails identically there and the report reads as "ESPN has
-# nothing". This runner can reach ESPN. A wrong answer that looks like a
+# nothing". This runner can reach it. A wrong answer that looks like a
 # confident one is the failure worth spending a workflow to avoid.
 #
-# Nothing is written. No image is downloaded, the database is read-only, and
-# the data branch is not touched.
+# The images land on a branch and a pull request, never straight on main. The
+# whole point of the by-hand directories is that a person decides what the
+# league publishes, and a job that pushed three hundred files to the default
+# branch unattended would be deciding for them.
 
 name: Probe images
 
@@ -23,13 +26,20 @@ on:
         default: "2026-27"
       limit:
         description: >-
-          Stop after this many assets. 0 is all of them (about 600 requests
-          and five minutes). Set it to 20 for a quick check that the shapes
+          Stop after this many assets. 0 is all of them (about 800 requests
+          and eight minutes). Set it to 20 for a quick check that the shapes
           ESPN returns are still the ones the script reads.
         default: "0"
+      fetch:
+        description: >-
+          Download what the probe found and open a pull request with the
+          files. Unchecked, this only reports.
+        type: boolean
+        default: false
 
 permissions:
-  contents: read
+  contents: write        # to push the image branch
+  pull-requests: write   # to open the pull request that carries it
 
 jobs:
   probe:
@@ -64,13 +74,57 @@ jobs:
             --json image-urls.json \
             | tee probe-images.txt
 
-      # The report is the point and it is in the log, but the JSON is what a
-      # later fetch step would read, and a log is a poor place to keep it.
+      - name: Fetch the images
+        if: inputs.fetch
+        run: python scripts/fetch-images.py image-urls.json | tee fetch-images.txt
+
+      - name: What is still missing
+        if: inputs.fetch
+        run: |
+          python -m whul.cli images-needed \
+            --db data/whul.sqlite3 \
+            --season "${{ inputs.season || '2026-27' }}" \
+            | tee images-needed.txt
+
+      # The database came from the data branch and must not travel with the
+      # images; it is state the nightly job owns and a pull request carrying it
+      # would put a binary diff nobody can read in front of a reviewer.
+      - name: Open a pull request with the images
+        if: inputs.fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "whul-bot"
+          git config user.email "whul-bot@users.noreply.github.com"
+          git checkout -- data/whul.sqlite3 2>/dev/null || rm -f data/whul.sqlite3
+          if [ -z "$(git status --porcelain assets/img)" ]; then
+            echo "No new image files -- nothing to open a pull request for."
+            exit 0
+          fi
+          BRANCH="images/$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add assets/img
+          COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
+          git commit -qm "Fetch $COUNT image(s) from ESPN
+
+          Downloaded by .github/workflows/probe-images.yml. Every file is one
+          the probe confirmed answers, saved under the name the site looks it
+          up by. Anything already present was left alone, so a file added by
+          hand is never replaced by a worse one from a feed."
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "Fetch $COUNT image(s) from ESPN" \
+            --body "$(printf 'Downloaded by the Probe images workflow.\n\n```\n%s\n```\n\nStill missing after this:\n\n```\n%s\n```\n' \
+                        "$(tail -12 fetch-images.txt)" "$(head -4 images-needed.txt)")" \
+            --base main --head "$BRANCH"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: image-probe
           path: |
             probe-images.txt
+            fetch-images.txt
+            images-needed.txt
             image-urls.json
           if-no-files-found: warn

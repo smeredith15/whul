@@ -99,6 +99,18 @@ INDIVIDUAL = {"Tennis", "PGA", "Motorsports"}
 CONFEDERATIONS = ("UEFA", "CONMEBOL", "CONCACAF", "CAF", "AFC", "OFC")
 
 
+def slug(value: str) -> str:
+    """The site's own filename rule, imported rather than reimplemented.
+
+    A manifest whose names differ from what `images.find` looks for is a
+    download that succeeds and an image that never appears.
+    """
+    from whul.site.build import _slug
+    from whul.site.images import plain
+
+    return plain(_slug(value))
+
+
 def normalize(name: str, team: bool) -> str:
     """The project's own name key, so this matches the way ingest matches."""
     from whul.resolve import normalize_team, split_name
@@ -170,7 +182,7 @@ def rostered(db: sqlite3.Connection, season: str) -> list[dict]:
     """Every filled slot: what it is, what league, and which category holds it."""
     rows = db.execute(
         "SELECT DISTINCT a.asset_id, a.asset_type, a.league, a.display_name, "
-        "       r.category "
+        "       r.category, a.affiliation "
         "FROM roster_slots r "
         "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
         "JOIN assets a ON a.asset_id = o.asset_id "
@@ -178,7 +190,8 @@ def rostered(db: sqlite3.Connection, season: str) -> list[dict]:
     ).fetchall()
     return [
         {"id": r[0], "type": r[1], "league": str(r[2] or ""),
-         "name": str(r[3] or ""), "category": str(r[4] or "")}
+         "name": str(r[3] or ""), "category": str(r[4] or ""),
+         "affiliation": str(r[5] or "").strip()}
         for r in rows
     ]
 
@@ -556,16 +569,30 @@ def main() -> int:
     #: Athlete -> country, where ESPN names the nationality but renders no flag.
     nations: dict[str, str] = {}
 
-    def record(kind: str, key: str, url: str, label: str) -> None:
+    def keep(dest: tuple[str, str] | None, url: str) -> None:
+        """File a URL under where the site would put it.
+
+        The report's own labels -- "headshot", "team logo" -- are for a person
+        reading a summary. The manifest has to be keyed by destination instead:
+        `assets/img/asset/<id>`, `assets/img/badge/<slug>`. They are different
+        keyings of the same fact, and a fetcher that had to translate between
+        them would be re-deriving what this already knows.
+        """
+        if dest:
+            found.setdefault(dest[0], {})[dest[1]] = url
+
+    def record(kind: str, key: str, url: str, label: str,
+               dest: tuple[str, str] | None = None) -> None:
         tally[kind][1] += 1
         if url and check.ok(url):
             tally[kind][0] += 1
-            found.setdefault(kind, {})[key] = url
+            keep(dest, url)
         else:
             misses[kind].append(label)
 
     def record_first(kind: str, key: str, label: str,
-                     candidates: list[tuple[str, str]]) -> None:
+                     candidates: list[tuple[str, str]],
+                     dest: tuple[str, str] | None = None) -> None:
         """The first candidate that answers, and a note of which one it was.
 
         Every candidate is tried before giving up, and the miss carries what
@@ -583,7 +610,7 @@ def main() -> int:
             answer = check.why(url)
             if answer == "ok":
                 tally[kind][0] += 1
-                found.setdefault(kind, {})[key] = url
+                keep(dest, url)
                 winners[kind][how] += 1
                 return
             reasons.append(f"{how}: {answer}")
@@ -599,7 +626,8 @@ def main() -> int:
     indexes = {league: team_index(session, league) for league in leagues}
     for league in leagues:
         record_first("league logo", league, league,
-                     league_logo_candidates(session, league))
+                     league_logo_candidates(session, league),
+                     dest=("badge", slug(league)))
 
     for asset in assets:
         if asset["type"] != "Team":
@@ -611,7 +639,8 @@ def main() -> int:
         entry = indexes.get(asset["league"], {}).get(
             normalize(asset["name"], team=True), {})
         record("team logo", asset["id"], entry.get("logo", ""),
-               f"{asset['name']} ({asset['league']})")
+               f"{asset['name']} ({asset['league']})",
+               dest=("asset", asset["id"]))
 
     # --- players ------------------------------------------------------------
     # Footballers first, off their clubs' roster pages. Search knows who they
@@ -647,7 +676,8 @@ def main() -> int:
         # has no picture of.
         who = find_athlete(session, asset["name"], asset["league"])
         record_first("headshot", asset["id"], label,
-                     [*from_squad, ("search", who.get("image", ""))])
+                     [*from_squad, ("search", who.get("image", ""))],
+                     dest=("asset", asset["id"]))
 
         if asset["category"] in INDIVIDUAL:
             # The tour's own listing first. It is one request for a whole tour
@@ -668,16 +698,46 @@ def main() -> int:
                 found.setdefault("athlete nationality", {})[asset["id"]] = \
                     flag.split(":", 1)[1]
             else:
-                record("athlete flag", asset["id"], flag, label)
+                # Filed by country, not by athlete. Four Americans want one
+                # file, and the site looks it up by the nationality the sheet
+                # carries rather than by whose picture it is going on.
+                record("athlete flag", asset["id"], flag, label,
+                       dest=("flag", slug(asset["affiliation"]))
+                       if asset["affiliation"] else None)
         # A team-sport player's badge is his club's logo, which needs his club.
         # That is recorded against the asset only from the first nightly run
         # after the identity carry landed; until then the club set cannot be
         # counted and saying so beats guessing at it.
 
+    # --- the clubs a player's corner badge needs ----------------------------
+    # Most of these are drafted teams whose logo was found above, but the file
+    # goes somewhere else: a crest is `club/arsenal.png` when it badges a
+    # player and `asset/team-premier-league-arsenal.png` when it *is* the
+    # picture. Same image, two names, because the site looks them up by
+    # different keys and neither key can be derived from the other.
+    print("\nClub crests, for the corner of a player's headshot")
+    clubs: dict[str, str] = {}
+    for asset in assets:
+        if asset["type"] == "Player" and asset["category"] not in INDIVIDUAL \
+                and asset["affiliation"]:
+            clubs.setdefault(asset["affiliation"], asset["league"])
+    for club, league in sorted(clubs.items()):
+        entry = indexes.get(league, {}).get(normalize(club, team=True), {})
+        if not entry:
+            # A club can be in a league nobody drafted a team from, so look
+            # across every league that was indexed before giving up.
+            for other in indexes.values():
+                entry = other.get(normalize(club, team=True), {})
+                if entry:
+                    break
+        record("club crest", slug(club), entry.get("logo", ""),
+               f"{club} ({league})", dest=("club", slug(club)))
+
     # --- what it adds up to -------------------------------------------------
     print(f"\n{'=' * 68}\n{check.calls} image URL(s) checked.\n")
     print(f"  {'what':<16}{'found':>7}{'needed':>8}   by hand")
-    for kind in ("headshot", "team logo", "league logo", "athlete flag"):
+    for kind in ("headshot", "team logo", "league logo", "athlete flag",
+                 "club crest"):
         got, need = tally[kind]
         if need:
             print(f"  {kind:<16}{got:>7}{need:>8}   {need - got}")
@@ -710,7 +770,8 @@ def main() -> int:
         print(f"    club logos for players  ?   no nightly run has recorded a "
               f"player's club yet")
 
-    for kind in ("headshot", "team logo", "league logo", "athlete flag"):
+    for kind in ("headshot", "team logo", "league logo", "athlete flag",
+                 "club crest"):
         if misses[kind]:
             print(f"\n  {kind} — {len(misses[kind])} to find yourself:")
             for label in sorted(misses[kind]):
