@@ -12,6 +12,7 @@
 #   ./scripts/deploy.sh                 # freeze the newest draft, publish
 #   ./scripts/deploy.sh <version>       # publish against a named version
 #   INGEST_ONLY=1 ./scripts/deploy.sh   # skip the freeze, refresh the results
+#   NO_PUSH=1 ./scripts/deploy.sh       # do everything but publish
 #
 # A league with no benchmark is not a reason to wait. It records its raw
 # figures, scores nothing, and the About page names it -- which is a season in
@@ -251,6 +252,20 @@ step "building the site"
 "$PY" -m whul.cli site --season "$SEASON" || exit 1
 
 # --- 4. publish ------------------------------------------------------------
+# Everything above is local and repeatable. This step is neither: it
+# force-pushes over a branch the nightly job also writes. NO_PUSH=1 stops here,
+# which is the flag to use when the point is to see whether the freeze and the
+# rollup behave -- I ran this script as a test against the real database
+# without one, on a machine that turned out to have credentials, and published
+# a test benchmark over a real season.
+if [ "${NO_PUSH:-}" = "1" ]; then
+    step "not pushing"
+    echo "  NO_PUSH=1, so the database stays here. Everything above did run:"
+    echo "  the scale is frozen locally, the standings are rolled up, and the"
+    echo "  site is built in ./site."
+    exit 0
+fi
+
 step "pushing the database to the data branch"
 # The database is the one piece of state. It lives on its own branch so a
 # growing binary does not put an unreadable diff into every pull request.
