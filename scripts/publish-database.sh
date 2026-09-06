@@ -68,6 +68,70 @@ if [ -z "${GITHUB_TOKEN:-}" ]; then
     export GITHUB_TOKEN
 fi
 
+# Ask GitHub about the token before asking git to use it. "Invalid username or
+# token" is what git reports for every credential fault alike -- expired,
+# revoked, wrong scope, or right token and wrong repository -- and those have
+# different fixes.
+#
+# Read from `permissions.push` rather than from the status code: this
+# repository answers 200 to an unauthenticated request, so a status check
+# passes a bogus token straight through. `permissions` appears only when the
+# request was authenticated, which is exactly the question.
+#
+# Passed through --config on stdin rather than as an argument, so the token
+# does not appear in the process list.
+echo "Checking the token ..."
+VERDICT=$(
+    printf 'header = "Authorization: Bearer %s"\nheader = "Accept: application/vnd.github+json"\n' "$GITHUB_TOKEN" \
+    | curl -sS --config - https://api.github.com/repos/smeredith15/whul 2>/dev/null \
+    | .venv/bin/python -c '
+import json, sys
+try:
+    body = json.load(sys.stdin)
+except Exception:
+    print("unreachable"); raise SystemExit
+perms = body.get("permissions")
+if perms is None:
+    print("anonymous")
+elif perms.get("push"):
+    print("ok")
+else:
+    print("readonly")
+'
+) || VERDICT=unreachable
+
+case "$VERDICT" in
+    ok)
+        echo "  the token can write to smeredith15/whul"
+        ;;
+    anonymous|readonly)
+        # Not split further on purpose. This repository answers an
+        # unauthenticated request with a permissions block of its own, so a
+        # rejected token and a read-only one are indistinguishable from here --
+        # and the fix is the same list either way.
+        cat <<'BAD'
+
+  This token cannot push to smeredith15/whul, so the push below would fail
+  the way it just did. One of:
+
+    - expired or revoked
+    - truncated when pasted (they are long; paste rather than type)
+    - Contents is set to read, not read *and write*
+    - fine-grained, and this repository is not in its list. "All
+      repositories" on the account is not the same as this repository
+      being selected.
+
+  Settings -> Developer settings -> Personal access tokens.
+
+BAD
+        exit 1
+        ;;
+    *)
+        echo "  could not reach the API to check; trying the push anyway"
+        ;;
+esac
+echo
+
 # One commit holding one snapshot, with no parent, built through a temporary
 # index so the working tree, the real index and HEAD are all left alone.
 BLOB=$(git hash-object -w "$DB") || exit 1
