@@ -10,6 +10,11 @@ data/cache/
 # `python -m whul.cli simulate`.
 data/*.sqlite3
 
+# What `carry-benchmark.sh` leaves behind: the database a scale was computed
+# in, and the diff that was read before adopting it. Both are working notes
+# for one publish, not repository content.
+benchmark-review.txt
+
 # The generated site is a build artifact; `python -m whul.cli site` rebuilds it.
 # Anchored with a leading slash: a bare `site/` matches at any depth, which
 # quietly excluded the whul/site/ package itself -- the code was never
