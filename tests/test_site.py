@@ -1213,3 +1213,30 @@ def test_a_corner_badge_has_a_directory_of_its_own():
 
     for kind in ("club", "flag", "shield"):
         assert kind in images.KINDS
+
+
+def test_a_missing_image_directory_says_so_rather_than_reporting_nothing_found(tmp_path):
+    """`assets/img` is a relative path. Run from anywhere but the repository
+    root it resolves to nothing and all four hundred files read as missing,
+    which is indistinguishable from having fetched none of them -- and was read
+    that way. The directory it looked in is now always printed, and its absence
+    is called out rather than left to be inferred from a round number."""
+    import contextlib
+    import io
+    from types import SimpleNamespace
+
+    from whul import simulate
+    from whul.cli import cmd_images_needed
+    from whul.store import open_store
+
+    db = tmp_path / "whul.sqlite3"
+    store = open_store(str(db))
+    simulate.generate(store, seed=1, verbose=False)
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cmd_images_needed(SimpleNamespace(
+            db=str(db), season=simulate.SIM_SEASON, images=str(tmp_path / "nowhere")))
+    said = out.getvalue()
+    assert "nowhere" in said
+    assert "does not exist" in said

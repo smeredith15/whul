@@ -11,6 +11,13 @@ can be filled in at whatever pace suits and in any order.
 python -m whul.cli images-needed
 ```
 
+**Run it from the repository root.** `assets/img` is a relative path, so from
+anywhere else it resolves to nothing and every file reads as missing -- which
+looks exactly like having fetched none of them. The command prints the
+directory it looked in for that reason; `--images <path>` points it elsewhere.
+And pull first: a clone that has not seen the last merge has none of the files
+either.
+
 That prints every image the site wants **that is not already here**, grouped by
 directory, with the exact filename and what belongs in it:
 

@@ -664,6 +664,8 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
     Grouped by directory and listing only what is absent, because the question
     being asked is "what do I do this evening", not "what does the site hold".
     """
+    from pathlib import Path
+
     from whul.site import images
     from whul.site.build import INDIVIDUAL_CATEGORIES, _slug
     from whul.store import open_store
@@ -705,9 +707,21 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
     for confederation in ("uefa", "conmebol", "concacaf", "caf", "afc", "ofc"):
         wanted[("shield", confederation)] = f"{confederation.upper()} -- shield"
 
+    # Where it looked, said out loud, always.
+    #
+    # `assets/img` is a relative path, so run from anywhere but the repository
+    # root it resolves to nothing and every single file reads as missing --
+    # which is indistinguishable from having fetched none of them, and was
+    # read that way. A stale clone does the same thing. Printing the directory
+    # and whether it exists turns a wrong answer into an obvious one.
+    source = Path(args.images) if args.images else images.SOURCE_DIR
     missing = [(kind, key, what) for (kind, key), what in sorted(wanted.items())
-               if images.find(kind, key) is None]
+               if images.find(kind, key, source=source) is None]
 
+    print(f"\n  Looking in {source.resolve()}")
+    if not source.is_dir():
+        print("  ...which does not exist, so everything below reads as missing.")
+        print("  Run this from the repository root, or pass --images.")
     print(f"\n  {len(wanted) - len(missing)} of {len(wanted)} image(s) present; "
           f"{len(missing)} to add.")
     print("  Any of .png .jpg .jpeg .webp .svg. A missing one is a monogram,")
@@ -1702,6 +1716,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     needed.add_argument("--db", default="data/whul.sqlite3", help="database path")
     needed.add_argument("--season", default="2026-27", help="season whose roster to list")
+    needed.add_argument("--images", help="where the image directories are "
+                                         "(default: assets/img, relative to here)")
     needed.set_defaults(func=cmd_images_needed)
 
     names = sub.add_parser(
