@@ -86,8 +86,8 @@ def test_a_chart_with_no_data_says_so_rather_than_drawing_an_empty_frame():
 
 SLOT_ROWS = [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")]
 SLOT_VALUES = {
-    ("Avery", "NFL 1"): (100.0, "a1", "P. Vance"),
-    ("Avery", "NFL 2"): (60.0, "a2", "R. Lockwood"),
+    ("Avery", "NFL 1"): (100.0, "a1", "P. Vance", "Player"),
+    ("Avery", "NFL 2"): (60.0, "a2", "R. Lockwood", "Team"),
 }
 
 
@@ -99,8 +99,35 @@ def test_bars_are_capped_and_rounded_at_the_data_end():
 
 
 def test_every_bar_carries_a_native_title_for_keyboard_and_screen_readers():
+    """Named first. A hover and a screen reader both got "NFL 1" before the
+    name, which answers neither who this is nor how they are doing."""
     svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
-    assert "<title>Avery — NFL 1: P. Vance 100</title>" in svg
+    assert "<title>P. Vance — Player · NFL #1 · Avery · 100</title>" in svg
+
+
+def test_a_bar_with_no_asset_still_titles_itself():
+    """An empty slot is a real state, and a blank title reads as a broken one."""
+    svg = charts.contribution_chart(
+        [("NFL", "NFL 1", "#1")], [("Avery", 1)], {})
+    assert "(empty)" in svg
+
+
+def test_a_three_entry_value_still_works():
+    """The kind is a later addition; a caller that does not carry it should
+    lose the word, not the bar."""
+    svg = charts.contribution_chart(
+        SLOT_ROWS, [("Avery", 1)], {("Avery", "NFL 1"): (100.0, "a1", "P. Vance")})
+    assert "P. Vance" in svg and 'class="bar"' in svg
+
+
+def test_players_and_teams_are_drawn_at_different_strengths():
+    """One category can hold both, and a run of identical bars does not say
+    which is which. The label carries the word too -- alpha on its own is a
+    weak signal and no help at all to a screen reader."""
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert f'fill-opacity="{charts.PLAYER_ALPHA}"' in svg
+    assert svg.count("fill-opacity") == 1   # the team bar is drawn solid
+    assert "Player</tspan>" in svg and "Team</tspan>" in svg
 
 
 def test_every_bar_is_one_slot_so_any_two_are_comparable():
@@ -120,7 +147,23 @@ def test_a_category_is_written_once_per_run_of_its_slots():
     """Four rows of the same word is four lines of noise."""
     svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
     assert svg.count(">NFL<") == 1
-    assert ">#1<" in svg and ">#2<" in svg
+
+
+def test_a_bar_is_labelled_with_what_it_is_of():
+    """The rank says where a holding sits and the colour says whose it is.
+    Neither says the manager holds P. Vance."""
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert "#1 P. Vance" in svg
+    assert "#2 R. Lockwood" in svg
+
+
+def test_a_long_name_is_cut_rather_than_overrunning_the_column():
+    values = {("Avery", "NFL 1"): (10.0, "a1", "Andrea Kimi Antonelli Jr", "Player")}
+    svg = charts.contribution_chart([("NFL", "NFL 1", "#1")], [("Avery", 1)], values)
+    # The label is cut; the title still carries the whole name, because a
+    # hover has room where a 250px column does not.
+    assert "Andrea Kimi\u2026" in svg or "Andrea Kimi Antonelli\u2026" in svg
+    assert "<title>Andrea Kimi Antonelli Jr" in svg
 
 
 def test_a_legend_is_present_for_more_than_one_series():
@@ -544,7 +587,7 @@ def test_the_rank_is_labelled_so_a_bar_says_which_slot_it_is():
     svg = charts.contribution_chart(
         [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")],
         [("Avery", 1)], values, depth={"NFL": 2})
-    assert ">#1<" in svg and ">#2<" in svg
+    assert ">#1 x<" in svg and ">#2 y<" in svg
 
 
 def test_a_single_slot_category_is_not_labelled_with_a_rank():
@@ -706,7 +749,8 @@ def test_every_section_shares_one_ceiling():
     html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES,
                                 depth={"NFL": 2, "PGA": 1})
     # The 100-point bar is full width in its section; the 40-point one is not.
-    assert html.count('width="794.0"') == 1
+    full = 1000 - charts.SLOT_LABEL_WIDTH - 56
+    assert html.count(f'width="{full:.1f}"') == 1
 
 
 def test_a_filterable_legend_is_made_of_buttons():

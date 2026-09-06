@@ -197,7 +197,35 @@ def progression_chart(
 #: Each slot's own bar is thinner than a category's was: 47 rows of five needs
 #: the height back.
 SLOT_BAR_THICKNESS = 9
-SLOT_ROW_PAD = 9
+#: Room under a category for its bars, plus a line for the category's own name.
+#: The name used to sit in the label column beside the first bar; now that every
+#: bar is labelled with its asset, it needs its own line or the two collide.
+SLOT_ROW_PAD = 24
+SLOT_HEADER_DROP = 12
+
+#: The label column. Wide enough for a name and its type, which is what a bar
+#: is actually of -- "#2" alone says a manager holds something in a category
+#: without saying what.
+SLOT_LABEL_WIDTH = 250
+
+#: Teams are drawn solid and players a little softer, so a category holding
+#: both reads as two kinds of thing rather than one run of bars. Alpha alone is
+#: a weak signal, which is why the label carries the word as well.
+PLAYER_ALPHA = 0.68
+
+
+def _fit(text: str, limit: int) -> str:
+    """A name short enough for the label column, cut on a character count.
+
+    Crude next to measuring the glyphs, and enough: the column is sized for the
+    longest name a roster actually holds, and the few that overrun are cut at a
+    word rather than mid-syllable where that is possible.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    spaced = cut.rsplit(" ", 1)[0]
+    return (spaced if len(spaced) >= limit - 8 else cut) + "\u2026"
 
 
 def contribution_chart(
@@ -243,7 +271,7 @@ def contribution_chart(
     depth = depth or counted
     per_row = {c: max(depth.get(c, counted.get(c, 1)), 1) for c in categories}
 
-    pad_left, pad_right, pad_top = 150, 56, 8
+    pad_left, pad_right, pad_top = SLOT_LABEL_WIDTH, 56, 8
     def _row_height(category: str) -> float:
         bars = len(managers) * per_row[category]
         return bars * (SLOT_BAR_THICKNESS + BAR_GAP) + SLOT_ROW_PAD
@@ -277,46 +305,67 @@ def contribution_chart(
 
     offset = pad_top
     for category in categories:
-        base_y = offset + 4
+        base_y = offset + 4 + SLOT_HEADER_DROP
+        # Above its bars rather than beside the first one, and anchored at the
+        # left edge: the column to the right of it now belongs to the assets.
         parts.append(
-            f'<text x="{pad_left - 10}" y="{base_y + 10:.1f}" text-anchor="end" '
+            f'<text x="6" y="{offset + 12:.1f}" '
             f'font-size="12" fill="var(--text-primary)" font-weight="600">'
             f'{escape(category)}</text>'
         )
         parts.append(
-            f'<line x1="{pad_left - 4}" y1="{base_y - 3:.1f}" '
-            f'x2="{width - pad_right}" y2="{base_y - 3:.1f}" '
+            f'<line x1="6" y1="{base_y - 5:.1f}" '
+            f'x2="{width - pad_right}" y2="{base_y - 5:.1f}" '
             f'stroke="var(--grid)" stroke-width="1"/>'
         )
         index = 0
         for manager, slot in managers:
             for rank in range(1, per_row[category] + 1):
                 key = f"{category} {rank}"
-                score, asset_id, asset_name = values.get((manager, key), (0.0, "", ""))
+                # Three entries or four: the fourth is the asset's kind, which
+                # older callers do not carry.
+                held = values.get((manager, key), (0.0, "", "", ""))
+                score, asset_id, asset_name = held[0], held[1], held[2]
+                kind = held[3] if len(held) > 3 else ""
                 bar_y = base_y + index * (SLOT_BAR_THICKNESS + BAR_GAP) + 2
                 index += 1
-                # Which of the manager's slots this is. Colour says whose the
-                # bar is; without this nothing says whether it is their best
-                # holding in the category or their fourth.
+                # What the bar is of, not merely which slot it fills. Colour
+                # says whose it is and the rank says where it sits; neither
+                # says the manager holds Arsenal.
+                # The rank is dropped where a category holds one slot: "#1"
+                # down a column of single-slot categories is a column of ones.
+                shown = _fit(asset_name, 22)
                 if per_row[category] > 1:
-                    parts.append(
-                        f'<text x="{pad_left - 10}" '
-                        f'y="{bar_y + SLOT_BAR_THICKNESS - 3:.1f}" text-anchor="end" '
-                        f'font-size="10" fill="var(--muted)">#{rank}</text>'
-                    )
+                    label = f"#{rank} {shown}" if shown else f"#{rank}"
+                else:
+                    label = shown
+                suffix = (f'<tspan fill="var(--muted)" font-size="9"> '
+                          f'{escape(kind)}</tspan>') if kind else ""
+                parts.append(
+                    f'<text x="{pad_left - 10}" '
+                    f'y="{bar_y + SLOT_BAR_THICKNESS - 1:.1f}" text-anchor="end" '
+                    f'font-size="10.5" fill="var(--text-secondary)">'
+                    f'{escape(label)}{suffix}</text>'
+                )
                 bar_w = max(plot_w * score / top, 0.0)
                 radius = min(BAR_RADIUS, bar_w / 2) if bar_w else 0
+                # Players a little softer than teams, so a mixed category reads
+                # as two kinds of holding.
+                alpha = f' fill-opacity="{PLAYER_ALPHA}"' if kind == "Player" else ""
                 parts.append(
                     f'<rect class="bar" x="{pad_left}" y="{bar_y:.1f}" '
                     f'width="{bar_w:.1f}" height="{SLOT_BAR_THICKNESS}" '
-                    f'rx="{radius:.1f}" fill="var(--series-{slot})" '
-                    # The title carries the fully qualified key: "#2" means
-                    # nothing read on its own, and a screen reader gets no help
-                    # from the visual grouping.
+                    f'rx="{radius:.1f}" fill="var(--series-{slot})"{alpha} '
+                    # Name first. This is what a hover shows and what a screen
+                    # reader reads, and "Club Soccer Top 3 1" answers neither
+                    # "who is this" nor "how are they doing".
                     f'data-manager="{escape(manager)}" data-category="{escape(key)}" '
                     f'data-asset="{escape(asset_id)}" '
-                    f'data-value="{score:.1f}"><title>{escape(manager)} — '
-                    f'{escape(key)}: {escape(asset_name)} {_fmt(score)}</title></rect>'
+                    f'data-value="{score:.1f}"><title>'
+                    f'{escape(asset_name or "(empty)")}'
+                    f'{" — " + escape(kind) if kind else ""} · '
+                    f'{escape(category)} #{rank} · {escape(manager)} · '
+                    f'{_fmt(score)}</title></rect>'
                 )
         offset += heights[category]
     parts.append("</svg>")

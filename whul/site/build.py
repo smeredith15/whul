@@ -141,6 +141,11 @@ def asset_profiles(
         out[asset_id] = {
             "name": escape(name),
             "meta": escape(f"{league} · {info['asset_type']}"),
+            # Kept apart from `meta` as well as in it: the chart labels a bar
+            # with the kind alone, and splitting a formatted string back up to
+            # get at it is how the two drift.
+            "kind": escape(str(info["asset_type"])),
+            "league": escape(league),
             "avatar": images.avatar("asset", asset_id, name, size=52, depth=depth),
             "badge": (
                 f'<img class="badge" src="{"../" * depth}{images.OUT_DIR}/badge/'
@@ -574,9 +579,15 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 
     slot_rows, values, slot_depth = _slot_rows(bars, managers)
     # Name each bar's asset, so the tooltip and the table both read as people.
+    # The kind rides along, which is what lets a bar say "Arsenal Team" rather
+    # than "Club Soccer Top 3 1".
     for key, (score, asset_id, _) in list(values.items()):
         profile = profiles.get(asset_id)
-        values[key] = (score, asset_id, profile["name"] if profile else "")
+        values[key] = (
+            score, asset_id,
+            profile["name"] if profile else "",
+            profile.get("kind", "") if profile else "",
+        )
     bar_rows = [
         [key] + [
             (f"{values[(m, key)][0]:,.1f}" if (m, key) in values else "—")
