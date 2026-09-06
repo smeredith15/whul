@@ -1021,17 +1021,27 @@ def _print_benchmark_diff(diff) -> None:
 
 def cmd_benchmarks_versions(args: argparse.Namespace) -> int:
     store = _benchmark_store(args)
+    # The count is the column that was missing. A version holding no benchmarks
+    # reads exactly like a full one here, and everything downstream treats it as
+    # a scale that covers nothing -- so `deploy.sh` reported an empty version as
+    # one that "would score fewer leagues than the version already in force",
+    # which sends you to look at the benchmark rather than at the version.
     rows = store.query(
-        "SELECT version, season, quantile, managers, computed_at, frozen_at, notes "
-        "FROM benchmark_versions ORDER BY computed_at DESC"
+        "SELECT v.version, v.season, v.quantile, v.managers, v.computed_at, "
+        "       v.frozen_at, v.notes, COUNT(b.version) AS groups "
+        "FROM benchmark_versions v "
+        "LEFT JOIN benchmarks b ON b.version = v.version "
+        "GROUP BY v.version ORDER BY v.computed_at DESC"
     )
     if rows.empty:
         print("\nNo benchmark versions yet. Start with `benchmarks compute`.\n")
         return 0
-    print(f"\n  {'version':<26}{'season':<12}{'state':<10}{'notes'}")
+    print(f"\n  {'version':<26}{'season':<12}{'state':<10}{'groups':>7}  notes")
     for row in rows.itertuples():
         state = "FROZEN" if row.frozen_at else "draft"
-        print(f"  {row.version:<26}{row.season:<12}{state:<10}{row.notes or ''}")
+        empty = "  <- holds nothing" if not row.groups else ""
+        print(f"  {row.version:<26}{row.season:<12}{state:<10}{row.groups:>7}  "
+              f"{row.notes or ''}{empty}")
     print()
     return 0
 
