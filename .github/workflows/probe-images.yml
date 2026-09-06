@@ -38,8 +38,9 @@ on:
         default: false
 
 permissions:
-  contents: write        # to push the image branch
-  pull-requests: write   # to open the pull request that carries it
+  contents: write   # to push the image branch. Nothing else: the pull request
+                    # is opened by a person, so no pull-requests scope is
+                    # needed and none is asked for.
 
 jobs:
   probe:
@@ -89,10 +90,16 @@ jobs:
       # The database came from the data branch and must not travel with the
       # images; it is state the nightly job owns and a pull request carrying it
       # would put a binary diff nobody can read in front of a reviewer.
-      - name: Open a pull request with the images
+      # Pushed to a branch, and the pull request is opened by hand.
+      #
+      # The first version ran `gh pr create` and the run failed on its last
+      # line with "GitHub Actions is not permitted to create or approve pull
+      # requests" -- a repository setting that is off by default, and one worth
+      # leaving off. Three hundred files had already been fetched and pushed by
+      # then, so the work was done and the run looked broken, which is the
+      # worst of both. A branch and a link cost nothing and need no permission.
+      - name: Push the images to a branch
         if: inputs.fetch
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "whul-bot"
           git config user.email "whul-bot@users.noreply.github.com"
@@ -112,11 +119,16 @@ jobs:
           up by. Anything already present was left alone, so a file added by
           hand is never replaced by a worse one from a feed."
           git push -u origin "$BRANCH"
-          gh pr create \
-            --title "Fetch $COUNT image(s) from ESPN" \
-            --body "$(printf 'Downloaded by the Probe images workflow.\n\n```\n%s\n```\n\nStill missing after this:\n\n```\n%s\n```\n' \
-                        "$(tail -12 fetch-images.txt)" "$(head -4 images-needed.txt)")" \
-            --base main --head "$BRANCH"
+
+          echo
+          echo "==================================================="
+          echo "  $COUNT image file(s) pushed to $BRANCH."
+          echo
+          echo "  Open the pull request here:"
+          echo "  ${{ github.server_url }}/${{ github.repository }}/compare/main...$BRANCH?expand=1"
+          echo
+          echo "  Merge it, then run Publish standings from main."
+          echo "==================================================="
 
       - uses: actions/upload-artifact@v4
         if: always()
