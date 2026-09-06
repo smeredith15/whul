@@ -804,3 +804,97 @@ def test_a_derived_version_never_overwrites_the_one_it_copies(store):
     assert len(set(drafts)) == 3
     assert frozen not in drafts
     assert bm.get_version(store, frozen).is_frozen
+
+
+# --- moving a scale between databases ----------------------------------------
+
+def _with_draft(path, version="2026-27-x", value=100.0):
+    """A database holding one unfrozen version, as a laptop would after a run."""
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    store = open_store(str(path))
+    bm.save(store, pd.DataFrame([{
+        "asset_type": "Player", "norm_key": "Premier League",
+        "benchmark": value, "pool_size": 340, "seasons": "2021,2025",
+    }]), "2026-27", version=version, notes="computed on the laptop")
+    store.conn.commit()
+    return store
+
+
+def test_a_scale_computed_elsewhere_can_be_brought_in(tmp_path):
+    """A scale is computed where the feeds are reachable and a laptop can run
+    for hours; the results it will score live in the database the nightly job
+    owns. Publishing the whole local database over the branch was the only
+    bridge, and it loses every day the job recorded in the meantime."""
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    _with_draft(tmp_path / "laptop.sqlite3", value=185.8)
+    here = open_store(str(tmp_path / "branch.sqlite3"))
+
+    season, rows = bm.adopt(here, str(tmp_path / "laptop.sqlite3"), "2026-27-x")
+
+    assert (season, rows) == ("2026-27", 1)
+    landed = bm.load(here, "2026-27-x")
+    assert landed.loc[0, "benchmark"] == 185.8
+    assert landed.loc[0, "norm_key"] == "Premier League"
+
+
+def test_an_adopted_scale_arrives_unfrozen(tmp_path):
+    """Copying a scale and adopting it stay separate acts, as they are for
+    every other way a version arrives."""
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    _with_draft(tmp_path / "laptop.sqlite3")
+    here = open_store(str(tmp_path / "branch.sqlite3"))
+    bm.adopt(here, str(tmp_path / "laptop.sqlite3"), "2026-27-x")
+
+    assert not bm.get_version(here, "2026-27-x").is_frozen
+    assert bm.active_version(here, "2026-27") is None
+
+
+def test_adopting_says_which_database_lacks_the_version(tmp_path):
+    """The likely mistake is naming a version that is somewhere else, or a
+    database that is not the laptop's. Both should say so rather than land
+    an empty version."""
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    _with_draft(tmp_path / "laptop.sqlite3")
+    here = open_store(str(tmp_path / "branch.sqlite3"))
+
+    with pytest.raises(ValueError, match="has no benchmark version"):
+        bm.adopt(here, str(tmp_path / "laptop.sqlite3"), "2026-27-nope")
+    with pytest.raises(ValueError, match="no database at"):
+        bm.adopt(here, str(tmp_path / "missing.sqlite3"), "2026-27-x")
+
+
+def test_adopting_a_version_already_here_is_refused(tmp_path):
+    """Re-running it must not quietly replace a scale that may be frozen and
+    scoring."""
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    _with_draft(tmp_path / "laptop.sqlite3")
+    here = open_store(str(tmp_path / "branch.sqlite3"))
+    bm.adopt(here, str(tmp_path / "laptop.sqlite3"), "2026-27-x")
+
+    with pytest.raises(ValueError, match="already here"):
+        bm.adopt(here, str(tmp_path / "laptop.sqlite3"), "2026-27-x")
+
+
+def test_the_source_database_is_not_written_to(tmp_path):
+    """Opened read-only, so publishing from a laptop cannot alter the laptop's
+    copy and a mistyped path cannot have a schema written into it."""
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    laptop = tmp_path / "laptop.sqlite3"
+    _with_draft(laptop)
+    before = laptop.read_bytes()
+    here = open_store(str(tmp_path / "branch.sqlite3"))
+    bm.adopt(here, str(laptop), "2026-27-x")
+
+    assert laptop.read_bytes() == before

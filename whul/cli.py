@@ -1104,6 +1104,24 @@ def cmd_benchmarks_coverage(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_benchmarks_adopt(args: argparse.Namespace) -> int:
+    """Bring a scale computed elsewhere into this database."""
+    from whul.store import benchmarks as store_benchmarks
+
+    store = _benchmark_store(args)
+    try:
+        season, rows = store_benchmarks.adopt(store, args.source, args.version)
+    except ValueError as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
+
+    print(f"\n  {args.version} copied in: {rows} benchmark(s) for {season}.")
+    print("  Nothing is frozen. Check it covers what the old one did, then adopt it:\n")
+    print(f"    python -m whul.cli benchmarks coverage {args.version} --season {season}")
+    print(f"    python -m whul.cli benchmarks freeze {args.version}\n")
+    return 0
+
+
 def cmd_benchmarks_derive(args: argparse.Namespace) -> int:
     """Start a draft from an existing scale, so one league can be corrected."""
     from whul.store import benchmarks as store_benchmarks
@@ -1681,6 +1699,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     bench_derive.add_argument("--notes", default="", help="why this version exists")
     bench_derive.set_defaults(func=cmd_benchmarks_derive)
+
+    bench_adopt = _with_db(bench_sub.add_parser(
+        "adopt",
+        help="copy a version out of another database, so a scale computed on a "
+             "laptop can be published from the database the nightly job owns",
+    ))
+    bench_adopt.add_argument("version", help="the version to copy")
+    # `from` is a keyword, so the flag reads as one and the attribute does not.
+    bench_adopt.add_argument(
+        "--from", dest="source", required=True, metavar="DB",
+        help="database to copy it out of, opened read-only",
+    )
+    bench_adopt.set_defaults(func=cmd_benchmarks_adopt)
 
     bench_freeze = _with_db(bench_sub.add_parser("freeze", help="adopt a version as the scale"))
     bench_freeze.add_argument("version")
