@@ -328,27 +328,41 @@ def league_logo_candidates(session: requests.Session, league: str) -> list[tuple
 
 
 def squad_headshots(session: requests.Session, league: str,
-                    index: dict[str, dict]) -> dict[str, str]:
-    """``{normalized player name: headshot url}`` for one soccer league.
+                    index: dict[str, dict]) -> dict[str, list[tuple[str, str]]]:
+    """``{normalized player name: [(how, url)]}`` for one soccer league.
 
-    One request a club. Expensive, and the only path that works: ESPN's search
-    returns soccer players without an image, so the first run of this probe
-    reported forty-five footballers as having no photograph when every one of
-    them has one on the club's own roster page.
+    One request a club, and the payload is read rather than used to build a
+    guess. The previous version took the athlete id and constructed
+    ``/i/headshots/soccer/players/full/{id}.png``, which 404s for every
+    footballer on the roster -- forty-five of them, each reported as a
+    photograph nobody could find, when the payload had the right URL sitting in
+    ``headshot.href`` the whole time. The constructed path is kept as a second
+    candidate rather than deleted: where ESPN omits the field the guess may
+    still be right, and a candidate that fails costs one HEAD.
     """
     sport, key = ESPN_PATH.get(league, ("", ""))
     if sport != "soccer":
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, list[tuple[str, str]]] = {}
     for record in {r["id"]: r for r in index.values() if r.get("id")}.values():
         payload = get(session, f"{BASE}/{sport}/{key}/teams/{record['id']}/roster")
         if not payload:
             continue
         for athlete in (payload.get("athletes") or []):
             name = str(athlete.get("displayName") or athlete.get("fullName") or "")
+            if not name:
+                continue
+            candidates: list[tuple[str, str]] = []
+            shot = athlete.get("headshot")
+            if isinstance(shot, dict) and shot.get("href"):
+                candidates.append(("roster payload", str(shot["href"])))
+            elif isinstance(shot, str) and shot:
+                candidates.append(("roster payload", shot))
             ident = str(athlete.get("id") or "")
-            if name and ident:
-                out.setdefault(normalize(name, team=False), HEADSHOT.format(id=ident))
+            if ident:
+                candidates.append(("headshot path", HEADSHOT.format(id=ident)))
+            if candidates:
+                out.setdefault(normalize(name, team=False), candidates)
     return out
 
 
@@ -397,6 +411,66 @@ def find_athlete(session: requests.Session, name: str, league: str) -> dict:
             if wanted and wanted.split(".")[0] in record["link"]:
                 return record
     return best
+
+
+#: Where a tour publishes its athletes' flags. The per-athlete endpoint does
+#: not: asked for a tennis player it answers with age, hand, height, weight,
+#: debut year and no nationality at all. The rankings and the leaderboard do,
+#: because that is where a flag is shown on ESPN's own pages.
+FLAG_SOURCES = {
+    "tennis": ["https://site.web.api.espn.com/apis/site/v2/sports/tennis/"
+               "{key}/rankings"],
+    "golf": ["https://site.api.espn.com/apis/site/v2/sports/golf/{key}/leaderboard"],
+    "racing": ["https://site.api.espn.com/apis/site/v2/sports/racing/"
+               "{key}/standings"],
+}
+
+
+def _flags_within(node, out: dict[str, str]) -> None:
+    """Every ``{a name, a flag}`` pair anywhere in a payload.
+
+    Walked rather than indexed by path. Rankings, leaderboards and standings
+    are three different shapes and none of them is documented; what they have
+    in common is that wherever a competitor appears, their flag appears beside
+    them. Looking for that pair finds it in all three without this script
+    having to know which one it is reading.
+    """
+    if isinstance(node, list):
+        for item in node:
+            _flags_within(item, out)
+        return
+    if not isinstance(node, dict):
+        return
+    flag = node.get("flag")
+    href = flag.get("href") if isinstance(flag, dict) else None
+    if href:
+        for key in ("displayName", "fullName", "shortName", "name"):
+            name = node.get(key)
+            if isinstance(name, str) and name.strip():
+                out.setdefault(normalize(name, team=False), str(href))
+                break
+    for value in node.values():
+        if isinstance(value, (dict, list)):
+            _flags_within(value, out)
+
+
+_FLAG_INDEX: dict[str, dict[str, str]] = {}
+
+
+def flag_index(session: requests.Session, league: str) -> dict[str, str]:
+    """``{normalized athlete name: flag url}`` for one tour, fetched once."""
+    sport, key = ESPN_PATH.get(league, ("", ""))
+    if sport not in FLAG_SOURCES:
+        return {}
+    if sport + key in _FLAG_INDEX:
+        return _FLAG_INDEX[sport + key]
+    out: dict[str, str] = {}
+    for template in FLAG_SOURCES[sport]:
+        payload = get(session, template.format(key=key))
+        if payload:
+            _flags_within(payload, out)
+    _FLAG_INDEX[sport + key] = out
+    return out
 
 
 #: Printed once, the first time an athlete payload carries no flag, so a run
@@ -554,25 +628,35 @@ def main() -> int:
             squads[league] = squad_headshots(session, league, indexes.get(league, {}))
             print(f"    {league}: {len(squads[league])} player(s) with an id", flush=True)
 
+    print("\nFlags, from each tour's own listing")
+    for league in sorted({a["league"] for a in assets
+                          if a["category"] in INDIVIDUAL}):
+        listed = flag_index(session, league)
+        print(f"    {league}: {len(listed)} athlete(s) with a flag", flush=True)
+
     print("\nHeadshots, and the badge each one wears")
     for asset in assets:
         if asset["type"] != "Player":
             continue
         label = f"{asset['name']} ({asset['league']})"
         from_squad = squads.get(asset["league"], {}).get(
-            normalize(asset["name"], team=False), "")
+            normalize(asset["name"], team=False), [])
         # Search is asked either way, so a squad id whose photograph is a
         # silhouette still gets a second chance -- and so the report can say
         # whether a missing headshot is a name nobody matched or a person ESPN
         # has no picture of.
         who = find_athlete(session, asset["name"], asset["league"])
-        record_first("headshot", asset["id"], label, [
-            ("club roster page", from_squad),
-            ("search", who.get("image", "")),
-        ])
+        record_first("headshot", asset["id"], label,
+                     [*from_squad, ("search", who.get("image", ""))])
 
         if asset["category"] in INDIVIDUAL:
-            flag = athlete_flag(session, asset["league"], numeric_id(who))
+            # The tour's own listing first. It is one request for a whole tour
+            # and it is where ESPN actually keeps the flag; the per-athlete
+            # endpoint is the fallback, not the other way round.
+            flag = flag_index(session, asset["league"]).get(
+                normalize(asset["name"], team=False), "")
+            if not flag:
+                flag = athlete_flag(session, asset["league"], numeric_id(who))
             if flag.startswith("country:"):
                 # A nationality rather than a rendered flag. Not a URL and not
                 # a miss either: a flag file keyed on the country is one lookup
