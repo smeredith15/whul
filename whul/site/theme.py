@@ -148,6 +148,22 @@ tbody tr:hover { background: color-mix(in srgb, var(--grid) 35%, transparent); }
 .chart { width: 100%; overflow-x: auto; }
 .chart svg { display: block; max-width: 100%; height: auto; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 14px; font-size: 13px; }
+/* The counting mix. Ring and table side by side rather than stacked: the ring
+   answers "what is carrying this roster" at a glance and the table answers
+   "by exactly how much", and a reader usually wants the second right after the
+   first. They stack under 620px, where the ring alone is already the width. */
+.mix { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(220px, 1fr);
+       gap: 20px; align-items: center; }
+@media (max-width: 620px) { .mix { grid-template-columns: 1fr; } }
+.chart.donut { overflow: visible; }
+/* No stroke: the wedges are already separated by an angular gap, and a stroke
+   would also outline the inner and outer arcs, which are edges of the ring
+   rather than boundaries between fills. */
+.donutchart .wedge { cursor: pointer; transition: fill-opacity .08s; }
+.donutchart .wedge:hover { fill-opacity: 1; }
+.mixtable { font-size: 13px; }
+.mixtable th, .mixtable td { padding: 5px 8px; }
+
 .legend span { display: inline-flex; align-items: center; color: var(--text-secondary); }
 
 details.tableview { margin-top: 10px; }
@@ -194,6 +210,45 @@ details.tableview[open] summary { margin-bottom: 8px; }
    needed it. The initials still title the browser tab, which is the place that
    really is too narrow. */
 
+/* --- the results page ---------------------------------------------------- */
+/* A figure is a card that closes. The summary carries the heading rather than
+   sitting above it, so the whole title is the hit target. */
+.figure { background: var(--surface-1); border: 1px solid var(--grid);
+  border-radius: 10px; padding: 0 18px; margin-bottom: 22px; }
+.figure > summary { cursor: pointer; list-style: none; padding: 16px 0;
+  display: flex; align-items: center; gap: 8px; }
+.figure > summary::-webkit-details-marker { display: none; }
+.figure > summary::before { content: "\25be"; color: var(--muted);
+  transition: transform 0.12s ease; }
+.figure:not([open]) > summary::before { transform: rotate(-90deg); }
+.figure > summary h2 { margin: 0; font-size: 1.05rem; }
+.figure > summary:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 2px; border-radius: 6px; }
+.figurebody { padding-bottom: 18px; }
+
+.figureindex { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.jump { font-size: 0.82rem; color: var(--text-secondary);
+  border: 1px solid var(--grid); border-radius: 999px; padding: 4px 12px;
+  text-decoration: none; }
+.jump:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { font: inherit; font-size: 0.78rem; cursor: pointer; padding: 3px 10px;
+  border-radius: 999px; border: 1px solid var(--grid);
+  background: var(--page); color: var(--text-secondary); }
+.chip[aria-pressed="true"] { background: var(--text-primary);
+  border-color: var(--text-primary); color: var(--surface-1); }
+.chip:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+.filtercount { margin: 0 0 10px; }
+
+table.results { width: 100%; }
+table.results .rowmeta { display: block; font-size: 0.74rem; color: var(--muted); }
+.assetlink { font: inherit; background: none; border: 0; padding: 0;
+  color: var(--text-primary); cursor: pointer; text-align: left; }
+.assetlink:hover { text-decoration: underline; text-underline-offset: 3px; }
+.assetlink:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+table.results tr[hidden] { display: none; }
+
 /* A collapsible league section. Twenty leagues open at once is a page that is
    long before it is informative. */
 .leaguebox { border-top: 1px solid var(--grid); }
@@ -211,7 +266,7 @@ details.tableview[open] summary { margin-bottom: 8px; }
 .legend.filterable .legenditem.off { opacity: 0.4;
   text-decoration: line-through; }
 .ghosted { opacity: 0.12; }
-.legend.filterable .legenditem:focus-visible { outline: 2px solid var(--accent);
+.legend.filterable .legenditem:focus-visible { outline: 2px solid var(--series-1);
   outline-offset: 2px; }
 
 .profile h3 { font-size: 0.78rem; text-transform: uppercase;

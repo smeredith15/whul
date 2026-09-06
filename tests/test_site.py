@@ -86,8 +86,8 @@ def test_a_chart_with_no_data_says_so_rather_than_drawing_an_empty_frame():
 
 SLOT_ROWS = [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")]
 SLOT_VALUES = {
-    ("Avery", "NFL 1"): (100.0, "a1", "P. Vance"),
-    ("Avery", "NFL 2"): (60.0, "a2", "R. Lockwood"),
+    ("Avery", "NFL 1"): (100.0, "a1", "P. Vance", "Player"),
+    ("Avery", "NFL 2"): (60.0, "a2", "R. Lockwood", "Team"),
 }
 
 
@@ -99,8 +99,35 @@ def test_bars_are_capped_and_rounded_at_the_data_end():
 
 
 def test_every_bar_carries_a_native_title_for_keyboard_and_screen_readers():
+    """Named first. A hover and a screen reader both got "NFL 1" before the
+    name, which answers neither who this is nor how they are doing."""
     svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
-    assert "<title>Avery — NFL 1: P. Vance 100</title>" in svg
+    assert "<title>P. Vance — Player · NFL #1 · Avery · 100</title>" in svg
+
+
+def test_a_bar_with_no_asset_still_titles_itself():
+    """An empty slot is a real state, and a blank title reads as a broken one."""
+    svg = charts.contribution_chart(
+        [("NFL", "NFL 1", "#1")], [("Avery", 1)], {})
+    assert "(empty)" in svg
+
+
+def test_a_three_entry_value_still_works():
+    """The kind is a later addition; a caller that does not carry it should
+    lose the word, not the bar."""
+    svg = charts.contribution_chart(
+        SLOT_ROWS, [("Avery", 1)], {("Avery", "NFL 1"): (100.0, "a1", "P. Vance")})
+    assert "P. Vance" in svg and 'class="bar"' in svg
+
+
+def test_players_and_teams_are_drawn_at_different_strengths():
+    """One category can hold both, and a run of identical bars does not say
+    which is which. The label carries the word too -- alpha on its own is a
+    weak signal and no help at all to a screen reader."""
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert f'fill-opacity="{charts.PLAYER_ALPHA}"' in svg
+    assert svg.count("fill-opacity") == 1   # the team bar is drawn solid
+    assert "Player</tspan>" in svg and "Team</tspan>" in svg
 
 
 def test_every_bar_is_one_slot_so_any_two_are_comparable():
@@ -120,7 +147,23 @@ def test_a_category_is_written_once_per_run_of_its_slots():
     """Four rows of the same word is four lines of noise."""
     svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
     assert svg.count(">NFL<") == 1
-    assert ">#1<" in svg and ">#2<" in svg
+
+
+def test_a_bar_is_labelled_with_what_it_is_of():
+    """The rank says where a holding sits and the colour says whose it is.
+    Neither says the manager holds P. Vance."""
+    svg = charts.contribution_chart(SLOT_ROWS, [("Avery", 1)], SLOT_VALUES)
+    assert "#1 P. Vance" in svg
+    assert "#2 R. Lockwood" in svg
+
+
+def test_a_long_name_is_cut_rather_than_overrunning_the_column():
+    values = {("Avery", "NFL 1"): (10.0, "a1", "Andrea Kimi Antonelli Jr", "Player")}
+    svg = charts.contribution_chart([("NFL", "NFL 1", "#1")], [("Avery", 1)], values)
+    # The label is cut; the title still carries the whole name, because a
+    # hover has room where a 250px column does not.
+    assert "Andrea Kimi\u2026" in svg or "Andrea Kimi Antonelli\u2026" in svg
+    assert "<title>Andrea Kimi Antonelli Jr" in svg
 
 
 def test_a_legend_is_present_for_more_than_one_series():
@@ -182,10 +225,31 @@ def test_the_standings_table_is_the_default_view(site):
     assert html.index("Standings</h2>") < html.index("Progression</h2>")
 
 
-def test_both_charts_ship_a_table_view(site):
+def test_every_chart_ships_a_table_view(site):
+    """The relief the light-mode contrast warning requires, and what makes a
+    value readable without a hover. The two charts now sit on two pages -- the
+    line on the standings, both on the results -- so the count is per page."""
+    out, _ = site
+    assert (out / "index.html").read_text().count("Show as a table") == 1
+    assert (out / "results.html").read_text().count("Show as a table") == 2
+
+
+def test_the_results_page_carries_both_charts_and_the_table(site):
+    """The bars move here and the line is copied: the standings page is opened
+    to see who is winning, and the line is the shape of that."""
+    out, _ = site
+    html = (out / "results.html").read_text()
+    assert 'id="progression"' in html
+    assert 'id="slots"' in html
+    assert 'id="everyone"' in html
+    assert "linechart" in html and "barchart" in html
+
+
+def test_the_standings_page_keeps_the_line_and_loses_the_bars(site):
     out, _ = site
     html = (out / "index.html").read_text()
-    assert html.count("Show as a table") == 2
+    assert "linechart" in html
+    assert "barchart" not in html
 
 
 def test_a_team_page_shows_the_normalized_score(site):
@@ -350,7 +414,7 @@ def test_an_undrafted_slot_is_shown_not_skipped(site):
     out, _ = site
     pages = [(out / "team" / f"{m.lower()}.html").read_text() for m in simulate.MANAGERS]
     assert any("Undrafted" in page for page in pages)
-    assert any("Still to draft" in page for page in pages)
+    assert any("still to draft" in page for page in pages)
 
 
 def test_an_undrafted_slot_never_becomes_a_player_called_nan(site):
@@ -544,7 +608,7 @@ def test_the_rank_is_labelled_so_a_bar_says_which_slot_it_is():
     svg = charts.contribution_chart(
         [("NFL", "NFL 1", "#1"), ("NFL", "NFL 2", "#2")],
         [("Avery", 1)], values, depth={"NFL": 2})
-    assert ">#1<" in svg and ">#2<" in svg
+    assert ">#1 x<" in svg and ">#2 y<" in svg
 
 
 def test_a_single_slot_category_is_not_labelled_with_a_rank():
@@ -706,7 +770,8 @@ def test_every_section_shares_one_ceiling():
     html = charts.slot_sections(SECTION_ROWS, [("Avery", 1)], SECTION_VALUES,
                                 depth={"NFL": 2, "PGA": 1})
     # The 100-point bar is full width in its section; the 40-point one is not.
-    assert html.count('width="794.0"') == 1
+    full = 1000 - charts.SLOT_LABEL_WIDTH - 56
+    assert html.count(f'width="{full:.1f}"') == 1
 
 
 def test_a_filterable_legend_is_made_of_buttons():
@@ -755,3 +820,275 @@ def test_a_full_season_share_says_nothing():
     from whul.site.build import _scaling_notes
 
     assert _scaling_notes({"advanced_share": 1.0}) == []
+
+
+# --- the results page ---------------------------------------------------------
+
+import pandas as pd
+
+RESULT_BARS = pd.DataFrame([
+    {"manager_id": "AV", "asset_id": "a1", "score": 40.0},
+    {"manager_id": "BL", "asset_id": "a2", "score": 90.0},
+    {"manager_id": "AV", "asset_id": "a3", "score": 0.0},
+])
+RESULT_PROFILES = {
+    "a1": {"name": "P. Vance", "league": "NFL", "kind": "Player"},
+    "a2": {"name": "Arsenal", "league": "Premier League", "kind": "Team"},
+    "a3": {"name": "Q. Idle", "league": "NBA", "kind": "Player"},
+}
+
+
+def test_the_results_table_leads_with_the_best_score():
+    """The bar chart answers "how is my roster doing"; this answers "who is
+    doing well", which is a different question and had no page."""
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert html.index("Arsenal") < html.index("P. Vance") < html.index("Q. Idle")
+
+
+def test_every_row_carries_what_it_can_be_filtered_by():
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert 'data-league="Premier League" data-kind="Team"' in html
+    assert 'data-filter="kind" data-value="Player"' in html
+    assert 'data-filter="league" data-value="NFL"' in html
+
+
+def test_an_asset_on_nothing_yet_is_listed_rather_than_dropped():
+    """Two thirds of the roster is on nothing in September, when most leagues
+    have not started. Listing them is the honest default; the toggle is what
+    makes the table useful anyway."""
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert "Q. Idle" in html
+    assert 'data-filter="scoring"' in html
+    assert 'data-score="0.0000"' in html
+
+
+def test_a_name_in_the_table_opens_its_profile():
+    """The same hook the bars use, so one handler serves both."""
+    from whul.site.build import _results_table
+
+    html = _results_table(RESULT_BARS, RESULT_PROFILES, ["AV", "BL"])
+    assert 'class="assetlink" data-asset="a2"' in html
+
+
+def test_a_figure_is_collapsible_and_addressable():
+    """Three figures on one page is long, and someone who wants the table
+    should not scroll past two charts to reach it."""
+    from whul.site.build import _figure, _figure_index
+
+    html = _figure("everyone", "Every scored asset", "Best first.", "<p>x</p>")
+    assert 'id="everyone"' in html and 'data-figure="everyone"' in html
+    assert html.startswith("\n<details") and " open>" in html
+    assert "#everyone" in _figure_index([("everyone", "Every scored asset")])
+
+
+# --- the counting mix ---------------------------------------------------------
+
+MIX_BARS = pd.DataFrame([
+    {"manager_id": "AV", "asset_id": f"a{i}", "score": float(s),
+     "category": c, "counts": True}
+    for i, (c, s) in enumerate([
+        ("NFL QB", 90), ("NFL RB", 80), ("NBA Guard", 70), ("MLB SP", 60),
+        ("NHL C", 50), ("Golf", 40), ("Tennis", 30), ("Club Soccer", 20),
+    ])
+])
+MIX_PROFILES = {f"a{i}": {"name": f"Name {i}"} for i in range(8)}
+
+
+def test_a_benched_or_scoreless_slot_is_not_part_of_the_mix():
+    """The ring has to add up to the counting total printed beside it. A
+    benched slot is not in that total, so a wedge for it would make the ring
+    say something the number does not."""
+    from whul.site.build import _counting_mix
+
+    bars = MIX_BARS.copy()
+    bars.loc[0, "counts"] = False
+    bars.loc[1, "score"] = 0.0
+    mix = _counting_mix(bars, MIX_PROFILES)
+    assert "NFL QB" not in dict(mix)
+    assert "NFL RB" not in dict(mix)
+
+
+def test_the_mix_never_exceeds_six_segments():
+    """Past six, angles stop being comparable and adjacent hues blur. The tail
+    folds into one "Other" rather than growing a seventh hue -- a manager has
+    nine contributing categories now and twice that once every league is in."""
+    from whul.site.build import _counting_mix
+    from whul.site import charts
+
+    mix = _counting_mix(MIX_BARS, MIX_PROFILES)
+    assert len(mix) == charts.DONUT_SEGMENTS
+    assert mix[-1][0] == charts.DONUT_OTHER
+    # Nothing is dropped on the way into "Other".
+    assert sum(len(holdings) for _, holdings in mix) == len(MIX_BARS)
+
+
+def test_the_mix_is_ordered_by_what_each_category_contributes():
+    """Named categories descend. "Other" stays last however big it grows: it is
+    a remainder rather than a category, and sorting it into the middle would
+    put a bucket of eight leagues between two single ones."""
+    from whul.site.build import _counting_mix
+    from whul.site import charts
+
+    mix = _counting_mix(MIX_BARS, MIX_PROFILES)
+    named = [sum(s for _, s, _ in holdings) for name, holdings in mix
+             if name != charts.DONUT_OTHER]
+    assert named == sorted(named, reverse=True)
+    assert mix[-1][0] == charts.DONUT_OTHER
+
+
+def test_a_category_is_one_hue_and_its_holdings_step_down_in_shade():
+    """Alpha within a hue is what says "these three are all NFL QBs" without
+    spending three hues on it. It is not readable as a quantity, which is why
+    the wedge names itself on hover and the table carries the numbers."""
+    from whul.site import charts
+
+    html = charts.donut_chart(
+        [("NFL QB", [("A", 60.0, "a1"), ("B", 30.0, "a2")]),
+         ("Golf", [("C", 10.0, "a3")])],
+        100.0,
+    )
+    assert html.count('fill="var(--series-1)"') == 2
+    assert html.count('fill="var(--series-2)"') == 1
+    alphas = re.findall(r'fill="var\(--series-1\)" fill-opacity="([\d.]+)"', html)
+    assert float(alphas[0]) > float(alphas[1]) >= charts.DONUT_MIN_ALPHA
+
+
+def test_a_lone_holding_is_not_faded():
+    """A category of one has no ordering to convey, and fading it would read as
+    a category that is somehow half-present."""
+    from whul.site import charts
+
+    html = charts.donut_chart([("Golf", [("C", 10.0, "a3")])], 10.0)
+    assert 'fill-opacity="1.00"' in html
+
+
+def test_every_wedge_says_who_it_is_and_opens_its_profile():
+    from whul.site import charts
+
+    html = charts.donut_chart([("NFL QB", [("P. Vance", 60.0, "a1")])], 60.0)
+    assert 'data-asset="a1"' in html
+    assert 'data-name="P. Vance"' in html
+    assert 'data-category="NFL QB"' in html
+
+
+def test_the_categories_are_named_on_the_figure_and_in_a_table():
+    """The palette check warns on contrast at this surface, which obligates
+    visible labels or a table view. This ships both: colour is never the only
+    thing carrying an identity."""
+    from whul.site import charts
+
+    html = charts.donut_chart(
+        [("NFL QB", [("A", 60.0, "a1")]), ("Golf", [("C", 40.0, "a3")])], 100.0)
+    assert html.count("NFL QB") >= 2 and html.count("Golf") >= 2
+    assert 'class="mixtable"' in html
+    assert "60%" in html and "40%" in html
+
+
+def test_a_roster_on_nothing_yet_says_so_rather_than_drawing_an_empty_ring():
+    from whul.site import charts
+
+    assert "Nothing counting yet" in charts.donut_chart([], 0.0)
+    assert "Nothing counting yet" in charts.donut_chart(
+        [("Golf", [("C", 0.0, "a3")])], 0.0)
+
+
+def test_the_remainder_is_neutral_rather_than_a_sixth_hue():
+    """Two reasons that agree. "Other" is a bucket, not a category, so it
+    should recede next to the five things being compared -- and the palette
+    will not carry six hues in a ring where any wedge may be matched against
+    any other. Validated all-pairs, the sixth hue is 3.2 from the second for a
+    protanope. Five hues plus a neutral passes."""
+    from whul.site import charts
+
+    html = charts.donut_chart(
+        [("NFL QB", [("A", 60.0, "a1")]),
+         (charts.DONUT_OTHER, [("C", 40.0, "a3")])],
+        100.0,
+    )
+    assert f'fill="{charts.DONUT_OTHER_FILL}"' in html
+    assert "--series-2" not in html
+
+
+def test_the_share_table_reads_in_the_order_the_ring_is_drawn():
+    """So a row is found by position rather than by matching a swatch to a
+    hue. Nobody should have to tell the pink from the orange to read this."""
+    from whul.site import charts
+
+    parts = [("NFL QB", [("A", 60.0, "a1")]), ("Golf", [("C", 30.0, "a3")]),
+             ("MLB SP", [("D", 10.0, "a4")])]
+    html = charts.donut_chart(parts, 100.0)
+    table = html[html.index('class="mixtable"'):]
+    assert table.index("NFL QB") < table.index("Golf") < table.index("MLB SP")
+
+
+# --- how much of a roster is in season ----------------------------------------
+
+SEASON_BARS = pd.DataFrame([
+    # An injured NFL back: the league has started and the slot is in it.
+    {"asset_id": "n1", "score": 0.0, "counts": True},
+    {"asset_id": "n2", "score": 30.0, "counts": True},
+    # The NBA has not tipped off.
+    {"asset_id": "b1", "score": 0.0, "counts": True},
+    # An international squad, whose tournament has not come round.
+    {"asset_id": "i1", "score": 0.0, "counts": True},
+    # A bench slot, and an undrafted one. Neither is in the counting total.
+    {"asset_id": "n3", "score": 90.0, "counts": False},
+    {"asset_id": "", "score": 0.0, "counts": True},
+])
+SEASON_PROFILES = {
+    "n1": {"name": "A", "league": "NFL"}, "n2": {"name": "B", "league": "NFL"},
+    "b1": {"name": "C", "league": "NBA"}, "i1": {"name": "D", "league": "Men's Intl Soccer"},
+    "n3": {"name": "E", "league": "NFL"},
+}
+
+
+def test_an_injured_player_is_still_in_season():
+    """The badge is asked of the calendar, not of the scores. Counting non-zero
+    scores would file an injury, a benching and a quiet week under "not
+    started", so a manager whose back is hurt would look like one who never
+    drafted a back."""
+    from whul.site.build import _in_season
+
+    live, filled = _in_season(SEASON_BARS, SEASON_PROFILES, date(2026, 9, 15))
+    assert (live, filled) == (2, 4)   # both NFL slots; not the NBA or the squad
+
+
+def test_a_league_that_has_not_started_is_not_counted():
+    from whul.site.build import _in_season
+
+    assert _in_season(SEASON_BARS, SEASON_PROFILES, date(2026, 9, 1))[0] == 0
+    assert _in_season(SEASON_BARS, SEASON_PROFILES, date(2026, 11, 1))[0] == 3
+
+
+def test_a_squad_with_no_start_date_is_read_from_its_score():
+    """Each international squad plays in a different competition on a different
+    calendar, so there is no date the slot begins on. A score is the only
+    evidence there is."""
+    from whul.site.build import _in_season
+
+    bars = SEASON_BARS.copy()
+    bars.loc[bars["asset_id"] == "i1", "score"] = 12.0
+    live, _ = _in_season(bars, SEASON_PROFILES, date(2026, 9, 15))
+    assert live == 3
+
+
+def test_a_bench_or_undrafted_slot_is_not_part_of_the_count():
+    """The badge explains the counting total, so it counts what the total is
+    made of."""
+    from whul.site.build import _in_season
+
+    assert _in_season(SEASON_BARS, SEASON_PROFILES, date(2027, 3, 1))[1] == 4
+
+
+def test_the_note_says_what_the_total_is_missing():
+    from whul.site.build import _season_note
+
+    assert _season_note(2, 4) == "2 of 4 slots in season"
+    assert _season_note(4, 4) == "every slot in season"
+    assert _season_note(0, 0) == "nothing drafted yet"

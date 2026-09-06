@@ -197,7 +197,35 @@ def progression_chart(
 #: Each slot's own bar is thinner than a category's was: 47 rows of five needs
 #: the height back.
 SLOT_BAR_THICKNESS = 9
-SLOT_ROW_PAD = 9
+#: Room under a category for its bars, plus a line for the category's own name.
+#: The name used to sit in the label column beside the first bar; now that every
+#: bar is labelled with its asset, it needs its own line or the two collide.
+SLOT_ROW_PAD = 24
+SLOT_HEADER_DROP = 12
+
+#: The label column. Wide enough for a name and its type, which is what a bar
+#: is actually of -- "#2" alone says a manager holds something in a category
+#: without saying what.
+SLOT_LABEL_WIDTH = 250
+
+#: Teams are drawn solid and players a little softer, so a category holding
+#: both reads as two kinds of thing rather than one run of bars. Alpha alone is
+#: a weak signal, which is why the label carries the word as well.
+PLAYER_ALPHA = 0.68
+
+
+def _fit(text: str, limit: int) -> str:
+    """A name short enough for the label column, cut on a character count.
+
+    Crude next to measuring the glyphs, and enough: the column is sized for the
+    longest name a roster actually holds, and the few that overrun are cut at a
+    word rather than mid-syllable where that is possible.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    spaced = cut.rsplit(" ", 1)[0]
+    return (spaced if len(spaced) >= limit - 8 else cut) + "\u2026"
 
 
 def contribution_chart(
@@ -243,7 +271,7 @@ def contribution_chart(
     depth = depth or counted
     per_row = {c: max(depth.get(c, counted.get(c, 1)), 1) for c in categories}
 
-    pad_left, pad_right, pad_top = 150, 56, 8
+    pad_left, pad_right, pad_top = SLOT_LABEL_WIDTH, 56, 8
     def _row_height(category: str) -> float:
         bars = len(managers) * per_row[category]
         return bars * (SLOT_BAR_THICKNESS + BAR_GAP) + SLOT_ROW_PAD
@@ -277,50 +305,230 @@ def contribution_chart(
 
     offset = pad_top
     for category in categories:
-        base_y = offset + 4
+        base_y = offset + 4 + SLOT_HEADER_DROP
+        # Above its bars rather than beside the first one, and anchored at the
+        # left edge: the column to the right of it now belongs to the assets.
         parts.append(
-            f'<text x="{pad_left - 10}" y="{base_y + 10:.1f}" text-anchor="end" '
+            f'<text x="6" y="{offset + 12:.1f}" '
             f'font-size="12" fill="var(--text-primary)" font-weight="600">'
             f'{escape(category)}</text>'
         )
         parts.append(
-            f'<line x1="{pad_left - 4}" y1="{base_y - 3:.1f}" '
-            f'x2="{width - pad_right}" y2="{base_y - 3:.1f}" '
+            f'<line x1="6" y1="{base_y - 5:.1f}" '
+            f'x2="{width - pad_right}" y2="{base_y - 5:.1f}" '
             f'stroke="var(--grid)" stroke-width="1"/>'
         )
         index = 0
         for manager, slot in managers:
             for rank in range(1, per_row[category] + 1):
                 key = f"{category} {rank}"
-                score, asset_id, asset_name = values.get((manager, key), (0.0, "", ""))
+                # Three entries or four: the fourth is the asset's kind, which
+                # older callers do not carry.
+                held = values.get((manager, key), (0.0, "", "", ""))
+                score, asset_id, asset_name = held[0], held[1], held[2]
+                kind = held[3] if len(held) > 3 else ""
                 bar_y = base_y + index * (SLOT_BAR_THICKNESS + BAR_GAP) + 2
                 index += 1
-                # Which of the manager's slots this is. Colour says whose the
-                # bar is; without this nothing says whether it is their best
-                # holding in the category or their fourth.
+                # What the bar is of, not merely which slot it fills. Colour
+                # says whose it is and the rank says where it sits; neither
+                # says the manager holds Arsenal.
+                # The rank is dropped where a category holds one slot: "#1"
+                # down a column of single-slot categories is a column of ones.
+                shown = _fit(asset_name, 22)
                 if per_row[category] > 1:
-                    parts.append(
-                        f'<text x="{pad_left - 10}" '
-                        f'y="{bar_y + SLOT_BAR_THICKNESS - 3:.1f}" text-anchor="end" '
-                        f'font-size="10" fill="var(--muted)">#{rank}</text>'
-                    )
+                    label = f"#{rank} {shown}" if shown else f"#{rank}"
+                else:
+                    label = shown
+                suffix = (f'<tspan fill="var(--muted)" font-size="9"> '
+                          f'{escape(kind)}</tspan>') if kind else ""
+                parts.append(
+                    f'<text x="{pad_left - 10}" '
+                    f'y="{bar_y + SLOT_BAR_THICKNESS - 1:.1f}" text-anchor="end" '
+                    f'font-size="10.5" fill="var(--text-secondary)">'
+                    f'{escape(label)}{suffix}</text>'
+                )
                 bar_w = max(plot_w * score / top, 0.0)
                 radius = min(BAR_RADIUS, bar_w / 2) if bar_w else 0
+                # Players a little softer than teams, so a mixed category reads
+                # as two kinds of holding.
+                alpha = f' fill-opacity="{PLAYER_ALPHA}"' if kind == "Player" else ""
                 parts.append(
                     f'<rect class="bar" x="{pad_left}" y="{bar_y:.1f}" '
                     f'width="{bar_w:.1f}" height="{SLOT_BAR_THICKNESS}" '
-                    f'rx="{radius:.1f}" fill="var(--series-{slot})" '
-                    # The title carries the fully qualified key: "#2" means
-                    # nothing read on its own, and a screen reader gets no help
-                    # from the visual grouping.
+                    f'rx="{radius:.1f}" fill="var(--series-{slot})"{alpha} '
+                    # Name first. This is what a hover shows and what a screen
+                    # reader reads, and "Club Soccer Top 3 1" answers neither
+                    # "who is this" nor "how are they doing".
                     f'data-manager="{escape(manager)}" data-category="{escape(key)}" '
                     f'data-asset="{escape(asset_id)}" '
-                    f'data-value="{score:.1f}"><title>{escape(manager)} — '
-                    f'{escape(key)}: {escape(asset_name)} {_fmt(score)}</title></rect>'
+                    f'data-name="{escape(asset_name)}" data-kind="{escape(kind)}" '
+                    f'data-value="{score:.1f}"><title>'
+                    f'{escape(asset_name or "(empty)")}'
+                    f'{" — " + escape(kind) if kind else ""} · '
+                    f'{escape(category)} #{rank} · {escape(manager)} · '
+                    f'{_fmt(score)}</title></rect>'
                 )
         offset += heights[category]
     parts.append("</svg>")
     return '<div class="chart">' + "".join(parts) + "</div>"
+
+
+#: Segments a part-to-whole figure may carry. Past this, angle comparison stops
+#: working and adjacent hues blur -- so the rest folds into one "Other" slice
+#: and the table underneath carries the detail. A manager has nine contributing
+#: categories today and will have twice that once every league is in season,
+#: which is a table's job rather than a pie's.
+DONUT_SEGMENTS = 6
+DONUT_OTHER = "Other"
+
+#: "Other" is painted in the neutral rather than given a hue of its own.
+#:
+#: Two reasons, and they agree. It is a remainder rather than a category, so it
+#: should recede next to the five things actually being compared. And the
+#: palette will not carry six hues in a ring where any wedge may be matched
+#: against any other: validated all-pairs, ``#008300`` against ``#eb6834`` is
+#: 3.2 apart for a protanope -- indistinguishable -- and the pink against the
+#: orange is 12.9 for everyone, under the floor of 15. Spending the sixth hue
+#: on a bucket is what forced that. Five hues plus a neutral passes.
+#:
+#: The five that remain are checked adjacent, which is the scope that fits a
+#: ring: wedges in a fixed rank order, each one touching its neighbours, and
+#: the wrap from the last back to the first checked too. Both modes pass. The
+#: contrast warning that comes with it obliges visible labels or a table, and
+#: this figure carries both.
+DONUT_OTHER_FILL = "var(--muted)"
+
+#: How far an asset inside a segment may fade from its category's colour. Every
+#: asset stays recognisably the category's hue; the alpha says only "these are
+#: several holdings", never which is which -- the labels and the table do that.
+DONUT_MIN_ALPHA = 0.45
+
+#: Room either side of the ring for the direct category labels, and the longest
+#: label that fits in it. A label sits ten pixels outside the ring and runs
+#: outwards from there, so without a gutter the ends of the words are simply
+#: outside the viewBox -- clipped rather than wrapped, and clipped silently.
+DONUT_GUTTER = 104
+DONUT_LABEL_CHARS = 18
+
+#: The same, above and below. A label at twelve or six o'clock sits ten pixels
+#: outside a ring that already reaches within six of the box.
+DONUT_VPAD = 16
+
+
+def _arc(cx: float, cy: float, r: float, start: float, end: float) -> str:
+    """A pie wedge's outer arc, as path commands."""
+    import math
+
+    x1, y1 = cx + r * math.cos(start), cy + r * math.sin(start)
+    x2, y2 = cx + r * math.cos(end), cy + r * math.sin(end)
+    large = 1 if (end - start) > math.pi else 0
+    return f"L {x1:.2f} {y1:.2f} A {r:.2f} {r:.2f} 0 {large} 1 {x2:.2f} {y2:.2f}"
+
+
+def donut_chart(
+    parts: list[tuple[str, list[tuple[str, float, str]]]],
+    total: float,
+    chart_id: str = "mix",
+    size: int = 260,
+) -> str:
+    """Where a manager's counting total comes from.
+
+    ``parts`` is ``(category, [(asset name, score, asset id)])``, biggest first.
+    A category is one hue and the holdings inside it step down in alpha, so a
+    segment reads as one category made of several things without the alpha
+    having to be decoded -- which it cannot be, and is why the labels and the
+    table carry the identities.
+
+    A donut rather than a pie: the middle is where the total goes, and a number
+    a reader wants is better in the figure than beside it.
+    """
+    import math
+
+    if not parts or total <= 0:
+        return '<p class="sub">Nothing counting yet.</p>'
+
+    cx = cy = size / 2
+    outer, inner = size / 2 - 6, size / 2 - 40
+    angle = -math.pi / 2          # twelve o'clock
+    gap = 0.012                   # the 2px surface gap, in radians at this radius
+    wedges, labels, rows = [], [], []
+
+    for index, (category, holdings) in enumerate(parts):
+        fill = (DONUT_OTHER_FILL if category == DONUT_OTHER
+                else f"var(--series-{index + 1})")
+        share = sum(score for _, score, _ in holdings)
+        if share <= 0:
+            continue
+        span = 2 * math.pi * share / total
+        steps = max(len(holdings), 1)
+        within = angle
+        for depth, (name, score, asset_id) in enumerate(holdings):
+            if score <= 0:
+                continue
+            piece = 2 * math.pi * score / total
+            a0, a1 = within + gap / 2, within + piece - gap / 2
+            if a1 <= a0:                      # a sliver too thin to gap
+                a0, a1 = within, within + piece
+            alpha = 1.0 - (1.0 - DONUT_MIN_ALPHA) * (depth / max(steps - 1, 1))
+            wedges.append(
+                f'<path class="wedge" d="M {cx + inner * math.cos(a0):.2f} '
+                f'{cy + inner * math.sin(a0):.2f} '
+                f'{_arc(cx, cy, outer, a0, a1)} '
+                f'L {cx + inner * math.cos(a1):.2f} {cy + inner * math.sin(a1):.2f} '
+                f'A {inner:.2f} {inner:.2f} 0 0 0 {cx + inner * math.cos(a0):.2f} '
+                f'{cy + inner * math.sin(a0):.2f} Z" '
+                f'fill="{fill}" fill-opacity="{alpha:.2f}" '
+                f'data-asset="{escape(asset_id)}" data-name="{escape(name)}" '
+                f'data-category="{escape(category)}" data-value="{score:.1f}">'
+                f'<title>{escape(name)} — {escape(category)} · '
+                f'{_fmt(score)}</title></path>'
+            )
+            within += piece
+        # One direct label a category, on the segment's midpoint. Named rather
+        # than left to the colour: the contrast check warns at this surface, and
+        # a legend of six hues beside a ring of six hues is the same information
+        # twice.
+        mid = angle + span / 2
+        lx = cx + (outer + 10) * math.cos(mid)
+        ly = cy + (outer + 10) * math.sin(mid)
+        anchor = "start" if math.cos(mid) > 0.02 else (
+            "end" if math.cos(mid) < -0.02 else "middle")
+        labels.append(
+            f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" '
+            f'font-size="10" fill="var(--text-secondary)" '
+            f'dominant-baseline="middle">'
+            f'{escape(_fit(category, DONUT_LABEL_CHARS))}</text>'
+        )
+        rows.append((category, share, fill))
+        angle += span
+
+    # In the same order the ring goes, clockwise from twelve, so a row is
+    # found by position rather than by matching a swatch to a hue. That is what
+    # keeps the figure readable for the pairs the palette separates least: no
+    # one has to tell the pink from the orange to read this.
+    share_rows = "".join(
+        f"<tr><td><i class='swatch' style='background: {fill}'></i>"
+        f"{escape(c)}</td><td class='num'>{v:,.1f}</td>"
+        f"<td class='num'>{100 * v / total:.0f}%</td></tr>"
+        for c, v, fill in rows
+    )
+    return (
+        f'<div class="chart donut">'
+        f'<svg viewBox="0 {-DONUT_VPAD} {size + 2 * DONUT_GUTTER} '
+        f'{size + 2 * DONUT_VPAD}" class="donutchart" '
+        f'role="img" '
+        f'aria-label="Share of the counting total by roster category" '
+        f'data-chart="{chart_id}">'
+        f'<g transform="translate({DONUT_GUTTER},0)">'
+        f'{"".join(wedges)}{"".join(labels)}'
+        f'<text x="{cx}" y="{cy - 4}" text-anchor="middle" font-size="22" '
+        f'font-weight="600" fill="var(--text-primary)">{total:,.1f}</text>'
+        f'<text x="{cx}" y="{cy + 14}" text-anchor="middle" font-size="10" '
+        f'fill="var(--muted)">counting total</text></g></svg></div>'
+        f'<table class="mixtable"><thead><tr><th>Category</th>'
+        f'<th class="num">Points</th><th class="num">Share</th></tr></thead>'
+        f'<tbody>{share_rows}</tbody></table>'
+    )
 
 
 def slot_sections(
@@ -500,6 +708,72 @@ SCRIPT = """\
     });
   });
 
+  // --- filtering the results table -------------------------------------
+  // Two independent sets of chips. Within a set the chosen values are OR-ed --
+  // picking two leagues means either -- and the sets are AND-ed together, so
+  // "Player" plus two leagues is the players in those two. Nothing chosen in a
+  // set means that set is not filtering, which is what makes the page useful
+  // before anything is clicked.
+  var picked = {kind: {}, league: {}, scoring: {}};
+  function anyPicked(set) {
+    for (var k in set) if (set[k]) return true;
+    return false;
+  }
+  function applyResultsFilter() {
+    var table = document.getElementById('resultstable');
+    if (!table) return;
+    var shown = 0;
+    table.querySelectorAll('tbody tr').forEach(function (row) {
+      var ok = true;
+      ['kind', 'league'].forEach(function (name) {
+        if (anyPicked(picked[name]) && !picked[name][row.dataset[name]]) ok = false;
+      });
+      if (picked.scoring.yes) {
+        var cell = row.querySelector('[data-score]');
+        if (!cell || Number(cell.dataset.score) <= 0) ok = false;
+      }
+      row.hidden = !ok;
+      if (ok) shown++;
+    });
+    var count = document.querySelector('[data-count]');
+    if (count) {
+      var total = table.querySelectorAll('tbody tr').length;
+      count.textContent = shown === total
+        ? 'Showing every scored asset.'
+        : 'Showing ' + shown + ' of ' + total + '.';
+    }
+  }
+  document.querySelectorAll('.chip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      var set = picked[chip.dataset.filter];
+      var value = chip.dataset.value;
+      set[value] = !set[value];
+      chip.setAttribute('aria-pressed', set[value] ? 'true' : 'false');
+      applyResultsFilter();
+    });
+  });
+
+  // Which figures a reader left closed, alongside the league boxes below. A
+  // page of three figures is long, and someone who wants only the table should
+  // not have to scroll past two charts every visit.
+  var FKEY = 'whul.figures';
+  var shut = {};
+  try { shut = JSON.parse(localStorage.getItem(FKEY) || '{}'); } catch (e) {}
+  document.querySelectorAll('details.figure').forEach(function (box) {
+    var name = box.dataset.figure;
+    // An anchor wins over a remembered state: arriving at #everyone and
+    // finding it closed is the one case where the memory is wrong.
+    if (shut[name] && location.hash !== '#' + name) box.open = false;
+    box.addEventListener('toggle', function () {
+      shut[name] = !box.open;
+      try { localStorage.setItem(FKEY, JSON.stringify(shut)); } catch (e) {}
+    });
+  });
+  window.addEventListener('hashchange', function () {
+    var target = document.querySelector(location.hash || '#none');
+    if (target && target.classList.contains('figure')) target.open = true;
+  });
+
   // Which leagues a reader left collapsed. Someone who closes fifteen of them
   // does not want to do it again tomorrow.
   var KEY = 'whul.collapsed';
@@ -516,15 +790,37 @@ SCRIPT = """\
 
   document.querySelectorAll('svg.barchart .bar').forEach(function (bar) {
     bar.addEventListener('mousemove', function (event) {
-      tip.innerHTML = '<div class="tt-date">' + bar.dataset.category + '</div>' +
+      // The name leads. This tooltip overrides the <title> the SVG carries,
+      // so a title that names the asset is no help here -- it showed the slot
+      // key, "Club Soccer Top 3 1", which says nothing about who the bar is.
+      var name = bar.dataset.name || bar.dataset.category;
+      var kind = bar.dataset.kind ? ' · ' + bar.dataset.kind : '';
+      tip.innerHTML = '<div class="tt-date">' + name + kind + '</div>' +
         '<div class="tt-row">' + bar.dataset.manager + '<b>' +
-        Number(bar.dataset.value).toLocaleString(undefined, {maximumFractionDigits: 0}) +
+        Number(bar.dataset.value).toLocaleString(undefined, {maximumFractionDigits: 1}) +
         '</b></div>';
       tip.style.opacity = '1';
       tip.style.left = (event.pageX + 14) + 'px';
       tip.style.top = (event.pageY - tip.offsetHeight / 2) + 'px';
     });
     bar.addEventListener('mouseleave', function () { tip.style.opacity = '0'; });
+  });
+
+  // A wedge's alpha says which holding inside a category it is, and alpha is
+  // not readable as a quantity -- so the wedge has to say who it is on hover.
+  // Without this the ring shows six categories and nothing else; the names are
+  // the point of splitting them at all.
+  document.querySelectorAll('svg.donutchart .wedge').forEach(function (wedge) {
+    wedge.addEventListener('mousemove', function (event) {
+      tip.innerHTML = '<div class="tt-date">' + wedge.dataset.name + '</div>' +
+        '<div class="tt-row">' + wedge.dataset.category + '<b>' +
+        Number(wedge.dataset.value).toLocaleString(undefined, {maximumFractionDigits: 1}) +
+        '</b></div>';
+      tip.style.opacity = '1';
+      tip.style.left = (event.pageX + 14) + 'px';
+      tip.style.top = (event.pageY - tip.offsetHeight / 2) + 'px';
+    });
+    wedge.addEventListener('mouseleave', function () { tip.style.opacity = '0'; });
   });
 
   // --- the profile window ---------------------------------------------
@@ -584,6 +880,10 @@ SCRIPT = """\
   document.querySelectorAll('svg.barchart .bar').forEach(function (bar) {
     if (!bar.dataset.asset) return;
     bar.addEventListener('click', function () { open(bar.dataset.asset); });
+  });
+  document.querySelectorAll('svg.donutchart .wedge').forEach(function (wedge) {
+    if (!wedge.dataset.asset) return;
+    wedge.addEventListener('click', function () { open(wedge.dataset.asset); });
   });
   document.querySelectorAll('button.assetlink').forEach(function (button) {
     button.addEventListener('click', function () { open(button.dataset.asset); });

@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 from whul.config.league import (
     ALL_SLOTS,
@@ -201,21 +203,26 @@ def test_no_source_file_is_excluded_by_gitignore():
 
 # --- when each league's results start counting ------------------------------
 
-def test_college_football_starts_on_its_opening_weekend():
-    """ESPN labels Week 1 as August 22 to September 7. A start on the 27th
-    discards the games played that first weekend, and discards them as results
-    that belong to no league year at all -- last season's is over."""
-    from datetime import date
+def test_college_football_starts_when_the_league_says_it_does():
+    """The 28th, which excludes Week 0 on purpose.
 
+    This read the 22nd first, on the grounds that ESPN labels Week 1 as August
+    22 to September 7 and a later start would discard the games played that
+    first weekend. It does discard them, and that is the rule: WHUL counts from
+    the 28th, so the handful of Week 0 games belong to nobody. A feed's idea of
+    when a season opens is not the league's."""
     from whul.config.league import season_start
 
-    assert season_start("NCAAF") == date(2026, 8, 22)
+    assert season_start("NCAAF") == date(2026, 8, 28)
 
 
 def test_a_league_with_no_start_of_its_own_uses_the_league_years():
+    """Not the NHL any more -- every rostered league is dated now. An unknown
+    league still falls back, because a score arriving from one should be
+    recorded rather than dropped."""
     from whul.config.league import SEASON, season_start
 
-    assert season_start("NHL") == SEASON.start
+    assert season_start("Some League Nobody Drafted") == SEASON.start
 
 
 def test_every_league_start_falls_in_this_league_year():
@@ -247,3 +254,41 @@ def test_a_league_drafted_for_next_calendar_year_asks_for_nothing_yet():
     for key in ("mls", "nwsl"):
         assert SOURCES[key].seasons_for(date(2026, 9, 5)) == []
         assert SOURCES[key].seasons_for(date(2027, 3, 15)) == [2027]
+
+
+def test_a_league_with_no_start_date_answers_neither_yes_nor_no():
+    """Not the same as "no". The caller has to decide what to do about not
+    knowing, and the one thing it must not do is report the slot as out of
+    season."""
+    from whul.config.league import in_season
+
+    assert in_season("Men's Intl Soccer", date(2026, 9, 6)) is None
+    assert in_season("NFL", date(2026, 9, 6)) is False
+    assert in_season("NFL", date(2026, 9, 10)) is True
+
+
+def test_an_unknown_league_does_not_fall_back_to_the_league_years_start():
+    """season_start() does, deliberately -- a score with no start date should
+    still be recorded. in_season() must not: the fallback is in the past, so
+    every unknown league would read as in season and a dropped NBA row would
+    have the NBA playing in September."""
+    from whul.config.league import in_season, season_start, SEASON
+
+    assert season_start("Nonexistent League") == SEASON.start
+    assert in_season("Nonexistent League", date(2026, 9, 6)) is None
+
+
+def test_every_rostered_league_that_can_be_dated_is():
+    """A league missing from the table is read from its scores instead, which
+    reports an injured player as a league that has not started. That fallback
+    is for the international squads and nothing else, so this is the list of
+    what is allowed to be missing."""
+    from whul.config.league import LEAGUE_START
+
+    rostered = {
+        "NFL", "NBA", "MLB", "NHL", "NCAAF", "NCAAM", "NCAAW",
+        "NCAA Baseball", "NCAA Softball", "ATP", "WTA", "Tennis",
+        "PGA", "F1", "NASCAR", "Motorsports", "Premier League", "La Liga",
+        "Serie A", "Bundesliga", "Ligue 1", "MLS", "NWSL",
+    }
+    assert not rostered - set(LEAGUE_START)

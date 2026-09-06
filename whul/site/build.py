@@ -60,7 +60,8 @@ def _page(title: str, body: str, active: str, managers: list[str],
           depth: int = 0, stamp: str = "", simulated: str | bool = False) -> str:
     """One page's HTML. Depth sets how far up the shared assets are."""
     up = "../" * depth
-    nav = [("index.html", "Standings"), ("about.html", "How scoring works")]
+    nav = [("index.html", "Standings"), ("results.html", "Results"),
+           ("about.html", "How scoring works")]
     current = ' aria-current="page"'
     links = "".join(
         f'<a href="{up}{href}"{current if label == active else ""}>{label}</a>'
@@ -141,6 +142,11 @@ def asset_profiles(
         out[asset_id] = {
             "name": escape(name),
             "meta": escape(f"{league} · {info['asset_type']}"),
+            # Kept apart from `meta` as well as in it: the chart labels a bar
+            # with the kind alone, and splitting a formatted string back up to
+            # get at it is how the two drift.
+            "kind": escape(str(info["asset_type"])),
+            "league": escape(league),
             "avatar": images.avatar("asset", asset_id, name, size=52, depth=depth),
             "badge": (
                 f'<img class="badge" src="{"../" * depth}{images.OUT_DIR}/badge/'
@@ -278,6 +284,191 @@ def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0)
         f'{images.avatar("asset", asset_id, name, size=26, depth=depth)}'
         f'<span class="nm">{inner}</span></span></button>'
     )
+
+
+def _counting_mix(
+    mine: pd.DataFrame, profiles: dict[str, dict]
+) -> list[tuple[str, list[tuple[str, float, str]]]]:
+    """A manager's counting slots, grouped by category, biggest share first.
+
+    Past six segments a part-to-whole figure stops being readable -- angles
+    cannot be compared and adjacent hues blur -- so the tail folds into one
+    "Other". A manager has nine contributing categories now and will have twice
+    that once every league is in season, which the table beneath is for.
+    """
+    if mine.empty:
+        return []
+    counting = mine[mine["counts"].astype(bool) & (mine["score"] > 0)]
+    if counting.empty:
+        return []
+
+    by_category: dict[str, list[tuple[str, float, str]]] = {}
+    for row in counting.sort_values("score", ascending=False).itertuples():
+        asset = str(row.asset_id or "")
+        profile = profiles.get(asset)
+        name = profile["name"] if profile else asset
+        by_category.setdefault(str(row.category), []).append(
+            (name, float(row.score), asset)
+        )
+
+    ranked = sorted(
+        by_category.items(),
+        key=lambda kv: sum(score for _, score, _ in kv[1]),
+        reverse=True,
+    )
+    if len(ranked) <= charts.DONUT_SEGMENTS:
+        return ranked
+    head = ranked[:charts.DONUT_SEGMENTS - 1]
+    tail = [h for _, holdings in ranked[charts.DONUT_SEGMENTS - 1:] for h in holdings]
+    return head + [(charts.DONUT_OTHER, sorted(tail, key=lambda h: -h[1]))]
+
+
+def _season_note(live: int, filled: int) -> str:
+    """What the counting total is missing, said in the tile that shows it.
+
+    A total of 1,900 in September and one of 4,000 in March are not a team
+    improving; they are eleven leagues in season instead of five. The tile
+    printed the date and left the reader to know that.
+    """
+    if not filled:
+        return "nothing drafted yet"
+    if live == filled:
+        return "every slot in season"
+    return f"{live} of {filled} slots in season"
+
+
+def _in_season(
+    mine: pd.DataFrame, profiles: dict[str, dict], day: date
+) -> tuple[int, int]:
+    """How many of a manager's counting slots are in a league that has started.
+
+    Returns ``(in season, filled)``. The difference between the two is what a
+    total is missing today, and it is the whole reason a counting total in
+    September cannot be compared with one in February.
+
+    Asked of the calendar rather than of the scores. A slot whose player is
+    injured, benched, suspended or simply had a quiet week scores zero, and
+    counting non-zero scores would file all of that under "not started" -- so a
+    manager whose NFL back is hurt would look like a manager who has not
+    drafted one. The league has started; the slot is in it; the zero is a
+    result.
+
+    The exception is a slot with no start date to ask about, which today is
+    only the international squads: each plays in a different competition on a
+    different calendar. There a score is the only evidence there is, so a zero
+    is read as "the tournaments have not come round yet" -- the reading this
+    function exists to avoid everywhere else, used here because nothing better
+    exists.
+    """
+    from whul.config.league import in_season as league_in_season
+
+    if mine.empty:
+        return 0, 0
+    filled = mine[mine["counts"].astype(bool) & mine["asset_id"].astype(bool)]
+    if filled.empty:
+        return 0, 0
+
+    live = 0
+    for row in filled.itertuples():
+        profile = profiles.get(str(row.asset_id)) or {}
+        started = league_in_season(str(profile.get("league") or ""), day)
+        live += bool(float(row.score) > 0) if started is None else bool(started)
+    return live, len(filled)
+
+
+def _results_table(
+    bars: pd.DataFrame, profiles: dict[str, dict], managers: list[str]
+) -> str:
+    """Every scored asset in one table, best first.
+
+    The bar chart answers "how is my roster doing"; this answers "who is doing
+    well", which is a different question and had no page. Sorted by normalized
+    score because that is the only figure comparable across leagues -- a raw
+    total is on a scale that differs per sport.
+
+    Filtered in the browser rather than pre-split: twenty leagues is twenty
+    tables nobody scrolls, and the interesting comparison is usually across two
+    of them rather than within one.
+    """
+    if bars.empty:
+        return '<p class="sub">Nothing scored yet.</p>'
+
+    rows = []
+    leagues: set[str] = set()
+    kinds: set[str] = set()
+    for row in bars.sort_values("score", ascending=False).itertuples():
+        profile = profiles.get(row.asset_id)
+        if not profile:
+            continue
+        league = profile.get("league", "")
+        kind = profile.get("kind", "")
+        leagues.add(league)
+        kinds.add(kind)
+        slot = theme.series_index(managers, row.manager_id) + 1
+        rows.append(
+            f'<tr data-league="{league}" data-kind="{kind}">'
+            f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
+            f'{profile["name"]}</button>'
+            f'<span class="rowmeta">{league} · {kind}</span></td>'
+            f'<td><span class="who"><i class="swatch" '
+            f'style="background: var(--series-{slot})"></i>'
+            f'{escape(manager_name(row.manager_id))}</span></td>'
+            f'<td class="num" data-score="{row.score:.4f}">{row.score:,.1f}</td></tr>'
+        )
+    if not rows:
+        return '<p class="sub">Nothing scored yet.</p>'
+
+    def chips(name: str, values: set[str]) -> str:
+        buttons = "".join(
+            f'<button class="chip" data-filter="{name}" data-value="{escape(v)}" '
+            f'aria-pressed="false">{escape(v)}</button>'
+            for v in sorted(values) if v
+        )
+        return f'<div class="chips" role="group" aria-label="Filter by {name}">{buttons}</div>'
+
+    # Everything is listed, including the assets on nothing yet -- two thirds
+    # of the roster in September, when most leagues have not started. Listing
+    # them is the honest default and burying them is the useful one, so the
+    # toggle is here and off, rather than either being chosen for the reader.
+    scoring_only = (
+        '<div class="chips" role="group" aria-label="Hide unscored">'
+        '<button class="chip" data-filter="scoring" data-value="yes" '
+        'aria-pressed="false">Scoring only</button></div>'
+    )
+    return (
+        f'{chips("kind", kinds)}{chips("league", leagues)}{scoring_only}'
+        '<p class="sub filtercount" data-count>Showing every scored asset.</p>'
+        '<table class="results" id="resultstable">'
+        '<thead><tr><th>Asset</th><th>Owner</th>'
+        '<th class="num">Normalized</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>'
+    )
+
+
+def _figure(anchor: str, title: str, blurb: str, body: str, open_: bool = True) -> str:
+    """One collapsible figure, addressable by anchor.
+
+    Open by default and remembered per reader, like the league boxes: a page of
+    three closed figures makes someone open the one they came for every time,
+    and a page of three open ones is long. Letting them choose once is the only
+    answer that suits both.
+    """
+    return f"""
+<details class="figure" id="{anchor}" data-figure="{anchor}"{" open" if open_ else ""}>
+  <summary><h2>{escape(title)}</h2></summary>
+  <div class="figurebody">
+    <p class="sub">{blurb}</p>
+    {body}
+  </div>
+</details>"""
+
+
+def _figure_index(items: list[tuple[str, str]]) -> str:
+    """Links to the figures below, so the page opens with a way through it."""
+    links = "".join(
+        f'<a class="jump" href="#{anchor}">{escape(label)}</a>' for anchor, label in items
+    )
+    return f'<nav class="figureindex" aria-label="On this page">{links}</nav>'
 
 
 def _profile_payload(profiles: dict[str, dict]) -> str:
@@ -574,9 +765,15 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 
     slot_rows, values, slot_depth = _slot_rows(bars, managers)
     # Name each bar's asset, so the tooltip and the table both read as people.
+    # The kind rides along, which is what lets a bar say "Arsenal Team" rather
+    # than "Club Soccer Top 3 1".
     for key, (score, asset_id, _) in list(values.items()):
         profile = profiles.get(asset_id)
-        values[key] = (score, asset_id, profile["name"] if profile else "")
+        values[key] = (
+            score, asset_id,
+            profile["name"] if profile else "",
+            profile.get("kind", "") if profile else "",
+        )
     bar_rows = [
         [key] + [
             (f"{values[(m, key)][0]:,.1f}" if (m, key) in values else "—")
@@ -603,22 +800,54 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
                progression_rows, columns=[s.name for s in series])}
 </div>
 
-<div class="card">
-  <h2>Every counting slot</h2>
-  <p class="sub">One section per league, each collapsible. A manager's slots sit
-    together in their own colour, ranked best first, so a category reads as a
-    block. Every bar is a single normalized score, so any two are directly
-    comparable. Click a manager in the key to hide them; click a bar for the
-    player behind it.</p>
-  {charts.legend(slotted, filterable=True)}
-  {charts.slot_sections(slot_rows, slotted, values, depth=slot_depth)}
-  {_table_view("Show as a table", ["Slot"] + [m for m, _ in slotted], bar_rows,
-               columns=[m for m, _ in slotted])}
-</div>
 {_profile_payload(profiles)}
 """
     (out / "index.html").write_text(
         _page(f"{LEAGUE_ABBR} — Standings", body, "Standings", managers,
+              stamp=stamp, simulated=simulated)
+    )
+
+    # --- results ------------------------------------------------------------
+    # The bar chart moves here and the progression is copied. Copied rather
+    # than moved because the standings page is what someone opens to see who is
+    # winning, and the line is the shape of that; the bars are the detail
+    # underneath it, which is what this page is for.
+    progression_figure = _figure(
+        "progression", "Progression",
+        "Total score by day. Hover for every manager on a given date.",
+        f"{charts.legend(slotted, filterable=True)}"
+        f"{charts.progression_chart(days, series)}"
+        + _table_view("Show as a table", ["Date"] + [s.name for s in series],
+                      progression_rows, columns=[s.name for s in series]),
+    )
+    slots_figure = _figure(
+        "slots", "Every counting slot",
+        "One section per league, each collapsible. A manager's slots sit "
+        "together in their own colour, ranked best first, so a category reads "
+        "as a block. Every bar is a single normalized score, so any two are "
+        "directly comparable. Click a manager in the key to hide them; click a "
+        "bar for the asset behind it.",
+        f"{charts.legend(slotted, filterable=True)}"
+        f"{charts.slot_sections(slot_rows, slotted, values, depth=slot_depth)}"
+        + _table_view("Show as a table", ["Slot"] + [m for m, _ in slotted],
+                      bar_rows, columns=[m for m, _ in slotted]),
+    )
+    table_figure = _figure(
+        "everyone", "Every scored asset",
+        "Best first, on the normalized scale -- the only figure comparable "
+        "across leagues. Filter by kind or league; the filters combine. Click "
+        "a name for the stats behind the score.",
+        _results_table(bars, profiles, managers),
+    )
+    results_body = (
+        _figure_index([("progression", "Progression"),
+                       ("slots", "Every counting slot"),
+                       ("everyone", "Every scored asset")])
+        + progression_figure + slots_figure + table_figure
+        + _profile_payload(profiles)
+    )
+    (out / "results.html").write_text(
+        _page(f"{LEAGUE_ABBR} — Results", results_body, "Results", managers,
               stamp=stamp, simulated=simulated)
     )
 
@@ -692,6 +921,27 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
         )
 
     slot = theme.series_index(managers, manager) + 1
+
+    # The count of unfilled slots used to be a tile of its own. It is one
+    # number that changes a handful of times a season, and it sat beside two
+    # others in the space where the interesting question is which parts of the
+    # roster are carrying the total. The count keeps its place in the sentence
+    # under the ring, where it is still read and no longer costs a third of the
+    # header.
+    mix = _counting_mix(mine, profiles)
+    live, filled = _in_season(mine, profiles, latest)
+    still = (
+        "Every slot filled." if not empty_slots
+        else f"{empty_slots} slot{'' if empty_slots == 1 else 's'} still to draft."
+    )
+    mix_card = (
+        f'<div class="card"><h2>Where the total comes from</h2>'
+        f'<p class="sub">Each roster category is one colour and the assets '
+        f'inside it step down in shade, biggest first. Hover a segment for the '
+        f'asset, click it for the stats behind the score. {escape(still)}</p>'
+        f'<div class="mix">{charts.donut_chart(mix, total)}</div></div>'
+    )
+
     head = f"""
 <div class="grid2" style="margin-bottom:22px">
   <div class="tile"><div class="label">Manager</div>
@@ -701,11 +951,8 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
       {escape(manager_name(manager))}</span></div></div>
   <div class="tile"><div class="label">Counting total</div>
     <div class="value">{total:,.1f}</div>
-    <div class="note">on {latest}</div></div>
-  <div class="tile"><div class="label">Still to draft</div>
-    <div class="value">{empty_slots}</div>
-    <div class="note">{"every slot filled" if not empty_slots else "slots with nobody in them"}</div></div>
-</div>"""
+    <div class="note">on {latest} · {_season_note(live, filled)}</div></div>
+</div>{mix_card}"""
     (out / "team" / f"{_slug(manager)}.html").write_text(
         _page(f"{LEAGUE_ABBR} — {manager_name(manager)}", head + "".join(sections) +
               _profile_payload(profiles), manager,

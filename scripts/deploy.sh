@@ -12,6 +12,7 @@
 #   ./scripts/deploy.sh                 # freeze the newest draft, publish
 #   ./scripts/deploy.sh <version>       # publish against a named version
 #   INGEST_ONLY=1 ./scripts/deploy.sh   # skip the freeze, refresh the results
+#   NO_PUSH=1 ./scripts/deploy.sh       # do everything but publish
 #
 # A league with no benchmark is not a reason to wait. It records its raw
 # figures, scores nothing, and the About page names it -- which is a season in
@@ -86,12 +87,13 @@ print("  !! -- a feed reports today, not last Tuesday.")
 print()
 print("  Refresh this copy first, keeping whatever you computed here:")
 print()
-print("      git fetch origin data")
-print("      git show origin/data:data/whul.sqlite3 > data/whul.sqlite3")
+print("      ./scripts/carry-benchmark.sh")
 print()
-print("  A benchmark draft computed locally lives in this file and would be")
-print("  lost by that. Freeze and publish it BEFORE refreshing, or recompute")
-print("  it after -- `benchmarks versions` says whether you have one.")
+print("  That keeps a copy, takes the branch's database, and carries any")
+print("  benchmark computed here across to it. Refreshing by hand instead")
+print("  discards the draft -- which is how one was lost, at the cost of a")
+print("  recompute. Safe to re-run: it reads the draft from the copy it just")
+print("  made, so running it twice carries the same version twice.")
 raise SystemExit(1)
 DBCHECK
     rc=$?
@@ -124,6 +126,23 @@ if [ "${INGEST_ONLY:-}" != "1" ]; then
     if [ -z "$VERSION" ]; then
         echo "No unfrozen version to adopt, and none named."
         echo "Either name one, or run ./scripts/overnight-benchmarks.sh first."
+        echo
+        "$PY" -m whul.cli benchmarks versions
+        exit 1
+    fi
+
+    # A version id is a timestamp to the second, typed or pasted, and dropping
+    # two characters from it is not obvious to look at. Checked here because
+    # everything below reads a missing version as one that covers nothing --
+    # so a typo is reported as a scale that would score fewer leagues, which
+    # sends you looking at the benchmark instead of at the id.
+    if ! "$PY" -m whul.cli benchmarks versions \
+         | awk -v v="$VERSION" '$1 == v { found = 1 } END { exit !found }'; then
+        echo
+        echo "No benchmark version '$VERSION' in data/whul.sqlite3."
+        echo "Check the id against the list below -- a version that is not there"
+        echo "covers nothing, and the downgrade check would call that a scale"
+        echo "worse than the one in force rather than a name that does not exist."
         echo
         "$PY" -m whul.cli benchmarks versions
         exit 1
@@ -195,8 +214,14 @@ if new < old:
 # first freeze is left to refuse and be decided deliberately.
 raise SystemExit(2 if active else 0)
 GUARD
+    # Captured before anything else runs. `$?` is the status of the *last*
+    # command, and an assignment is a command that succeeds -- so reading it
+    # after `FREEZE=1` returned 0 every time, which silently threw the guard's
+    # decision away: --force was never passed and the skip-freeze case never
+    # fired. Every deploy then died at a freeze that had a reason to be forced.
+    GUARDED=$?
     FREEZE=1
-    case $? in
+    case $GUARDED in
         0) FORCE="" ;;
         2) FORCE="--force" ;;
         3) FREEZE=0 ;;
@@ -227,6 +252,20 @@ step "building the site"
 "$PY" -m whul.cli site --season "$SEASON" || exit 1
 
 # --- 4. publish ------------------------------------------------------------
+# Everything above is local and repeatable. This step is neither: it
+# force-pushes over a branch the nightly job also writes. NO_PUSH=1 stops here,
+# which is the flag to use when the point is to see whether the freeze and the
+# rollup behave -- I ran this script as a test against the real database
+# without one, on a machine that turned out to have credentials, and published
+# a test benchmark over a real season.
+if [ "${NO_PUSH:-}" = "1" ]; then
+    step "not pushing"
+    echo "  NO_PUSH=1, so the database stays here. Everything above did run:"
+    echo "  the scale is frozen locally, the standings are rolled up, and the"
+    echo "  site is built in ./site."
+    exit 0
+fi
+
 step "pushing the database to the data branch"
 # The database is the one piece of state. It lives on its own branch so a
 # growing binary does not put an unreadable diff into every pull request.
@@ -267,6 +306,19 @@ COMMIT=$(git commit-tree "$TREE" \
 # With GITHUB_TOKEN set, the token is read from the environment by a helper
 # rather than put in the remote URL, so it never appears in the command line,
 # in `git remote -v`, or in an error message that echoes the URL back.
+#
+# Clearing `credential.helper` is not enough on its own, which took a refused
+# push to find out. An editor also injects GIT_ASKPASS, pointing at a socket
+# inside its own process -- a different mechanism, untouched by the helper
+# list. When that socket has gone, git does not fall back to asking: the
+# askpass program errors, git goes anonymous, and the push is refused. Clearing
+# it too is what lets the token helper below, or a plain terminal prompt,
+# actually be reached.
+unset GIT_ASKPASS SSH_ASKPASS
+unset VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_ASKPASS_EXTRA_ARGS
+unset VSCODE_GIT_IPC_HANDLE
+export GIT_TERMINAL_PROMPT=1
+
 AUTH=(-c credential.helper=)
 if [ -n "${GITHUB_TOKEN:-}" ]; then
     AUTH+=(-c "credential.helper=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f")
