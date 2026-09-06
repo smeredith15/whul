@@ -130,6 +130,23 @@ if [ "${INGEST_ONLY:-}" != "1" ]; then
         exit 1
     fi
 
+    # A version id is a timestamp to the second, typed or pasted, and dropping
+    # two characters from it is not obvious to look at. Checked here because
+    # everything below reads a missing version as one that covers nothing --
+    # so a typo is reported as a scale that would score fewer leagues, which
+    # sends you looking at the benchmark instead of at the id.
+    if ! "$PY" -m whul.cli benchmarks versions \
+         | awk -v v="$VERSION" '$1 == v { found = 1 } END { exit !found }'; then
+        echo
+        echo "No benchmark version '$VERSION' in data/whul.sqlite3."
+        echo "Check the id against the list below -- a version that is not there"
+        echo "covers nothing, and the downgrade check would call that a scale"
+        echo "worse than the one in force rather than a name that does not exist."
+        echo
+        "$PY" -m whul.cli benchmarks versions
+        exit 1
+    fi
+
     step "what this scale covers"
     "$PY" -m whul.cli benchmarks coverage "$VERSION" --season "$SEASON"
 
