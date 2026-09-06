@@ -652,6 +652,92 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     return 0 if produced else 1
 
 
+def cmd_images_needed(args: argparse.Namespace) -> int:
+    """Every image file the site would use, and whether it is there yet.
+
+    The naming rule is short enough to state in a sentence and long enough to
+    get wrong eighty times running, so this states it once per file instead:
+    the exact directory, the exact name, and what belongs in it. Fill what you
+    can and leave the rest; a missing file renders as a monogram, which is a
+    finished answer rather than a hole.
+
+    Grouped by directory and listing only what is absent, because the question
+    being asked is "what do I do this evening", not "what does the site hold".
+    """
+    from whul.site import images
+    from whul.site.build import INDIVIDUAL_CATEGORIES, _slug
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    rows = store.query(
+        "SELECT DISTINCT a.asset_id, a.asset_type, a.display_name, a.league, "
+        "       a.affiliation, r.category "
+        "FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id "
+        "WHERE r.season = ? ORDER BY r.category, a.display_name",
+        (args.season,),
+    )
+    if rows.empty:
+        print(f"\nNothing rostered in {args.season}.\n")
+        return 1
+
+    # Keyed, so the club twenty players share is one file rather than twenty.
+    # That collapse is most of the difference between a long evening and a
+    # short one, and it is invisible in a list of players.
+    wanted: dict[tuple[str, str], str] = {}
+    for row in rows.itertuples():
+        name = str(row.display_name)
+        wanted[("asset", str(row.asset_id))] = (
+            f"{name} -- {'headshot' if row.asset_type == 'Player' else 'team logo'}"
+        )
+        affiliation = str(row.affiliation or "").strip()
+        if row.asset_type == "Team":
+            # A national side takes its confederation's shield, not a league.
+            if "Intl" not in str(row.category):
+                wanted[("badge", _slug(str(row.league)))] = f"{row.league} -- league logo"
+        elif str(row.category) in INDIVIDUAL_CATEGORIES:
+            if affiliation:
+                wanted[("flag", _slug(affiliation))] = f"{affiliation} -- flag"
+        elif affiliation:
+            wanted[("club", _slug(affiliation))] = f"{affiliation} -- club crest"
+
+    for confederation in ("uefa", "conmebol", "concacaf", "caf", "afc", "ofc"):
+        wanted[("shield", confederation)] = f"{confederation.upper()} -- shield"
+
+    missing = [(kind, key, what) for (kind, key), what in sorted(wanted.items())
+               if images.find(kind, key) is None]
+
+    print(f"\n  {len(wanted) - len(missing)} of {len(wanted)} image(s) present; "
+          f"{len(missing)} to add.")
+    print("  Any of .png .jpg .jpeg .webp .svg. A missing one is a monogram,")
+    print("  so there is no wrong order and no need to finish.\n")
+
+    kind = None
+    for this_kind, key, what in missing:
+        if this_kind != kind:
+            kind = this_kind
+            print(f"  --- {images.SOURCE_DIR}/{kind}/")
+        # The accent-folded spelling, because that is the one a person can
+        # type. `find` accepts either.
+        print(f"    {images.plain(key) + '.png':<50}{what}")
+
+    blank = sorted(
+        str(r.display_name) for r in rows.itertuples()
+        if r.asset_type == "Player" and not str(r.affiliation or "").strip()
+    )
+    if blank:
+        print(f"\n  {len(blank)} player(s) have no club or country in the "
+              f"spreadsheet,")
+        print("  so this cannot name a corner badge for them:")
+        for name in blank[:15]:
+            print(f"    {name}")
+        if len(blank) > 15:
+            print(f"    ... and {len(blank) - 15} more")
+    print()
+    return 0
+
+
 def cmd_site(args: argparse.Namespace) -> int:
     """Generate the static site from whatever the store holds."""
     from pathlib import Path as _Path
@@ -1610,6 +1696,13 @@ def main(argv: list[str] | None = None) -> int:
     site.add_argument("--season", default="2026-27-SIM", help="season to publish")
     site.add_argument("--out", default="site", help="output directory")
     site.set_defaults(func=cmd_site)
+
+    needed = sub.add_parser(
+        "images-needed", help="every image file the site wants, and what is missing"
+    )
+    needed.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    needed.add_argument("--season", default="2026-27", help="season whose roster to list")
+    needed.set_defaults(func=cmd_images_needed)
 
     names = sub.add_parser(
         "feed-names", help="what a live feed calls things, against your roster"

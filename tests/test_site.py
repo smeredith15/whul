@@ -1178,3 +1178,38 @@ def test_the_donut_pushes_two_labels_off_each_other():
         charts.donut_chart(parts, 100.0))]
     assert all(abs(a - b) >= charts.DONUT_LABEL_GAP - 0.01
                for i, a in enumerate(ys) for b in ys[i + 1:])
+
+
+# --- naming images by hand ----------------------------------------------------
+
+def test_an_accented_id_is_found_under_its_plain_spelling(tmp_path):
+    """Asset ids keep the spelling the league drafted, and `kylian-mbappé` is
+    what the rest of the engine speaks. Asking someone to type that as a
+    filename eighty times is asking for a file that looks right and is never
+    found: a precomposed é, a combining accent and whatever the file manager
+    did on the way through all fail identically and silently."""
+    from whul.site import images
+
+    folder = tmp_path / "asset"
+    folder.mkdir()
+    (folder / "player-la-liga-kylian-mbappe.png").write_bytes(b"x")
+
+    found = images.find("asset", "player-la-liga-kylian-mbappé", source=tmp_path)
+    assert found is not None and found.name.endswith("mbappe.png")
+
+
+def test_the_exact_spelling_wins_where_both_exist():
+    """That one was deliberate."""
+    from whul.site import images
+
+    assert images.plain("kylian-mbappé") == "kylian-mbappe"
+    assert images.plain("arsenal") == "arsenal"
+
+
+def test_a_corner_badge_has_a_directory_of_its_own():
+    """"England" is a country and an international side. A shared directory
+    would hand whichever asked first a file meant for the other."""
+    from whul.site import images
+
+    for kind in ("club", "flag", "shield"):
+        assert kind in images.KINDS

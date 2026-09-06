@@ -45,6 +45,20 @@ COLUMNS = {
     # scoring needs the former while the roster needs the latter.
     "league": ("league", "competition", "comp"),
     "cost": ("winning_bid", "bid", "cost", "price", "salary", "amount"),
+    # Who the asset belongs to: a club for a team-sport player, a country for
+    # an individual athlete. One column, because it answers one question -- what
+    # goes in the corner of this asset's picture -- and which kind of answer it
+    # is follows from the roster category.
+    #
+    # "team" is deliberately *not* a candidate here even though it is the
+    # obvious header. It is already an alias for `manager`, and a sheet whose
+    # only such column was headed "Team" would have every row's owner read out
+    # of it. The aliases below are the ones that cannot be mistaken for
+    # anything else; a plain "Team" header is picked up by the pass that reads
+    # a header's individual words, after `manager` has taken "Manager".
+    "affiliation": ("affiliation", "club", "nationality", "country",
+                    "team_or_country", "team_country", "squad", "franchise",
+                    "team"),
 }
 
 #: What counts as "no pick yet" in a spreadsheet cell.
@@ -99,17 +113,25 @@ class ImportReport:
         return "\n".join(lines)
 
 
-def _find_column(frame: pd.DataFrame, candidates: tuple[str, ...]) -> str | None:
+def _find_column(frame: pd.DataFrame, candidates: tuple[str, ...],
+                 taken: set | None = None) -> str | None:
     """The first candidate present, matched on whole words in the header.
 
     Word boundaries, not substrings. A bare ``endswith`` matched "Winning_Bid"
     against the candidate "id" and bound every asset's identity to its auction
     price -- which the dry run showed as 61 distinct assets out of 205 picks,
     because bids collide and names do not.
+
+    ``taken`` is the columns already claimed by an earlier field, and they are
+    skipped. Several fields legitimately share an alias -- "team" names the
+    manager on one sheet and the club on another -- and without this the same
+    column answers for both, so a sheet with a Manager column and a Team column
+    reads the club as the owner of every pick.
     """
+    taken = taken or set()
     normalized = {
         str(c).strip().lower().replace(" ", "_").replace("-", "_"): c
-        for c in frame.columns
+        for c in frame.columns if c not in taken
     }
     for candidate in candidates:
         if candidate in normalized:
@@ -160,10 +182,12 @@ def plan(frame: pd.DataFrame, path: str = "") -> tuple[list[dict], ImportReport]
     """Turn the sheet into rows to write, without writing any of them."""
     report = ImportReport(path=path, rows=len(frame))
     columns = {}
+    taken: set = set()
     for field_name, candidates in COLUMNS.items():
-        found = _find_column(frame, candidates)
+        found = _find_column(frame, candidates, taken)
         if found:
             columns[field_name] = found
+            taken.add(found)
             report.matched_columns[field_name] = str(found)
         else:
             report.missing_columns.append(field_name)
@@ -232,6 +256,7 @@ def plan(frame: pd.DataFrame, path: str = "") -> tuple[list[dict], ImportReport]
             "asset_id": asset_id or _asset_id(league, asset_type, asset),
             "display_name": asset or asset_id,
             "role": _clean(row.get(columns.get("role"), "")),
+            "affiliation": _clean(row.get(columns.get("affiliation"), "")),
             "cost": _number(row.get(columns.get("cost"))),
         })
 
@@ -294,6 +319,7 @@ def apply(
                 "asset_id": p["asset_id"], "asset_type": p["asset_type"],
                 "display_name": p["display_name"], "league": p["league"],
                 "role": p["role"], "norm_key": p["league"],
+                "affiliation": p.get("affiliation", ""),
                 "active": 1, "created_at": _now(),
             }
             for p in {p["asset_id"]: p for p in picks}.values()

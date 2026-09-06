@@ -314,3 +314,54 @@ def test_two_teams_sharing_a_name_are_reported_rather_than_merged():
     assert "fills 2 slots at once" in report.warnings[0]
     assert "SS/NCAAM#1" in report.warnings[0]
     assert "JM/NCAAW#1" in report.warnings[0]
+
+
+def test_a_team_column_is_not_read_as_the_manager():
+    """"team" is an alias for the manager column and for the affiliation one.
+    Without claim-tracking the same column answers for both, and a sheet with a
+    Manager column and a Team column reads the club as the owner of every
+    pick."""
+    import pandas as pd
+
+    from whul.roster_import import plan
+
+    frame = pd.DataFrame([{
+        "Manager": "JM", "Category": "NFL", "Asset_Type": "Player",
+        "Name": "Bijan Robinson", "League": "NFL", "Team": "Atlanta Falcons",
+    }])
+    picks, report = plan(frame)
+    assert report.matched_columns["manager"] == "Manager"
+    assert report.matched_columns["affiliation"] == "Team"
+    assert picks[0]["manager"] == "JM"
+    assert picks[0]["affiliation"] == "Atlanta Falcons"
+
+
+def test_a_nationality_column_serves_the_same_field():
+    """One column for both, because it answers one question -- what goes in the
+    corner of this asset's picture -- and which kind of answer it is follows
+    from the roster category."""
+    import pandas as pd
+
+    from whul.roster_import import plan
+
+    frame = pd.DataFrame([{
+        "Manager": "JM", "Category": "Tennis", "Asset_Type": "Player",
+        "Name": "Carlos Alcaraz", "League": "ATP", "Nationality": "Spain",
+    }])
+    picks, _ = plan(frame)
+    assert picks[0]["affiliation"] == "Spain"
+
+
+def test_a_sheet_with_no_affiliation_column_still_imports():
+    """Every sheet before this one had none, and they must keep working."""
+    import pandas as pd
+
+    from whul.roster_import import plan
+
+    frame = pd.DataFrame([{
+        "Manager": "JM", "Category": "NFL", "Asset_Type": "Player",
+        "Name": "Bijan Robinson", "League": "NFL",
+    }])
+    picks, report = plan(frame)
+    assert "affiliation" in report.missing_columns
+    assert picks[0]["affiliation"] == ""
