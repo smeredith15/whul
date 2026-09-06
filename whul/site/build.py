@@ -286,6 +286,43 @@ def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0)
     )
 
 
+def _counting_mix(
+    mine: pd.DataFrame, profiles: dict[str, dict]
+) -> list[tuple[str, list[tuple[str, float, str]]]]:
+    """A manager's counting slots, grouped by category, biggest share first.
+
+    Past six segments a part-to-whole figure stops being readable -- angles
+    cannot be compared and adjacent hues blur -- so the tail folds into one
+    "Other". A manager has nine contributing categories now and will have twice
+    that once every league is in season, which the table beneath is for.
+    """
+    if mine.empty:
+        return []
+    counting = mine[mine["counts"].astype(bool) & (mine["score"] > 0)]
+    if counting.empty:
+        return []
+
+    by_category: dict[str, list[tuple[str, float, str]]] = {}
+    for row in counting.sort_values("score", ascending=False).itertuples():
+        asset = str(row.asset_id or "")
+        profile = profiles.get(asset)
+        name = profile["name"] if profile else asset
+        by_category.setdefault(str(row.category), []).append(
+            (name, float(row.score), asset)
+        )
+
+    ranked = sorted(
+        by_category.items(),
+        key=lambda kv: sum(score for _, score, _ in kv[1]),
+        reverse=True,
+    )
+    if len(ranked) <= charts.DONUT_SEGMENTS:
+        return ranked
+    head = ranked[:charts.DONUT_SEGMENTS - 1]
+    tail = [h for _, holdings in ranked[charts.DONUT_SEGMENTS - 1:] for h in holdings]
+    return head + [(charts.DONUT_OTHER, sorted(tail, key=lambda h: -h[1]))]
+
+
 def _results_table(
     bars: pd.DataFrame, profiles: dict[str, dict], managers: list[str]
 ) -> str:
@@ -831,6 +868,26 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
         )
 
     slot = theme.series_index(managers, manager) + 1
+
+    # The count of unfilled slots used to be a tile of its own. It is one
+    # number that changes a handful of times a season, and it sat beside two
+    # others in the space where the interesting question is which parts of the
+    # roster are carrying the total. The count keeps its place in the sentence
+    # under the ring, where it is still read and no longer costs a third of the
+    # header.
+    mix = _counting_mix(mine, profiles)
+    still = (
+        "Every slot filled." if not empty_slots
+        else f"{empty_slots} slot{'' if empty_slots == 1 else 's'} still to draft."
+    )
+    mix_card = (
+        f'<div class="card"><h2>Where the total comes from</h2>'
+        f'<p class="sub">Each roster category is one colour and the assets '
+        f'inside it step down in shade, biggest first. Hover a segment for the '
+        f'asset, click it for the stats behind the score. {escape(still)}</p>'
+        f'<div class="mix">{charts.donut_chart(mix, total)}</div></div>'
+    )
+
     head = f"""
 <div class="grid2" style="margin-bottom:22px">
   <div class="tile"><div class="label">Manager</div>
@@ -841,10 +898,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
   <div class="tile"><div class="label">Counting total</div>
     <div class="value">{total:,.1f}</div>
     <div class="note">on {latest}</div></div>
-  <div class="tile"><div class="label">Still to draft</div>
-    <div class="value">{empty_slots}</div>
-    <div class="note">{"every slot filled" if not empty_slots else "slots with nobody in them"}</div></div>
-</div>"""
+</div>{mix_card}"""
     (out / "team" / f"{_slug(manager)}.html").write_text(
         _page(f"{LEAGUE_ABBR} — {manager_name(manager)}", head + "".join(sections) +
               _profile_payload(profiles), manager,

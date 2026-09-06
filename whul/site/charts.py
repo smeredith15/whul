@@ -373,6 +373,164 @@ def contribution_chart(
     return '<div class="chart">' + "".join(parts) + "</div>"
 
 
+#: Segments a part-to-whole figure may carry. Past this, angle comparison stops
+#: working and adjacent hues blur -- so the rest folds into one "Other" slice
+#: and the table underneath carries the detail. A manager has nine contributing
+#: categories today and will have twice that once every league is in season,
+#: which is a table's job rather than a pie's.
+DONUT_SEGMENTS = 6
+DONUT_OTHER = "Other"
+
+#: "Other" is painted in the neutral rather than given a hue of its own.
+#:
+#: Two reasons, and they agree. It is a remainder rather than a category, so it
+#: should recede next to the five things actually being compared. And the
+#: palette will not carry six hues in a ring where any wedge may be matched
+#: against any other: validated all-pairs, ``#008300`` against ``#eb6834`` is
+#: 3.2 apart for a protanope -- indistinguishable -- and the pink against the
+#: orange is 12.9 for everyone, under the floor of 15. Spending the sixth hue
+#: on a bucket is what forced that. Five hues plus a neutral passes.
+#:
+#: The five that remain are checked adjacent, which is the scope that fits a
+#: ring: wedges in a fixed rank order, each one touching its neighbours, and
+#: the wrap from the last back to the first checked too. Both modes pass. The
+#: contrast warning that comes with it obliges visible labels or a table, and
+#: this figure carries both.
+DONUT_OTHER_FILL = "var(--muted)"
+
+#: How far an asset inside a segment may fade from its category's colour. Every
+#: asset stays recognisably the category's hue; the alpha says only "these are
+#: several holdings", never which is which -- the labels and the table do that.
+DONUT_MIN_ALPHA = 0.45
+
+#: Room either side of the ring for the direct category labels, and the longest
+#: label that fits in it. A label sits ten pixels outside the ring and runs
+#: outwards from there, so without a gutter the ends of the words are simply
+#: outside the viewBox -- clipped rather than wrapped, and clipped silently.
+DONUT_GUTTER = 92
+DONUT_LABEL_CHARS = 18
+
+#: The same, above and below. A label at twelve or six o'clock sits ten pixels
+#: outside a ring that already reaches within six of the box.
+DONUT_VPAD = 16
+
+
+def _arc(cx: float, cy: float, r: float, start: float, end: float) -> str:
+    """A pie wedge's outer arc, as path commands."""
+    import math
+
+    x1, y1 = cx + r * math.cos(start), cy + r * math.sin(start)
+    x2, y2 = cx + r * math.cos(end), cy + r * math.sin(end)
+    large = 1 if (end - start) > math.pi else 0
+    return f"L {x1:.2f} {y1:.2f} A {r:.2f} {r:.2f} 0 {large} 1 {x2:.2f} {y2:.2f}"
+
+
+def donut_chart(
+    parts: list[tuple[str, list[tuple[str, float, str]]]],
+    total: float,
+    chart_id: str = "mix",
+    size: int = 260,
+) -> str:
+    """Where a manager's counting total comes from.
+
+    ``parts`` is ``(category, [(asset name, score, asset id)])``, biggest first.
+    A category is one hue and the holdings inside it step down in alpha, so a
+    segment reads as one category made of several things without the alpha
+    having to be decoded -- which it cannot be, and is why the labels and the
+    table carry the identities.
+
+    A donut rather than a pie: the middle is where the total goes, and a number
+    a reader wants is better in the figure than beside it.
+    """
+    import math
+
+    if not parts or total <= 0:
+        return '<p class="sub">Nothing counting yet.</p>'
+
+    cx = cy = size / 2
+    outer, inner = size / 2 - 6, size / 2 - 40
+    angle = -math.pi / 2          # twelve o'clock
+    gap = 0.012                   # the 2px surface gap, in radians at this radius
+    wedges, labels, rows = [], [], []
+
+    for index, (category, holdings) in enumerate(parts):
+        fill = (DONUT_OTHER_FILL if category == DONUT_OTHER
+                else f"var(--series-{index + 1})")
+        share = sum(score for _, score, _ in holdings)
+        if share <= 0:
+            continue
+        span = 2 * math.pi * share / total
+        steps = max(len(holdings), 1)
+        within = angle
+        for depth, (name, score, asset_id) in enumerate(holdings):
+            if score <= 0:
+                continue
+            piece = 2 * math.pi * score / total
+            a0, a1 = within + gap / 2, within + piece - gap / 2
+            if a1 <= a0:                      # a sliver too thin to gap
+                a0, a1 = within, within + piece
+            alpha = 1.0 - (1.0 - DONUT_MIN_ALPHA) * (depth / max(steps - 1, 1))
+            wedges.append(
+                f'<path class="wedge" d="M {cx + inner * math.cos(a0):.2f} '
+                f'{cy + inner * math.sin(a0):.2f} '
+                f'{_arc(cx, cy, outer, a0, a1)} '
+                f'L {cx + inner * math.cos(a1):.2f} {cy + inner * math.sin(a1):.2f} '
+                f'A {inner:.2f} {inner:.2f} 0 0 0 {cx + inner * math.cos(a0):.2f} '
+                f'{cy + inner * math.sin(a0):.2f} Z" '
+                f'fill="{fill}" fill-opacity="{alpha:.2f}" '
+                f'data-asset="{escape(asset_id)}" data-name="{escape(name)}" '
+                f'data-category="{escape(category)}" data-value="{score:.1f}">'
+                f'<title>{escape(name)} — {escape(category)} · '
+                f'{_fmt(score)}</title></path>'
+            )
+            within += piece
+        # One direct label a category, on the segment's midpoint. Named rather
+        # than left to the colour: the contrast check warns at this surface, and
+        # a legend of six hues beside a ring of six hues is the same information
+        # twice.
+        mid = angle + span / 2
+        lx = cx + (outer + 10) * math.cos(mid)
+        ly = cy + (outer + 10) * math.sin(mid)
+        anchor = "start" if math.cos(mid) > 0.02 else (
+            "end" if math.cos(mid) < -0.02 else "middle")
+        labels.append(
+            f'<text x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}" '
+            f'font-size="10" fill="var(--text-secondary)" '
+            f'dominant-baseline="middle">'
+            f'{escape(_fit(category, DONUT_LABEL_CHARS))}</text>'
+        )
+        rows.append((category, share, fill))
+        angle += span
+
+    # In the same order the ring goes, clockwise from twelve, so a row is
+    # found by position rather than by matching a swatch to a hue. That is what
+    # keeps the figure readable for the pairs the palette separates least: no
+    # one has to tell the pink from the orange to read this.
+    share_rows = "".join(
+        f"<tr><td><i class='swatch' style='background: {fill}'></i>"
+        f"{escape(c)}</td><td class='num'>{v:,.1f}</td>"
+        f"<td class='num'>{100 * v / total:.0f}%</td></tr>"
+        for c, v, fill in rows
+    )
+    return (
+        f'<div class="chart donut">'
+        f'<svg viewBox="0 {-DONUT_VPAD} {size + 2 * DONUT_GUTTER} '
+        f'{size + 2 * DONUT_VPAD}" class="donutchart" '
+        f'role="img" '
+        f'aria-label="Share of the counting total by roster category" '
+        f'data-chart="{chart_id}">'
+        f'<g transform="translate({DONUT_GUTTER},0)">'
+        f'{"".join(wedges)}{"".join(labels)}'
+        f'<text x="{cx}" y="{cy - 4}" text-anchor="middle" font-size="22" '
+        f'font-weight="600" fill="var(--text-primary)">{total:,.1f}</text>'
+        f'<text x="{cx}" y="{cy + 14}" text-anchor="middle" font-size="10" '
+        f'fill="var(--muted)">counting total</text></g></svg></div>'
+        f'<table class="mixtable"><thead><tr><th>Category</th>'
+        f'<th class="num">Points</th><th class="num">Share</th></tr></thead>'
+        f'<tbody>{share_rows}</tbody></table>'
+    )
+
+
 def slot_sections(
     rows: list[tuple[str, str, str]],
     managers: list[tuple[str, int]],
@@ -648,6 +806,23 @@ SCRIPT = """\
     bar.addEventListener('mouseleave', function () { tip.style.opacity = '0'; });
   });
 
+  // A wedge's alpha says which holding inside a category it is, and alpha is
+  // not readable as a quantity -- so the wedge has to say who it is on hover.
+  // Without this the ring shows six categories and nothing else; the names are
+  // the point of splitting them at all.
+  document.querySelectorAll('svg.donutchart .wedge').forEach(function (wedge) {
+    wedge.addEventListener('mousemove', function (event) {
+      tip.innerHTML = '<div class="tt-date">' + wedge.dataset.name + '</div>' +
+        '<div class="tt-row">' + wedge.dataset.category + '<b>' +
+        Number(wedge.dataset.value).toLocaleString(undefined, {maximumFractionDigits: 1}) +
+        '</b></div>';
+      tip.style.opacity = '1';
+      tip.style.left = (event.pageX + 14) + 'px';
+      tip.style.top = (event.pageY - tip.offsetHeight / 2) + 'px';
+    });
+    wedge.addEventListener('mouseleave', function () { tip.style.opacity = '0'; });
+  });
+
   // --- the profile window ---------------------------------------------
   // Every asset the page mentions ships with it, so opening a profile is a
   // local lookup rather than a request. On a static site there is nothing to
@@ -705,6 +880,10 @@ SCRIPT = """\
   document.querySelectorAll('svg.barchart .bar').forEach(function (bar) {
     if (!bar.dataset.asset) return;
     bar.addEventListener('click', function () { open(bar.dataset.asset); });
+  });
+  document.querySelectorAll('svg.donutchart .wedge').forEach(function (wedge) {
+    if (!wedge.dataset.asset) return;
+    wedge.addEventListener('click', function () { open(wedge.dataset.asset); });
   });
   document.querySelectorAll('button.assetlink').forEach(function (button) {
     button.addEventListener('click', function () { open(button.dataset.asset); });

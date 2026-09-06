@@ -414,7 +414,7 @@ def test_an_undrafted_slot_is_shown_not_skipped(site):
     out, _ = site
     pages = [(out / "team" / f"{m.lower()}.html").read_text() for m in simulate.MANAGERS]
     assert any("Undrafted" in page for page in pages)
-    assert any("Still to draft" in page for page in pages)
+    assert any("still to draft" in page for page in pages)
 
 
 def test_an_undrafted_slot_never_becomes_a_player_called_nan(site):
@@ -885,3 +885,143 @@ def test_a_figure_is_collapsible_and_addressable():
     assert 'id="everyone"' in html and 'data-figure="everyone"' in html
     assert html.startswith("\n<details") and " open>" in html
     assert "#everyone" in _figure_index([("everyone", "Every scored asset")])
+
+
+# --- the counting mix ---------------------------------------------------------
+
+MIX_BARS = pd.DataFrame([
+    {"manager_id": "AV", "asset_id": f"a{i}", "score": float(s),
+     "category": c, "counts": True}
+    for i, (c, s) in enumerate([
+        ("NFL QB", 90), ("NFL RB", 80), ("NBA Guard", 70), ("MLB SP", 60),
+        ("NHL C", 50), ("Golf", 40), ("Tennis", 30), ("Club Soccer", 20),
+    ])
+])
+MIX_PROFILES = {f"a{i}": {"name": f"Name {i}"} for i in range(8)}
+
+
+def test_a_benched_or_scoreless_slot_is_not_part_of_the_mix():
+    """The ring has to add up to the counting total printed beside it. A
+    benched slot is not in that total, so a wedge for it would make the ring
+    say something the number does not."""
+    from whul.site.build import _counting_mix
+
+    bars = MIX_BARS.copy()
+    bars.loc[0, "counts"] = False
+    bars.loc[1, "score"] = 0.0
+    mix = _counting_mix(bars, MIX_PROFILES)
+    assert "NFL QB" not in dict(mix)
+    assert "NFL RB" not in dict(mix)
+
+
+def test_the_mix_never_exceeds_six_segments():
+    """Past six, angles stop being comparable and adjacent hues blur. The tail
+    folds into one "Other" rather than growing a seventh hue -- a manager has
+    nine contributing categories now and twice that once every league is in."""
+    from whul.site.build import _counting_mix
+    from whul.site import charts
+
+    mix = _counting_mix(MIX_BARS, MIX_PROFILES)
+    assert len(mix) == charts.DONUT_SEGMENTS
+    assert mix[-1][0] == charts.DONUT_OTHER
+    # Nothing is dropped on the way into "Other".
+    assert sum(len(holdings) for _, holdings in mix) == len(MIX_BARS)
+
+
+def test_the_mix_is_ordered_by_what_each_category_contributes():
+    """Named categories descend. "Other" stays last however big it grows: it is
+    a remainder rather than a category, and sorting it into the middle would
+    put a bucket of eight leagues between two single ones."""
+    from whul.site.build import _counting_mix
+    from whul.site import charts
+
+    mix = _counting_mix(MIX_BARS, MIX_PROFILES)
+    named = [sum(s for _, s, _ in holdings) for name, holdings in mix
+             if name != charts.DONUT_OTHER]
+    assert named == sorted(named, reverse=True)
+    assert mix[-1][0] == charts.DONUT_OTHER
+
+
+def test_a_category_is_one_hue_and_its_holdings_step_down_in_shade():
+    """Alpha within a hue is what says "these three are all NFL QBs" without
+    spending three hues on it. It is not readable as a quantity, which is why
+    the wedge names itself on hover and the table carries the numbers."""
+    from whul.site import charts
+
+    html = charts.donut_chart(
+        [("NFL QB", [("A", 60.0, "a1"), ("B", 30.0, "a2")]),
+         ("Golf", [("C", 10.0, "a3")])],
+        100.0,
+    )
+    assert html.count('fill="var(--series-1)"') == 2
+    assert html.count('fill="var(--series-2)"') == 1
+    alphas = re.findall(r'fill="var\(--series-1\)" fill-opacity="([\d.]+)"', html)
+    assert float(alphas[0]) > float(alphas[1]) >= charts.DONUT_MIN_ALPHA
+
+
+def test_a_lone_holding_is_not_faded():
+    """A category of one has no ordering to convey, and fading it would read as
+    a category that is somehow half-present."""
+    from whul.site import charts
+
+    html = charts.donut_chart([("Golf", [("C", 10.0, "a3")])], 10.0)
+    assert 'fill-opacity="1.00"' in html
+
+
+def test_every_wedge_says_who_it_is_and_opens_its_profile():
+    from whul.site import charts
+
+    html = charts.donut_chart([("NFL QB", [("P. Vance", 60.0, "a1")])], 60.0)
+    assert 'data-asset="a1"' in html
+    assert 'data-name="P. Vance"' in html
+    assert 'data-category="NFL QB"' in html
+
+
+def test_the_categories_are_named_on_the_figure_and_in_a_table():
+    """The palette check warns on contrast at this surface, which obligates
+    visible labels or a table view. This ships both: colour is never the only
+    thing carrying an identity."""
+    from whul.site import charts
+
+    html = charts.donut_chart(
+        [("NFL QB", [("A", 60.0, "a1")]), ("Golf", [("C", 40.0, "a3")])], 100.0)
+    assert html.count("NFL QB") >= 2 and html.count("Golf") >= 2
+    assert 'class="mixtable"' in html
+    assert "60%" in html and "40%" in html
+
+
+def test_a_roster_on_nothing_yet_says_so_rather_than_drawing_an_empty_ring():
+    from whul.site import charts
+
+    assert "Nothing counting yet" in charts.donut_chart([], 0.0)
+    assert "Nothing counting yet" in charts.donut_chart(
+        [("Golf", [("C", 0.0, "a3")])], 0.0)
+
+
+def test_the_remainder_is_neutral_rather_than_a_sixth_hue():
+    """Two reasons that agree. "Other" is a bucket, not a category, so it
+    should recede next to the five things being compared -- and the palette
+    will not carry six hues in a ring where any wedge may be matched against
+    any other. Validated all-pairs, the sixth hue is 3.2 from the second for a
+    protanope. Five hues plus a neutral passes."""
+    from whul.site import charts
+
+    html = charts.donut_chart(
+        [("NFL QB", [("A", 60.0, "a1")]),
+         (charts.DONUT_OTHER, [("C", 40.0, "a3")])],
+        100.0,
+    )
+    assert f'fill="{charts.DONUT_OTHER_FILL}"' in html
+    assert "--series-2" not in html
+
+
+def test_the_share_table_reads_in_the_order_the_ring_is_drawn():
+    """So a row is found by position rather than by matching a swatch to a
+    hue. Nobody should have to tell the pink from the orange to read this."""
+    from whul.site import charts
+
+    parts = [("NFL QB", [("A", 60.0, "a1")]), ("Golf", [("C", 30.0, "a3")]),
+             ("MLB SP", [("D", 10.0, "a4")])]
+    html = charts.donut_chart(parts, 100.0)
+    table = html[html.index('class="mixtable"'):]
+    assert table.index("NFL QB") < table.index("Golf") < table.index("MLB SP")

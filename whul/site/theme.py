@@ -148,6 +148,22 @@ tbody tr:hover { background: color-mix(in srgb, var(--grid) 35%, transparent); }
 .chart { width: 100%; overflow-x: auto; }
 .chart svg { display: block; max-width: 100%; height: auto; }
 .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 14px; font-size: 13px; }
+/* The counting mix. Ring and table side by side rather than stacked: the ring
+   answers "what is carrying this roster" at a glance and the table answers
+   "by exactly how much", and a reader usually wants the second right after the
+   first. They stack under 620px, where the ring alone is already the width. */
+.mix { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(220px, 1fr);
+       gap: 20px; align-items: center; }
+@media (max-width: 620px) { .mix { grid-template-columns: 1fr; } }
+.chart.donut { overflow: visible; }
+/* No stroke: the wedges are already separated by an angular gap, and a stroke
+   would also outline the inner and outer arcs, which are edges of the ring
+   rather than boundaries between fills. */
+.donutchart .wedge { cursor: pointer; transition: fill-opacity .08s; }
+.donutchart .wedge:hover { fill-opacity: 1; }
+.mixtable { font-size: 13px; }
+.mixtable th, .mixtable td { padding: 5px 8px; }
+
 .legend span { display: inline-flex; align-items: center; color: var(--text-secondary); }
 
 details.tableview { margin-top: 10px; }
