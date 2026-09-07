@@ -722,7 +722,11 @@ def test_uncovered_names_a_league_nobody_asked_for():
 def test_uncovered_tells_a_gap_from_an_omission():
     """A league left out of tonight's pull is a one-word fix. A league no
     source can score is a known gap. Reporting them the same way makes the
-    first invisible among the second."""
+    first invisible among the second.
+
+    Men's Intl Soccer was the example of a gap until it got a source, which is
+    the right way for an example to go stale. It is now the example of an
+    omission -- named, with the source that would have scored it."""
     store = open_store(":memory:")
     rostered(store, "Spain", league="Men's Intl Soccer", asset_type="Team")
 
@@ -730,7 +734,41 @@ def test_uncovered_tells_a_gap_from_an_omission():
 
     missed = ingest.uncovered(store, "2026-27", resolve(["nfl"]))
     assert list(missed["league"]) == ["Men's Intl Soccer"]
-    assert missed["source"].iloc[0] == ""
+    assert missed["source"].iloc[0] == "intl-soccer"
+
+
+def test_no_rostered_league_is_without_a_source():
+    """Every category the roster template holds can now be scored by something.
+    A new one added without a source would be drafted into and never score, and
+    the standings would show zeroes -- which is what a team that lost every
+    game also shows."""
+    store = open_store(":memory:")
+    rosters.add_manager(store, "TG")
+    rosters.create_slots(store, "TG", "2026-27")
+
+    from whul.benchmark_sources import SOURCES
+    from whul.config.league import (POOL_MAP_PLAYERS, POOL_MAP_TEAMS,
+                                    competitions_for)
+
+    covered = set()
+    for source in SOURCES.values():
+        covered |= set(source.produces or (source.league,))
+        covered |= set(competitions_for(source.league))
+
+    # A slot category is a draft pool, not a league: "Club Soccer Top 3" holds
+    # Premier League and La Liga clubs. It is covered when any league that
+    # pools into it has a source.
+    slots = store.query(
+        "SELECT DISTINCT category, asset_type FROM roster_slots "
+        "WHERE season = '2026-27'"
+    )
+    missing = []
+    for row in slots.itertuples():
+        pool_map = POOL_MAP_TEAMS if row.asset_type == "Team" else POOL_MAP_PLAYERS
+        leagues = {lg for lg, pool in pool_map.items() if pool == row.category}
+        if not leagues & covered:
+            missing.append(f"{row.category} ({row.asset_type})")
+    assert not missing, f"rostered categories no source can score: {sorted(missing)}"
 
 
 def test_mls_results_from_the_season_nobody_drafted_do_not_count():
@@ -938,3 +976,21 @@ def test_a_feed_that_cannot_say_whether_a_game_was_played_says_that(store):
     report = ingest.ingest(store, source, "2026-27", date(2026, 9, 14), verbose=False)
     assert "cannot be told apart" in report.problems[0]
     assert "completed row(s)" not in report.problems[0]
+
+
+def test_a_feed_that_returns_nothing_at_all_says_so(store):
+    """An empty frame reaching the report as a bare zero is the fault this
+    module exists to prevent, and the early return skipped every explanation.
+
+    International soccer found it. Its first pull of a league year returns
+    nothing and is right to -- the next international window is weeks away --
+    and the run reported a league on zero without a word about why."""
+    rostered(store, "Spain", league="Men's Intl Soccer", asset_type="Team")
+    source = FakeSource(
+        key="intl-soccer", league="Intl Soccer", asset_type="Team",
+        produces=("Men's Intl Soccer", "Women's Intl Soccer"),
+        build=lambda: (lambda seasons: pd.DataFrame(), lambda raw: raw),
+        seasons_for=lambda day: [2026],
+    )
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 7), verbose=False)
+    assert any("returned nothing for season(s) 2026" in p for p in report.problems)

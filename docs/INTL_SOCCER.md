@@ -482,27 +482,40 @@ Four cautions, all of them the silent kind:
   is missing, so the next W Gold Cup has to be checked for rather than assumed
   — that is a diary entry, not a code change.**
 
-## Still to decide — the admin's, not mine
+## Built
 
-Settled 2026-09-07: the league-year exception and the block/windows split; the
-club soccer match scale with its clean-sheet and margin bonuses; stage
-×1/×2/×3 and rung ×1/×1.5/×2; the ceiling divided by the champion's path; the
-best competition whole plus half of everything else; the fallow-year lift; the
-eight-year benchmark window; no friendlies, no invitational cups, no Olympics;
-League A's path as the denominator for every team in a Nations League.
+`whul/sources/intl_soccer.py` loads and classifies; `whul/scoring/intl_soccer.py`
+applies the ladder; `whul/data/` carries the three tables — the ladder, the
+stated Nations League shapes, and the supplement. Registered as `intl-soccer`,
+in the nightly run's league list, and covered by eighteen tests.
 
-`whul/data/intl_editions.csv` no longer carries a row marked `assumed`. The six
-CONCACAF ones were resolved from the match counts of teams that are always in
-League A — the United States, Mexico, Canada, Costa Rica, Panama — which is the
-same evidence approached from the other end. Four of the six guesses were
-wrong, which is the argument for deriving rather than asking.
+Two faults the build turned up, neither guessable from the design:
 
-What is left:
+**A pull for one league year had no tournament shape to read.** The shape comes
+from the edition that was played, so a single-season pull left the 2026 Women's
+Africa Cup of Nations with no group stage and no knockout: its qualifiers
+became the whole competition, and Ghana topped the women's board on **two won
+matches at a full ceiling**. The loader now returns the whole history with the
+asked-for years marked and the scorer drops the rest once it has the shapes.
+
+**A feed that returned nothing said nothing.** `_pull` returned early on an
+empty frame without reaching any of the explanations, so international
+soccer's first pull of 2026-27 — correctly empty, the next international window
+being weeks away — reported a league on zero with no word about why. Fixed for
+every source, not just this one.
+
+Today's pull is empty and right to be: the only counting matches since 14 July
+2026 are the last four of the World Cup, which the block rule holds in 2025-26
+where the tournament began. The first real scores arrive with the September
+international window.
+
+## Still open
 
 1. **Whether the 2023-24 CONCACAF W Gold Cup is the only hole.** Nobody knows
-   why it is missing, which means nobody knows whether anything else is. The
-   next edition needs checking for rather than assuming.
-2. **Wiring it into the ingest.** None of this writes to the database yet: no
-   source adapter, no benchmark row, no scorer module, nothing in the nightly
-   run. That is the next build, and the numbers above are settled enough to
-   start it.
+   why it is missing, which means nobody knows whether anything else is — and
+   the next W Gold Cup is not until 2029, so there is nothing to probe in the
+   meantime. `intl_supplement.csv` carries the 2024 edition by hand and the
+   loader reports any row of it that later appears upstream.
+2. **The benchmark has not been computed or frozen.** `whul benchmarks` has
+   not been run for this league; until it is, the source scores raw points and
+   nothing scales them.
