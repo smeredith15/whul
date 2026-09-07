@@ -123,33 +123,58 @@ worth more than Euro qualifying, which is right — and a team that fails to
 qualify has still spent its year on the World Cup rung, which is what stops
 "miss the World Cup, get your other points upscaled" from being a strategy.
 
-### 2. Two ladders of 1-2-3
+### 2. A match is scored exactly as a club match is
+
+The club soccer scale, unchanged, so a national team's 2-0 and a club's 2-0 are
+worth the same before the tournament ladder touches them:
+
+| | |
+|---|--:|
+| win | 3 |
+| shootout win | 2 |
+| draw | 1 |
+| shootout loss | 1 |
+| loss | 0 |
+| **+ won by two or more** | +1 |
+| **+ conceded nothing** | +1 |
+
+A shootout win is deliberately not a win for the margin bonus — the match
+itself was drawn, so there is no margin to be big. The clean sheet is not gated
+on the result, because a side that conceded nothing cannot have lost in normal
+time, so it reaches exactly wins to nil and goalless draws.
+
+**Friendlies do not count**, nor the invitational cups that are friendlies
+under another name — SheBelieves, the Algarve Cup, the Tournoi de France, the
+Arnold Clark Cup, the Pinatar Cup, FIFA Series. **Nor the Olympics**, which the
+planned Olympics category will carry: 58 Olympic matches and 20 in Olympic
+qualifying for the rostered women's teams since 2016, deliberately left here.
+
+### 3. Two multipliers, and the rung ladder is shallow
 
 | Stage of a match | | | Rung of a competition | |
 |---|--:|---|---|--:|
-| qualifying | 1 | | nations league | 1 |
-| group | 2 | | federation cup | 2 |
-| knockout | 3 | | world cup | 3 |
+| qualifying | ×1 | | nations league | ×1 |
+| group | ×2 | | federation cup | ×1.5 |
+| knockout | ×3 | | world cup | ×2 |
 
-A result is the R script's own scale, kept: **3** for a win, **2** for a
-shootout win, **1** for a draw or shootout loss, **0** for a loss.
+The rung ladder is 2 : 1.5 : 1 rather than 3 : 2 : 1 on purpose. See §5.
 
-**Friendlies do not count**, and neither do the invitational cups that are
-friendlies by another name — the SheBelieves Cup, the Algarve Cup, the Tournoi
-de France, the Arnold Clark Cup, FIFA Series. That is 476 friendlies and ~150
-invitational matches for the rostered teams since 2015.
-
-### 3. A competition pays a purse, divided by the champion's own path
+### 4. A competition pays a ceiling, divided by the champion's own path
 
 ```
-team points = purse x (its units / path_max)
-path_max    = 3 x (its own qualifiers x 1 + group x 2 + champion's knockouts x 3)
+team points = ceiling x (its units / path_max)
+path_max    = 5 x (its own qualifiers x 1 + group x 2 + champion's knockouts x 3)
 ```
 
-So winning the Gold Cup in six matches and AFCON in seven are worth the same,
-and the 2026 World Cup's new Round of 32 changes nothing about what a World Cup
-is worth. Qualifying length is the team's own, because a CONMEBOL campaign is
-eighteen matches and a CAF one is six and both are the same achievement.
+Five, not three, because the ceiling has to be a real ceiling: a *perfect* run
+now means winning every match by two or more to nil, and nothing can exceed its
+own competition.
+
+Winning the Gold Cup in six matches and AFCON in seven are therefore worth the
+same, and the 2026 World Cup's new Round of 32 changes nothing about what a
+World Cup is worth. Qualifying length is the team's own, because a CONMEBOL
+campaign is eighteen matches and a CAF one is six and both are the same
+achievement.
 
 **Stage is inferred per edition, not assumed.** `G` is the fewest matches any
 team played — a side eliminated in the group stage plays exactly the group —
@@ -157,23 +182,37 @@ and `K` is what the longest run adds. The script prints every edition's
 inferred shape for eyeballing against the format table above, because a
 withdrawal would drag the minimum down and nothing else would say so.
 
-### 4. A fallow year is scaled up
+### 5. A season is its best competition plus half its second
+
+The two-way rule the MLB scorer already uses for a player who bats and pitches:
+the primary scores whole, the secondary contributes half.
+
+Summing every competition instead put the United States' 2018-19 at **310**
+against a 99th percentile of 121 — they won the World Cup and the championship
+that qualified them for it, in one league year. The fold and the shallower rung
+ladder together bring that to **235 against 111**, from 2.6x the benchmark to
+2.1x.
+
+A third competition scores nothing. That is 74 of 3,023 team-seasons, or 2.4%.
+
+### 6. A fallow year can be scaled up
 
 ```
-multiplier = top purse / the best rung the team actually played that season
+multiplier = top ceiling / the best rung the team actually played that season
 ```
 
-A Nations League year pays x3, a federation-cup year x1.5, a World Cup year
-x1. Without it a European men's team's 2026-27 — which is a Nations League and
-the first Euro qualifiers, and nothing else — scores a third of what its World
-Cup year does, and the category goes quiet two years in three.
+A Nations League year pays ×2, a federation-cup year ×1.33, a World Cup year
+×1. Without it a European men's team's 2026-27 — a Nations League and the first
+Euro qualifiers, and nothing else — scores half what its World Cup year does.
 
-### 5. Then the ordinary machinery
+Computed both ways; see the table below before fixing it.
 
-The purses are league points, not scores. The 0-100 scale comes from dividing
-by the pool's 99th percentile as everywhere else, **so a perfect run lands well
-above 100** — which is the admin's stated requirement and the reason the purse
-is not itself the scale.
+### 7. Then the ordinary machinery
+
+These are league points, not scores. The 0-100 scale comes from dividing by the
+pool's 99th percentile as everywhere else, **so a perfect run lands well above
+100** — which is the admin's stated requirement and the reason the ceiling is
+not itself the scale.
 
 ## What this league year actually holds
 
@@ -216,43 +255,50 @@ November - 5 December 2026, for Canada and the USA), and the World Cup itself.
 Run `scripts/intl-soccer-ladder.py`. Every figure here is out of it.
 
 It reproduces results anyone in the league can check. England's women won Euro
-2022 with six wins from six and take the **full 200** federation purse, plus 86
-from World Cup qualifying the same year. Spain's men won the 2026 World Cup
-dropping only a group draw to Cape Verde and score **278 of 300**. The United
-States' women won both the 2019 World Cup and the 2018 CONCACAF Championship
-that qualified them for it, and score **500** — two purses, because a season is
-the sum of the competitions in it and taking two of them whole is meant to beat
-taking one.
+2022 with six wins from six — four of them to nil, one 8-0 — and take **122 of
+the 150** a federation cup can pay; they were hosts, so their `path_max` has no
+qualifying term at all. Spain's men won the 2026 World Cup dropping only a
+group draw to Cape Verde and score **164 of 200**.
 
-The rostered teams, raw purse shares by league year:
+The rostered teams, best competition plus half the second, by league year:
 
 ```
    M          2017 2018 2019 2020 2021 2022 2023 2024 2025
-   England     139   63   38  200   71  122  108   77  224
-   France      214   55   38  148   80  210   90   62  226
-   Spain        89   57   33  155  109  123  185   72  278
+   England      73   41   28   95   44   63   57   54  119
+   France      114   30   24   79   37   92   57   55  135
+   Spain        49   32   21   74   63   68  105   51  164
 
    W          2017 2018 2019 2020 2021 2022 2023 2024 2025
-   Brazil      200   67    0    0  200   44    0  167    0
-   Canada        0  217    0    0  150   44    0    0    0
-   England      62  162    0    0  286  171   85  160   62
-   France         0  150   17   46  152  114  116  167  101
-   Germany      58  127   35   35  179   50  113  148  103
-   Spain        69   54   20   43  104  208  133  210  142
-   United S      0  500    0    0  200   72    0    0    0
+   Brazil      141   40    0    0  144   31    0  107    0
+   Canada        0  128    0    0  108   22    0    0    0
+   England      40   98    0    0  150   91   48   81   37
+   France        0   73   13   35   68   69   74  109   42
+   Germany      37   78   26   25   93   31   78   99   59
+   Spain        42   32   14   33   57  111   90  111   97
+   United S      0  235    0    0  138   49    0    0    0
 ```
 
-**The benchmark, and the requirement it has to meet:**
+**The benchmark, over 3,023 team-seasons since 2015:**
 
-| | pool | p99 | a perfect World Cup run scores |
+| | p99 | highest season | a perfect World Cup scores |
 |---|--:|--:|--:|
-| raw purse shares | 3,023 team-seasons | 199.9 | **150.0** |
-| with fallow-year upscaling | 3,023 | 249.0 | **120.5** |
+| summed, no fold | 121.1 | 310.0 (USA 2018-19) | 165.2 |
+| **best + half the second** | **110.6** | **235.0** | **180.9** |
+| ...and fallow years upscaled | 139.7 | 235.0 | 143.2 |
 
-Both clear 100, which is the requirement. Upscaling costs a third of the
-headroom, because lifting every fallow year lifts the 99th percentile with it.
-Worth knowing before the multiplier is fixed, and an argument for a gentler
-lift than the full x3 if the headroom matters more than the flat years.
+All three clear 100, which is the requirement.
+
+**On the fear the fold was meant to answer.** A 99th percentile is a rank
+statistic over three thousand seasons, so one enormous season cannot move it —
+roughly thirty seasons sit above it either way, and the United States' 2018-19
+was never *setting* the bar. What it was doing was scoring 2.6x it, which made
+one dual-trophy year worth more than two very good ones put together. The fold
+and the shallow ladder bring that to 2.1x, which is the thing they actually
+fix.
+
+**On upscaling.** Lifting every fallow year lifts the 99th percentile with it,
+so it costs headroom above 100 — 180.9 falls to 143.2. Still comfortable, and a
+gentler lift than the full ×2 would keep more.
 
 ### What the numbers expose
 
@@ -268,14 +314,12 @@ bug: Brazil host the 2027 World Cup, qualify automatically, and are the one
 CONMEBOL nation absent from the nine-team Nations League that *is* the
 qualifying. A World Cup host plays no competitive football for a year. It also
 makes their World Cup cheaper to max out than a team that had to qualify —
-their `path_max` carries no qualifying term at all.
+their `path_max` carries no qualifying term, exactly as England's Euro 2022 did
+not.
 
-**The Olympics are the one real exclusion question.** The rostered women's
-teams have played 58 Olympic matches since 2016 and 20 more in Olympic
-qualifying. Women's Olympic football is a senior tournament, unlike the men's
-U-23 competition, so it is not a friendly. It is left out here only because
-WHUL plans a separate Olympics category and double-counting would be worse than
-the gap.
+**The men's 2019-20 and 2018-19 are the flattest years on the board**, 21 to 41
+points for teams that reach World Cup finals. That is the fallow-year problem
+in its natural habitat, and the row to look at when deciding how hard to lift.
 
 ## What must come out equal
 
@@ -367,27 +411,28 @@ Three cautions, all of them the silent kind:
 
 ## Still to decide — the admin's, not mine
 
-Settled 2026-09-07: the league-year exception, the 1-2-3 stage and rung
-ladders, purse-by-path-max, no friendlies, and normalizing to history so a
-perfect run clears 100.
+Settled 2026-09-07: the league-year exception; the club soccer match scale with
+its clean-sheet and margin bonuses; stage ×1/×2/×3 and rung ×1/×1.5/×2; the
+ceiling divided by the champion's path; best competition plus half the second;
+no friendlies, no invitational cups, no Olympics; and normalizing to history so
+a perfect run clears 100.
 
 What is left:
 
-1. **The strength of the fallow-year lift.** The full x3 works and costs a
-   third of the headroom above 100 (150.0 falls to 120.5). A gentler lift keeps
-   more of it. Both are computed; the choice is which trade is wanted.
-2. **The Olympics.** 58 matches for the rostered women's teams since 2016.
-   Excluded here on the assumption that the planned Olympics category will
-   carry them, which is worth confirming rather than assuming.
-3. **CONCACAF's missing 2024 W Gold Cup**, and more generally whether the
-   CONCACAF women's calendar is well enough covered by this source for Canada
-   and the USA to be scored fairly. Four blank years in a row is the symptom.
+1. **Whether to upscale fallow years, and how hard.** The full lift works and
+   costs headroom (180.9 down to 143.2). A gentler one keeps more. Both are
+   computed; the choice is which trade is wanted.
+2. **Whether a third competition should score anything.** It currently scores
+   nothing, which affects 74 of 3,023 team-seasons.
+3. **CONCACAF's missing 2024 W Gold Cup**, and whether this source covers the
+   CONCACAF women's calendar well enough for Canada and the USA to be scored
+   fairly. Four blank years in a row is the symptom, and the admin has no lead
+   on where the data might be either. Options, none of them free: a second
+   source for CONCACAF, an upstream contribution to the ledger, or entering
+   those tournaments by hand.
 4. **The Nations Leagues' internal divisions.** The ledger does not record
    whether a match is League A, B or C, so an edition's inferred `G` is the
-   smallest league's and its `K` the largest's — the UEFA men's 2024-25 edition
-   comes out `G=4 K=6` where League A is `G=6 K=4`. It is an ~8% error on one
-   competition and it needs a small per-edition override table. No rostered
-   team is in CONCACAF's men's Nations League; England, France and Spain are in
-   UEFA's, so this one does bite.
-5. **Whether a shootout win stays worth 2.** Kept from the R script; never
-   challenged, only inherited.
+   smallest league's and its `K` the largest's — UEFA men's 2024-25 comes out
+   `G=4 K=6` where League A is `G=6 K=4`. An ~8% error on one competition, and
+   England, France and Spain are all in it, so it needs a small per-edition
+   override table before this goes live.

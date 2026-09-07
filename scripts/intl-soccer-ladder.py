@@ -17,20 +17,25 @@ The scheme, in four steps:
   2. **A match is worth its result times its stage**: qualifying 1, group 2,
      knockout 3. Multiplied by 3 for a win, 2 for a shootout win, 1 for a draw
      or shootout loss, 0 for a loss -- the R script's own scale, kept.
-  3. **A competition pays a purse, not a rate.** A team takes the share of the
-     purse its results earned against the champion's whole path:
+  3. **A competition pays a ceiling, not a rate.** A team takes the share of
+     it their results earned, measured against the champion's whole path:
 
-         team points = purse x (its units / path_max units)
+         team points = ceiling x (its units / path_max units)
 
      so winning the Gold Cup (six matches) and winning AFCON (seven) are worth
      the same, and the 2026 World Cup's new Round of 32 changes nothing about
      what a World Cup is worth. This is the tennis tier model already in the
      codebase.
-  4. **A fallow year is scaled up** so the best rung actually in play that
-     season is worth a full purse. Without it a European team's Nations League
+  4. **A season is its best competition plus half its second** -- the two-way
+     rule the MLB scorer uses for a player who bats and pitches. Summing them
+     instead put the 2018-19 United States at 500 against a 99th percentile of
+     200: they won the World Cup and the championship that qualified them for
+     it, and a benchmark nobody else can reach is a category decided by one
+     season.
+  5. **A fallow year can be scaled up** so the best rung actually in play that
+     season reaches a full ceiling. Without it a European team's Nations League
      year -- which is all 2026-27 holds for England, France and Spain -- scores
-     a third of what the same team's World Cup year does, and the category
-     goes quiet for two years in three.
+     half what the same team's World Cup year does. Both are computed here.
 
 Stage is inferred per edition rather than assumed. The R script took the first
 three matches as the group stage, which is right for a four-team group and
@@ -60,16 +65,43 @@ WOMEN = "https://raw.githubusercontent.com/martj42/womens-international-results/
 
 LADDER = Path(__file__).resolve().parent.parent / "whul" / "data" / "intl_tournaments.csv"
 
-#: What a competition pays a champion for a perfect run, by rung. Only the
-#: ratios matter: the figures become league points, and the 0-100 scale comes
-#: from dividing by the pool's 99th percentile afterwards -- which is why a
-#: perfect run lands well above 100 rather than exactly on it.
-PURSE = {"nations_league": 100.0, "federation": 200.0, "world": 300.0}
+#: What a perfect run in a competition is worth, by rung.
+#:
+#: Deliberately shallow -- 2 : 1.5 : 1 rather than 3 : 2 : 1. A steeper ladder
+#: put the United States' 2018-19 (they won the World Cup and the championship
+#: that qualified them for it) at 500 against a 99th percentile of 200, which
+#: is a benchmark nobody else can reach and a category decided by one season.
+#: The fold below is the other half of that fix.
+RUNG = {"nations_league": 1.0, "federation": 1.5, "world": 2.0}
 
 #: What a match is worth by the stage it is played at.
 STAGE = {"qualifying": 1.0, "group": 2.0, "knockout": 3.0}
 
-WIN, SHOOTOUT_WIN, DRAW, LOSS = 3.0, 2.0, 1.0, 0.0
+#: A season is its best competition in full plus half its second best -- the
+#: two-way rule the MLB scorer already uses for a player who bats and pitches,
+#: where the primary role scores whole and the secondary contributes half.
+#:
+#: It applies *after* rung and stage, so "best" means the competition worth
+#: most to this team this year, not the highest rung it entered.
+SECOND_SHARE = 0.5
+
+#: The club soccer scale, unchanged: `whul.scoring.competition.OUTCOME_SHARE`
+#: and the two bonuses from `whul.scoring.soccer`. A win is three, a shootout
+#: win two because the ninety minutes were drawn, a draw and a shootout loss
+#: one apiece, a loss nothing -- plus one for winning by two or more, and one
+#: for conceding nothing whatever the result.
+WIN, SHOOTOUT_WIN, DRAW, SHOOTOUT_LOSS, LOSS = 3.0, 2.0, 1.0, 1.0, 0.0
+BIG_MARGIN, PTS_BIG_MARGIN, PTS_CLEAN_SHEET = 2, 1.0, 1.0
+
+#: What one match can be worth at most: won by two or more, to nil. The
+#: denominator is built from this rather than from a bare win, so a run cannot
+#: exceed its own competition and the rung stays a rung.
+MATCH_MAX = WIN + PTS_BIG_MARGIN + PTS_CLEAN_SHEET
+
+#: League points are quoted per hundred so they read like the rest of the
+#: project. The figure is arbitrary -- the 0-100 scale comes from dividing by
+#: the pool's 99th percentile afterwards.
+SCALE = 100.0
 
 #: The league year opens on 21 August. History is partitioned into contiguous
 #: windows from that date so no match falls outside one -- the real 2026-27
@@ -133,16 +165,34 @@ def classify(games: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def per_team(games: pd.DataFrame) -> pd.DataFrame:
-    """One row per team per match, with the result already priced."""
+    """One row per team per match, priced on the club soccer scale.
+
+    The same outcome table and the same two bonuses a club gets, so a national
+    team's 2-0 and a club's 2-0 are worth the same thing before the tournament
+    ladder touches them. A shootout is only ever consulted on a level score,
+    which is the only way one can happen.
+    """
     sides = []
     for side, other in (("home", "away"), ("away", "home")):
         mine, theirs = games[f"{side}_score"], games[f"{other}_score"]
         team = games[f"{side}_team"]
+        won, drew = mine > theirs, mine == theirs
+        shootout_won = drew & (games["winner"] == team)
+        shootout_lost = drew & games["winner"].notna() & ~shootout_won
+
         base = pd.Series(LOSS, index=games.index)
-        base[mine > theirs] = WIN
-        drew = mine == theirs
+        base[won] = WIN
         base[drew] = DRAW
-        base[drew & (games["winner"] == team)] = SHOOTOUT_WIN
+        base[shootout_lost] = SHOOTOUT_LOSS
+        base[shootout_won] = SHOOTOUT_WIN
+        # A shootout win is deliberately not a win for the margin bonus: the
+        # match itself was drawn, so there is no margin to be big. A clean
+        # sheet is not gated on the result at all -- a side that conceded
+        # nothing cannot have lost in normal time, so it reaches exactly wins
+        # to nil and goalless draws.
+        base = base + (won & (mine - theirs >= BIG_MARGIN)) * PTS_BIG_MARGIN
+        base = base + (theirs == 0) * PTS_CLEAN_SHEET
+
         sides.append(pd.DataFrame({
             "date": games["date"], "gender": games["gender"], "team": team,
             "competition": games["competition"], "rung": games["rung"],
@@ -240,7 +290,7 @@ def structure(rows: pd.DataFrame) -> pd.DataFrame:
     # qualifying campaign in progress -- has no shape to read, and a missing
     # shape is not a neutral zero. It makes the denominator the team's own
     # qualifiers alone, so winning both matches of a two-game preliminary tie
-    # paid a full World Cup purse. Seven African sides and the US Virgin
+    # paid a full World Cup ceiling. Seven African sides and the US Virgin
     # Islands scored a perfect season that way, on one or two matches.
     #
     # The format is the most stable thing about a competition, so the last
@@ -255,7 +305,7 @@ def structure(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
-    """Each match's share of its competition's purse."""
+    """Each match's share of its competition's ceiling."""
     rows = rows.merge(shape, on=["gender", "competition", "edition"], how="left")
     rows["G"] = rows["G"].fillna(0).astype(int)
     rows["K"] = rows["K"].fillna(0).astype(int)
@@ -275,32 +325,51 @@ def price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
     rows["units"] = rows["base"] * rows["stage"].map(STAGE)
 
     # The denominator is the champion's whole path -- their qualifying, their
-    # group, their knockouts -- so the purse is what a perfect run pays and
-    # nothing else. Qualifying length is the team's own, because a CONMEBOL
+    # group, their knockouts -- so the ceiling is what a run of wins by two
+    # or more to nil pays, and nothing else reaches it. Qualifying length is the team's own, because a CONMEBOL
     # campaign is eighteen matches and a CAF one is six, and both are the same
     # achievement.
     quals = rows[rows["kind"] == "qualifying"].groupby(
         ["gender", "competition", "edition", "team"]).size().rename("Q")
     rows = rows.merge(quals, on=["gender", "competition", "edition", "team"], how="left")
     rows["Q"] = rows["Q"].fillna(0).astype(int)
-    rows["path_max"] = WIN * (
+    rows["path_max"] = MATCH_MAX * (
         rows["Q"] * STAGE["qualifying"]
         + rows["G"] * STAGE["group"]
         + rows["K"] * STAGE["knockout"]
     )
-    rows["purse"] = rows["rung"].map(PURSE)
-    rows["points"] = rows["purse"] * rows["units"] / rows["path_max"].where(rows["path_max"] > 0)
+    rows["ceiling"] = rows["rung"].map(RUNG) * SCALE
+    rows["points"] = rows["ceiling"] * rows["units"] / rows["path_max"].where(rows["path_max"] > 0)
     return rows[rows["points"].notna()]
 
 
-def seasons(rows: pd.DataFrame, upscale: bool) -> pd.DataFrame:
-    """Team-seasons, optionally lifted so the year's best rung pays a full purse."""
-    grouped = rows.groupby(["gender", "team", "year"]).agg(
-        points=("points", "sum"), matches=("points", "size"),
-        top_rung=("purse", "max"),
+def seasons(rows: pd.DataFrame, upscale: bool = False, fold: bool = True) -> pd.DataFrame:
+    """Team-seasons: the best competition whole, the second at half.
+
+    ``fold=False`` sums every competition instead, which is what produced the
+    500 that started this. ``upscale`` lifts a year whose best rung is not the
+    top one, so a Nations League season is not worth half a World Cup season by
+    the calendar alone.
+    """
+    per_comp = rows.groupby(
+        ["gender", "team", "year", "competition"]
+    ).agg(points=("points", "sum"), ceiling=("ceiling", "max"),
+          matches=("points", "size")).reset_index()
+
+    ranked = per_comp.sort_values("points", ascending=False)
+    ranked["rank"] = ranked.groupby(["gender", "team", "year"]).cumcount()
+    if fold:
+        share = pd.Series(0.0, index=ranked.index)
+        share[ranked["rank"] == 0] = 1.0
+        share[ranked["rank"] == 1] = SECOND_SHARE
+        ranked["points"] = ranked["points"] * share
+
+    grouped = ranked.groupby(["gender", "team", "year"]).agg(
+        points=("points", "sum"), matches=("matches", "sum"),
+        entered=("competition", "size"), top_rung=("ceiling", "max"),
     ).reset_index()
     if upscale:
-        grouped["points"] = grouped["points"] * max(PURSE.values()) / grouped["top_rung"]
+        grouped["points"] = grouped["points"] * max(RUNG.values()) * SCALE / grouped["top_rung"]
     return grouped.sort_values(["year", "points"], ascending=[True, False])
 
 
@@ -363,8 +432,9 @@ def main() -> int:
 
     print(f"\n{'=' * 74}\nThe rostered teams, by league year\n")
     for upscale in (False, True):
-        table = seasons(priced, upscale)
-        label = "WITH fallow-year upscaling" if upscale else "raw purse shares"
+        table = seasons(priced, upscale=upscale)
+        label = "best + half the second, WITH fallow-year upscaling" if upscale \
+            else "best + half the second"
         print(f"  --- {label}")
         for gender, names in ROSTERED.items():
             mine = table[(table["gender"] == gender) & table["team"].isin(names)
@@ -375,16 +445,29 @@ def main() -> int:
         print()
 
     print(f"{'=' * 74}\nWhat a benchmark would be\n")
-    for upscale in (False, True):
-        table = seasons(priced, upscale)
-        pool = table[table["year"] >= args.from_year]
-        label = "upscaled" if upscale else "raw     "
+    perfect = max(RUNG.values()) * SCALE
+    for label, kwargs in (
+        ("summed, no fold ", dict(fold=False)),
+        ("best + half 2nd  ", dict()),
+        ("...and upscaled  ", dict(upscale=True)),
+    ):
+        pool = seasons(priced, **kwargs)
+        pool = pool[pool["year"] >= args.from_year]
         p99 = pool["points"].quantile(0.99)
         best = pool.nlargest(1, "points").iloc[0]
-        print(f"    {label}  pool {len(pool):>5} team-seasons   p99 {p99:7.1f}   "
-              f"best {best['points']:7.1f} ({best['team']} {int(best['year'])})")
-        print(f"              a perfect World Cup run ({max(PURSE.values()):.0f}) would score "
-              f"{max(PURSE.values()) / p99 * 100:6.1f} on the 0-100 scale")
+        print(f"    {label}  p99 {p99:6.1f}   best {best['points']:6.1f} "
+              f"({best['team']} {int(best['year'])})   "
+              f"a perfect World Cup ({perfect:.0f}) scores {perfect / p99 * 100:6.1f}")
+    print(f"\n    'Perfect' now means every match won by two or more to nil, since")
+    print(f"    the clean-sheet and margin bonuses are in the ceiling too.")
+
+    print(f"\n{'=' * 74}\nHow often a third competition is dropped\n")
+    table = seasons(priced)
+    live = table[table["year"] >= args.from_year]
+    counts = live["entered"].value_counts().sort_index()
+    for entered, n in counts.items():
+        note = "  <- a third and beyond score nothing" if entered >= 3 else ""
+        print(f"    {entered} competition(s) in a season: {n:>5} team-seasons{note}")
     return 0
 
 
