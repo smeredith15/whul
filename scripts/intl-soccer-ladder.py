@@ -77,13 +77,25 @@ RUNG = {"nations_league": 1.0, "federation": 1.5, "world": 2.0}
 #: What a match is worth by the stage it is played at.
 STAGE = {"qualifying": 1.0, "group": 2.0, "knockout": 3.0}
 
-#: A season is its best competition in full plus half its second best -- the
-#: two-way rule the MLB scorer already uses for a player who bats and pitches,
-#: where the primary role scores whole and the secondary contributes half.
+#: A season is its best competition in full plus half of everything else --
+#: the two-way rule the MLB scorer already uses for a player who bats and
+#: pitches, where the primary role scores whole and the secondary contributes
+#: half, extended to however many competitions a year holds.
 #:
 #: It applies *after* rung and stage, so "best" means the competition worth
 #: most to this team this year, not the highest rung it entered.
-SECOND_SHARE = 0.5
+BEYOND_BEST_SHARE = 0.5
+
+#: The real league names, because `whul.normalize` keys its normalization
+#: groups on them and is fed them directly here -- so the benchmark this
+#: prints is the benchmark that would be frozen, buffer-pool truncation and
+#: all, rather than a percentile of every national team that played.
+LEAGUES = {"M": "Men's Intl Soccer", "W": "Women's Intl Soccer"}
+
+#: Two full four-year cycles. Five seasons -- what the other leagues use --
+#: holds one World Cup and either one continental championship or two, so a
+#: five-year pool is a different mix depending on which year it starts in.
+BENCHMARK_SEASONS = 8
 
 #: The club soccer scale, unchanged: `whul.scoring.competition.OUTCOME_SHARE`
 #: and the two bonuses from `whul.scoring.soccer`. A win is three, a shootout
@@ -344,10 +356,10 @@ def price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
 
 
 def seasons(rows: pd.DataFrame, upscale: bool = False, fold: bool = True) -> pd.DataFrame:
-    """Team-seasons: the best competition whole, the second at half.
+    """Team-seasons: the best competition whole, everything else at half.
 
     ``fold=False`` sums every competition instead, which is what produced the
-    500 that started this. ``upscale`` lifts a year whose best rung is not the
+    outlier that started this. ``upscale`` lifts a year whose best rung is not the
     top one, so a Nations League season is not worth half a World Cup season by
     the calendar alone.
     """
@@ -359,9 +371,8 @@ def seasons(rows: pd.DataFrame, upscale: bool = False, fold: bool = True) -> pd.
     ranked = per_comp.sort_values("points", ascending=False)
     ranked["rank"] = ranked.groupby(["gender", "team", "year"]).cumcount()
     if fold:
-        share = pd.Series(0.0, index=ranked.index)
+        share = pd.Series(BEYOND_BEST_SHARE, index=ranked.index)
         share[ranked["rank"] == 0] = 1.0
-        share[ranked["rank"] == 1] = SECOND_SHARE
         ranked["points"] = ranked["points"] * share
 
     grouped = ranked.groupby(["gender", "team", "year"]).agg(
@@ -444,31 +455,95 @@ def main() -> int:
             print("      " + wide.round(0).fillna(0).astype(int).to_string().replace("\n", "\n      "))
         print()
 
-    print(f"{'=' * 74}\nWhat a benchmark would be\n")
-    perfect = max(RUNG.values()) * SCALE
-    for label, kwargs in (
-        ("summed, no fold ", dict(fold=False)),
-        ("best + half 2nd  ", dict()),
-        ("...and upscaled  ", dict(upscale=True)),
-    ):
-        pool = seasons(priced, **kwargs)
-        pool = pool[pool["year"] >= args.from_year]
-        p99 = pool["points"].quantile(0.99)
-        best = pool.nlargest(1, "points").iloc[0]
-        print(f"    {label}  p99 {p99:6.1f}   best {best['points']:6.1f} "
-              f"({best['team']} {int(best['year'])})   "
-              f"a perfect World Cup ({perfect:.0f}) scores {perfect / p99 * 100:6.1f}")
-    print(f"\n    'Perfect' now means every match won by two or more to nil, since")
-    print(f"    the clean-sheet and margin bonuses are in the ceiling too.")
+    print(f"{'=' * 74}\nThe benchmark, through the real machinery\n")
+    print(f"    `whul.normalize.compute_benchmarks`, not a flat percentile: the")
+    print(f"    pool is truncated to the top {40} of each season before the 99th")
+    print(f"    percentile is taken, so 100 means the best of the draftable field")
+    print(f"    rather than of every national team that played a match.\n")
 
-    print(f"\n{'=' * 74}\nHow often a third competition is dropped\n")
+    window = sorted(priced["year"].unique())[-BENCHMARK_SEASONS:]
+    for label, kwargs in (
+        ("summed, no fold", dict(fold=False)),
+        ("best + half the rest", dict()),
+        ("...and upscaled", dict(upscale=True)),
+    ):
+        table = seasons(priced, **kwargs)
+        scored = normalized(table, window)
+        print(f"  --- {label}")
+        for gender, league in LEAGUES.items():
+            block = scored[scored["league"] == league]
+            pool = block[block["in_pool"]]
+            if pool.empty:
+                continue
+            over = [(t, int((pool["scaled"] > t).sum())) for t in (100, 125, 150, 200)]
+            print(f"    {league:<22} benchmark {block['benchmark'].iloc[0]:6.1f} "
+                  f"from {len(pool)} pooled seasons; best raw {pool['points'].max():6.1f}"
+                  f" = {pool['scaled'].max():5.1f}")
+            print(f"      seasons over: " + ",  ".join(
+                f"{t} -> {n}" for t, n in over))
+        print()
+
+    print(f"{'=' * 74}\nNormalized scores -- every team, not only the roster\n")
     table = seasons(priced)
-    live = table[table["year"] >= args.from_year]
-    counts = live["entered"].value_counts().sort_index()
+    scored = normalized(table, window)
+    for gender, league in LEAGUES.items():
+        block = scored[(scored["league"] == league) & scored["in_pool"]]
+        print(f"  --- {league}: the 20 highest seasons in the pool")
+        top = block.nlargest(20, "scaled")
+        for row in top.itertuples():
+            print(f"      {int(row.year)}  {row.team:<28} {row.points:7.1f} raw  "
+                  f"{row.scaled:6.1f}  ({row.entered} competition(s), {row.matches} matches)")
+        share = block["scaled"]
+        print(f"      median {share.median():5.1f}   75th {share.quantile(.75):5.1f}   "
+              f"90th {share.quantile(.90):5.1f}   99th {share.quantile(.99):5.1f}   "
+              f"max {share.max():5.1f}\n")
+
+    print(f"{'=' * 74}\nThe rostered teams, normalized\n")
+    for gender, names in ROSTERED.items():
+        block = scored[(scored["league"] == LEAGUES[gender]) & scored["team"].isin(names)]
+        wide = block.pivot_table(index="team", columns="year", values="scaled")
+        print(f"  {LEAGUES[gender]}")
+        print("    " + wide.round(0).fillna(0).astype(int).to_string().replace("\n", "\n    "))
+        print()
+
+    print(f"{'=' * 74}\nHow often a competition beyond the best is halved\n")
+    counts = table[table["year"].isin(window)]["entered"].value_counts().sort_index()
     for entered, n in counts.items():
-        note = "  <- a third and beyond score nothing" if entered >= 3 else ""
+        note = "  <- all but the best are halved" if entered >= 2 else ""
         print(f"    {entered} competition(s) in a season: {n:>5} team-seasons{note}")
     return 0
+
+
+def normalized(table: pd.DataFrame, window: list[int]) -> pd.DataFrame:
+    """Team-seasons on the 0-100 scale, against a benchmark computed as WHUL does.
+
+    The buffer-pool truncation is the whole point of routing through
+    `whul.normalize` rather than taking a percentile here: it keeps only the
+    top of each season before pooling, so the benchmark is the best of a
+    draftable field. A flat percentile over every nation that played a
+    competitive match puts the bar around a team that lost in qualifying, and
+    every good season then scores three figures.
+    """
+    from whul.normalize import buffer_pool, compute_benchmarks
+
+    live = table[table["year"].isin(window)].copy()
+    live["league"] = live["gender"].map(LEAGUES)
+    live["total_points"] = live["points"]
+
+    bench = compute_benchmarks(live, "Team", season_col="year")
+    pooled = buffer_pool(live, "Team", season_col="year")
+    keys = set(zip(pooled["league"], pooled["team"], pooled["year"]))
+
+    out = live.merge(
+        bench[["norm_key", "benchmark"]].rename(columns={"norm_key": "league"}),
+        on="league", how="left",
+    )
+    out["scaled"] = out["points"] / out["benchmark"] * 100.0
+    out["in_pool"] = [
+        (lg, tm, yr) in keys
+        for lg, tm, yr in zip(out["league"], out["team"], out["year"])
+    ]
+    return out
 
 
 if __name__ == "__main__":

@@ -182,20 +182,19 @@ and `K` is what the longest run adds. The script prints every edition's
 inferred shape for eyeballing against the format table above, because a
 withdrawal would drag the minimum down and nothing else would say so.
 
-### 5. A season is its best competition plus half its second
+### 5. A season is its best competition plus half of everything else
 
-The two-way rule the MLB scorer already uses for a player who bats and pitches:
-the primary scores whole, the secondary contributes half.
+The two-way rule the MLB scorer already uses for a player who bats and pitches
+— the primary scores whole, the secondary contributes half — extended to
+however many competitions a year holds. 674 team-seasons in the pool have two
+competitions and 74 have three.
 
-Summing every competition instead put the United States' 2018-19 at **310**
-against a 99th percentile of 121 — they won the World Cup and the championship
-that qualified them for it, in one league year. The fold and the shallower rung
-ladder together bring that to **235 against 111**, from 2.6x the benchmark to
-2.1x.
+Summing them instead put the United States' 2018-19 at **211 on the 0-100
+scale**: they won the World Cup and the championship that qualified them for it
+inside one league year. The fold and the shallower rung ladder bring that to
+**165**.
 
-A third competition scores nothing. That is 74 of 3,023 team-seasons, or 2.4%.
-
-### 6. A fallow year can be scaled up
+### 6. Whether to scale up a fallow year
 
 ```
 multiplier = top ceiling / the best rung the team actually played that season
@@ -205,7 +204,11 @@ A Nations League year pays ×2, a federation-cup year ×1.33, a World Cup year
 ×1. Without it a European men's team's 2026-27 — a Nations League and the first
 Euro qualifiers, and nothing else — scores half what its World Cup year does.
 
-Computed both ways; see the table below before fixing it.
+**It also flattens the top, which is the opposite of what a flat percentile
+suggested.** Lifting every fallow year lifts far more of the pool than it lifts
+the best seasons — a World Cup winner is already on the top rung and gets ×1 —
+so the benchmark rises and the outlier comes down with it. The United States'
+2018-19 goes from 165 to **133**, and nothing in sixteen pool-years clears 150.
 
 ### 7. Then the ordinary machinery
 
@@ -252,53 +255,75 @@ November - 5 December 2026, for Canada and the USA), and the World Cup itself.
 
 ## What the scheme does to real seasons
 
-Run `scripts/intl-soccer-ladder.py`. Every figure here is out of it.
+Run `scripts/intl-soccer-ladder.py`. Every figure here is out of it, and the
+benchmark comes from `whul.normalize.compute_benchmarks` rather than a
+percentile taken here — **the pool is truncated to the top 40 of each season
+before the 99th percentile is taken**, so 100 means the best of a draftable
+field rather than of every nation that played a competitive match. Two full
+four-year cycles, 2018-19 to 2025-26, 320 pooled seasons per gender.
 
-It reproduces results anyone in the league can check. England's women won Euro
-2022 with six wins from six — four of them to nil, one 8-0 — and take **122 of
-the 150** a federation cup can pay; they were hosts, so their `path_max` has no
-qualifying term at all. Spain's men won the 2026 World Cup dropping only a
-group draw to Cape Verde and score **164 of 200**.
+That truncation is not a detail. Against a flat percentile over all 3,023
+seasons the numbers look about 40% larger and the conclusions invert.
 
-The rostered teams, best competition plus half the second, by league year:
+### Does anything score far above 100?
+
+| | benchmark | best season | >100 | >125 | >150 | >200 |
+|---|--:|--:|--:|--:|--:|--:|
+| **summed, no fold** | | | | | | |
+| Men's | 164.4 | 115.6 (Spain 25) | 4 | 0 | 0 | 0 |
+| Women's | 146.8 | **211.2** (USA 18) | 4 | 1 | 1 | 1 |
+| **best + half the rest** | | | | | | |
+| Men's | 136.6 | 120.4 (Spain 25) | 4 | 0 | 0 | 0 |
+| Women's | 142.5 | **164.9** (USA 18) | 4 | 1 | 1 | 0 |
+| **...and fallow years upscaled** | | | | | | |
+| Men's | 163.6 | 126.3 | 4 | 1 | 0 | 0 |
+| Women's | 177.0 | **132.8** | 4 | 1 | 0 | 0 |
+
+Four seasons of 320 clear 100 in every variant, which is what a 99th percentile
+means. What changes is the tail: summing gives one season at 211, the fold
+brings it to 165, and the fold plus the lift brings it to 133 with nothing at
+all above 150.
+
+The middle of the distribution is nowhere near 100 — the women's pool has a
+median of 26 and a 90th percentile of 63; the men's 40 and 68.
+
+### The highest seasons in the pool, all teams
 
 ```
-   M          2017 2018 2019 2020 2021 2022 2023 2024 2025
-   England      73   41   28   95   44   63   57   54  119
-   France      114   30   24   79   37   92   57   55  135
-   Spain        49   32   21   74   63   68  105   51  164
-
-   W          2017 2018 2019 2020 2021 2022 2023 2024 2025
-   Brazil      141   40    0    0  144   31    0  107    0
-   Canada        0  128    0    0  108   22    0    0    0
-   England      40   98    0    0  150   91   48   81   37
-   France        0   73   13   35   68   69   74  109   42
-   Germany      37   78   26   25   93   31   78   99   59
-   Spain        42   32   14   33   57  111   90  111   97
-   United S      0  235    0    0  138   49    0    0    0
+   Men's                                      Women's
+   2025  Spain           164.4 raw   120.4    2018  United States  235.0   164.9
+   2020  United States   155.0       113.5    2018  New Zealand    150.0   105.3
+   2022  Mexico          149.0       109.1    2021  England        149.9   105.2
+   2018  Qatar           137.0       100.3    2021  Brazil         143.6   100.7
+   2025  France          134.8        98.7    2025  Japan          138.0    96.8
+   2023  Argentina       133.3        97.6    2021  United States  137.5    96.5
+   2022  United States   130.7        95.7    2018  Canada         127.5    89.5
+   2024  Mexico          130.6        95.6    2021  South Africa   112.1    78.7
 ```
 
-**The benchmark, over 3,023 team-seasons since 2015:**
+Spain's men won the 2026 World Cup dropping only a group draw to Cape Verde,
+which is the top men's season on the board at 120. England's women won Euro
+2022 six from six, four of them to nil including an 8-0, and take 105 — 122 of
+the 150 a federation cup can pay, with no qualifying term at all because they
+were hosts.
 
-| | p99 | highest season | a perfect World Cup scores |
-|---|--:|--:|--:|
-| summed, no fold | 121.1 | 310.0 (USA 2018-19) | 165.2 |
-| **best + half the second** | **110.6** | **235.0** | **180.9** |
-| ...and fallow years upscaled | 139.7 | 235.0 | 143.2 |
+### The rostered teams, normalized
 
-All three clear 100, which is the requirement.
+```
+   Men's           2018 2019 2020 2021 2022 2023 2024 2025
+   England           30   20   76   32   48   41   40   87
+   France            22   17   64   27   74   41   41   99
+   Spain             23   16   59   46   52   77   37  120
 
-**On the fear the fold was meant to answer.** A 99th percentile is a rank
-statistic over three thousand seasons, so one enormous season cannot move it —
-roughly thirty seasons sit above it either way, and the United States' 2018-19
-was never *setting* the bar. What it was doing was scoring 2.6x it, which made
-one dual-trophy year worth more than two very good ones put together. The fold
-and the shallow ladder bring that to 2.1x, which is the thing they actually
-fix.
-
-**On upscaling.** Lifting every fallow year lifts the 99th percentile with it,
-so it costs headroom above 100 — 180.9 falls to 143.2. Still comfortable, and a
-gentler lift than the full ×2 would keep more.
+   Women's         2018 2019 2020 2021 2022 2023 2024 2025
+   Brazil            28    0    0  101   22    0   75    0
+   Canada            89    0    0   75   16    0    0    0
+   England           69    0    0  105   64   34   57   26
+   France            51    9   25   48   48   52   77   30
+   Germany           55   18   17   65   22   55   69   42
+   Spain             23   10   23   40   78   63   78   68
+   United States    165    0    0   96   34    0    0    0
+```
 
 ### What the numbers expose
 
@@ -312,14 +337,11 @@ pile.
 **Brazil's women score nothing in 2025-26 either**, and that one is nobody's
 bug: Brazil host the 2027 World Cup, qualify automatically, and are the one
 CONMEBOL nation absent from the nine-team Nations League that *is* the
-qualifying. A World Cup host plays no competitive football for a year. It also
-makes their World Cup cheaper to max out than a team that had to qualify —
-their `path_max` carries no qualifying term, exactly as England's Euro 2022 did
-not.
+qualifying. A World Cup host plays no competitive football for a year.
 
-**The men's 2019-20 and 2018-19 are the flattest years on the board**, 21 to 41
-points for teams that reach World Cup finals. That is the fallow-year problem
-in its natural habitat, and the row to look at when deciding how hard to lift.
+**The men's 2018-19 and 2019-20 are the flattest years on the board**, 16 to 30
+for teams that reach World Cup finals. That is the fallow-year problem in its
+natural habitat, and the row to look at when deciding whether to lift.
 
 ## What must come out equal
 
@@ -413,23 +435,26 @@ Three cautions, all of them the silent kind:
 
 Settled 2026-09-07: the league-year exception; the club soccer match scale with
 its clean-sheet and margin bonuses; stage ×1/×2/×3 and rung ×1/×1.5/×2; the
-ceiling divided by the champion's path; best competition plus half the second;
-no friendlies, no invitational cups, no Olympics; and normalizing to history so
-a perfect run clears 100.
+ceiling divided by the champion's path; the best competition whole plus half of
+everything else; no friendlies, no invitational cups, no Olympics; and
+normalizing to history so a good season clears 100 without the scale breaking.
 
 What is left:
 
-1. **Whether to upscale fallow years, and how hard.** The full lift works and
-   costs headroom (180.9 down to 143.2). A gentler one keeps more. Both are
-   computed; the choice is which trade is wanted.
-2. **Whether a third competition should score anything.** It currently scores
-   nothing, which affects 74 of 3,023 team-seasons.
+1. **Whether to upscale fallow years.** It fixes the flat years *and* pulls the
+   top season from 165 to 133, which is not the trade it looked like against a
+   flat percentile. The cost is that a Nations League year and a World Cup year
+   become closer than the rung ladder says they are.
+2. **The eight-year benchmark window.** Every other league uses five seasons.
+   Five here holds one World Cup and either one continental championship or
+   two, so the pool changes character with its start year. Two full cycles is
+   the natural unit and is what the R script used.
 3. **CONCACAF's missing 2024 W Gold Cup**, and whether this source covers the
    CONCACAF women's calendar well enough for Canada and the USA to be scored
    fairly. Four blank years in a row is the symptom, and the admin has no lead
-   on where the data might be either. Options, none of them free: a second
-   source for CONCACAF, an upstream contribution to the ledger, or entering
-   those tournaments by hand.
+   on where the data might be either. Options, none free: a second source for
+   CONCACAF, an upstream contribution to the ledger, or entering those
+   tournaments by hand.
 4. **The Nations Leagues' internal divisions.** The ledger does not record
    whether a match is League A, B or C, so an edition's inferred `G` is the
    smallest league's and its `K` the largest's — UEFA men's 2024-25 comes out
