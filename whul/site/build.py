@@ -124,19 +124,26 @@ def _identity(stats: dict, league: str, norm_key: str,
                   merely repeats the league: an italic line reading "Premier
                   League" under a line reading "Premier League" is furniture.
     """
-    def first(*names: str) -> str:
+    def first(*names: str, words_only: bool = False) -> str:
         for name in names:
             value = stats.get(name)
             if value is None or value != value:      # NaN
                 continue
             text = str(value).strip()
-            if text and text.lower() not in ("nan", "none"):
-                return text
+            if not text or text.lower() in ("nan", "none"):
+                continue
+            # A position is a word. Golf files a *finishing* position under the
+            # same key -- Rory McIlroy read "14.0 · Northern Ireland", which is
+            # a place on a leaderboard printed where a role belongs. Skipping
+            # the number falls through to the role, which says "Golfer".
+            if words_only and text.replace(".", "").replace("-", "").isdigit():
+                continue
+            return text
         return ""
 
     group = norm_key.replace("_", " ").strip()
     return {
-        "position": first("position", "role"),
+        "position": first("position", "role", words_only=True),
         # The feed first, then the sheet. The feed is the one that notices a
         # January transfer; the sheet is the one that knows a golfer is Spanish,
         # which no feed here carries at all. Neither covers the other's case, so
@@ -144,6 +151,80 @@ def _identity(stats: dict, league: str, norm_key: str,
         "team": first("team_name", "team", "club") or affiliation.strip(),
         "group": "" if group in ("", league) else group,
     }
+
+
+#: Which confederation a national side belongs to, for the shield in its
+#: corner. Written down because nothing in the roster carries it and no feed
+#: here does either: a country's continent is not a fact about a football
+#: match, so it has to be stated.
+#:
+#: Not exhaustive, and does not pretend to be. It covers the nations a slot in
+#: this league plausibly holds; anything else gets no corner badge, which is
+#: the honest answer -- a wrong shield is worse than none, and adding a line
+#: here is a smaller job than noticing a quiet mistake.
+CONFEDERATIONS = {
+    "uefa": (
+        "England", "France", "Spain", "Germany", "Italy", "Portugal",
+        "Netherlands", "Belgium", "Croatia", "Denmark", "Sweden", "Norway",
+        "Switzerland", "Austria", "Poland", "Ukraine", "Serbia", "Scotland",
+        "Wales", "Republic of Ireland", "Ireland", "Czechia", "Czech Republic",
+        "Turkey", "Greece", "Russia", "Hungary", "Romania", "Iceland",
+        "Finland", "Slovakia", "Slovenia", "Albania", "Bosnia and Herzegovina",
+        "North Macedonia", "Georgia", "Northern Ireland",
+    ),
+    "conmebol": (
+        "Brazil", "Argentina", "Uruguay", "Colombia", "Chile", "Peru",
+        "Ecuador", "Paraguay", "Bolivia", "Venezuela",
+    ),
+    "concacaf": (
+        "USA", "United States", "Mexico", "Canada", "Costa Rica", "Jamaica",
+        "Panama", "Honduras", "El Salvador", "Haiti", "Trinidad and Tobago",
+    ),
+    "caf": (
+        "Morocco", "Senegal", "Nigeria", "Egypt", "Ghana", "Cameroon",
+        "Algeria", "Tunisia", "Ivory Coast", "South Africa", "Mali",
+    ),
+    "afc": (
+        "Japan", "South Korea", "Australia", "Iran", "Saudi Arabia", "Qatar",
+        "China", "Iraq", "Uzbekistan", "Jordan",
+    ),
+    "ofc": ("New Zealand", "Fiji", "New Caledonia"),
+}
+
+#: Country -> confederation, built once from the table above.
+CONFEDERATION_OF = {
+    country: shield
+    for shield, countries in CONFEDERATIONS.items()
+    for country in countries
+}
+
+
+def corner_badge(asset_type: str, category: str, league: str,
+                 affiliation: str) -> tuple[str, str] | None:
+    """The image that goes bottom-right of this asset's picture.
+
+    ``(directory, filename stem)``, or None where nothing is known to put
+    there. Which directory it is follows from what the asset is, so there is
+    nothing to choose and nothing to keep in step:
+
+        a team-sport player   his club's crest
+        an individual athlete their country's flag
+        a club or programme   its league's mark
+        an international side its confederation's shield
+        an Olympic entry      the rings
+
+    The main picture is always ``asset/<asset id>``. This is only the corner.
+    """
+    if asset_type == "Team":
+        if "Intl" in category:
+            shield = CONFEDERATION_OF.get(affiliation.strip())
+            return ("shield", shield) if shield else None
+        if category == "Olympics":
+            return ("shield", "olympics")
+        return ("badge", _slug(league)) if league else None
+    if category in INDIVIDUAL_CATEGORIES:
+        return ("flag", _slug(affiliation)) if affiliation else None
+    return ("club", _slug(affiliation)) if affiliation else None
 
 
 def badge_names(store: Store, season: str, as_of=None) -> dict[str, str]:
@@ -210,6 +291,14 @@ def asset_profiles(
         "asset_type FROM assets"
     ).set_index("asset_id")
     stats = store.read_stats(season, as_of)
+    # The roster category, which is what decides whether a corner badge is a
+    # club, a flag or a shield. It lives on the slot rather than the asset,
+    # since the same country can be a men's and a women's side.
+    categories = dict(store.query(
+        "SELECT DISTINCT o.asset_id, r.category FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "WHERE r.season = ?", (season,),
+    ).itertuples(index=False, name=None))
 
     lines: dict[str, list[tuple[str, str]]] = {}
     finishes: dict[str, list[dict]] = {}
@@ -235,6 +324,10 @@ def asset_profiles(
             raw_rows.get(asset_id, {}), league, str(info["norm_key"] or ""),
             str(info["affiliation"] or ""),
         )
+        corner = corner_badge(
+            str(info["asset_type"]), categories.get(asset_id, ""), league,
+            who["team"],
+        )
         out[asset_id] = {
             "name": escape(name),
             "meta": escape(f"{league} · {info['asset_type']}"),
@@ -245,12 +338,21 @@ def asset_profiles(
             "position": escape(who["position"]),
             "team": escape(who["team"]),
             "group": escape(who["group"]),
+            # Carried so the tables can badge a name without working out again
+            # what this already knows. Two derivations of one rule drift.
+            "corner": list(corner) if corner else None,
+            # A team's picture is a crest and is fitted rather than cropped;
+            # carried for the same reason as the corner, so a table does not
+            # have to know what an asset type implies.
+            "logo": str(info["asset_type"]) == "Team",
             # Kept apart from `meta` as well as in it: the chart labels a bar
             # with the kind alone, and splitting a formatted string back up to
             # get at it is how the two drift.
             "kind": escape(str(info["asset_type"])),
             "league": escape(league),
-            "avatar": images.avatar("asset", asset_id, name, size=52, depth=depth),
+            "avatar": images.avatar("asset", asset_id, name, size=52, depth=depth,
+                                    badge=corner,
+                                    logo=str(info["asset_type"]) == "Team"),
             "badge": (
                 f'<img class="badge" src="{"../" * depth}{images.OUT_DIR}/badge/'
                 f'{escape(badge.name)}" alt="{escape(league)}">' if badge else ""
@@ -410,10 +512,13 @@ def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0,
     window still has all of it, which is what the click is for.
     """
     inner = escape(name)
+    corner = profile.get("corner") if profile else None
+    corner = tuple(corner) if corner else None
+    logo = bool(profile.get("logo")) if profile else False
     return (
         f'<button class="assetlink" data-asset="{escape(asset_id or "")}" '
         f'type="button"><span class="who">'
-        f'{images.avatar("asset", asset_id, name, size=26, depth=depth)}'
+        f"{images.avatar('asset', asset_id, name, size=26, depth=depth, badge=corner, logo=logo)}"
         f'<span class="stack"><span class="nm">{inner}</span>'
         f'{_identity_lines(profile)}</span></span></button>'
     )
@@ -859,10 +964,13 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         asset_id = str(best["asset_id"] or "")
         profile = profiles.get(asset_id)
         name = profile["name"] if profile else asset_id or "—"
+        corner = (profile or {}).get("corner")
+        corner = tuple(corner) if corner else None
+        is_logo = bool((profile or {}).get("logo"))
         mvps[manager] = (
             f'<button class="assetlink" type="button" data-asset="{escape(asset_id)}">'
             f'<span class="who">'
-            f'{images.avatar("asset", asset_id, name, size=26)}'
+            f"{images.avatar('asset', asset_id, name, size=26, badge=corner, logo=is_logo)}"
             f'<span><span class="nm">{name}</span> '
             f'<span style="color:var(--muted)">{best["category"]} · '
             f'{float(best["score"]):,.1f}</span></span></span></button>'

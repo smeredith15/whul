@@ -1296,3 +1296,70 @@ def test_an_asset_neither_knows_about_is_left_out(tmp_path):
 
     store = _badge_store(tmp_path, "")
     assert "p1" not in badge_names(store, "2026-27")
+
+
+# --- the corner badge ---------------------------------------------------------
+
+def test_each_kind_of_asset_takes_the_badge_its_spec_says():
+    """Which directory the corner comes from follows from what the asset is, so
+    there is nothing to choose and nothing to keep in step."""
+    from whul.site.build import corner_badge
+
+    assert corner_badge("Player", "Club Soccer Top 3", "Premier League",
+                        "Arsenal") == ("club", "arsenal")
+    assert corner_badge("Player", "PGA", "PGA", "Spain") == ("flag", "spain")
+    assert corner_badge("Team", "NFL", "NFL", "") == ("badge", "nfl")
+    assert corner_badge("Team", "Intl Soccer", "Men's Intl Soccer",
+                        "Brazil") == ("shield", "conmebol")
+
+
+def test_a_country_with_no_confederation_gets_no_shield():
+    """A wrong shield is worse than none, and the table is not exhaustive."""
+    from whul.site.build import corner_badge
+
+    assert corner_badge("Team", "Intl Soccer", "Men's Intl Soccer", "Atlantis") is None
+    assert corner_badge("Player", "NBA", "NBA", "") is None
+
+
+def test_the_badge_is_drawn_on_a_monogram_too(tmp_path):
+    """A player with no photograph still plays for somebody, and of that pair
+    the crest is the more useful half."""
+    from whul.site import images
+
+    (tmp_path / "club").mkdir()
+    (tmp_path / "club" / "arsenal.png").write_bytes(b"x")
+    html = images.avatar("asset", "nobody", "A Player", size=26,
+                         source=tmp_path, badge=("club", "arsenal"))
+    assert "avatar mono" in html and 'class="pip"' in html
+
+
+def test_a_badge_nobody_supplied_leaves_the_picture_alone(tmp_path):
+    from whul.site import images
+
+    html = images.avatar("asset", "nobody", "A Player", size=26,
+                         source=tmp_path, badge=("club", "arsenal"))
+    assert "pip" not in html
+
+
+def test_a_badge_too_small_to_read_is_not_drawn(tmp_path):
+    """A crest at nine pixels is a smudge that costs a request and says
+    nothing, and the row it would sit in names the club anyway."""
+    from whul.site import images
+
+    (tmp_path / "club").mkdir()
+    (tmp_path / "club" / "arsenal.png").write_bytes(b"x")
+    small = images.avatar("asset", "x", "A", size=images.BADGE_FLOOR - 1,
+                          source=tmp_path, badge=("club", "arsenal"))
+    big = images.avatar("asset", "x", "A", size=images.BADGE_FLOOR,
+                        source=tmp_path, badge=("club", "arsenal"))
+    assert "pip" not in small and "pip" in big
+
+
+def test_a_finishing_position_is_not_printed_where_a_role_belongs():
+    """Golf files a leaderboard place under the same key a soccer feed uses for
+    "F". Rory McIlroy read "14.0 · Northern Ireland" on the live site."""
+    from whul.site.build import _identity
+
+    assert _identity({"position": 14.0, "role": "Golfer"}, "PGA", "")["position"] \
+        == "Golfer"
+    assert _identity({"position": "F"}, "Premier League", "")["position"] == "F"
