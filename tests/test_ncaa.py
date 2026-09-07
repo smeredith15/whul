@@ -276,3 +276,83 @@ def test_incomplete_games_are_ignored():
     rows.append({**game("A", "B", 0, 0), "completed": False})
     out = score_football(pd.DataFrame(rows)).set_index("team")
     assert out.loc["A", "wins"] == 1
+
+
+# --- Notre Dame -----------------------------------------------------------
+
+def _fb_game(home, away, home_conf, away_conf, hs, as_, season_type=2, notes=""):
+    return {
+        "season": 2026, "season_type": season_type, "notes": notes,
+        "home_team": home, "away_team": away,
+        "home_conference": home_conf, "away_conference": away_conf,
+        "home_score": hs, "away_score": as_, "completed": True,
+    }
+
+
+def test_notre_dame_is_scored_as_a_conference_member():
+    """They play football as an independent, so an unmodified feed gives them
+    no conference games at all and the conference-wins term is zero however the
+    season goes. The league's rule is to score them as ACC."""
+    import pandas as pd
+
+    from whul.scoring.ncaa import _team_games
+
+    games = _team_games(pd.DataFrame([
+        # Miami is the exemplar: whatever the feed calls the ACC, they have it.
+        _fb_game("Miami Hurricanes", "Notre Dame Fighting Irish", "1", "18", 20, 17),
+    ]))
+    nd = games[games["team"] == "Notre Dame Fighting Irish"].iloc[0]
+    miami = games[games["team"] == "Miami Hurricanes"].iloc[0]
+    assert nd["conference"] == "1", "put into the ACC"
+    assert bool(nd["is_conf_game"]) and bool(miami["is_conf_game"]), \
+        "and both sides agree it was a conference game"
+
+
+def test_the_override_moves_the_opponents_view_too():
+    """A conference game is one whose two sides share a conference. Moving one
+    side and not the other leaves a table that does not add up."""
+    import pandas as pd
+
+    from whul.scoring.ncaa import _team_games
+
+    games = _team_games(pd.DataFrame([
+        _fb_game("Miami Hurricanes", "Notre Dame Fighting Irish", "1", "18", 20, 17),
+    ]))
+    miami = games[games["team"] == "Miami Hurricanes"].iloc[0]
+    assert miami["opp_conference"] == "1"
+
+
+def test_notre_dame_never_wins_the_conference():
+    """Scored as a member, they could top the table on a technicality and take
+    a title they are not eligible for."""
+    import pandas as pd
+
+    from whul.scoring.ncaa import score_football
+
+    rows = [
+        _fb_game("Notre Dame Fighting Irish", "Miami Hurricanes", "18", "1", 30, 3),
+        _fb_game("Notre Dame Fighting Irish", "Duke Blue Devils", "18", "1", 30, 3),
+        _fb_game("Miami Hurricanes", "Duke Blue Devils", "1", "1", 21, 20),
+    ]
+    scored = score_football(pd.DataFrame(rows))
+    by_team = scored.set_index("team")
+    assert by_team.loc["Notre Dame Fighting Irish", "pts_reg_champ"] == 0.0
+    # They still played, and still lead the table on conference wins. The
+    # title is simply unwon -- excluded after the maximum is taken, so it is
+    # not handed down to whoever finished behind them.
+    assert by_team.loc["Notre Dame Fighting Irish", "conf_wins"] == 2
+    assert by_team.loc["Miami Hurricanes", "pts_reg_champ"] == 0.0
+
+
+def test_a_team_with_no_exemplar_in_the_frame_is_left_alone():
+    """Scoring short is recoverable; a wrong conference is a title awarded to
+    the wrong programme."""
+    import pandas as pd
+
+    from whul.scoring.ncaa import _team_games
+
+    games = _team_games(pd.DataFrame([
+        _fb_game("Notre Dame Fighting Irish", "Navy Midshipmen", "18", "18", 30, 3),
+    ]))
+    nd = games[games["team"] == "Notre Dame Fighting Irish"].iloc[0]
+    assert nd["conference"] == "18", "unchanged, since no ACC team was present"
