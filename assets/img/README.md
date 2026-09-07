@@ -11,6 +11,13 @@ can be filled in at whatever pace suits and in any order.
 python -m whul.cli images-needed
 ```
 
+**Run it from the repository root.** `assets/img` is a relative path, so from
+anywhere else it resolves to nothing and every file reads as missing -- which
+looks exactly like having fetched none of them. The command prints the
+directory it looked in for that reason; `--images <path>` points it elsewhere.
+And pull first: a clone that has not seen the last merge has none of the files
+either.
+
 That prints every image the site wants **that is not already here**, grouped by
 directory, with the exact filename and what belongs in it:
 
@@ -81,6 +88,24 @@ Three steps, and the middle one is the only one with a wrong answer.
 
 There is no separate "publish images" step and no cache to bust. The images are
 part of the site the same way the HTML is.
+
+## After correcting a name in the spreadsheet
+
+A club or country that ESPN spells differently -- "LA Clippers", not "Los
+Angeles Clippers" -- shows up as an image nobody can find. Fix the spelling in
+the sheet, then:
+
+1. Upload the sheet to `main`.
+2. *Actions -> Probe images -> Run workflow*, from `main`, with **Fetch**
+   ticked. It re-imports the sheet before it probes, so the correction is live
+   for that run; files already present are left alone, so only what is still
+   missing is fetched.
+3. Open the compare link it prints, and merge.
+4. *Actions -> Publish standings*, from `main`, to put the new files on the site.
+
+Step 2 is where the refresh happens. There is no separate re-import to
+remember: the probe reads the sheet every time, for the same reason the nightly
+job does.
 
 ## A note on what to spend an evening on
 
