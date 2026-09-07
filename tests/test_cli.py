@@ -75,3 +75,43 @@ def test_a_warning_is_printed_once(tmp_path, capsys):
         date=None, backfill=False,
     ))
     assert capsys.readouterr().out.count("no frozen benchmark") == 1
+
+
+def test_derive_accepts_frozen_instead_of_a_version_id(tmp_path, capsys):
+    """So an unattended run does not have to parse an id out of `versions`.
+    A script that derived from the wrong scale would produce a plausible,
+    wrong one, which is the failure `derive` exists to make cheap to fix."""
+    import argparse
+
+    from whul.cli import cmd_benchmarks_derive
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    import pandas as pd
+
+    db = tmp_path / "whul.sqlite3"
+    store = open_store(str(db))
+    version = bm.save(store, pd.DataFrame([{
+        "asset_type": "Team", "norm_key": "NFL", "benchmark": 100.0,
+        "pool_size": 40, "seasons": "2021-2025",
+    }]), "2026-27", notes="first")
+    bm.freeze(store, version)
+
+    args = argparse.Namespace(db=str(db), version="frozen", season=None, notes="")
+    assert cmd_benchmarks_derive(args) == 0
+    out = capsys.readouterr().out
+    assert f"frozen -> {version}" in out
+    assert "copied from" in out
+
+
+def test_derive_from_frozen_says_so_when_there_is_none(tmp_path, capsys):
+    import argparse
+
+    from whul.cli import cmd_benchmarks_derive
+    from whul.store import open_store
+
+    db = tmp_path / "whul.sqlite3"
+    open_store(str(db))
+    args = argparse.Namespace(db=str(db), version="frozen", season=None, notes="")
+    assert cmd_benchmarks_derive(args) == 1
+    assert "No frozen version" in capsys.readouterr().err

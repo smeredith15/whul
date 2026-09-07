@@ -1241,12 +1241,26 @@ def cmd_benchmarks_adopt(args: argparse.Namespace) -> int:
 
 def cmd_benchmarks_derive(args: argparse.Namespace) -> int:
     """Start a draft from an existing scale, so one league can be corrected."""
+    from whul.config.league import SEASON
     from whul.store import benchmarks as store_benchmarks
 
     store = _benchmark_store(args)
+    source = args.version
+    if source == "frozen":
+        # So a script does not have to parse a version id out of `versions`.
+        # An unattended run that derived from the wrong scale would produce a
+        # plausible, wrong one, which is the failure this whole command exists
+        # to make cheap to correct.
+        active = store_benchmarks.active_version(store, args.season or SEASON.label)
+        if active is None:
+            print(f"\nNo frozen version for {args.season or SEASON.label} to "
+                  f"derive from.\n", file=sys.stderr)
+            return 1
+        source = active.version
+        print(f"\n  frozen -> {source}")
     try:
         version = store_benchmarks.derive(
-            store, args.version, season=args.season, notes=args.notes
+            store, source, season=args.season, notes=args.notes
         )
     except ValueError as exc:
         print(f"\n{exc}\n", file=sys.stderr)
@@ -1256,10 +1270,10 @@ def cmd_benchmarks_derive(args: argparse.Namespace) -> int:
         "SELECT COUNT(*) AS n FROM benchmarks WHERE version = ?", (version,)
     )
     print(f"\n  {version} holds {int(rows.loc[0, 'n'])} benchmark(s), copied from "
-          f"{args.version}.")
+          f"{source}.")
     print(f"  Nothing is frozen. Recompute the group(s) that changed into it:\n")
     print(f"    python -m whul.cli benchmarks compute <league> --into {version} --save")
-    print(f"    python -m whul.cli benchmarks compare {args.version} {version}")
+    print(f"    python -m whul.cli benchmarks compare {source} {version}")
     print(f"    python -m whul.cli benchmarks freeze {version}\n")
     return 0
 
@@ -1819,7 +1833,11 @@ def main(argv: list[str] | None = None) -> int:
         help="start a draft holding everything an existing version holds, so one "
              "league can be recomputed without redoing the other nineteen",
     ))
-    bench_derive.add_argument("version", help="the version to copy from, usually the frozen one")
+    bench_derive.add_argument(
+        "version",
+        help="the version to copy from; `frozen` means the season's current "
+             "scale, so a script needs no version id",
+    )
     bench_derive.add_argument(
         "--season", help="season the new version is for (default: the source's)",
     )
