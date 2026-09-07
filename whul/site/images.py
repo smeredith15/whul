@@ -104,6 +104,17 @@ def _initials(name: str) -> str:
     return (parts[0][0] + parts[-1][0]).upper()
 
 
+#: The corner badge, as a fraction of the picture it sits on. Small enough to
+#: read as a mark on a photograph rather than a second photograph, large enough
+#: to tell one crest from another at 26px.
+BADGE_SCALE = 0.46
+
+#: Below this the corner badge is dropped entirely. A crest rendered at nine
+#: pixels is a smudge that costs a request and says nothing, and the row it
+#: would sit in has a club written next to the name anyway.
+BADGE_FLOOR = 24
+
+
 def avatar(
     kind: str,
     key: str,
@@ -113,31 +124,58 @@ def avatar(
     depth: int = 0,
     source: Path | None = None,
     initials: str | None = None,
+    badge: tuple[str, str] | None = None,
+    logo: bool = False,
 ) -> str:
-    """An image if one exists, a monogram if not.
+    """An image if one exists, a monogram if not, with an optional corner mark.
 
     ``slot`` tints the monogram with a manager's series colour, so identity
     still carries where a photograph does not. ``initials`` overrides what the
     monogram says -- a manager's id already *is* their initials, so deriving
     them from the display name again would turn TG into T rather than leaving
     it as the badge the league uses.
+
+    ``badge`` is ``(directory, filename stem)`` for the mark in the bottom
+    right: a club's crest on a player, a league's on a team, a flag on an
+    individual athlete. It is drawn over whatever the main picture turned out
+    to be, monogram included -- a player with no photograph still plays for
+    somebody, and the crest is the more useful half of that pair anyway.
+
+    ``logo`` fits the picture inside the circle instead of filling it. A
+    photograph cropped to a circle loses a corner of the background and is
+    better for it; a crest cropped to a circle loses the top of the shield and
+    the bottom of the scroll, which is most of what makes it that club's. It
+    was Arsenal's cannon coming out clipped at both ends that made this a
+    parameter rather than one rule for everything.
     """
     up = "../" * depth
     file = find(kind, key, source)
     style = f"width:{size}px;height:{size}px"
     if file is not None:
-        return (
-            f'<img class="avatar" src="{up}{OUT_DIR}/{kind}/{escape(file.name)}" '
+        main = (
+            f'<img class="avatar{" fitted" if logo else ""}" '
+            f'src="{up}{OUT_DIR}/{kind}/{escape(file.name)}" '
             f'alt="" loading="lazy" style="{style}">'
         )
-    tint = (
-        f"background: color-mix(in srgb, var(--series-{slot}) 22%, transparent); "
-        f"color: var(--series-{slot})"
-        if slot
-        else "background: var(--grid); color: var(--text-secondary)"
-    )
+    else:
+        tint = (
+            f"background: color-mix(in srgb, var(--series-{slot}) 22%, transparent); "
+            f"color: var(--series-{slot})"
+            if slot
+            else "background: var(--grid); color: var(--text-secondary)"
+        )
+        main = (
+            f'<span class="avatar mono" aria-hidden="true" '
+            f'style="{style};font-size:{max(10, int(size * 0.36))}px;{tint}">'
+            f"{escape(initials or _initials(name))}</span>"
+        )
+
+    corner = find(badge[0], badge[1], source) if badge else None
+    if corner is None or size < BADGE_FLOOR:
+        return main
+    pip = max(10, round(size * BADGE_SCALE))
     return (
-        f'<span class="avatar mono" aria-hidden="true" '
-        f'style="{style};font-size:{max(10, int(size * 0.36))}px;{tint}">'
-        f"{escape(initials or _initials(name))}</span>"
+        f'<span class="badged" style="{style}">{main}'
+        f'<img class="pip" src="{up}{OUT_DIR}/{badge[0]}/{escape(corner.name)}" '
+        f'alt="" loading="lazy" style="width:{pip}px;height:{pip}px"></span>'
     )

@@ -189,6 +189,11 @@ details.tableview[open] summary { margin-bottom: 8px; }
   vertical-align: middle;
 }
 .avatar.mono { border: 1px solid color-mix(in srgb, currentColor 28%, transparent); }
+/* A crest is fitted, not filled. Cropping a photograph to a circle costs a
+   corner of the background; cropping a crest to one costs the top of the
+   shield and the bottom of the scroll, which is most of what makes it that
+   club's -- Arsenal's cannon came out clipped at both ends. */
+.avatar.fitted { object-fit: contain; padding: 2px; }
 .badge {
   width: 18px; height: 18px; border-radius: 3px; object-fit: contain;
   vertical-align: middle; margin-left: 6px;
@@ -297,6 +302,25 @@ button.assetlink:hover span.nm { text-decoration: underline; text-underline-offs
    the names and a reader's eye should not have to step over a club to reach the
    next one. Every part is optional -- most of them are empty until a league
    starts -- so the block collapses to the name alone. */
+/* A picture with a mark in its corner: a club's crest on a player, a league's
+   on a team, a flag on an athlete who plays for a country rather than a club.
+   The mark sits *over* the picture rather than beside it, so a row of names
+   stays a row of names -- put side by side these would double the width of
+   every asset column on the site.
+
+   It is drawn on the monogram too. A player with no photograph still plays for
+   somebody, and of that pair the crest is the more useful half. */
+.badged { position: relative; display: inline-block; flex: none; line-height: 0; }
+.badged .pip {
+  position: absolute; right: -2px; bottom: -2px;
+  border-radius: 50%; object-fit: contain;
+  /* A ring in the page's own colour, so a dark crest on a dark photograph is
+     still a separate thing rather than a smudge in the corner of it. */
+  background: var(--surface-1);
+  box-shadow: 0 0 0 1.5px var(--surface-1);
+}
+.tile .badged .pip, .card .badged .pip { background: var(--surface-1); }
+
 .stack { display: inline-flex; flex-direction: column; gap: 1px; min-width: 0; }
 .stack .nm { line-height: 1.25; }
 .idl, .rowmeta .idl {
