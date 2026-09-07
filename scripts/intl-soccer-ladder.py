@@ -206,7 +206,7 @@ def classify(games: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     written against history keeps matching history and drops the season being
     played -- which is this project's whole failure mode in one column.
     """
-    ladder = pd.read_csv(LADDER)
+    ladder = pd.read_csv(LADDER, comment="#")
     scored = games.merge(ladder, on=["gender", "tournament"], how="left")
     return scored[scored["rung"].notna()].copy(), scored[scored["rung"].isna()].copy()
 
@@ -243,12 +243,54 @@ def per_team(games: pd.DataFrame) -> pd.DataFrame:
         sides.append(pd.DataFrame({
             "date": games["date"], "gender": games["gender"], "team": team,
             "competition": games["competition"], "rung": games["rung"],
-            "kind": games["kind"], "base": base,
+            "kind": games["kind"], "phase": games["phase"], "base": base,
         }))
     out = pd.concat(sides, ignore_index=True)
     out = out[out["base"].notna()]
-    out["year"] = out["date"].map(league_year)
-    return out
+    return _assign_year(out)
+
+
+#: How far apart two matches can be and still be the same tournament. A block
+#: tournament runs two to five weeks with a rest day or two inside it; the next
+#: staging is a year or two away, and even a Nations League league phase leaves
+#: a month between windows.
+BLOCK_GAP_DAYS = 35
+
+
+def _assign_year(rows: pd.DataFrame) -> pd.DataFrame:
+    """Which league year each match scores in.
+
+    Two rules, and the difference is the phase rather than the competition:
+
+    **A block goes whole into the year it began in.** A group stage that runs
+    directly into a knockout is one event, and splitting it at a date nobody
+    playing in it would recognise is worse than letting it finish outside the
+    year. The 2027 Women's World Cup ends twelve days after the 2026-27 league
+    year closes and belongs to it entirely, including the final -- which is
+    played after the next draft, and still pays the rosters that held those
+    teams when it kicked off.
+
+    **A windowed phase scores where it was played.** Qualifying campaigns and
+    the Nations Leagues' league phases run across international windows months
+    apart, and they do not line up with a league year in any reliable way --
+    the 2022-23 UEFA Nations League opened in June 2022 and finished in June
+    2023, so a whole-block rule would have to pick one year and be wrong about
+    half the fixtures either way.
+    """
+    rows = rows.sort_values("date").reset_index(drop=True)
+    rows["year"] = rows["date"].map(league_year)
+
+    block = rows["phase"] == "block"
+    if not block.any():
+        return rows
+    inside = rows[block]
+    gap = inside.groupby(["gender", "competition"])["date"].diff()
+    started = (gap.isna()) | (gap > pd.Timedelta(days=BLOCK_GAP_DAYS))
+    # Every match of a block takes the year of the block's first match.
+    label = started.cumsum()
+    first = inside.groupby(label)["year"].transform("first")
+    rows.loc[block, "year"] = first
+    return rows
 
 
 def edition_of(rows: pd.DataFrame) -> pd.Series:
@@ -489,6 +531,14 @@ def main() -> int:
                   f"{hits['date'].min().date()} to {hits['date'].max().date()}")
 
     rows = per_team(kept)
+    by_date = rows["date"].map(league_year)
+    moved = rows[(rows["year"] != by_date) & (rows["year"] >= args.from_year)]
+    print(f"\n  Block tournaments held whole in the year they began: "
+          f"{len(moved)} team-match(es) since {args.from_year} score in a league "
+          f"year their date alone would not have put them in.")
+    if len(moved):
+        for key, block in moved.groupby(["gender", "competition", "year"]):
+            print(f"    {key[0]}  {key[1]} -> {int(key[2])}  ({len(block)} matches)")
     rows["edition"] = edition_of(rows)
     shape = structure(rows)
     priced = price(rows, shape)

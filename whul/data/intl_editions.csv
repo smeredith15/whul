@@ -35,7 +35,9 @@
 # Using League A's numbers for every team is deliberate, not a shortcut. A
 # League C side plays the same six league matches and cannot reach the Finals,
 # so measuring it against the winner's path caps it below a full Nations League
-# ceiling -- which is the right answer for winning League C.
+# ceiling -- which is the right answer for winning League C, and what the league
+# admin confirmed they want: nobody here is likely to hold a team outside League
+# A, and one that is outside it should cap lower.
 #
 # The `competition` column is the CANONICAL name from intl_tournaments.csv, not
 # the ledger's. The women's file calls its Nations League "UEFA Nations League"

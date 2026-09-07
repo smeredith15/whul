@@ -182,6 +182,16 @@ and `K` is what the longest run adds. The script prints every edition's
 inferred shape for eyeballing against the format table above, because a
 withdrawal would drag the minimum down and nothing else would say so.
 
+**Where inference cannot work, the shape is stated** in
+`whul/data/intl_editions.csv` — sixteen rows, all of them Nations Leagues, for
+the two reasons that file sets out at length. Those rows carry **League A's**
+numbers and every team in the competition is measured against them. That is
+deliberate and confirmed by the admin: a League C side plays the same six
+league matches and cannot reach the Finals, so measuring it against the
+winner's path caps it below a full Nations League ceiling, which is the right
+answer for winning League C. Nobody in this league is likely to hold a team
+outside League A anyway.
+
 ### 5. A season is its best competition plus half of everything else
 
 The two-way rule the MLB scorer already uses for a player who bats and pitches
@@ -243,23 +253,37 @@ The women's 2027 World Cup qualifying ran March-June 2026, also before the
 window. Inside it are the play-off phase, the 2026 CONCACAF W Championship (27
 November - 5 December 2026, for Canada and the USA), and the World Cup itself.
 
-> ### International tournaments are the exception to the end of the league year
+> ### Which league year a match scores in
 >
-> **Decided 2026-09-07.** The 2027 Women's World Cup runs 24 June - 25 July
-> 2027 and the league year ends 13 July, so its quarter-finals, semi-finals and
-> final fall outside. The 2027 Africa Cup of Nations (19 June - 17 July) is cut
-> the same way.
+> **Decided 2026-09-07.** Two rules, and the difference is the *phase* rather
+> than the competition.
 >
-> The rule is that **a tournament is scored whole into the league year it began
-> in**, however long after the year's end it finishes. Even where the next
-> draft has happened before the final, those points go to the 2026-27 rosters.
+> **A block goes whole into the year it began in.** A group stage that runs
+> directly into a knockout is one event, and splitting it at a date nobody
+> playing in it would recognise is worse than letting it finish outside the
+> year. The 2027 Women's World Cup runs 24 June - 25 July 2027 and the league
+> year closes on 13 July; every match of it belongs to **2026-27**, final
+> included, and pays the rosters that held those teams when it kicked off —
+> even though the next draft happens mid-tournament. The 2027 Africa Cup of
+> Nations (19 June - 17 July) is the same.
 >
-> So the edition key is the league year of a tournament's first match — not the
-> calendar year, and not the match date. That is also what holds a tournament
-> together internally: keyed by calendar year, the 2025 Africa Cup of Nations
-> split across new year into two half-tournaments, one of which had its group
-> stage inferred as a single match, and both Nations Leagues broke into a
-> league phase in one year and a four-team finals in the next.
+> **A windowed phase scores where it was played.** Qualifying campaigns and the
+> Nations Leagues' league phases run across international windows months apart
+> and do not line up with a league year in any reliable way: the 2022-23 UEFA
+> Nations League opened in June 2022 and finished in June 2023, so a
+> whole-block rule would have to pick one year and be wrong about half the
+> fixtures either way.
+>
+> `whul/data/intl_tournaments.csv` carries the distinction per row as `phase`,
+> `block` or `windows`; qualifying is always `windows`.
+>
+> **The rule is inert on the modern record and that is worth knowing.** No
+> block tournament since 2015 straddles a league-year boundary — the closest is
+> the 2023 Women's World Cup, whose final was played on 20 August 2023, one day
+> inside. So adopting it changes no number today. It is written down because
+> the case it exists for is the one about to happen, and because a tournament
+> silently cut in half is the kind of thing nobody notices until a manager asks
+> why their World Cup winner scored a group stage.
 
 ---
 
