@@ -24,3 +24,7 @@ benchmark-review.txt
 
 # setuptools leaves this behind after a non-editable install.
 /build/
+
+# The international-soccer ledgers, cached by scripts/intl-soccer-ladder.py.
+# Someone else's dataset, 60,000 rows, re-downloadable in a second.
+scripts/.intl-cache/
