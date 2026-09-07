@@ -99,9 +99,6 @@ jobs:
             --season "${{ inputs.season || '2026-27' }}" \
             | tee images-needed.txt
 
-      # The database came from the data branch and must not travel with the
-      # images; it is state the nightly job owns and a pull request carrying it
-      # would put a binary diff nobody can read in front of a reviewer.
       # Pushed to a branch, and the pull request is opened by hand.
       #
       # The first version ran `gh pr create` and the run failed on its last
@@ -115,7 +112,23 @@ jobs:
         run: |
           git config user.name "whul-bot"
           git config user.email "whul-bot@users.noreply.github.com"
-          git checkout -- data/whul.sqlite3 2>/dev/null || rm -f data/whul.sqlite3
+
+          # Take the database back out of the index before anything is
+          # committed. `git checkout <tree> -- <path>`, which is how it was
+          # fetched from the data branch above, *stages* the file as well as
+          # writing it -- so it was committed on every image branch despite
+          # nothing ever running `git add` on it, and 1.6MB of binary reached
+          # main. `git checkout -- <path>` was the previous guard and could not
+          # have worked: it restores the working tree from the index, and the
+          # index was where the problem was.
+          git reset -q -- data/whul.sqlite3 2>/dev/null || true
+          rm -f data/whul.sqlite3
+
+          if [ -n "$(git diff --cached --name-only)" ]; then
+            echo "Something other than the images is staged; refusing to commit:"
+            git diff --cached --name-only
+            exit 1
+          fi
           if [ -z "$(git status --porcelain assets/img)" ]; then
             echo "No new image files -- nothing to open a pull request for."
             exit 0
@@ -123,7 +136,14 @@ jobs:
           BRANCH="images/$(date -u +%Y%m%d-%H%M%S)"
           git checkout -b "$BRANCH"
           git add assets/img
+          # Only the images, and said out loud. A branch that carries anything
+          # else is one a reviewer has to read a binary diff to trust.
           COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
+          if git diff --cached --name-only | grep -qv '^assets/img/'; then
+            echo "Refusing to push: something outside assets/img is staged:"
+            git diff --cached --name-only | grep -v '^assets/img/'
+            exit 1
+          fi
           git commit -qm "Fetch $COUNT image(s) from ESPN
 
           Downloaded by .github/workflows/probe-images.yml. Every file is one
