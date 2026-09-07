@@ -89,6 +89,24 @@ Three steps, and the middle one is the only one with a wrong answer.
 There is no separate "publish images" step and no cache to bust. The images are
 part of the site the same way the HTML is.
 
+## After correcting a name in the spreadsheet
+
+A club or country that ESPN spells differently -- "LA Clippers", not "Los
+Angeles Clippers" -- shows up as an image nobody can find. Fix the spelling in
+the sheet, then:
+
+1. Upload the sheet to `main`.
+2. *Actions -> Probe images -> Run workflow*, from `main`, with **Fetch**
+   ticked. It re-imports the sheet before it probes, so the correction is live
+   for that run; files already present are left alone, so only what is still
+   missing is fetched.
+3. Open the compare link it prints, and merge.
+4. *Actions -> Publish standings*, from `main`, to put the new files on the site.
+
+Step 2 is where the refresh happens. There is no separate re-import to
+remember: the probe reads the sheet every time, for the same reason the nightly
+job does.
+
 ## A note on what to spend an evening on
 
 Most of these are fetchable from ESPN and will be filled in automatically —

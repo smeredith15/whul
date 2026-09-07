@@ -66,6 +66,18 @@ jobs:
             exit 1
           fi
 
+      # Cheap, idempotent, and it removes a whole class of confusion: the
+      # spreadsheet is where the roster and every club and country come from,
+      # and without this the probe reads whatever the last nightly run happened
+      # to import. A correction typed into the sheet an hour ago would then be
+      # invisible here, and the image it should have found would be reported
+      # missing for reasons nobody can see from the output.
+      #
+      # The database is not pushed back. The nightly job owns that; this only
+      # needs its own copy to be current.
+      - name: Refresh the roster from the spreadsheet
+        run: python -m whul.cli import-rosters --season "${{ inputs.season || '2026-27' }}" --write
+
       - name: Probe
         run: |
           python scripts/probe-images.py \
