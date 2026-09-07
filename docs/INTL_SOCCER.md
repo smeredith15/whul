@@ -110,90 +110,70 @@ Two structural notes that matter more than they look:
 
 ---
 
-## The proposal
+## The scheme, as settled
 
-Three mechanisms, each aimed at one of the three problems. The mechanisms are
-mine to build; **every number in them is the admin's to set** — the tables
-below carry placeholder values, chosen to be legible rather than right.
+Decided by the league admin 2026-09-07; the machinery below is built to it.
+`scripts/intl-soccer-ladder.py` implements it against the whole history and
+prints what comes out.
 
-### 1. A tournament is worth a purse, not a rate
+### 1. A competition is its qualifying and its finals together
 
-Each competition gets a **purse**: what a champion takes for winning every
-match of it. Not points per match.
+Not two events. **World Cup qualifying is on the World Cup rung**, so it is
+worth more than Euro qualifying, which is right — and a team that fails to
+qualify has still spent its year on the World Cup rung, which is what stops
+"miss the World Cup, get your other points upscaled" from being a strategy.
 
-| Rung | Purse | Competitions |
-|---|--:|---|
-| World | 1000 | World Cup, Women's World Cup |
-| Continental | 600 | Euro, Copa América, AFCON, Asian Cup, Gold Cup, and every women's equivalent |
-| Nations League | 300 | UEFA, CONCACAF, CONMEBOL Women's |
-| Qualifying | 200 | World Cup and continental qualifying |
+### 2. Two ladders of 1-2-3
 
-This is the tennis idea already in the codebase: the tables are built so every
-tier's column sums to its face value. Winning the Gold Cup and winning AFCON
-are worth the same, and the fact that AFCON takes an extra match to win stops
-mattering.
+| Stage of a match | | | Rung of a competition | |
+|---|--:|---|---|--:|
+| qualifying | 1 | | nations league | 1 |
+| group | 2 | | federation cup | 2 |
+| knockout | 3 | | world cup | 3 |
 
-### 2. Within a tournament, the purse is divided by the champion's own path
+A result is the R script's own scale, kept: **3** for a win, **2** for a
+shootout win, **1** for a draw or shootout loss, **0** for a loss.
 
-Keep the R script's match scoring — 3 / 2 / 1 / 0, times a stage multiplier —
-but treat it as **shares, not points**. For each edition:
+**Friendlies do not count**, and neither do the invitational cups that are
+friendlies by another name — the SheBelieves Cup, the Algarve Cup, the Tournoi
+de France, the Arnold Clark Cup, FIFA Series. That is 476 friendlies and ~150
+invitational matches for the rostered teams since 2015.
 
-```
-champion_max = the raw total for winning every match on the champion's path
-scale        = purse / champion_max
-team points  = its raw total x scale
-```
-
-AFCON's champion path is 3 group + 4 knockout: `3x3x1.5 + 4x3x2.0 = 37.5`, so
-its scale is `600/37.5 = 16.0`. The Gold Cup's is 3 + 3: `31.5`, scale
-`600/31.5 = 19.05`. Same title, same purse, and the shorter tournament simply
-pays more per match — which is what "the rung is a rung" means.
-
-It also absorbs format changes without anyone re-tuning a table. The 2026
-World Cup added a Round of 32; `champion_max` grows, the scale shrinks, and the
-World Cup is still worth a World Cup.
-
-**Stage must be read from a table, not from match order.** The martj42 data
-names the tournament and not the stage, so this needs a small per-edition file
-— tournament, year, group matches per team, knockout rounds — in the shape of
-the `whul/data/tennis_calendar.csv` that already exists for exactly this
-reason. Sixteen competitions is a page of CSV, and it is checkable by eye
-against the table above.
-
-### 3. Opportunity: divide by what was available
-
-This is the admin's own suggestion — *"weighting countries/teams by the number
-of points available to them"* — and it is the only mechanism that fixes both
-asymmetries at once, the two-versus-three competitions **and** the fallow year
-in the middle of a cycle.
+### 3. A competition pays a purse, divided by the champion's own path
 
 ```
-available(team, year) = the purses of every competition the team was eligible
-                        to enter that year
-score                 = REFERENCE x earned / available
+team points = purse x (its units / path_max)
+path_max    = 3 x (its own qualifiers x 1 + group x 2 + champion's knockouts x 3)
 ```
 
-A World Cup a team failed to qualify for stays in its denominator. Qualifying
-is its own competition with its own purse; missing out means earning little of
-that purse and none of the finals purse, which is the right answer rather than
-a technicality.
+So winning the Gold Cup in six matches and AFCON in seven are worth the same,
+and the 2026 World Cup's new Round of 32 changes nothing about what a World Cup
+is worth. Qualifying length is the team's own, because a CONMEBOL campaign is
+eighteen matches and a CAF one is six and both are the same achievement.
 
-**The one dial, and it is a real choice.** Divide fully and a team that wins a
-Nations League in a fallow year scores exactly what a World Cup winner scores,
-because both took everything available to them. Do not divide at all and a
-European team out-earns an African one for reasons of geography. A dampening
-exponent sits between them:
+**Stage is inferred per edition, not assumed.** `G` is the fewest matches any
+team played — a side eliminated in the group stage plays exactly the group —
+and `K` is what the longest run adds. The script prints every edition's
+inferred shape for eyeballing against the format table above, because a
+withdrawal would drag the minimum down and nothing else would say so.
+
+### 4. A fallow year is scaled up
 
 ```
-score = REFERENCE x earned / available^a        a = 1 full share, a = 0 raw points
+multiplier = top purse / the best rung the team actually played that season
 ```
 
-I would not pick `a` from an armchair. The pipeline can compute the 2017-2024
-history under two or three candidate values and show what each does to real
-seasons — which is how the benchmarks were settled, and the same
-compute-review-freeze the rest of the project uses.
+A Nations League year pays x3, a federation-cup year x1.5, a World Cup year
+x1. Without it a European men's team's 2026-27 — which is a Nations League and
+the first Euro qualifiers, and nothing else — scores a third of what its World
+Cup year does, and the category goes quiet two years in three.
 
----
+### 5. Then the ordinary machinery
+
+The purses are league points, not scores. The 0-100 scale comes from dividing
+by the pool's 99th percentile as everywhere else, **so a perfect run lands well
+above 100** — which is the admin's stated requirement and the reason the purse
+is not itself the scale.
 
 ## What this league year actually holds
 
@@ -202,35 +182,100 @@ against the match ledgers:
 
 **The men's World Cup was played 15 June - 19 July 2026** — over five weeks
 before the league year opened. England, France and Spain took nothing from it,
-and cannot: the whole tournament falls outside the window.
-
-That leaves the three men's teams with the **UEFA Nations League** (league
-phase 24 September - 17 November 2026, quarter-finals March 2027, Finals 9-13
-June 2027) and the start of **Euro 2028 qualifying** from 25 March 2027.
-Nothing else.
+and cannot. That leaves them the **UEFA Nations League** (league phase 24
+September - 17 November 2026, quarter-finals March 2027, Finals 9-13 June 2027)
+and the start of **Euro 2028 qualifying** from 25 March 2027. Nothing else — so
+their multiplier this year is x1.5, not x3.
 
 The women's 2027 World Cup qualifying ran March-June 2026, also before the
-window. What the seven women's teams have inside it is the play-off phase, the
-2026 CONCACAF W Championship (27 November - 5 December 2026, for Canada and the
-USA) and then:
+window. Inside it are the play-off phase, the 2026 CONCACAF W Championship (27
+November - 5 December 2026, for Canada and the USA), and the World Cup itself.
 
-> ### The 2027 Women's World Cup does not fit inside the league year
+> ### International tournaments are the exception to the end of the league year
 >
-> It runs **24 June - 25 July 2027**. The league year ends **13 July 2027**.
-> Group stage and round of 16 land inside it; **the quarter-finals, semi-finals
-> and final do not** — the semi-final is on 20 July and the final on the 25th.
+> **Decided 2026-09-07.** The 2027 Women's World Cup runs 24 June - 25 July
+> 2027 and the league year ends 13 July, so its quarter-finals, semi-finals and
+> final fall outside. The 2027 Africa Cup of Nations (19 June - 17 July) is cut
+> the same way.
 >
-> Seven of the ten slots in this category, the biggest tournament of their
-> cycle, and the last three rounds fall outside the year. The 2027 Africa Cup
-> of Nations (19 June - 17 July 2027) is cut the same way.
+> The rule is that **a tournament is scored whole into the league year it began
+> in**, however long after the year's end it finishes. Even where the next
+> draft has happened before the final, those points go to the 2026-27 rosters.
 >
-> This is a league-year decision, not a scoring one, and it is the admin's:
-> extend the year for this category, score the tournament into the following
-> year, or accept the truncation. It wants deciding before the ladder does,
-> because a truncated World Cup changes what the rungs are worth relative to
-> each other.
+> So the edition key is the league year of a tournament's first match — not the
+> calendar year, and not the match date. That is also what holds a tournament
+> together internally: keyed by calendar year, the 2025 Africa Cup of Nations
+> split across new year into two half-tournaments, one of which had its group
+> stage inferred as a single match, and both Nations Leagues broke into a
+> league phase in one year and a four-team finals in the next.
 
 ---
+
+## What the scheme does to real seasons
+
+Run `scripts/intl-soccer-ladder.py`. Every figure here is out of it.
+
+It reproduces results anyone in the league can check. England's women won Euro
+2022 with six wins from six and take the **full 200** federation purse, plus 86
+from World Cup qualifying the same year. Spain's men won the 2026 World Cup
+dropping only a group draw to Cape Verde and score **278 of 300**. The United
+States' women won both the 2019 World Cup and the 2018 CONCACAF Championship
+that qualified them for it, and score **500** — two purses, because a season is
+the sum of the competitions in it and taking two of them whole is meant to beat
+taking one.
+
+The rostered teams, raw purse shares by league year:
+
+```
+   M          2017 2018 2019 2020 2021 2022 2023 2024 2025
+   England     139   63   38  200   71  122  108   77  224
+   France      214   55   38  148   80  210   90   62  226
+   Spain        89   57   33  155  109  123  185   72  278
+
+   W          2017 2018 2019 2020 2021 2022 2023 2024 2025
+   Brazil      200   67    0    0  200   44    0  167    0
+   Canada        0  217    0    0  150   44    0    0    0
+   England      62  162    0    0  286  171   85  160   62
+   France         0  150   17   46  152  114  116  167  101
+   Germany      58  127   35   35  179   50  113  148  103
+   Spain        69   54   20   43  104  208  133  210  142
+   United S      0  500    0    0  200   72    0    0    0
+```
+
+**The benchmark, and the requirement it has to meet:**
+
+| | pool | p99 | a perfect World Cup run scores |
+|---|--:|--:|--:|
+| raw purse shares | 3,023 team-seasons | 199.9 | **150.0** |
+| with fallow-year upscaling | 3,023 | 249.0 | **120.5** |
+
+Both clear 100, which is the requirement. Upscaling costs a third of the
+headroom, because lifting every fallow year lifts the 99th percentile with it.
+Worth knowing before the multiplier is fixed, and an argument for a gentler
+lift than the full x3 if the headroom matters more than the flat years.
+
+### What the numbers expose
+
+**Two rostered teams have four blank years in a row.** Canada and the United
+States score nothing from 2022 to 2025. CONCACAF's women play a biennial
+championship and almost nothing else that is not a friendly or the Olympics —
+and the 2024 W Gold Cup they did play is missing from the ledger altogether.
+Whatever the ladder says, half the CONCACAF women's calendar is in the excluded
+pile.
+
+**Brazil's women score nothing in 2025-26 either**, and that one is nobody's
+bug: Brazil host the 2027 World Cup, qualify automatically, and are the one
+CONMEBOL nation absent from the nine-team Nations League that *is* the
+qualifying. A World Cup host plays no competitive football for a year. It also
+makes their World Cup cheaper to max out than a team that had to qualify —
+their `path_max` carries no qualifying term at all.
+
+**The Olympics are the one real exclusion question.** The rostered women's
+teams have played 58 Olympic matches since 2016 and 20 more in Olympic
+qualifying. Women's Olympic football is a senior tournament, unlike the men's
+U-23 competition, so it is not a friendly. It is left out here only because
+WHUL plans a separate Olympics category and double-counting would be worse than
+the gap.
 
 ## What must come out equal
 
@@ -307,21 +352,42 @@ Three cautions, all of them the silent kind:
   rather than dropping.
 * **82 distinct tournament names in the men's file, 89 in the women's.** A
   permissive regex sweeps in the Island Games and the CONIFA World Football
-  Cup. The ladder should be an allow-list.
+  Cup. The ladder is therefore `whul/data/intl_tournaments.csv`, an allow-list
+  of 39 exact strings, and the script prints every name it did not match so a
+  competition that should score cannot go missing quietly.
+* **The 2024 CONCACAF W Gold Cup is not in the ledger at all.** Its
+  qualification is there, 87 matches of it; the tournament itself is not — not
+  one match, though the United States won it and Brazil were runners-up. Three
+  of the ten rostered teams played in it. The `CONCACAF Gold Cup` name in the
+  women's file holds only the old 2000-2010 competition. This is a hole in the
+  source, not in the ladder, and it needs either a second source for CONCACAF
+  or an upstream fix before those slots can be trusted.
 
 ---
 
 ## Still to decide — the admin's, not mine
 
-1. **The league year against the 2027 Women's World Cup.** The boxed section
-   above. This one first.
-2. **The four purses**, or a different set of rungs.
-3. **`a`, the opportunity dampener** — to be chosen against real history rather
-   than in advance.
-4. **Do qualifiers score, and do friendlies?** The men's file holds 2,564
-   friendlies since 2017 and the women's 1,098, plus invitational cups — the
-   SheBelieves Cup, the Algarve Cup, the Arab Cup. The rostered women's teams
-   played five SheBelieves matches and five FIFA Series matches in 2026 alone,
-   so this is not a rounding decision.
-5. **Whether a shootout win stays worth 2.** Kept from the R script above; it
-   has never been challenged, only inherited.
+Settled 2026-09-07: the league-year exception, the 1-2-3 stage and rung
+ladders, purse-by-path-max, no friendlies, and normalizing to history so a
+perfect run clears 100.
+
+What is left:
+
+1. **The strength of the fallow-year lift.** The full x3 works and costs a
+   third of the headroom above 100 (150.0 falls to 120.5). A gentler lift keeps
+   more of it. Both are computed; the choice is which trade is wanted.
+2. **The Olympics.** 58 matches for the rostered women's teams since 2016.
+   Excluded here on the assumption that the planned Olympics category will
+   carry them, which is worth confirming rather than assuming.
+3. **CONCACAF's missing 2024 W Gold Cup**, and more generally whether the
+   CONCACAF women's calendar is well enough covered by this source for Canada
+   and the USA to be scored fairly. Four blank years in a row is the symptom.
+4. **The Nations Leagues' internal divisions.** The ledger does not record
+   whether a match is League A, B or C, so an edition's inferred `G` is the
+   smallest league's and its `K` the largest's — the UEFA men's 2024-25 edition
+   comes out `G=4 K=6` where League A is `G=6 K=4`. It is an ~8% error on one
+   competition and it needs a small per-edition override table. No rostered
+   team is in CONCACAF's men's Nations League; England, France and Spain are in
+   UEFA's, so this one does bite.
+5. **Whether a shootout win stays worth 2.** Kept from the R script; never
+   challenged, only inherited.
