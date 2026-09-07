@@ -378,6 +378,11 @@ STAT_SKIP = {
     # Shown as identity, above the figures. Left here as well they read as a
     # statistic -- "Position  F" in a column of goals and assists.
     "position", "role",
+    # An identifier, not a statistic. ESPN's conference is a number, so a
+    # college team's line read "Conference 5" beside its wins and point
+    # differential, which is neither a figure anyone can check nor one that
+    # went into the score.
+    "conference", "opp_conference",
 }
 
 #: Raw column names read as debug output. These are what they mean.
@@ -406,6 +411,11 @@ STAT_LABELS = {
     "pts_shutouts": "Shutouts", "pts_run_diff": "Run differential",
     "pts_div_champ": "Division title", "pts_playoff": "Postseason",
     "year_n_points": "This season's share", "year_n1_points": "Next season's share",
+    "hr": "Home runs", "h": "Hits", "ab": "At bats", "bb": "Walks",
+    "sb": "Stolen bases", "cs": "Caught stealing", "hbp": "Hit by pitch",
+    "doubles": "Doubles", "triples": "Triples", "ip": "Innings",
+    "so": "Strikeouts", "sv": "Saves", "hld": "Holds", "war": "WAR",
+    "offense": "Offense", "defense": "Defense",
 }
 
 
@@ -717,6 +727,19 @@ def _profile_payload(profiles: dict[str, dict]) -> str:
     )
 
 
+def _day_payload(breakdown: dict) -> str:
+    """What each cell of the progression table opens.
+
+    A second dialog rather than the asset one: this answers "what happened on
+    the 12th" and the other answers "who is this", and stacking them in one
+    element would mean a reader who opened a day and then a player could not
+    get back."""
+    return (
+        f'<script type="application/json" id="daydata">{json.dumps(breakdown)}</script>'
+        '<dialog class="profile" id="dayview" aria-label="A day\'s scoring"></dialog>'
+    )
+
+
 def _standings_table(table: pd.DataFrame, mvps: dict[str, str], managers: list[str]) -> str:
     rows = []
     for row in table.itertuples():
@@ -740,9 +763,135 @@ def _standings_table(table: pd.DataFrame, mvps: dict[str, str], managers: list[s
     )
 
 
+#: Figures worth leading a day's line with, in the order they read best.
+#: Everything else in the statline still shows, after these -- this is about
+#: what a reader sees first, not about hiding anything.
+HEADLINE = (
+    "wins", "reg_wins", "games_played", "matches", "matches_played",
+    "goals", "assists", "hr", "h", "sb", "ip", "so", "sv",
+    "passing_yards", "rushing_yards", "receiving_yards", "receptions",
+    "events", "point_diff", "run_diff", "conf_wins",
+)
+
+#: How many figures a day's line carries. It is a summary sitting inside a
+#: table cell, not a profile -- the profile window is one click further on and
+#: carries everything.
+BRIEF = 5
+
+
+def _brief(lines: list[tuple[str, str]], row: dict) -> list[tuple[str, str]]:
+    """The few figures that say what a score was made of.
+
+    Zero-valued ones are dropped first: a batter's line reading "Saves 0,
+    Innings pitched 0, Holds 0" is three quarters of the space and none of the
+    information. What is left is ordered by `HEADLINE` so the same sport reads
+    the same way from one day to the next, which a dict's own order does not
+    guarantee across feeds.
+    """
+    kept = [(label, text) for label, text in lines
+            if text not in ("0", "0.0", "no", "")
+            # The score is its own column in the panel. Repeating it inside the
+            # line spends a fifth of the space saying what is already there.
+            and label not in ("Total points", "Points in this role")]
+    order = {_label_for(c): i for i, c in enumerate(HEADLINE)}
+    kept.sort(key=lambda pair: order.get(pair[0], len(HEADLINE)))
+
+    # Two columns can share a label -- `goals` and `goal_points` are both
+    # "Goals" -- and a line reading "Goals 2 - Goals 8" reads as a fault. The
+    # HEADLINE order above decides which survives, so the count beats the
+    # points it earned.
+    seen: set[str] = set()
+    brief = []
+    for label, text in kept:
+        if label in seen:
+            continue
+        seen.add(label)
+        # A count is a count: "Matches 2" rather than "Matches 2.0".
+        brief.append((label, text[:-2] if text.endswith(".0") else text))
+        if len(brief) == BRIEF:
+            break
+    return brief
+
+
+def _day_breakdown(
+    store: Store, season: str, days: list, managers: list[str],
+) -> dict:
+    """What each manager's counting slots did on each listed day.
+
+    The progression table gives a manager's total by date and says nothing
+    about how it got there. This is the answer to "what happened on the 12th":
+    every counting asset that moved since the previous listed day, what it
+    added, and the figures behind it -- a statline for a player, a result for
+    a team or an individual athlete.
+
+    Keyed on the days the table actually lists rather than every day of the
+    season. The table samples to about fifteen rows, so this is bounded by what
+    is on screen instead of growing with the year, and the deltas are between
+    consecutive *listed* days for the same reason: they are the movements a
+    reader can see.
+    """
+    listed = [str(d) for d in days]
+    scores: dict[str, dict[str, tuple[float, str]]] = {}
+    stats: dict[str, dict[str, dict]] = {}
+    for day in listed:
+        rows = store.query(
+            "SELECT s.asset_id, s.score, r.manager_id FROM slot_scores s "
+            "JOIN roster_slots r ON r.slot_id = s.slot_id "
+            "WHERE s.season = ? AND s.as_of = ? AND s.counts = 1",
+            (season, day),
+        )
+        scores[day] = {
+            f"{row.manager_id}|{row.asset_id}": (float(row.score), str(row.manager_id))
+            for row in rows.itertuples()
+        }
+        frame = store.read_stats(season, day)
+        stats[day] = {r["asset_id"]: r for r in frame.to_dict("records")} \
+            if not frame.empty else {}
+
+    out: dict[str, dict] = {}
+    for index, day in enumerate(listed):
+        before = scores.get(listed[index - 1], {}) if index else {}
+        totals: dict[str, float] = {}
+        was: dict[str, float] = {}
+        for key, (score, manager) in scores[day].items():
+            totals[manager] = totals.get(manager, 0.0) + score
+            was[manager] = was.get(manager, 0.0) + before.get(key, (0.0, ""))[0]
+        for manager, total in totals.items():
+            out[f"{manager}|{day}"] = {
+                "total": round(total, 1),
+                "delta": round(total - was[manager], 1) if index else None,
+                "since": listed[index - 1] if index else None,
+                "movers": [],
+            }
+        for key, (score, manager) in scores[day].items():
+            asset_id = key.split("|", 1)[1]
+            delta = score - before.get(key, (0.0, ""))[0]
+            # The first listed day has nothing before it, so every asset looks
+            # like a mover -- and at the season's opening every score is zero,
+            # which filled that panel with twelve rows of "+0.0". A zero is a
+            # zero whichever day it is on.
+            if abs(delta) < 0.05:
+                continue
+            row = stats[day].get(asset_id, {})
+            out[f"{manager}|{day}"]["movers"].append({
+                "asset": asset_id,
+                "points": round(score, 1),
+                "delta": round(delta, 1),
+                "lines": _brief(_stat_lines(row), row),
+                "finishes": _finish_list(row)[:3],
+            })
+    for entry in out.values():
+        entry["movers"].sort(key=lambda m: -abs(m["delta"]))
+        entry["movers"] = entry["movers"][:12]
+    # A cell with nothing behind it is not marked clickable, so an entry with
+    # no movers is a panel that would open empty.
+    return {key: entry for key, entry in out.items() if entry["movers"]}
+
+
 def _table_view(
     summary: str, header: list[str], rows: list[list[str]],
     columns: list[str] | None = None,
+    breakdown: list[list[str]] | None = None,
 ) -> str:
     """A chart's values as a table -- the readable-without-hover fallback.
 
@@ -755,12 +904,21 @@ def _table_view(
         f"<th class='num'>{escape(h)}</th>" if i else f"<th>{escape(h)}</th>"
         for i, h in enumerate(header)
     )
+    # A cell that can be opened says so with a key, and only where there is
+    # something behind it. Marking every cell would promise a breakdown for
+    # days nothing moved on, which is a click that opens an empty panel.
+    keys = breakdown or []
     body = "".join(
         "<tr>" + "".join(
-            f"<td class='num'>{c}</td>" if i else f"<td>{c}</td>"
+            (f"<td class='num'>{c}</td>" if not (
+                r < len(keys) and i - 1 < len(keys[r]) and keys[r][i - 1]
+            ) else
+             f"<td class='num'><button class='daycell' "
+             f"data-day=\"{escape(keys[r][i - 1])}\">{c}</button></td>")
+            if i else f"<td>{c}</td>"
             for i, c in enumerate(row)
         ) + "</tr>"
-        for row in rows
+        for r, row in enumerate(rows)
     )
     named = (
         f' data-columns="{escape(json.dumps(columns))}"' if columns else ""
@@ -819,7 +977,7 @@ def build(
     deep_profiles = asset_profiles(store, season, latest, rostered, depth=1)
 
     _write_index(out, season, today, progression, bars, managers, slotted,
-                 latest, stamp, simulated, profiles)
+                 latest, stamp, simulated, profiles, store)
     for manager in managers:
         _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     simulated, deep_profiles)
@@ -937,7 +1095,7 @@ def _slot_rows(bars: pd.DataFrame, managers: list[str]) -> tuple[list, dict, dic
 
 
 def _write_index(out, season, today, progression, bars, managers, slotted,
-                 latest, stamp, simulated, profiles) -> None:
+                 latest, stamp, simulated, profiles, store) -> None:
     leader = today.iloc[0]
     margin = float(today.iloc[0]["total"] - today.iloc[1]["total"]) if len(today) > 1 else 0.0
 
@@ -1004,6 +1162,13 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
     progression_rows = [
         [str(d)] + [f"{s.values[days.index(d)]:,.1f}" for s in series] for d in sampled
     ]
+    breakdown = _day_breakdown(store, season, sampled, managers)
+    # One key per cell, empty where nothing moved. Built against the same
+    # manager order the columns are in, so a cell and its panel cannot drift.
+    progression_keys = [
+        [(f"{key}|{d}" if f"{key}|{d}" in breakdown else "") for key in managers]
+        for d in sampled
+    ]
 
     slot_rows, values, slot_depth = _slot_rows(bars, managers)
     # Name each bar's asset, so the tooltip and the table both read as people.
@@ -1039,10 +1204,13 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
   {charts.legend(slotted, filterable=True)}
   {charts.progression_chart(days, series)}
   {_table_view("Show as a table", ["Date"] + [s.name for s in series],
-               progression_rows, columns=[s.name for s in series])}
+               progression_rows, columns=[s.name for s in series],
+               breakdown=progression_keys)}
+  <p class="sub">Click any figure in the table for the day it came from.</p>
 </div>
 
 {_profile_payload(profiles)}
+{_day_payload(breakdown)}
 """
     (out / "index.html").write_text(
         _page(f"{LEAGUE_ABBR} — Standings", body, "Standings", managers,
@@ -1060,7 +1228,8 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         f"{charts.legend(slotted, filterable=True)}"
         f"{charts.progression_chart(days, series)}"
         + _table_view("Show as a table", ["Date"] + [s.name for s in series],
-                      progression_rows, columns=[s.name for s in series]),
+                      progression_rows, columns=[s.name for s in series],
+                      breakdown=progression_keys),
     )
     slots_figure = _figure(
         "slots", "Every counting slot",
@@ -1086,7 +1255,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
                        ("slots", "Every counting slot"),
                        ("everyone", "Every scored asset")])
         + progression_figure + slots_figure + table_figure
-        + _profile_payload(profiles)
+        + _profile_payload(profiles) + _day_payload(breakdown)
     )
     (out / "results.html").write_text(
         _page(f"{LEAGUE_ABBR} — Results", results_body, "Results", managers,

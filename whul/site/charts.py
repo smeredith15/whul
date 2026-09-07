@@ -921,6 +921,10 @@ SCRIPT = """\
     dialog.showModal();
   }
 
+  // The day panel hands off to this rather than rendering a second profile.
+  // One implementation of "who is this" is the point of the payload.
+  window.whulProfile = open;
+
   document.querySelectorAll('svg.barchart .bar').forEach(function (bar) {
     if (!bar.dataset.asset) return;
     bar.addEventListener('click', function () { open(bar.dataset.asset); });
@@ -934,6 +938,85 @@ SCRIPT = """\
   });
   // Clicking the backdrop closes it, which is what the click outside a modal
   // is for; the dialog element does not do this on its own.
+  dialog.addEventListener('click', function (event) {
+    if (event.target === dialog) dialog.close();
+  });
+})();
+
+// --- what a day was made of -------------------------------------------
+//
+// The progression table gives a manager's total by date and says nothing about
+// how it got there. Every figure in it that moved is a button, and this is
+// what it opens: the counting assets that changed since the previous listed
+// day, what each added, and the figures behind it -- a statline for a player,
+// a result for a team or an individual athlete.
+(function () {
+  var node = document.getElementById('daydata');
+  var dialog = document.getElementById('dayview');
+  if (!node || !dialog) return;
+  var days = JSON.parse(node.textContent);
+  var assets = document.getElementById('assetdata');
+  var profiles = assets ? JSON.parse(assets.textContent) : {};
+
+  function line(mover) {
+    var a = profiles[mover.asset] || {};
+    // A finish is the better answer where the sport has one: "TOUR
+    // Championship 1st" says what happened and "Events 2" does not.
+    var detail = (mover.finishes || []).map(function (f) {
+      return f.label;
+    }).join(' \u00b7 ');
+    if (!detail) {
+      detail = (mover.lines || []).map(function (pair) {
+        return pair[0] + ' ' + pair[1];
+      }).join(' \u00b7 ');
+    }
+    var sign = mover.delta > 0 ? '+' : '';
+    return '<tr>' +
+      '<td><button class="assetlink" data-asset="' + mover.asset + '">' +
+        (a.name || mover.asset) + '</button>' +
+        (detail ? '<div class="micro">' + detail + '</div>' : '') + '</td>' +
+      '<td class="num gain">' + sign + mover.delta.toFixed(1) + '</td>' +
+      '<td class="num">' + mover.points.toFixed(1) + '</td></tr>';
+  }
+
+  function open(key) {
+    var day = days[key];
+    if (!day) return;
+    var parts = key.split('|');
+    var moved = (day.delta === null || day.delta === undefined) ? '' :
+      (day.delta > 0 ? '+' : '') + day.delta.toFixed(1) + ' since ' + day.since;
+    dialog.innerHTML =
+      '<button class="close" aria-label="Close">&times;</button>' +
+      '<div class="head"><div>' +
+        '<div class="nm">' + parts[0] + '</div>' +
+        '<div class="meta">' + parts[1] + (moved ? ' \u00b7 ' + moved : '') +
+        '</div></div></div>' +
+      '<div class="body"><table class="daylist"><thead><tr>' +
+        '<th>What moved</th><th class="num">Change</th><th class="num">Score</th>' +
+        '</tr></thead><tbody>' +
+        day.movers.map(line).join('') +
+        '</tbody></table></div>' +
+      '<div class="scoreline">' +
+        '<div><div class="label">Counting total</div>' +
+        '<div class="value">' + day.total.toFixed(1) + '</div></div>' +
+      '</div>';
+    dialog.querySelector('.close').addEventListener('click', function () {
+      dialog.close();
+    });
+    // A name here opens the asset profile, which is one click further on and
+    // carries everything this summarises.
+    dialog.querySelectorAll('button.assetlink').forEach(function (button) {
+      button.addEventListener('click', function () {
+        dialog.close();
+        if (window.whulProfile) window.whulProfile(button.dataset.asset);
+      });
+    });
+    dialog.showModal();
+  }
+
+  document.querySelectorAll('button.daycell').forEach(function (button) {
+    button.addEventListener('click', function () { open(button.dataset.day); });
+  });
   dialog.addEventListener('click', function (event) {
     if (event.target === dialog) dialog.close();
   });
