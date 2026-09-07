@@ -363,6 +363,39 @@ def _ncaa_live(key: str, category: str):
     return build
 
 
+def _intl_soccer():
+    """National teams, from the martj42 ledgers.
+
+    One pull for both genders and every competition: the ladder is what
+    separates a World Cup from a Nations League, and it is applied to the whole
+    history in one pass. Two benchmark groups come out, men's and women's, each
+    normalized against itself.
+    """
+    def build():
+        from whul.scoring import intl_soccer as scorer
+        from whul.sources import intl_soccer as source
+
+        return (
+            lambda seasons: source.load_matches(seasons),
+            scorer.score_teams,
+        )
+
+    return build
+
+
+def _intl_seasons(as_of: date) -> list[int]:
+    """The league year, which is what this source is keyed on.
+
+    Not a calendar year and not a feed's season number: international football
+    has neither. A match belongs to the league year its tournament began in,
+    which `whul.sources.intl_soccer` decides, so the only thing to ask for is
+    the year itself.
+    """
+    from whul.config.league import SEASON, league_year
+
+    return [league_year(SEASON.start)]
+
+
 def _soccer_players():
     """Club soccer players, from ESPN team rosters.
 
@@ -760,6 +793,11 @@ SOURCES: dict[str, Source] = _register(
     # season that falls outside the league year rather than the share of it
     # that belongs here. Overstating is worse than the gap, so the MLS half
     # waits for a dated source -- which this one needs anyway, being 403.
+    Source("intl-soccer", "Intl Soccer", "Team", _intl_soccer(),
+           produces=("Men's Intl Soccer", "Women's Intl Soccer"),
+           seasons_for=_intl_seasons,
+           note="martj42 ledgers; one pull, two benchmarks -- the men's game "
+                "and the women's are normalized against themselves"),
     Source("soccer-players", "Club Soccer", "Player", _soccer_players,
            produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
                      "Ligue 1", "MLS"),
@@ -773,7 +811,7 @@ SOURCES: dict[str, Source] = _register(
 ORDER = [
     "nfl", "nfl-teams", "tennis", "pga", "motorsports",
     "nhl", "nhl-teams", "mlb", "mlb-teams", "nba", "nba-teams",
-    "soccer-players",
+    "soccer-players", "intl-soccer",
     *NCAA_CATEGORIES, *SOCCER_CATEGORIES,
 ]
 

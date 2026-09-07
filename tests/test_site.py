@@ -1363,3 +1363,143 @@ def test_a_finishing_position_is_not_printed_where_a_role_belongs():
     assert _identity({"position": 14.0, "role": "Golfer"}, "PGA", "")["position"] \
         == "Golfer"
     assert _identity({"position": "F"}, "Premier League", "")["position"] == "F"
+
+
+# --- what a day was made of -------------------------------------------------
+
+def test_a_brief_line_drops_zeros_and_leads_with_the_headline_figures():
+    """A batter's line reading "Saves 0, Innings 0, Holds 0" is three quarters
+    of the space and none of the information."""
+    from whul.site.build import _brief, _stat_lines
+
+    row = {"sv": 0.0, "goals": 2.0, "matches": 3.0, "hld": 0.0,
+           "yellow": 1.0, "assists": 1.0}
+    got = dict(_brief(_stat_lines(row), row))
+    assert "Saves" not in got and "Holds" not in got
+    assert got["Goals"] == "2" and got["Matches"] == "3"
+
+
+def test_a_brief_line_never_repeats_a_label():
+    """`goals` and `goal_points` are both labelled "Goals", and a line reading
+    "Goals 2 - Goals 8" reads as a fault. The count wins."""
+    from whul.site.build import _brief, _stat_lines
+
+    row = {"goals": 2.0, "goal_points": 8.0, "matches": 2.0}
+    labels = [label for label, _ in _brief(_stat_lines(row), row)]
+    assert labels.count("Goals") == 1
+    assert dict(_brief(_stat_lines(row), row))["Goals"] == "2"
+
+
+def test_a_brief_line_does_not_repeat_the_score():
+    """The panel shows the score in its own column."""
+    from whul.site.build import _brief, _stat_lines
+
+    row = {"total_points": 18.0, "role_points": 18.0, "goals": 1.0}
+    labels = [label for label, _ in _brief(_stat_lines(row), row)]
+    assert labels == ["Goals"]
+
+
+def test_a_conference_id_is_not_a_statistic():
+    """ESPN's conference is a number, so a college team's line read
+    "Conference 5" beside its wins -- neither a figure anyone can check nor one
+    that went into the score."""
+    from whul.site.build import _stat_lines
+
+    labels = [label for label, _ in _stat_lines({"conference": "5", "wins": 1.0})]
+    assert labels == ["Wins"]
+
+
+def test_a_table_cell_is_only_clickable_where_something_moved():
+    """Marking every cell promises a breakdown for days nothing happened on,
+    which is a click that opens an empty panel."""
+    from whul.site.build import _table_view
+
+    html = _table_view(
+        "Show as a table", ["Date", "TG"], [["2026-09-04", "10.0"],
+                                            ["2026-09-05", "10.0"]],
+        columns=["TG"], breakdown=[["TG|2026-09-04"], [""]],
+    )
+    assert 'data-day="TG|2026-09-04"' in html
+    assert html.count("daycell") == 1
+    assert "<td class='num'>10.0</td>" in html, "the quiet day stays a plain cell"
+
+
+def test_a_day_breakdown_names_what_moved_and_by_how_much(tmp_path):
+    """The progression table gives a total by date and says nothing about how
+    it got there. This is the answer to "what happened on the 6th"."""
+    import json
+
+    from whul.site.build import _day_breakdown
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "TG", "display_name": "TG",
+                               "active": 1}], ["manager_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": "s1", "manager_id": "TG", "season": "2026-27",
+         "category": "NFL", "asset_type": "Team", "slot_index": 1},
+        {"slot_id": "s2", "manager_id": "TG", "season": "2026-27",
+         "category": "NFL", "asset_type": "Team", "slot_index": 2},
+    ], ["slot_id"])
+    store.upsert("slot_scores", [
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-05",
+         "asset_id": "a1", "score": 10.0, "counts": 1},
+        {"slot_id": "s2", "season": "2026-27", "as_of": "2026-09-05",
+         "asset_id": "a2", "score": 5.0, "counts": 1},
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-06",
+         "asset_id": "a1", "score": 18.0, "counts": 1},
+        {"slot_id": "s2", "season": "2026-27", "as_of": "2026-09-06",
+         "asset_id": "a2", "score": 5.0, "counts": 1},
+    ], ["slot_id", "as_of"])
+    store.upsert("assets", [
+        {"asset_id": "a1", "asset_type": "Team", "display_name": "Bills",
+         "league": "NFL", "norm_key": "NFL", "created_at": "2026-08-21"},
+        {"asset_id": "a2", "asset_type": "Team", "display_name": "Jets",
+         "league": "NFL", "norm_key": "NFL", "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    store.upsert("raw_stats", [{
+        "asset_id": "a1", "league": "NFL", "season": "2026-27",
+        "as_of": "2026-09-06", "source": "test", "phase": "regular",
+        "stats": json.dumps({"wins": 2.0, "reg_big_wins": 1.0}),
+        "fetched_at": "2026-09-06T09:00:00Z",
+    }], ["asset_id", "season", "as_of", "source", "phase"])
+
+    out = _day_breakdown(store, "2026-27", ["2026-09-05", "2026-09-06"], ["TG"])
+    day = out["TG|2026-09-06"]
+    assert day["total"] == 23.0 and day["delta"] == 8.0
+    assert day["since"] == "2026-09-05"
+    # Only what moved: the slot that stayed on five is not a mover.
+    assert [m["asset"] for m in day["movers"]] == ["a1"]
+    assert day["movers"][0]["delta"] == 8.0
+    assert dict(day["movers"][0]["lines"])["Wins"] == "2"
+
+
+def test_a_day_nothing_moved_on_gets_no_panel(tmp_path):
+    """An entry with no movers is a panel that would open empty, and a cell
+    marked clickable that opens nothing is worse than one that is not.
+
+    The first listed day is the exception and not a special case: it has
+    nothing before it, so everything on the board arrived since nothing."""
+    import json
+
+    from whul.site.build import _day_breakdown
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "TG", "display_name": "TG",
+                               "active": 1}], ["manager_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": "s1", "manager_id": "TG", "season": "2026-27",
+         "category": "NFL", "asset_type": "Team", "slot_index": 1},
+    ], ["slot_id"])
+    store.upsert("slot_scores", [
+        {"slot_id": "s1", "season": "2026-27", "as_of": d, "asset_id": "a1",
+         "score": 10.0, "counts": 1}
+        for d in ("2026-09-05", "2026-09-06")
+    ], ["slot_id", "as_of"])
+    out = _day_breakdown(store, "2026-27", ["2026-09-05", "2026-09-06"], ["TG"])
+    assert "TG|2026-09-06" not in out, "a still day has nothing to open"
+    # The first listed day has nothing before it, so what is on the board is
+    # the movement. It carries no "since", which is what the panel reads off.
+    assert out["TG|2026-09-05"]["delta"] is None
+    assert out["TG|2026-09-05"]["movers"][0]["delta"] == 10.0

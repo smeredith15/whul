@@ -8,10 +8,31 @@ the standings are real. Nothing here changes a number; it is all how the
 numbers are presented.
 
 
-**All seven are done**, along with three additions asked for afterwards: every
+**All seven are done**, along with four additions asked for afterwards: every
 figure behind a raw score in the profile window, a note wherever a score has
-been prorated or schedule-scaled, and a finish list for the individual sports
-in the form `ATP Winston Salem 250 F  150`.
+been prorated or schedule-scaled, a finish list for the individual sports in
+the form `ATP Winston Salem 250 F  150`, and a day's scoring behind every
+figure in the progression table.
+
+## ~~8. What a day was made of~~ — done
+
+The progression table gives a manager's total by date and says nothing about
+how it got there. Every figure in it that moved is now a button, and it opens
+the counting assets that changed since the previous listed day: what each
+added, its score, and the figures behind it -- a statline for a player, a
+result for a team, a finish for an individual athlete. A name in the panel
+opens that asset's profile, which is one click further on and carries
+everything the panel summarises.
+
+Only cells with something behind them are marked. Marking every one would
+promise a breakdown for days nothing happened on, which is a click that opens
+an empty panel.
+
+The data was already there: `raw_stats` keeps a day's figures per asset and
+`slot_scores` keeps a day's score per slot, so this needed no new fetching.
+It is keyed on the days the table actually lists -- about fifteen, sampled --
+so the payload is bounded by what is on screen rather than growing with the
+season.
 
 Kept as the record of what changed and why. Anything struck below is done.
 

@@ -310,7 +310,27 @@ CROSS_POOL_SOCCER = ("Club Soccer Top 3", "Club Soccer Other")
 CATEGORY_COMPETITIONS: dict[str, tuple[str, ...]] = {
     "Tennis": ("ATP", "WTA"),
     "Motorsports": ("F1", "NASCAR"),
+    "Intl Soccer": ("Men's Intl Soccer", "Women's Intl Soccer"),
 }
+
+
+#: The day a league year opens, and the day after the one before it closed.
+#:
+#: 2026-27 is the exception: it opened on 21 August 2026, which is when the
+#: league was drafted, and closes on 13 July 2027 like any other. Every year
+#: after it runs mid-July to mid-July.
+#:
+#: The date is load-bearing for international soccer and nowhere else. Nearly
+#: every continental championship and World Cup runs from mid-June to
+#: mid-July, so this boundary falls *inside* them -- Euro 2024 ran 14 June to
+#: 14 July -- and a tournament split across it would have its final scored in a
+#: different year from its group stage. See docs/INTL_SOCCER.md.
+LEAGUE_YEAR_OPENS = (7, 14)
+
+
+def league_year(day: date) -> int:
+    """The league year a date falls in. 2026 means the 2026-27 year."""
+    return day.year if (day.month, day.day) >= LEAGUE_YEAR_OPENS else day.year - 1
 
 
 def competitions_for(league: str) -> tuple[str, ...]:

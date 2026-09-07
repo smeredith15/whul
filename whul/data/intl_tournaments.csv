@@ -1,40 +1,65 @@
-gender,tournament,competition,rung,kind
-M,FIFA World Cup,FIFA World Cup,world,finals
-M,FIFA World Cup qualification,FIFA World Cup,world,qualifying
-W,FIFA World Cup,FIFA Women's World Cup,world,finals
-W,FIFA World Cup qualification,FIFA Women's World Cup,world,qualifying
-M,UEFA Euro,UEFA European Championship,federation,finals
-M,UEFA Euro qualification,UEFA European Championship,federation,qualifying
-W,UEFA Euro,UEFA Women's Euro,federation,finals
-W,UEFA Euro qualification,UEFA Women's Euro,federation,qualifying
-M,Copa América,Copa América,federation,finals
-M,Copa América qualification,Copa América,federation,qualifying
-W,Copa América,Copa América Femenina,federation,finals
-M,African Cup of Nations,Africa Cup of Nations,federation,finals
-M,African Cup of Nations qualification,Africa Cup of Nations,federation,qualifying
-W,African Cup of Nations,Women's Africa Cup of Nations,federation,finals
-W,African Championship,Women's Africa Cup of Nations,federation,finals
-W,African Cup of Nations qualification,Women's Africa Cup of Nations,federation,qualifying
-W,Africa Cup of Nations qualification,Women's Africa Cup of Nations,federation,qualifying
-W,African Championship qualification,Women's Africa Cup of Nations,federation,qualifying
-M,AFC Asian Cup,AFC Asian Cup,federation,finals
-M,AFC Asian Cup qualification,AFC Asian Cup,federation,qualifying
-W,AFC Asian Cup,AFC Women's Asian Cup,federation,finals
-W,AFC Asian Cup qualification,AFC Women's Asian Cup,federation,qualifying
-M,Gold Cup,CONCACAF Gold Cup,federation,finals
-M,Gold Cup qualification,CONCACAF Gold Cup,federation,qualifying
-W,CONCACAF Championship,CONCACAF W Championship,federation,finals
-W,CONCACAF Championship qualification,CONCACAF W Championship,federation,qualifying
-W,CONCACAF Gold Cup,CONCACAF W Gold Cup,federation,finals
-W,CONCACAF Gold Cup qualification,CONCACAF W Gold Cup,federation,qualifying
-M,Oceania Nations Cup,OFC Nations Cup,federation,finals
-M,Oceania Nations Cup qualification,OFC Nations Cup,federation,qualifying
-W,OFC Nations Cup,OFC Women's Nations Cup,federation,finals
-W,OFC Championship,OFC Women's Nations Cup,federation,finals
-W,OFC Nations Cup qualification,OFC Women's Nations Cup,federation,qualifying
-M,UEFA Nations League,UEFA Nations League,nations_league,finals
-M,CONCACAF Nations League,CONCACAF Nations League,nations_league,finals
-M,CONCACAF Nations League qualification,CONCACAF Nations League,nations_league,qualifying
-W,UEFA Nations League,UEFA Women's Nations League,nations_league,finals
-W,UEFA Women's Nations League,UEFA Women's Nations League,nations_league,finals
-W,CONMEBOL Nations League,CONMEBOL Women's Nations League,nations_league,finals
+# How the ladder reads a match: which competition it belongs to, at what rung,
+# and whether that phase is played as one block or across international windows.
+#
+# `phase` decides which league year the match scores in, and the two answers are
+# different on purpose:
+#
+#   block    -- a group stage that proceeds directly into a knockout, played as
+#               one tournament. Scored WHOLE into the league year it began in,
+#               however long after the year's end it finishes. The 2027 Women's
+#               World Cup starts 24 June 2027 and ends 25 July, twelve days after
+#               the 2026-27 league year closes; every match of it belongs to
+#               2026-27, and to the rosters that held those teams when it kicked
+#               off, even though the next draft happens mid-tournament.
+#
+#   windows  -- a phase played across several international windows with no
+#               knockout following directly: every qualifying campaign, and the
+#               Nations Leagues' league phases. Scored by the date each fixture
+#               was actually played. These windows do not align with a league
+#               year in any reliable way -- the 2022-23 UEFA Nations League
+#               began in June 2022 and finished in June 2023, straddling the
+#               boundary -- so a whole-block rule would have to guess which year
+#               owned them.
+#
+# Qualifying is always `windows`, whatever the competition.
+#
+gender,tournament,competition,rung,kind,phase
+M,FIFA World Cup,FIFA World Cup,world,finals,block
+M,FIFA World Cup qualification,FIFA World Cup,world,qualifying,windows
+W,FIFA World Cup,FIFA Women's World Cup,world,finals,block
+W,FIFA World Cup qualification,FIFA Women's World Cup,world,qualifying,windows
+M,UEFA Euro,UEFA European Championship,federation,finals,block
+M,UEFA Euro qualification,UEFA European Championship,federation,qualifying,windows
+W,UEFA Euro,UEFA Women's Euro,federation,finals,block
+W,UEFA Euro qualification,UEFA Women's Euro,federation,qualifying,windows
+M,Copa América,Copa América,federation,finals,block
+M,Copa América qualification,Copa América,federation,qualifying,windows
+W,Copa América,Copa América Femenina,federation,finals,block
+M,African Cup of Nations,Africa Cup of Nations,federation,finals,block
+M,African Cup of Nations qualification,Africa Cup of Nations,federation,qualifying,windows
+W,African Cup of Nations,Women's Africa Cup of Nations,federation,finals,block
+W,African Championship,Women's Africa Cup of Nations,federation,finals,block
+W,African Cup of Nations qualification,Women's Africa Cup of Nations,federation,qualifying,windows
+W,Africa Cup of Nations qualification,Women's Africa Cup of Nations,federation,qualifying,windows
+W,African Championship qualification,Women's Africa Cup of Nations,federation,qualifying,windows
+M,AFC Asian Cup,AFC Asian Cup,federation,finals,block
+M,AFC Asian Cup qualification,AFC Asian Cup,federation,qualifying,windows
+W,AFC Asian Cup,AFC Women's Asian Cup,federation,finals,block
+W,AFC Asian Cup qualification,AFC Women's Asian Cup,federation,qualifying,windows
+M,Gold Cup,CONCACAF Gold Cup,federation,finals,block
+M,Gold Cup qualification,CONCACAF Gold Cup,federation,qualifying,windows
+W,CONCACAF Championship,CONCACAF W Championship,federation,finals,block
+W,CONCACAF Championship qualification,CONCACAF W Championship,federation,qualifying,windows
+W,CONCACAF Gold Cup,CONCACAF W Gold Cup,federation,finals,block
+W,CONCACAF Gold Cup qualification,CONCACAF W Gold Cup,federation,qualifying,windows
+M,Oceania Nations Cup,OFC Nations Cup,federation,finals,block
+M,Oceania Nations Cup qualification,OFC Nations Cup,federation,qualifying,windows
+W,OFC Nations Cup,OFC Women's Nations Cup,federation,finals,block
+W,OFC Championship,OFC Women's Nations Cup,federation,finals,block
+W,OFC Nations Cup qualification,OFC Women's Nations Cup,federation,qualifying,windows
+M,UEFA Nations League,UEFA Nations League,nations_league,finals,windows
+M,CONCACAF Nations League,CONCACAF Nations League,nations_league,finals,windows
+M,CONCACAF Nations League qualification,CONCACAF Nations League,nations_league,qualifying,windows
+W,UEFA Nations League,UEFA Women's Nations League,nations_league,finals,windows
+W,UEFA Women's Nations League,UEFA Women's Nations League,nations_league,finals,windows
+W,CONMEBOL Nations League,CONMEBOL Women's Nations League,nations_league,finals,windows

@@ -518,6 +518,19 @@ def _pull(
     if not source.windowed:
         raw = fetch(seasons)
         if raw is None or raw.empty:
+            # A feed that returns nothing said nothing about why, and an empty
+            # frame reaching the report as a bare zero is the shape of fault
+            # this whole module exists to prevent. International soccer found
+            # it: its first pull of a league year returns nothing, correctly --
+            # the next international window is weeks away -- and the run said
+            # so in no way at all.
+            if notes is not None:
+                notes.append(
+                    f"the {source.league} feed returned nothing for season(s) "
+                    f"{', '.join(str(s) for s in seasons)}. Nothing that counts "
+                    f"has been played, or the feed is empty; the adapter's own "
+                    f"output says which"
+                )
             return pd.DataFrame()
         kept = _from_season_start(raw, source.league)
         scored = score(kept)

@@ -1,0 +1,39 @@
+# Matches the martj42 ledgers do not carry. Same columns as their results.csv,
+# plus `gender` and `shootout_winner`.
+#
+# Every row here is a hole in a public dataset, not a scoring decision. Keep it
+# to results that are missing and verifiable, and delete a block the moment the
+# upstream ledger carries it -- the loader reports any row it finds on both
+# sides so a duplicate cannot go unnoticed.
+#
+# 2024 CONCACAF W Gold Cup (17 Feb - 10 Mar 2024). Absent from
+# martj42/womens-international-results entirely: its qualification is there,
+# 87 matches of it, and not one match of the tournament. The United States won
+# it, Brazil were runners-up, and Canada reached the semi-finals -- three of
+# the ten teams this league drafted. Supplied by the league admin 2026-09-07.
+date,home_team,away_team,home_score,away_score,tournament,gender,shootout_winner
+2024-02-20,Mexico,Argentina,0,0,CONCACAF Gold Cup,W,
+2024-02-20,United States,Dominican Republic,5,0,CONCACAF Gold Cup,W,
+2024-02-21,Panama,Colombia,0,6,CONCACAF Gold Cup,W,
+2024-02-21,Brazil,Puerto Rico,1,0,CONCACAF Gold Cup,W,
+2024-02-22,Costa Rica,Paraguay,0,1,CONCACAF Gold Cup,W,
+2024-02-22,Canada,El Salvador,6,0,CONCACAF Gold Cup,W,
+2024-02-23,Dominican Republic,Mexico,0,8,CONCACAF Gold Cup,W,
+2024-02-23,Argentina,United States,0,4,CONCACAF Gold Cup,W,
+2024-02-24,Puerto Rico,Panama,2,1,CONCACAF Gold Cup,W,
+2024-02-24,Colombia,Brazil,0,1,CONCACAF Gold Cup,W,
+2024-02-25,Paraguay,Canada,0,4,CONCACAF Gold Cup,W,
+2024-02-25,El Salvador,Costa Rica,0,2,CONCACAF Gold Cup,W,
+2024-02-26,Argentina,Dominican Republic,3,0,CONCACAF Gold Cup,W,
+2024-02-26,United States,Mexico,0,2,CONCACAF Gold Cup,W,
+2024-02-27,Colombia,Puerto Rico,2,0,CONCACAF Gold Cup,W,
+2024-02-27,Brazil,Panama,5,0,CONCACAF Gold Cup,W,
+2024-02-28,Canada,Costa Rica,3,0,CONCACAF Gold Cup,W,
+2024-02-28,Paraguay,El Salvador,3,2,CONCACAF Gold Cup,W,
+2024-03-02,Canada,Costa Rica,1,0,CONCACAF Gold Cup,W,
+2024-03-02,Brazil,Argentina,5,1,CONCACAF Gold Cup,W,
+2024-03-03,Mexico,Paraguay,3,2,CONCACAF Gold Cup,W,
+2024-03-03,United States,Colombia,3,0,CONCACAF Gold Cup,W,
+2024-03-06,Brazil,Mexico,3,0,CONCACAF Gold Cup,W,
+2024-03-06,Canada,United States,2,2,CONCACAF Gold Cup,W,United States
+2024-03-10,United States,Brazil,1,0,CONCACAF Gold Cup,W,

@@ -258,6 +258,28 @@ table.results .rowmeta { display: block; font-size: 0.74rem; color: var(--muted)
   color: var(--text-primary); cursor: pointer; text-align: left; }
 .assetlink:hover { text-decoration: underline; text-underline-offset: 3px; }
 .assetlink:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+
+/* A figure in the progression table that has a day behind it. Underlined
+   rather than coloured: the table's numbers are already carrying a manager's
+   colour in the chart above, and a second meaning on the same channel reads as
+   a status rather than as a link. */
+button.daycell {
+  font: inherit; color: inherit; background: none; border: 0; padding: 0;
+  cursor: pointer; text-decoration: underline dotted;
+  text-underline-offset: 3px; text-decoration-color: var(--muted);
+}
+button.daycell:hover { text-decoration-style: solid; }
+button.daycell:focus-visible {
+  outline: 2px solid var(--series-1); outline-offset: 2px;
+}
+
+/* What a day was made of. The name leads, the figures behind it sit under it
+   in small type, and the two numbers stay in a column a reader can scan. */
+table.daylist td { vertical-align: top; }
+table.daylist .micro {
+  font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4;
+}
+table.daylist .gain { font-variant-numeric: tabular-nums; }
 table.results tr[hidden] { display: none; }
 
 /* A collapsible league section. Twenty leagues open at once is a page that is

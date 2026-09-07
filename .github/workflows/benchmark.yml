@@ -1,0 +1,161 @@
+# Compute a benchmark, review it, and -- separately -- freeze it.
+#
+# The benchmark is the number every score in its group is divided by, so it
+# decides what 100 means. Getting it wrong raises nothing: it produces a season
+# of plausible, wrong standings. So computing and adopting are two acts here,
+# as they are in docs/BENCHMARKS.md, and the second one needs a person to tick
+# a box.
+#
+# It runs here because it needs the same open network the nightly job has. The
+# agent sandbox this repository is developed in answers 403 to almost every
+# sports host -- international soccer happens to be an exception, being served
+# from raw.githubusercontent -- so a run there could compute two leagues and
+# would quietly skip the rest.
+#
+# What it does NOT do is recompute the whole scale. `benchmarks derive` copies
+# the frozen version's rows into a fresh draft and only the named leagues are
+# recomputed into it. A frozen scale is never edited, and a new version has to
+# cover the whole roster before it can be frozen -- without derive, correcting
+# one league would mean redoing the other twenty, some of which walk dates for
+# an hour, and in practice the correction would not get made.
+
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      leagues:
+        description: >-
+          Keys from `benchmarks list`, space separated. Only these are
+          recomputed; every other group is inherited from the frozen scale.
+        default: "intl-soccer"
+      seasons:
+        description: >-
+          How many seasons to draw the pool from. Five everywhere else;
+          international soccer wants eight, two full four-year cycles, because
+          five holds one World Cup and either one continental championship or
+          two depending on where it starts.
+        default: "8"
+      freeze:
+        description: >-
+          Adopt the draft as the scale. Leave this unticked on the first run,
+          read the comparison, and tick it on a second run only if the numbers
+          are right. Freezing refuses while any rostered asset lacks a
+          benchmark.
+        type: boolean
+        default: false
+      version:
+        description: >-
+          Freeze this existing draft instead of computing a new one. Leave
+          empty to compute.
+        default: ""
+
+permissions:
+  contents: write   # to push the database back to the data branch
+
+concurrency:
+  # Shares the nightly job's group on purpose: both write the same database on
+  # the same branch, and the loser of a race would have its work force-pushed
+  # away by the winner.
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+          # `git checkout <tree> -- <path>` stages the file as well as writing
+          # it, and this job commits. Left in the index it would ride along in
+          # the orphan commit below, which is where it belongs -- but staged
+          # here it would also show up in any other commit, so it is taken out
+          # and added back deliberately.
+          git reset -q -- data/whul.sqlite3
+
+      - name: Refresh the rosters from the draft file
+        # The freeze is refused while a rostered asset has no benchmark, so the
+        # roster has to be current or the check is against a stale one.
+        run: python -m whul.cli import-rosters --season 2026-27 --write
+
+      - name: Start a draft from the frozen scale
+        if: ${{ !inputs.version }}
+        run: |
+          python -m whul.cli benchmarks derive frozen \
+            --notes "recomputing ${{ inputs.leagues }}" | tee derive.txt
+          # "  <draft> holds N benchmark(s), copied from <frozen>."
+          echo "DRAFT=$(awk '/copied from/ {print $1}' derive.txt)" >> "$GITHUB_ENV"
+          echo "FROM=$(awk '/copied from/ {print $NF}' derive.txt | tr -d .)" \
+            >> "$GITHUB_ENV"
+
+      - name: Use the draft named in the inputs
+        if: ${{ inputs.version }}
+        run: echo "DRAFT=${{ inputs.version }}" >> "$GITHUB_ENV"
+
+      - name: Compute
+        if: ${{ !inputs.version }}
+        run: |
+          python -m whul.cli benchmarks compute ${{ inputs.leagues }} \
+            --seasons "${{ inputs.seasons }}" --save --into "$DRAFT" \
+            | tee -a benchmarks.txt
+
+      # Both of these are the review, and both are worth reading before the
+      # box gets ticked. `coverage` exits non-zero while anything is uncovered,
+      # which is a fact to report rather than a reason to stop.
+      - name: What the draft covers
+        continue-on-error: true
+        run: python -m whul.cli benchmarks coverage "$DRAFT" | tee -a benchmarks.txt
+
+      - name: What adopting it would change
+        if: ${{ !inputs.version }}
+        continue-on-error: true
+        run: |
+          python -m whul.cli benchmarks compare "$FROM" "$DRAFT" | tee -a benchmarks.txt
+
+      - name: Freeze
+        if: ${{ inputs.freeze }}
+        run: python -m whul.cli benchmarks freeze "$DRAFT" | tee -a benchmarks.txt
+
+      - name: Save the database
+        run: |
+          git config user.name "whul-bot"
+          git config user.email "whul-bot@users.noreply.github.com"
+          git checkout --orphan data-tmp
+          git rm -rq --cached . || true
+          git add -f data/whul.sqlite3
+          git commit -qm "Benchmarks: ${{ inputs.leagues }} $(date -u +%Y-%m-%d)"
+          git push -f origin data-tmp:data
+
+      - name: What to do next
+        run: |
+          echo "==================================================="
+          echo "  Draft: $DRAFT"
+          if [ "${{ inputs.freeze }}" = "true" ]; then
+            echo "  FROZEN. Run 'Publish standings' with backfill to rescore."
+          else
+            echo "  Nothing is frozen. Read the comparison above, then run this"
+            echo "  workflow again with Freeze ticked and Version set to:"
+            echo "    $DRAFT"
+          fi
+          echo "==================================================="
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmarks
+          path: |
+            benchmarks.txt
+            derive.txt
+          if-no-files-found: warn
