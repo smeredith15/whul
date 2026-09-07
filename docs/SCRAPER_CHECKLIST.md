@@ -195,6 +195,38 @@ scoreboard request per date, and the ESPN adapter already proven for NBA covers 
   NFL. NCAAF now uses **13 against a conference opponent or in the postseason,
   20 out of conference** — a lower bar where the field is stronger.
 
+### The live path had no conference at all (fixed 2026-09-07)
+
+Ten rostered NCAAF teams scored nothing through the opening weeks while the
+nightly ingest raised `MissingConference` every night. The cause was not the
+feed being wrong but the pipeline reading a different endpoint than the one that
+was probed. A season in progress is loaded by `load_rostered_schedules`, which
+walks **each rostered team's own schedule** — deliberately, because the
+scoreboard caps at twenty-five events a request and returns the featured slate
+rather than all of it. That endpoint carries no conference of any kind: not on
+the competition (`conferenceCompetition` is absent, so not even "was this a
+conference game"), not on either competitor, not on the team. Every earlier
+coverage figure above was measured on the scoreboard, which does carry it — so
+the historical backfill was genuinely fine and the live path was genuinely
+broken, and one clean bill of health was collected from a payload nothing in the
+live pipeline reads.
+
+`/teams/{id}` carries it, as `groups`. The rule, confirmed for every rostered
+team against what the scoreboard said for the same weekend:
+
+**conference = `groups.id` when `groups.isConference`, else `groups.parent.id`.**
+
+James Madison is the case that decides the second half: its own group 167 is the
+Sun Belt *East*, a division, and grouping by that would split a conference in two
+and hand out two titles. `espn.fill_conferences` joins that map onto the schedule
+rows, opponents included — a map covering only the drafted teams would report
+every one of their conference games as non-conference and score the term at zero,
+which looks exactly like a working feed. Anything it cannot resolve is named and
+counted, for the same reason.
+
+Membership is a season-long property, so it is cached per team per season: one
+request a team a year, and the nightly run restores `data/cache` between runs.
+
 ## 6. Motorsports, golf, tennis
 
 Not started, and **this is the largest data gap in the project**. In the R scripts

@@ -29,6 +29,9 @@ what it lacks:
   3. the scoreboard, for contrast, and to print each rostered team's conference
      id against its name -- which is how the ACC's id gets confirmed from data
      rather than from memory.
+  4. the fix, end to end: what `load_rostered_schedules` now returns for one
+     rostered team, and whether `score_football` scores it. Sections 1-3
+     diagnose; this one is the only part that says the league will score.
 
     python scripts/probe-ncaaf.py --db data/whul.sqlite3
     python scripts/probe-ncaaf.py --db data/whul.sqlite3 --date 2026-09-05
@@ -204,6 +207,50 @@ def show_scoreboard(day: date, names: list[str]) -> None:
             print(f"      {team:<32} conference {conf!r}")
 
 
+def show_scoring(names: list[str], season: int) -> None:
+    """The live path, run for real, and then scored.
+
+    Sections 1-3 can all read correctly while the league still scores nothing,
+    because what the pipeline does with the payload is a separate question from
+    what the payload holds. This runs `load_rostered_schedules` -- the function
+    the nightly ingest calls -- and hands the result to `score_football`, so a
+    green section 4 means points, not a promising-looking field.
+    """
+    from whul.scoring.ncaa import MissingConference, score_football
+    from whul.sources.espn import load_rostered_schedules
+
+    games = load_rostered_schedules("ncaaf", [season], names, verbose=True)
+    if games.empty:
+        print("    no games at all -- nothing to score, and nothing to conclude")
+        return
+
+    done = games[games["completed"].fillna(False).astype(bool)] \
+        if "completed" in games.columns else games
+    both = ((done["home_conference"].fillna("") != "")
+            & (done["away_conference"].fillna("") != "")).sum()
+    print(f"    {len(done)} completed game(s); a conference on both sides in "
+          f"{both} of them")
+
+    try:
+        scored = score_football(games, eligible=set(names))
+    except MissingConference as exc:
+        print(f"    STILL BROKEN: {exc}")
+        return
+    if scored.empty:
+        print("    scored an empty frame -- the games are there and the points "
+              "are not, which is a scoring bug rather than a feed one")
+        return
+    columns = [c for c in ("team", "conference", "games_played", "wins",
+                           "conf_wins", "total_points") if c in scored.columns]
+    print(f"    scored {len(scored)} team(s)  ({', '.join(columns)}):")
+    for row in scored[columns].itertuples(index=False):
+        print("      " + "  ".join(str(v) for v in row))
+    zero = scored[scored.get("total_points", 0) == 0] if "total_points" in scored else scored[:0]
+    if len(zero):
+        print(f"    {len(zero)} of them still on zero: "
+              f"{', '.join(str(t) for t in zero['team'])}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default="data/whul.sqlite3")
@@ -225,6 +272,8 @@ def main() -> int:
          lambda: show_team_detail(names)),
         (f"3. the scoreboard ({day}) -- known to carry it; which id is which",
          lambda: show_scoreboard(day, names)),
+        ("4. THE FIX, END TO END -- does NCAAF score now?",
+         lambda: show_scoring(names, args.feed_season)),
     ):
         print(f"\n{'=' * 70}\n{title}\n")
         try:
@@ -233,7 +282,8 @@ def main() -> int:
             print(f"    FAILED: {type(exc).__name__}: {exc}")
 
     print(f"\n{'=' * 70}")
-    print("Section 1 is the one that matters: it is the payload the pipeline")
+    print("Section 4 is the verdict; 1-3 are how it was arrived at.")
+    print("Section 1 is where the problem is: it is the payload the pipeline")
     print("reads. If `conferenceCompetition` is on its competition object, a")
     print("conference game needs no conference id at all. If section 2 carries")
     print("a conference, that is the map to join on. Section 3 only confirms")

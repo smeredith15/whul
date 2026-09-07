@@ -496,6 +496,133 @@ def load_team_schedule(league: str, team_id: str, season: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+#: Where a college team's conference actually lives.
+#:
+#: ``/teams/{id}/schedule`` -- the endpoint ``load_rostered_schedules`` reads --
+#: carries no conference of any kind. Not on the competition, not on either
+#: competitor, not on the team: the competitor keys are ``curatedRank, homeAway,
+#: id, leaders, order, record, score, team, type, winner`` and the team keys are
+#: ``abbreviation, displayName, id, links, location, logos, nickname,
+#: shortDisplayName``. ``conferenceCompetition`` is absent too, so not even
+#: "was this a conference game" can be read off it. That is why ten rostered
+#: NCAAF teams scored nothing while the nightly ingest raised
+#: ``MissingConference`` -- and why the historical backfill was unaffected: it
+#: walks the scoreboard, which does carry conferences.
+#:
+#: ``/teams/{id}`` carries it, as ``groups``:
+#:
+#:     Arkansas       groups.id 8    isConference true    parent 80
+#:     Indiana        groups.id 5    isConference true    parent 80
+#:     Miami          groups.id 1    isConference true    parent 80
+#:     Notre Dame     groups.id 18   isConference true    parent 80
+#:     James Madison  groups.id 167  isConference false   parent 37
+#:
+#: 8 is the SEC and 1 the ACC; 167 is the Sun Belt *East*, a division, whose
+#: parent 37 is the Sun Belt itself. So the conference is ``groups.id`` when
+#: ``isConference``, and ``groups.parent.id`` otherwise. Every one of those
+#: values matches what the scoreboard reports for the same team on the same
+#: weekend, which is two independent sources agreeing.
+#:
+#: Notre Dame's 18 is FBS Independents -- a real answer, not a missing one,
+#: which is why the league's ACC rule lives in the scorer as an override rather
+#: than here as a patched-up feed value.
+def _conference_of_team(team: dict) -> str:
+    """The conference id on a team record, division-aware."""
+    groups = team.get("groups")
+    if not isinstance(groups, dict):
+        return ""
+    if not groups.get("isConference"):
+        parent = groups.get("parent")
+        if isinstance(parent, dict) and parent.get("id"):
+            return str(parent["id"])
+        # A group that is neither a conference nor has a parent is a shape
+        # nobody has seen. Its own id is the better guess than nothing: a
+        # division id still groups a team with the teams it plays for the
+        # title, where a blank drops it out of scoring entirely.
+    return str(groups.get("id") or "")
+
+
+def team_conference(league: str, team_id: str, season: int) -> str:
+    """One team's conference, from its own record. Cached for the season.
+
+    Membership is a property of a team for a season, so this cannot go missing
+    on the night of a particular slate the way a per-game field can -- and the
+    cache key is the season, so the whole map costs one request a team a year.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    payload = _get(
+        f"{BASE}/{sport}/{path}/teams/{team_id}", {},
+        cache_key=f"{league}/conference/{season}/{team_id}",
+    )
+    return _conference_of_team(payload.get("team") or payload)
+
+
+def fill_conferences(
+    league: str, games: pd.DataFrame, season: int, verbose: bool = True
+) -> pd.DataFrame:
+    """Put each side's conference on rows that arrived without one.
+
+    Opponents are looked up as well as rostered teams, and that is the whole
+    point: a conference game is a game whose two sides share a conference, so a
+    map covering only the ten teams the league drafted would report every one of
+    their conference games as non-conference and score the term at zero. It
+    would look like a working feed.
+
+    What cannot be resolved is named and counted rather than passed over. A
+    partial map understates silently -- fewer conference wins, a title split
+    among the wrong teams -- and nothing downstream can tell it from a team that
+    genuinely lost those games.
+    """
+    if games is None or games.empty:
+        return games
+    if not {"home_team", "away_team"} <= set(games.columns):
+        return games
+    for column in ("home_conference", "away_conference"):
+        if column not in games.columns:
+            games[column] = ""
+        games[column] = games[column].fillna("").astype(str)
+
+    wanted: set[str] = set()
+    for side in ("home", "away"):
+        blank = games[f"{side}_conference"] == ""
+        wanted |= {str(n) for n in games.loc[blank, f"{side}_team"] if str(n)}
+    if not wanted:
+        return games
+
+    index = team_index(league)
+    lookup = {_match_key(name): team_id for name, team_id in index.items()}
+    found: dict[str, str] = {}
+    unknown: list[str] = []
+    for name in sorted(wanted):
+        team_id = lookup.get(_match_key(name))
+        if not team_id:
+            unknown.append(name)
+            continue
+        try:
+            conference = team_conference(league, team_id, season)
+        except Exception:  # noqa: BLE001 -- one team must not lose the rest
+            conference = ""
+        if conference:
+            found[name] = conference
+        else:
+            unknown.append(name)
+
+    for side in ("home", "away"):
+        filled = games[f"{side}_team"].astype(str).map(found).fillna("")
+        blank = games[f"{side}_conference"] == ""
+        games.loc[blank, f"{side}_conference"] = filled[blank]
+
+    if unknown and verbose:
+        print(
+            f"  {league}: no conference for {len(unknown)} of {len(wanted)} "
+            f"team(s) -- their games cannot count as conference games: "
+            f"{', '.join(unknown[:12])}"
+            f"{' ...' if len(unknown) > 12 else ''}",
+            flush=True,
+        )
+    return games
+
+
 def load_rostered_schedules(
     league: str, seasons: list[int], names: list[str], verbose: bool = True
 ) -> pd.DataFrame:
@@ -542,7 +669,13 @@ def load_rostered_schedules(
         return pd.DataFrame()
     both = pd.concat(frames, ignore_index=True)
     # Two rostered teams playing each other return the same game twice.
-    return both.drop_duplicates(subset=["game_id"]).reset_index(drop=True)
+    both = both.drop_duplicates(subset=["game_id"]).reset_index(drop=True)
+    # This endpoint carries no conference at all, and football and basketball
+    # scoring cannot proceed without one, so it is joined on from the teams'
+    # own records rather than left blank. Deduplicated first: it is one lookup
+    # per distinct team either way, and there is no sense paying for the same
+    # game twice.
+    return fill_conferences(league, both, max(seasons), verbose=verbose)
 
 
 def _match_key(name: str) -> str:
