@@ -91,9 +91,15 @@ part of the site the same way the HTML is.
 
 ## After correcting a name in the spreadsheet
 
-A club or country that ESPN spells differently -- "LA Clippers", not "Los
-Angeles Clippers" -- shows up as an image nobody can find. Fix the spelling in
-the sheet, then:
+The feed's spelling of a club wins over the sheet's, so most of these correct
+themselves: the feed notices a transfer, and its name is ESPN's own, which
+means a crest looked up under it matches by construction.
+
+The sheet is the answer only where the feed has none -- every athlete's
+country, and every league that has not kicked off. That is where a difference
+still bites: the sheet said "Los Angeles Clippers", ESPN files them as "LA
+Clippers", and a perfectly correct name found nothing. Fix the spelling in the
+sheet, then:
 
 1. Upload the sheet to `main`.
 2. *Actions -> Probe images -> Run workflow*, from `main`, with **Fetch**
