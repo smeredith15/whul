@@ -277,13 +277,23 @@ November - 5 December 2026, for Canada and the USA), and the World Cup itself.
 > `whul/data/intl_tournaments.csv` carries the distinction per row as `phase`,
 > `block` or `windows`; qualifying is always `windows`.
 >
-> **The rule is inert on the modern record and that is worth knowing.** No
-> block tournament since 2015 straddles a league-year boundary — the closest is
-> the 2023 Women's World Cup, whose final was played on 20 August 2023, one day
-> inside. So adopting it changes no number today. It is written down because
-> the case it exists for is the one about to happen, and because a tournament
-> silently cut in half is the kind of thing nobody notices until a manager asks
-> why their World Cup winner scored a group stage.
+> **The league year normally runs mid-July to mid-July.** 2026-27 is the
+> exception — it opens on 21 August because that is when the league was
+> drafted — and it closes on 13 July 2027 like any other, so history is
+> partitioned from the 14th and every year is contiguous with the next.
+>
+> That date is what makes the block rule load-bearing rather than decorative.
+> Nearly every continental championship and World Cup runs from mid-June to
+> mid-July, so a mid-July boundary falls *inside* them: Euro 2024 ran 14 June to
+> 14 July, and by match date alone its final would score in a different league
+> year from its group stage. Against an August boundary the rule never fired
+> once in eleven years; against this one it holds **292 team-matches** together,
+> including the finals of Euro 2024, Copa América 2024 and the 2026 World Cup.
+>
+> It also settles the one case that was genuinely ambiguous. The 2023 Women's
+> World Cup ran 20 July to 20 August 2023 — beginning a week after the 2022-23
+> year closed — so it belongs to **2023-24**, not to the year it nearly
+> straddled. Spain's win moves with it.
 
 ---
 
@@ -350,14 +360,18 @@ were hosts.
    Spain             26   17   39   41   42   86   61  101
 
    Women's         2018 2019 2020 2021 2022 2023 2024 2025
-   Brazil            23    0    0  108   18   80   81    0
-   Canada            72    0    0   81   13   68    0    0
-   England           56    0    0   85   52   33   55   21
-   France            41   10   27   39   39   54   59   19
-   Germany           44   20   19   53   18   58   52   29
-   Spain             18   11   25   32   63   70   75   32
-   United States    133    0    0  104   28   80    0    0
+   Brazil            23    0    0  108    0   69   81    0
+   Canada            72    0    0   81    0   57    0    0
+   England           56    0    0   85    8   58   57   21
+   France            41   10   27   39    7   56   59   19
+   Germany           44   20   19   53    8   47   55   29
+   Spain             18   11   25   32    9   83   81   32
+   United States    133    0    0  104    0   74    0    0
 ```
+
+The women's 2022-23 column is thin because the 2023 World Cup moved out of it:
+it began 20 July 2023, a week after that league year closed, so it and Spain's
+win belong to 2023-24. What is left in 2022-23 is qualifying alone.
 
 ### What the numbers expose
 
@@ -470,20 +484,25 @@ Four cautions, all of them the silent kind:
 
 ## Still to decide — the admin's, not mine
 
-Settled 2026-09-07: the league-year exception; the club soccer match scale with
-its clean-sheet and margin bonuses; stage ×1/×2/×3 and rung ×1/×1.5/×2; the
-ceiling divided by the champion's path; the best competition whole plus half of
-everything else; the fallow-year lift; the eight-year benchmark window; no
-friendlies, no invitational cups, no Olympics.
+Settled 2026-09-07: the league-year exception and the block/windows split; the
+club soccer match scale with its clean-sheet and margin bonuses; stage
+×1/×2/×3 and rung ×1/×1.5/×2; the ceiling divided by the champion's path; the
+best competition whole plus half of everything else; the fallow-year lift; the
+eight-year benchmark window; no friendlies, no invitational cups, no Olympics;
+League A's path as the denominator for every team in a Nations League.
+
+`whul/data/intl_editions.csv` no longer carries a row marked `assumed`. The six
+CONCACAF ones were resolved from the match counts of teams that are always in
+League A — the United States, Mexico, Canada, Costa Rica, Panama — which is the
+same evidence approached from the other end. Four of the six guesses were
+wrong, which is the argument for deriving rather than asking.
 
 What is left:
 
-1. **Six rows of `whul/data/intl_editions.csv` marked `assumed`** — every one
-   of them CONCACAF's men's Nations League, which no rostered team is in. They
-   affect the benchmark pool rather than any slot the league holds, so they can
-   be checked at leisure, but they should be checked.
-2. **Whether the 2023-24 CONCACAF W Gold Cup is the only hole.** Nobody knows
-   why it is missing, which means nobody knows whether anything else is.
-3. **Wiring it into the ingest.** None of this writes to the database yet: no
-   source, no benchmark row, no scorer module. That is the next build, and it
-   is only worth starting once the numbers above are settled.
+1. **Whether the 2023-24 CONCACAF W Gold Cup is the only hole.** Nobody knows
+   why it is missing, which means nobody knows whether anything else is. The
+   next edition needs checking for rather than assuming.
+2. **Wiring it into the ingest.** None of this writes to the database yet: no
+   source adapter, no benchmark row, no scorer module, nothing in the nightly
+   run. That is the next build, and the numbers above are settled enough to
+   start it.

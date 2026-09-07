@@ -118,12 +118,18 @@ MATCH_MAX = WIN + PTS_BIG_MARGIN + PTS_CLEAN_SHEET
 #: the pool's 99th percentile afterwards.
 SCALE = 100.0
 
-#: The league year opens on 21 August. History is partitioned into contiguous
-#: windows from that date so no match falls outside one -- the real 2026-27
-#: window closes on 13 July, and international tournaments are the admin's
-#: stated exception to that close: a tournament is scored whole into the year
-#: it began in, even when its final is played after the year has ended.
-YEAR_OPENS = (8, 21)
+#: The league year normally runs mid-July to mid-July. 2026-27 is the
+#: exception -- it opens on 21 August, because that is when the league was
+#: drafted -- and it closes on 13 July 2027 like any other, so history is
+#: partitioned from the 14th and every year is contiguous with the next.
+#:
+#: The date is load-bearing rather than cosmetic. Nearly every continental
+#: championship and World Cup is played from mid-June to mid-July, so a
+#: mid-July boundary falls *inside* them: Euro 2024 ran 14 June to 14 July, and
+#: partitioning by match date alone would have put its final in the next league
+#: year from its group stage. That is precisely what the block rule exists to
+#: prevent, and against an August boundary it never fired.
+YEAR_OPENS = (7, 14)
 
 ROSTERED = {
     "M": ["England", "France", "Spain"],
@@ -345,9 +351,9 @@ def straddling(rows: pd.DataFrame, days: int = 21) -> list[str]:
     warned = []
     for (gender, competition), block in rows[rows["kind"] == "finals"].groupby(
             ["gender", "competition"]):
-        late = block[(block["date"].dt.month == 8) & (block["date"].dt.day > 21 - days)
-                     & (block["date"].dt.day < 21)]
-        early = block[(block["date"].dt.month == 8) & (block["date"].dt.day >= 21)]
+        late = block[(block["date"].dt.month == 7) & (block["date"].dt.day > 14 - days)
+                     & (block["date"].dt.day < 14)]
+        early = block[(block["date"].dt.month == 7) & (block["date"].dt.day >= 14)]
         shared = set(late["year"] + 1) & set(early["year"])
         if shared:
             warned.append(f"{gender} {competition} {sorted(shared)}")

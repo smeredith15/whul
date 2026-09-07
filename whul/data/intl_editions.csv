@@ -46,7 +46,12 @@
 #
 # `source` says how much to trust the row:
 #   derived  -- read off the competition's own match calendar, month by month
-#   assumed  -- the format as I understand it; CHECK THESE
+#   assumed  -- the format as I understand it; CHECK THESE. There are none
+#               left: the six CONCACAF rows that carried this mark were read
+#               off the match counts of teams that are always in League A --
+#               the United States, Mexico, Canada, Costa Rica, Panama -- which
+#               is the same evidence, arrived at from the other end. Four of
+#               the six guesses were wrong.
 #   admin    -- supplied by the league admin
 #
 gender,competition,edition,group,knockout,source,note
@@ -56,12 +61,12 @@ M,UEFA Nations League,2021,4,2,derived,Oct 2021 Finals plus four matchdays of th
 M,UEFA Nations League,2022,2,2,derived,the last two matchdays Sep 2022; Finals June 2023
 M,UEFA Nations League,2023,2,2,derived,only the March 2024 play-outs fall in this year
 M,UEFA Nations League,2024,6,4,derived,Sep-Nov 2024 league phase; quarter-finals over two legs Mar 2025; Finals June 2025
-M,CONCACAF Nations League,2019,4,2,assumed,Sep-Nov 2019 league phase; its Finals were delayed to June 2021
+M,CONCACAF Nations League,2019,4,2,derived,League A groups of three; the Finals were delayed to June 2021 by COVID
 M,CONCACAF Nations League,2020,4,2,derived,the delayed June 2021 Finals; the league phase was the year before
-M,CONCACAF Nations League,2021,4,3,assumed,June 2022 league phase; that edition's knockout is Mar-Jun 2023
-M,CONCACAF Nations League,2022,2,3,assumed,Mar 2023 quarter-finals and the June 2023 Finals
-M,CONCACAF Nations League,2023,6,3,assumed,Sep-Nov 2023 league phase and quarter-finals; Finals Mar 2024
-M,CONCACAF Nations League,2024,6,3,assumed,Sep-Nov 2024 league phase and quarter-finals; Finals Mar 2025
+M,CONCACAF Nations League,2021,4,2,derived,June 2022 league phase; that edition's knockout is the June 2023 Finals
+M,CONCACAF Nations League,2022,4,2,derived,the last two group matchdays Mar 2023 and the June 2023 Finals
+M,CONCACAF Nations League,2023,4,4,derived,whole 2023-24 edition: four group then quarter-final over two legs then Finals
+M,CONCACAF Nations League,2024,4,4,derived,whole 2024-25 edition: same shape as 2023-24
 W,UEFA Women's Nations League,2023,6,2,derived,Sep-Dec 2023 league phase; Finals Feb 2024
 W,UEFA Women's Nations League,2024,6,2,derived,Feb-Jun 2025 league phase; its Finals fall in the next league year
 W,UEFA Women's Nations League,2025,6,2,derived,the Oct-Dec 2025 Finals under the competition's new name
