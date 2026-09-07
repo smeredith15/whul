@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+Master_Data/
+data/cache/
+
+# The local database, including any simulated league. Rebuild with
+# `python -m whul.cli simulate`.
+data/*.sqlite3
+
+# What `carry-benchmark.sh` leaves behind: the database a scale was computed
+# in, and the diff that was read before adopting it. Both are working notes
+# for one publish, not repository content.
+benchmark-review.txt
+
+# The generated site is a build artifact; `python -m whul.cli site` rebuilds it.
+# Anchored with a leading slash: a bare `site/` matches at any depth, which
+# quietly excluded the whul/site/ package itself -- the code was never
+# committed, every local test passed against the working tree, and CI was the
+# first thing to notice.
+/site/
+
+# setuptools leaves this behind after a non-editable install.
+/build/

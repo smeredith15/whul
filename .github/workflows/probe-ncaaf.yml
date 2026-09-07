@@ -1,0 +1,70 @@
+# Ask ESPN where a college football team's conference lives.
+#
+# Ten rostered NCAAF teams have scored nothing all season, and the ingest says
+# why every night: completed games arrive with no conference on them, so
+# conference wins and the regular-season title cannot be scored and the guard
+# refuses rather than scoring them low. What nobody can say from that message
+# is where the conference *should* have come from.
+#
+# It runs here rather than on a laptop for one reason: the agent sandbox this
+# repository is developed in answers 403 to every outbound CONNECT, so every
+# request fails identically there and the report would read as "ESPN has no
+# conferences at all" -- the one answer it must not invent.
+#
+# Reads only. No database, no commit, no branch.
+
+name: Probe NCAAF
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: >-
+          YYYY-MM-DD to read the scoreboard for. Empty means the last Saturday,
+          which is when college football is played -- a midweek date returns an
+          empty slate and looks like a broken feed.
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      # The roster decides which teams are asked about, so it comes from the
+      # data branch rather than a list typed into the script.
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+
+      - name: Probe
+        run: |
+          python scripts/probe-ncaaf.py --db data/whul.sqlite3 \
+            ${{ inputs.date && format('--date {0}', inputs.date) || '' }} \
+            | tee probe-ncaaf.txt
+
+      # `whul probe` alongside it: it answers a narrower question -- which
+      # request shape the endpoint accepted, and the coverage as a fraction --
+      # and the two together say both what is missing and where it should be.
+      - name: The existing coverage check, for comparison
+        if: always()
+        run: python -m whul.cli probe ncaaf | tee -a probe-ncaaf.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ncaaf-probe
+          path: probe-ncaaf.txt
+          if-no-files-found: warn

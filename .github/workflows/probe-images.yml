@@ -1,0 +1,174 @@
+# Find the league's images, and optionally fetch them into the repository.
+#
+# Two steps that were one question. The probe asks ESPN what it has and writes
+# a manifest; the fetch downloads what the manifest names. They are separate
+# because only the second one writes anything, and a run that is only meant to
+# count should not be able to commit by accident.
+#
+# It runs here rather than on a laptop for one reason: the agent sandbox this
+# repository is developed in answers 403 to every outbound CONNECT, so every
+# image check fails identically there and the report reads as "ESPN has
+# nothing". This runner can reach it. A wrong answer that looks like a
+# confident one is the failure worth spending a workflow to avoid.
+#
+# The images land on a branch and a pull request, never straight on main. The
+# whole point of the by-hand directories is that a person decides what the
+# league publishes, and a job that pushed three hundred files to the default
+# branch unattended would be deciding for them.
+
+name: Probe images
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to probe"
+        default: "2026-27"
+      limit:
+        description: >-
+          Stop after this many assets. 0 is all of them (about 800 requests
+          and eight minutes). Set it to 20 for a quick check that the shapes
+          ESPN returns are still the ones the script reads.
+        default: "0"
+      fetch:
+        description: >-
+          Download what the probe found and open a pull request with the
+          files. Unchecked, this only reports.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # to push the image branch. Nothing else: the pull request
+                    # is opened by a person, so no pull-requests scope is
+                    # needed and none is asked for.
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth 1
+            git checkout origin/data -- data/whul.sqlite3
+          else
+            echo "No data branch, so there is no roster to probe."
+            exit 1
+          fi
+
+      # Cheap, idempotent, and it removes a whole class of confusion: the
+      # spreadsheet is where the roster and every club and country come from,
+      # and without this the probe reads whatever the last nightly run happened
+      # to import. A correction typed into the sheet an hour ago would then be
+      # invisible here, and the image it should have found would be reported
+      # missing for reasons nobody can see from the output.
+      #
+      # The database is not pushed back. The nightly job owns that; this only
+      # needs its own copy to be current.
+      - name: Refresh the roster from the spreadsheet
+        run: python -m whul.cli import-rosters --season "${{ inputs.season || '2026-27' }}" --write
+
+      - name: Probe
+        run: |
+          python scripts/probe-images.py \
+            --db data/whul.sqlite3 \
+            --season "${{ inputs.season || '2026-27' }}" \
+            --limit "${{ inputs.limit || '0' }}" \
+            --json image-urls.json \
+            | tee probe-images.txt
+
+      - name: Fetch the images
+        if: inputs.fetch
+        run: python scripts/fetch-images.py image-urls.json | tee fetch-images.txt
+
+      - name: What is still missing
+        if: inputs.fetch
+        run: |
+          python -m whul.cli images-needed \
+            --db data/whul.sqlite3 \
+            --season "${{ inputs.season || '2026-27' }}" \
+            | tee images-needed.txt
+
+      # Pushed to a branch, and the pull request is opened by hand.
+      #
+      # The first version ran `gh pr create` and the run failed on its last
+      # line with "GitHub Actions is not permitted to create or approve pull
+      # requests" -- a repository setting that is off by default, and one worth
+      # leaving off. Three hundred files had already been fetched and pushed by
+      # then, so the work was done and the run looked broken, which is the
+      # worst of both. A branch and a link cost nothing and need no permission.
+      - name: Push the images to a branch
+        if: inputs.fetch
+        run: |
+          git config user.name "whul-bot"
+          git config user.email "whul-bot@users.noreply.github.com"
+
+          # Take the database back out of the index before anything is
+          # committed. `git checkout <tree> -- <path>`, which is how it was
+          # fetched from the data branch above, *stages* the file as well as
+          # writing it -- so it was committed on every image branch despite
+          # nothing ever running `git add` on it, and 1.6MB of binary reached
+          # main. `git checkout -- <path>` was the previous guard and could not
+          # have worked: it restores the working tree from the index, and the
+          # index was where the problem was.
+          git reset -q -- data/whul.sqlite3 2>/dev/null || true
+          rm -f data/whul.sqlite3
+
+          if [ -n "$(git diff --cached --name-only)" ]; then
+            echo "Something other than the images is staged; refusing to commit:"
+            git diff --cached --name-only
+            exit 1
+          fi
+          if [ -z "$(git status --porcelain assets/img)" ]; then
+            echo "No new image files -- nothing to open a pull request for."
+            exit 0
+          fi
+          BRANCH="images/$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+          git add assets/img
+          # Only the images, and said out loud. A branch that carries anything
+          # else is one a reviewer has to read a binary diff to trust.
+          COUNT=$(git diff --cached --name-only | wc -l | tr -d ' ')
+          if git diff --cached --name-only | grep -qv '^assets/img/'; then
+            echo "Refusing to push: something outside assets/img is staged:"
+            git diff --cached --name-only | grep -v '^assets/img/'
+            exit 1
+          fi
+          git commit -qm "Fetch $COUNT image(s) from ESPN
+
+          Downloaded by .github/workflows/probe-images.yml. Every file is one
+          the probe confirmed answers, saved under the name the site looks it
+          up by. Anything already present was left alone, so a file added by
+          hand is never replaced by a worse one from a feed."
+          git push -u origin "$BRANCH"
+
+          echo
+          echo "==================================================="
+          echo "  $COUNT image file(s) pushed to $BRANCH."
+          echo
+          echo "  Open the pull request here:"
+          echo "  ${{ github.server_url }}/${{ github.repository }}/compare/main...$BRANCH?expand=1"
+          echo
+          echo "  Merge it, then run Publish standings from main."
+          echo "==================================================="
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-probe
+          path: |
+            probe-images.txt
+            fetch-images.txt
+            images-needed.txt
+            image-urls.json
+          if-no-files-found: warn
