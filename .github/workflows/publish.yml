@@ -29,10 +29,13 @@ on:
       leagues:
         description: >-
           Leagues to pull, space separated, as `benchmarks list` names them.
-          Empty means every one, which is slow: the NBA alone is thousands of
-          requests. Keep it to the leagues that are in season.
+          Empty means every one. The default is every league WHUL drafts, in
+          season or not: a league that has not opened returns an empty season
+          list and is never fetched, so it costs nothing until its first game
+          and needs nobody to remember it on the morning of one.
         default: >-
           nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf
+          nhl nhl-teams nba nba-teams ncaam ncaaw ncaabaseball ncaasoftball
           epl laliga seriea bundesliga ligue1 mls nwsl soccer-players
       backfill:
         description: "Rebuild every day from the season start"
@@ -53,7 +56,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SEASON: ${{ inputs.season || '2026-27' }}
-      LEAGUES: ${{ inputs.leagues || 'nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf epl laliga seriea bundesliga ligue1 mls nwsl soccer-players' }}
+      # Kept in step with the `leagues` default above -- the scheduled run
+      # passes no inputs, so this string is what the league is scored from
+      # every night and the one there is is the one that matters.
+      LEAGUES: ${{ inputs.leagues || 'nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf nhl nhl-teams nba nba-teams ncaam ncaaw ncaabaseball ncaasoftball epl laliga seriea bundesliga ligue1 mls nwsl soccer-players' }}
     steps:
       - uses: actions/checkout@v4
 

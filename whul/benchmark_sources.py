@@ -643,7 +643,15 @@ FEED_WINDOWS: dict[str, tuple[tuple[int, int], tuple[int, int], str]] = {
     # From August so the preseason weeks nflverse already publishes are inside
     # the window, rather than the league reading as "not started" in late August.
     "nfl": ((8, 1), (2, 20), "starts"),
-    "nhl": ((10, 1), (6, 30), "ends"),
+    # From mid-September, because the 2026-27 season opens on the 29th and a
+    # window starting 1 October puts opening night outside it: the source
+    # answered "no NHL season has been played inside this league year yet" on
+    # the two days it had, and only began pulling on the 1st. Nothing was lost
+    # permanently -- the feed reports season totals, so the 29th and 30th
+    # arrived late rather than never -- but two days of zeroes on opening
+    # weekend is exactly when someone looks. The previous season ends 30 June,
+    # so there is nothing in September for a wider window to pick up wrongly.
+    "nhl": ((9, 15), (6, 30), "ends"),
 }
 
 
