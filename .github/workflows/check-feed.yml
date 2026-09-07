@@ -1,0 +1,87 @@
+# Does one league's feed still answer, and does the roster match what it says?
+#
+# The nightly run reports a league that scored nothing, but not why -- and the
+# three reasons need opposite fixes. The feed can be down, or it can answer
+# with names the roster spells differently, or the league can simply not have
+# played yet. `feed-names` pulls the league for real and lists what matched
+# against what did not, which separates them.
+#
+# It exists as its own workflow because the leagues arrive one at a time: the
+# NFL opens 10 September, the NHL 29 September, the NBA 20 October and college
+# basketball in November. Each wants the same check on its first weekend, and
+# writing it once means the answer on those mornings is a dropdown rather than
+# a new script.
+#
+# It runs here rather than on a laptop because the agent sandbox this
+# repository is developed in answers 403 to every outbound CONNECT, so every
+# feed fails identically there and the report reads as "the league is down".
+#
+# Reads only. No database is pushed, no commit, no branch.
+
+name: Check a feed
+
+on:
+  workflow_dispatch:
+    inputs:
+      league:
+        description: >-
+          A key from `benchmarks list` -- nfl, nfl-teams, nhl, nhl-teams, nba,
+          nba-teams, mlb, ncaam, epl, soccer-players, and so on.
+        default: "nfl-teams"
+      date:
+        description: >-
+          YYYY-MM-DD to pull as. Empty means today. Set it to the day after a
+          league's opening weekend to ask whether the first results landed.
+        default: ""
+      refresh:
+        description: >-
+          Re-import the roster from the spreadsheet first, so a spelling
+          corrected an hour ago is live for this check.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      # The roster decides which names are asked about, so it comes from the
+      # data branch rather than a list typed into a script.
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+          # `git checkout <tree> -- <path>` stages the file as well as writing
+          # it. Nothing here commits, but leaving 1.7MB of binary in the index
+          # is how it reached main from the image workflow.
+          git reset -q -- data/whul.sqlite3
+
+      - name: Refresh the roster from the spreadsheet
+        if: inputs.refresh
+        continue-on-error: true   # a missing sheet must not cost the check
+        run: python -m whul.cli import-rosters --season "2026-27" --write
+
+      - name: What the feed calls things, against the roster
+        run: |
+          python -m whul.cli feed-names "${{ inputs.league || 'nfl-teams' }}" \
+            ${{ inputs.date && format('--date {0}', inputs.date) || '' }} \
+            | tee feed-names.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feed-check
+          path: feed-names.txt
+          if-no-files-found: warn

@@ -51,7 +51,18 @@ def overlapping(window: Window, first: date, last: date) -> list[int]:
     year catches the tail of a spring-to-autumn season and the front of the
     next -- and none at all where the league has not played yet, which is a
     real answer and not the same as a feed with nothing in it.
+
+    A span that ends before it begins is how "the league has not played yet"
+    reaches here: the callers ask from the day a league's results start
+    counting to today, so any day before a league opens inverts it. Without
+    this an inverted span is not empty but *unbounded* -- both comparisons
+    below are satisfied by any window straddling the two dates -- and the
+    league reads as in season before it has played. It went unnoticed because
+    every feed window happened to open after its league did; the NHL's did not,
+    and it would have pulled a season that had not started.
     """
+    if last < first:
+        return []
     found = []
     for label in range(first.year - 1, last.year + 2):
         opens, closes = span(window, label)

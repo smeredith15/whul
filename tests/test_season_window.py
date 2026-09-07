@@ -5,7 +5,7 @@ plausible season, returned without an error, for a league year it does not
 belong to.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -62,7 +62,18 @@ def test_a_span_never_reaches_past_its_own_edges():
     ("nfl", date(2027, 1, 20), [2026]),
     ("nfl-teams", date(2027, 1, 20), [2026]),
     # And the ones that already were right, held in place.
-    ("nfl", date(2026, 9, 5), [2026]),
+    ("nfl", date(2026, 9, 10), [2026]),
+    # Before the NFL opens, nothing -- not season 2026.
+    #
+    # This read [2026] until the inverted-span fix, and only because of it: the
+    # span runs from the day results start counting (10 September) to today, so
+    # on the 5th it ran backwards, and a backwards span matched every window
+    # instead of none. The feed window opens in August deliberately, to take in
+    # the preseason weeks nflverse publishes -- but WHUL counts from the 10th,
+    # so those weeks belong to nobody and asking for them got the season's file
+    # before it existed. That is what the nightly run reported as "nflverse has
+    # no player stats for [2026]" every morning of the first three weeks.
+    ("nfl", date(2026, 9, 5), []),
     ("nba-teams", date(2026, 12, 1), [2027]),
     ("epl", date(2027, 3, 15), [2027]),
     # Drafted for 2027, so the 2026 season they are playing now is not asked
@@ -93,4 +104,58 @@ def test_no_source_is_left_asking_for_the_calendar_year():
     }
     assert unwindowed == set(), (
         f"these sources still ask for the calendar year: {sorted(unwindowed)}"
+    )
+
+
+# --- a league that has not opened yet --------------------------------------
+
+def test_a_span_that_ends_before_it_begins_is_empty():
+    """The callers ask from the day a league's results start counting to
+    today, so every day before a league opens inverts the span. An inverted
+    span is not merely empty here -- both comparisons are satisfied by any
+    window straddling the two dates, so it matches *more* than a real one."""
+    from whul.sources.season_window import overlapping
+
+    window = ((9, 15), (6, 30), "ends")
+    assert overlapping(window, date(2026, 9, 29), date(2026, 9, 28)) == []
+    # ...and the day it opens is not inverted, so it answers.
+    assert overlapping(window, date(2026, 9, 29), date(2026, 9, 29)) == [2027]
+
+
+#: Leagues whose start date is the day their season actually opens.
+#:
+#: MLS and the NWSL are excluded, and are not oversights: they were drafted for
+#: their 2027 seasons and their start date is the first day that can only
+#: belong to 2027, not a kickoff. Their seasons open in February, so answering
+#: nothing on 1 January is the right answer.
+OPENING_DAYS = [
+    ("nfl", "NFL"), ("nfl-teams", "NFL"),
+    ("nba", "NBA"), ("nba-teams", "NBA"),
+    ("nhl", "NHL"), ("nhl-teams", "NHL"),
+    ("ncaaf", "NCAAF"), ("ncaam", "NCAAM"), ("ncaaw", "NCAAW"),
+    ("ncaabaseball", "NCAA Baseball"), ("ncaasoftball", "NCAA Softball"),
+    ("epl", "Premier League"), ("laliga", "La Liga"), ("seriea", "Serie A"),
+    ("bundesliga", "Bundesliga"), ("ligue1", "Ligue 1"),
+]
+
+
+@pytest.mark.parametrize("key,league", OPENING_DAYS)
+def test_a_league_is_pulled_from_the_day_it_opens(key, league):
+    """A feed window is written per feed and a start date per league, by
+    different hands at different times, and nothing made them agree.
+
+    The NHL is why this exists. Its window opened 1 October and its 2026-27
+    season opens 29 September, so on opening night the source answered "no NHL
+    season has been played inside this league year yet" -- naming the very date
+    that had passed -- and did not pull until the 1st. Season totals meant the
+    games arrived late rather than never, which is the kind of wrong that is
+    only ever noticed by someone looking at the standings on opening weekend.
+    """
+    from whul.benchmark_sources import SOURCES
+    from whul.config.league import season_start
+
+    opens = season_start(league)
+    assert SOURCES[key].seasons_for(opens), f"{key} pulls nothing on {opens}"
+    assert not SOURCES[key].seasons_for(opens - timedelta(days=1)), (
+        f"{key} pulls a season the day before {league} opens"
     )

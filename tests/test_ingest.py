@@ -879,3 +879,62 @@ def test_the_two_identity_lists_stay_apart():
     assert ingest.CARRIED_IDENTITY != ingest.IDENTITY_COLUMNS
     assert "position" in ingest.CARRIED_IDENTITY
     assert "position" not in ingest.IDENTITY_COLUMNS
+
+
+def test_an_unplayed_schedule_without_a_completed_flag_is_not_a_scoring_bug(store):
+    """nflverse carries no `completed` column. `games.csv` is one row a fixture
+    from the day the schedule is published and the scores fill in as the season
+    is played, so "is this finished" has to be read off the scores themselves.
+
+    Reading only the flag called all 272 fixtures of an unplayed NFL season
+    completed and reported the week before kickoff as "none of them scored,
+    which is the scorer's to explain" -- sending someone to read arithmetic
+    that was working."""
+    rostered(store, "Seattle Seahawks", league="NFL", asset_type="Team")
+    fixtures = pd.DataFrame([
+        {"team": "Seattle Seahawks", "league": "NFL", "gameday": "2026-09-10",
+         "home_score": None, "away_score": None},
+        {"team": "Seattle Seahawks", "league": "NFL", "gameday": "2026-09-17",
+         "home_score": None, "away_score": None},
+    ])
+    source = FakeSource(
+        key="nfl-teams", league="NFL", asset_type="Team",
+        build=lambda: (lambda seasons: fixtures, lambda raw: pd.DataFrame()),
+    )
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 7), verbose=False)
+
+    assert "2 fixture(s) scheduled, none played yet" in report.problems[0]
+    assert "2026-09-10" in report.problems[0], "nflverse's date column was not read"
+    assert "scorer's to explain" not in report.problems[0]
+
+
+def test_a_played_schedule_that_scores_nothing_is_still_the_scorer_s(store):
+    """The other half: once the scores are in, a scorer returning nothing is
+    the scorer's to explain, flag or no flag."""
+    rostered(store, "Seattle Seahawks", league="NFL", asset_type="Team")
+    played = pd.DataFrame([
+        {"team": "Seattle Seahawks", "league": "NFL", "gameday": "2026-09-10",
+         "home_score": 24.0, "away_score": 17.0},
+    ])
+    source = FakeSource(
+        key="nfl-teams", league="NFL", asset_type="Team",
+        build=lambda: (lambda seasons: played, lambda raw: pd.DataFrame()),
+    )
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 14), verbose=False)
+    assert "1 completed row(s) arrived but none of them scored" in report.problems[0]
+
+
+def test_a_feed_that_cannot_say_whether_a_game_was_played_says_that(store):
+    """Neither a flag nor scores. The honest answer is that the two cases
+    cannot be told apart -- not a confident accusation aimed at the scorer."""
+    rostered(store, "Seattle Seahawks", league="NFL", asset_type="Team")
+    opaque = pd.DataFrame([
+        {"team": "Seattle Seahawks", "league": "NFL", "gameday": "2026-09-10"},
+    ])
+    source = FakeSource(
+        key="nfl-teams", league="NFL", asset_type="Team",
+        build=lambda: (lambda seasons: opaque, lambda raw: pd.DataFrame()),
+    )
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 14), verbose=False)
+    assert "cannot be told apart" in report.problems[0]
+    assert "completed row(s)" not in report.problems[0]

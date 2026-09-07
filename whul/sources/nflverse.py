@@ -70,6 +70,60 @@ def load_schedules(seasons: list[int] | None = None) -> pd.DataFrame:
     return df[df["season"].isin(seasons)].copy() if seasons else df
 
 
+def _most_recent(teams: pd.DataFrame, column: str) -> dict[str, str]:
+    """``{team_abbr: the newest value this table has}``, blanks skipped."""
+    known = teams[teams[column].notna()].sort_values("season")
+    return dict(zip(known["team_abbr"].astype(str), known[column]))
+
+
+def _carry_forward(teams: pd.DataFrame, seasons: list[int]) -> pd.DataFrame:
+    """Answer for a season these tables have not reached, from the last one.
+
+    Both files gain a season when it exists rather than when it is scheduled,
+    so on the morning of week one they can still stop at last year -- and they
+    are published separately, so standings.csv can carry a season that
+    teams.csv does not. Either way the name comes back blank, the scorer falls
+    back to the abbreviation, and "SEA" is offered to a roster that says
+    "Seattle Seahawks": ten team slots on zero in a season being played.
+
+    A division and a name are the two most stable facts about an NFL team, so
+    last season's are right almost always and wrong visibly -- a relocation or
+    a realignment shows up as a name nobody drafted, not as a silent zero. It
+    is announced either way: carrying a value forward is a guess, even a good
+    one, and a guess nobody was told about is the thing this project is most
+    careful to avoid.
+    """
+    have = {int(s) for s in teams["season"]}
+    if not have:
+        return teams
+    latest = max(have)
+    frames = [teams[teams["season"].isin(seasons)]]
+    for season in (s for s in seasons if s not in have):
+        borrowed = teams[teams["season"] == latest].copy()
+        borrowed["season"] = season
+        frames.append(borrowed)
+        print(f"  NFL: nflverse has no {season} teams yet, so they come "
+              f"from {latest}.", flush=True)
+    kept = pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0].copy()
+
+    # And the same again per column, since the two files move independently:
+    # a season standings.csv has reached and teams.csv has not arrives with
+    # divisions and no names, which is the half that a roster is matched on.
+    for column, what in (("team_name", "names"), ("team_division", "divisions")):
+        blank = kept[column].isna()
+        if not blank.any():
+            continue
+        known = _most_recent(teams, column)
+        filled = kept.loc[blank, "team_abbr"].astype(str).map(known)
+        kept.loc[blank, column] = filled
+        recovered = int(filled.notna().sum())
+        if recovered:
+            print(f"  NFL: {recovered} team {what} carried forward from an "
+                  f"earlier season; nflverse has not published them for "
+                  f"{sorted(set(kept.loc[blank, 'season']))} yet.", flush=True)
+    return kept
+
+
 def load_teams(seasons: list[int] | None = None) -> pd.DataFrame:
     """Season-aware ``team_abbr`` -> division and full name.
 
@@ -81,8 +135,6 @@ def load_teams(seasons: list[int] | None = None) -> pd.DataFrame:
     spelling.
     """
     df = pd.read_csv(f"{NFLDATA}/standings.csv")
-    if seasons:
-        df = df[df["season"].isin(seasons)]
     teams = (
         df[["season", "team", "division"]]
         .rename(columns={"team": "team_abbr", "division": "team_division"})
@@ -92,7 +144,9 @@ def load_teams(seasons: list[int] | None = None) -> pd.DataFrame:
     named = pd.read_csv(f"{NFLDATA}/teams.csv")[["season", "team", "full"]]
     named = named.rename(columns={"team": "team_abbr", "full": "team_name"})
     teams = teams.merge(named, on=["season", "team_abbr"], how="left")
-    # A season the name table has not caught up with keeps the abbreviation
-    # rather than a blank, which would match nothing and say nothing.
+    if seasons:
+        teams = _carry_forward(teams, [int(s) for s in seasons])
+    # A team the name table has never carried keeps the abbreviation rather
+    # than a blank, which would match nothing and say nothing.
     teams["team_name"] = teams["team_name"].fillna(teams["team_abbr"])
     return teams.reset_index(drop=True)

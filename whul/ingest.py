@@ -312,6 +312,36 @@ def _replace_block(frame: pd.DataFrame, feed_season, replacement: pd.DataFrame):
     return pd.concat([rest, replacement], ignore_index=True)
 
 
+#: Column pairs that say a row has a result, for the feeds carrying no
+#: ``completed`` flag.
+#:
+#: The flag is what the ESPN adapters set and is the easy case. nflverse has
+#: none: ``games.csv`` holds one row a fixture from the day the schedule is
+#: published, and the scores appear in it as the season is played. Reading only
+#: the flag counted all 272 fixtures of an unplayed NFL season as completed
+#: games and reported the week before kickoff as a scoring bug -- pointing at
+#: the scorer, which is the one place there was nothing to find.
+RESULT_COLUMNS = (
+    ("home_score", "away_score"),
+    ("points_for", "points_against"),
+)
+
+
+def _played_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    """The rows carrying a result, and whether that could be told at all.
+
+    The second half matters as much as the first. A feed that says neither
+    whether a game is finished nor what it finished is one this cannot read,
+    and guessing there is what produced a confident wrong answer.
+    """
+    if "completed" in frame.columns:
+        return frame[frame["completed"].fillna(False).astype(bool)], True
+    for left, right in RESULT_COLUMNS:
+        if left in frame.columns and right in frame.columns:
+            return frame[frame[left].notna() & frame[right].notna()], True
+    return frame, False
+
+
 def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
     """What arrived, when a full fetch scored nothing.
 
@@ -319,6 +349,10 @@ def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
     a feed whose rows all fall before the league year opened, and a schedule of
     fixtures nobody has played. Only the last is normal, and it is the one that
     reads most like a broken adapter.
+
+    A fourth is not knowing which of them it is, and that gets said rather than
+    resolved by assumption. Blaming the scorer for a season that has not started
+    sends someone to read arithmetic that is working.
     """
     if kept.empty:
         return (
@@ -326,9 +360,7 @@ def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
             f"before this league's results start counting"
         )
 
-    played = kept
-    if "completed" in kept.columns:
-        played = kept[kept["completed"].fillna(False).astype(bool)]
+    played, knowable = _played_rows(kept)
     if played.empty:
         upcoming = ""
         column = next((c for c in DATE_COLUMNS if c in kept.columns), None)
@@ -339,6 +371,13 @@ def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
         return (
             f"{len(kept):,} fixture(s) scheduled, none played yet{upcoming}. "
             f"This is a season that has not started, not a feed that is broken."
+        )
+    if not knowable:
+        return (
+            f"{len(kept):,} row(s) arrived and none scored, and this feed says "
+            f"neither whether a game is finished nor what it finished -- so a "
+            f"season that has not started cannot be told apart from a scorer "
+            f"that is not working"
         )
     return (
         f"{len(played):,} completed row(s) arrived but none of them scored, "
@@ -414,7 +453,11 @@ def uncovered(store: Store, season: str, sources) -> pd.DataFrame:
 
 
 #: Columns a raw feed puts an event's date in, in the order worth trying.
-DATE_COLUMNS = ("date", "game_date", "event_date", "match_date", "start_date")
+#: ``gameday`` is nflverse's spelling, and without it the NFL's whole schedule
+#: went unfiltered by the league start date and its "not played yet" message
+#: could not say when the first game is.
+DATE_COLUMNS = ("date", "game_date", "event_date", "match_date", "start_date",
+                "gameday")
 
 
 def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:

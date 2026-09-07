@@ -292,3 +292,49 @@ def test_every_rostered_league_that_can_be_dated_is():
         "Serie A", "Bundesliga", "Ligue 1", "MLS", "NWSL",
     }
     assert not rostered - set(LEAGUE_START)
+
+
+# --- the nightly run's league list ----------------------------------------
+
+def _publish_league_lists() -> list[list[str]]:
+    """Both copies of the league list in the publish workflow.
+
+    It appears twice: once as the dispatch input's default, which is what a
+    person sees in the Run-workflow form, and once in the job's `env`, which is
+    what the *scheduled* run uses because a cron firing passes no inputs. The
+    second is the one that scores the league every night.
+    """
+    import re
+    from pathlib import Path
+
+    text = Path(".github/workflows/publish.yml").read_text()
+    default = re.search(r"default: >-\n((?:\s+[a-z0-9 -]+\n)+)", text)
+    env = re.search(r"LEAGUES: \$\{\{ inputs\.leagues \|\| '([^']+)' \}\}", text)
+    assert default and env, "the publish workflow no longer states its leagues"
+    return [default.group(1).split(), env.group(1).split()]
+
+
+def test_the_nightly_run_pulls_every_league_the_roster_holds():
+    """A league missing from this list is not fetched, scores nothing, and
+    says nothing about it -- the standings simply show zeroes, which is what a
+    team that lost every game also shows.
+
+    Out of season costs nothing: `seasons_for` returns an empty list before a
+    league opens and `_pull` returns without a request. So there is no reason
+    to curate the list by calendar, and every reason not to -- curating it
+    means someone has to remember the NHL on 29 September, the NBA on 20
+    October and college basketball in November, on those exact mornings.
+    """
+    from whul.benchmark_sources import ORDER
+
+    for listed in _publish_league_lists():
+        missing = [key for key in ORDER if key not in listed]
+        assert not missing, f"the nightly run never pulls {missing}"
+
+
+def test_both_copies_of_the_league_list_agree():
+    """The form's default and the scheduled run's are separate strings, so
+    they can drift -- and the drift is invisible: a person running it by hand
+    sees the leagues they expect while the nightly run pulls a shorter list."""
+    shown, scheduled = _publish_league_lists()
+    assert shown == scheduled
