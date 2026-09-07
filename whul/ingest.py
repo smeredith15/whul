@@ -580,7 +580,7 @@ def _pull(
 #: different lists for different jobs. Defined under one name they collided
 #: silently -- the later definition won, this function read the group-by keys
 #: instead, and a position went missing with nothing raised anywhere.
-CARRIED_IDENTITY = ("team", "team_name", "position", "role")
+CARRIED_IDENTITY = ("team", "team_name", "position", "role", "car_number")
 
 
 def _carry_identity(scored: pd.DataFrame, feed: pd.DataFrame,

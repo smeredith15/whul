@@ -139,3 +139,19 @@ be — the player is not crossed out, their contribution is.
 
 `whul/site/build.py::_asset_button` applies the strike; move it to the score
 cell.
+
+## ~~9. Label individual athletes usefully~~ — done
+
+Every tennis player's role is "Singles", which distinguishes nobody, so the
+tour goes there instead: **ATP** or **WTA** where a footballer's position sits.
+
+A driver has no club, so the line that carries one for a footballer carries his
+car number -- **#1**, with the hash to keep it from reading as a finishing
+place, which is the other number a motorsport row is full of. It is never
+derived from the finish: fifth place is not car #5, and that mistake would look
+right. Where the feed reports no number the country stays, which is what the
+line showed before.
+
+F1's number comes from Jolpica's `permanentNumber`. NASCAR's is read from
+whichever of four keys ESPN uses, and until a live pull confirms which, those
+drivers keep their country.

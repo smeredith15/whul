@@ -1572,3 +1572,51 @@ def test_reversing_the_rows_does_not_reverse_the_deltas(tmp_path):
     out = _day_breakdown(store, "2026-27", ["2026-09-05", "2026-09-07"], ["TG"])
     assert out["TG|2026-09-07"]["delta"] == 5.0
     assert out["TG|2026-09-07"]["since"] == "2026-09-05"
+
+
+# --- how an individual athlete is labelled ----------------------------------
+
+def test_a_tennis_player_is_labelled_by_tour_not_by_singles():
+    """Every tennis player's role is "Singles", so it distinguishes nobody.
+    The tour does."""
+    from whul.site.build import _identity
+
+    assert _identity({"role": "Singles"}, "WTA", "WTA", "Poland")["position"] == "WTA"
+    assert _identity({"role": "Singles"}, "ATP", "ATP", "Serbia")["position"] == "ATP"
+    # ...and the country still goes where a club would.
+    assert _identity({"role": "Singles"}, "WTA", "WTA", "Poland")["team"] == "Poland"
+
+
+def test_a_driver_carries_the_number_on_the_car():
+    """A driver has no club, so the line that carries one for a footballer can
+    carry his number. The hash keeps it from reading as a finishing place,
+    which is the other number a motorsport row is full of."""
+    from whul.site.build import _identity
+
+    who = _identity({"role": "Driver", "car_number": "1"}, "F1", "F1", "Netherlands")
+    assert who["position"] == "Driver" and who["team"] == "#1"
+
+
+def test_a_driver_without_a_number_keeps_his_country():
+    """Not every racing feed reports one, and a country is what the line showed
+    before -- less useful, and not wrong."""
+    from whul.site.build import _identity
+
+    who = _identity({"role": "Driver"}, "NASCAR", "NASCAR", "United States")
+    assert who["team"] == "United States"
+
+
+def test_a_finishing_place_is_never_read_as_a_car_number():
+    """Fifth place is not car #5, and the mistake would look right."""
+    from whul.site.build import _identity
+
+    who = _identity({"role": "Driver", "position": "5"}, "NASCAR", "NASCAR", "USA")
+    assert who["team"] == "USA"
+
+
+def test_a_footballer_still_shows_a_club():
+    from whul.site.build import _identity
+
+    who = _identity({"position": "F", "team": "Arsenal"}, "Premier League",
+                    "Premier League", "")
+    assert who == {"position": "F", "team": "Arsenal", "group": ""}

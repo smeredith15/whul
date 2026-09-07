@@ -92,6 +92,10 @@ def _result_rows(races: list[dict], season: int, kind: str) -> list[dict]:
                     "date": race.get("date"),
                     "driver_name": name or driver.get("driverId", ""),
                     "driver_id": driver.get("driverId", ""),
+                    # The number on the car. A driver has no club, so this is
+                    # what goes where a footballer's line carries one -- and it
+                    # is the sport's own identifier, printed on the thing.
+                    "car_number": driver.get("permanentNumber", ""),
                     "position": pd.to_numeric(entry.get("position"), errors="coerce"),
                     "points": pd.to_numeric(entry.get("points"), errors="coerce"),
                     "status": entry.get("status", ""),

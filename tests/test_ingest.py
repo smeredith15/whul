@@ -994,3 +994,24 @@ def test_a_feed_that_returns_nothing_at_all_says_so(store):
     )
     report = ingest.ingest(store, source, "2026-27", date(2026, 9, 7), verbose=False)
     assert any("returned nothing for season(s) 2026" in p for p in report.problems)
+
+
+def test_a_car_number_survives_scoring(store):
+    """A scorer builds a fresh frame of exactly the columns its arithmetic
+    needs, and identity is not one of them -- so it is carried back on from the
+    feed rows. The windowed sports aggregate by athlete and drop everything
+    else, which is where a driver's number would go missing."""
+    from whul.ingest import CARRIED_IDENTITY, _carry_identity
+
+    assert "car_number" in CARRIED_IDENTITY
+    feed = pd.DataFrame([
+        {"player": "Max Verstappen", "car_number": "1", "role": "Driver"},
+        {"player": "Denny Hamlin", "car_number": "11", "role": "Driver"},
+    ])
+    scored = pd.DataFrame([
+        {"player": "Max Verstappen", "total_points": 30.0},
+        {"player": "Denny Hamlin", "total_points": 26.0},
+    ])
+    out = _carry_identity(scored, feed, "Player")
+    assert dict(zip(out["player"], out["car_number"])) == {
+        "Max Verstappen": "1", "Denny Hamlin": "11"}

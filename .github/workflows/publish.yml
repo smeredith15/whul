@@ -104,6 +104,18 @@ jobs:
         # the site on the next run without anyone having to remember a step.
         run: python -m whul.cli import-rosters --season 2026-27 --write
 
+      - name: Drop assets the spreadsheet no longer holds
+        # Only after the import, and only if it succeeded -- the step above
+        # exits non-zero on a sheet it could not read, which stops the job
+        # before anything is removed. The occupancy *is* the spreadsheet, so an
+        # asset holding no slot is one the sheet does not name: a name
+        # corrected, a category moved, a player traded away.
+        #
+        # It refuses on its own account if that would be more than a quarter of
+        # the table, which is what a half-read sheet looks like rather than a
+        # tidy-up.
+        run: python -m whul.cli prune-assets --season "$SEASON" --write
+
       - name: Pull today's results
         # Never fatal. A feed that is down, or a league with nothing on today,
         # must not take the site down with it -- yesterday's standings beat

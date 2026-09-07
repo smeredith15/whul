@@ -241,6 +241,34 @@ class Store:
         )
         return written
 
+    #: Every table that names an asset. Pruning one has to clear all of them or
+    #: the row comes back as a foreign-key failure on the next write, and a
+    #: table added later without being added here would leave orphaned rows
+    #: nothing ever reads.
+    ASSET_TABLES = (
+        "asset_aliases", "daily_scores", "raw_stats", "slot_scores",
+        "stat_baselines", "slot_occupancy",
+    )
+
+    def prune_assets(self, asset_ids: list[str]) -> dict[str, int]:
+        """Delete assets and everything that names them. Returns what went.
+
+        Destructive and deliberately narrow: the caller decides which ids, and
+        `whul prune-assets` is where the deciding is guarded.
+        """
+        removed: dict[str, int] = {}
+        if not asset_ids:
+            return removed
+        marks = ",".join("?" * len(asset_ids))
+        with self.transaction():
+            for table in (*self.ASSET_TABLES, "assets"):
+                cursor = self.conn.execute(
+                    f"DELETE FROM {table} WHERE asset_id IN ({marks})", asset_ids
+                )
+                if cursor.rowcount:
+                    removed[table] = cursor.rowcount
+        return removed
+
     def read_stats(
         self, season: str, as_of: date | str, league: str | None = None
     ) -> pd.DataFrame:

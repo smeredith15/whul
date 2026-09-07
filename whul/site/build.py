@@ -107,6 +107,11 @@ def _page(title: str, body: str, active: str, managers: list[str],
 INDIVIDUAL_CATEGORIES = {"Tennis", "PGA", "Motorsports", "Olympics"}
 
 
+#: Leagues whose "role" is the same word for everyone in them, and whose tour
+#: is the thing worth saying instead. Every tennis player's role is "Singles".
+TOUR_AS_POSITION = ("ATP", "WTA")
+
+
 def _identity(stats: dict, league: str, norm_key: str,
               affiliation: str = "") -> dict[str, str]:
     """What a player is, out of the day's recorded row.
@@ -142,13 +147,28 @@ def _identity(stats: dict, league: str, norm_key: str,
         return ""
 
     group = norm_key.replace("_", " ").strip()
+
+    # A tennis player's role is "Singles", which every tennis player's is, so
+    # it distinguishes nobody. The tour does: ATP or WTA is what a reader wants
+    # in the place a footballer's position goes.
+    position = league if league in TOUR_AS_POSITION \
+        else first("position", "role", words_only=True)
+
+    # A driver has no club, and where a footballer's line carries one his can
+    # carry his car number -- the sport's own identifier, and the one thing on
+    # the car. The hash is what keeps "#1" from reading as a finishing place,
+    # which is the other number a motorsport row is full of.
+    number = first("car_number", "number", "permanent_number")
+    team = f"#{number}" if number else \
+        (first("team_name", "team", "club") or affiliation.strip())
+
     return {
-        "position": first("position", "role", words_only=True),
+        "position": position,
         # The feed first, then the sheet. The feed is the one that notices a
         # January transfer; the sheet is the one that knows a golfer is Spanish,
         # which no feed here carries at all. Neither covers the other's case, so
         # both are read and the fresher wins where they overlap.
-        "team": first("team_name", "team", "club") or affiliation.strip(),
+        "team": team,
         "group": "" if group in ("", league) else group,
     }
 
