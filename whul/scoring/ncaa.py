@@ -130,6 +130,7 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
                     "season_type": base["season_type"],
                     "notes": base["notes"],
                     "team": base[f"{side}_team"],
+                    "opp_team": base[f"{other}_team"],
                     "conference": base[f"{side}_conference"],
                     "opp_conference": base[f"{other}_conference"],
                     "points_for": base[f"{side}_score"],
@@ -138,6 +139,8 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
             )
         )
     games = pd.concat(sides, ignore_index=True)
+    # Before `is_conf_game` is decided, since that is what the override is for.
+    games = _apply_overrides(games)
     games["margin"] = games["points_for"] - games["points_against"]
     games["is_win"] = games["margin"] > 0
     games["is_reg"] = games["season_type"] == SEASON_TYPE_REGULAR
@@ -145,6 +148,61 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
     has_both = games["conference"].notna() & games["opp_conference"].notna()
     has_both &= (games["conference"] != "") & (games["opp_conference"] != "")
     games["is_conf_game"] = has_both & (games["conference"] == games["opp_conference"])
+    return games
+
+
+#: Teams the league scores as a member of a conference they do not belong to.
+#:
+#: Notre Dame plays football as an independent. ESPN reports them that way, and
+#: an independent has no conference games, so the conference-wins term is zero
+#: for them no matter how the season goes -- which scores a genuinely strong
+#: programme short against a field where everyone else can earn it. The league's
+#: rule is to treat them as ACC, which is where their other sports play and
+#: where their football scheduling agreement points.
+#:
+#: Keyed on the conference *value the feed uses*, resolved from the data rather
+#: than written down: the id is ESPN's and could change, and a wrong one would
+#: group Notre Dame with some other conference silently. `_apply_overrides`
+#: takes the conference of the named exemplar wherever it appears in the same
+#: frame, so the mapping is only ever as right as the feed itself.
+CONFERENCE_OVERRIDES = {
+    "Notre Dame Fighting Irish": "Miami Hurricanes",
+}
+
+#: ...and are never credited with winning it.
+#:
+#: An independent scored as a conference member could top that conference's
+#: table on a technicality and take a title it is not eligible for. The league's
+#: rule is explicit: treat them as ACC for scoring, award no conference title.
+#: Kept as its own set rather than inferred from the override, because the two
+#: are different decisions -- a future override might be a real member.
+NO_CONFERENCE_TITLE = frozenset({"Notre Dame Fighting Irish"})
+
+
+def _apply_overrides(games: pd.DataFrame) -> pd.DataFrame:
+    """Put an independent into the conference the league scores it in.
+
+    Both its own rows and its opponents' view of it: a conference game is a
+    game whose two sides share a conference, so moving one side without the
+    other would leave the ACC's games against Notre Dame counting for Notre
+    Dame and not for the ACC team, which is a table that does not add up.
+    """
+    if games.empty or "team" not in games.columns:
+        return games
+    for team, exemplar in CONFERENCE_OVERRIDES.items():
+        rows = games["team"] == team
+        if not rows.any():
+            continue
+        borrowed = games.loc[games["team"] == exemplar, "conference"]
+        borrowed = borrowed[borrowed.astype(str) != ""]
+        if borrowed.empty:
+            # Nothing to copy from, so leave it alone rather than invent a
+            # conference. Scoring short is recoverable; a wrong conference is
+            # a title awarded to the wrong programme.
+            continue
+        value = borrowed.iloc[0]
+        games.loc[rows, "conference"] = value
+        games.loc[games["opp_team"] == team, "opp_conference"] = value
     return games
 
 
@@ -160,6 +218,13 @@ def _split_conference_title(summary: pd.DataFrame, pool: float) -> pd.Series:
     """
     best = summary.groupby(["season", "conference"])["conf_wins"].transform("max")
     is_champ = (summary["conf_wins"] == best) & (summary["conf_wins"] > 0)
+    # An independent scored as a conference member could top that conference's
+    # table on a technicality and take a title it is not eligible for. Excluded
+    # *after* the maximum is taken, not before: a team that is not eligible for
+    # the title still played the games, and dropping it earlier would hand the
+    # title to whoever finished behind it rather than leaving it unwon.
+    if "team" in summary.columns:
+        is_champ &= ~summary["team"].isin(NO_CONFERENCE_TITLE)
     ties = is_champ.groupby([summary["season"], summary["conference"]]).transform("sum")
     return (is_champ.astype(float) * pool / ties.where(ties > 0, 1)).fillna(0.0)
 

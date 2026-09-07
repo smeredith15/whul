@@ -1,37 +1,37 @@
 #!/usr/bin/env python3
 """Where does ESPN keep a college football team's conference?
 
-Ten rostered NCAAF teams have scored nothing all season. The ingest is not
-failing quietly -- it says exactly what is wrong, every night:
+Ten rostered NCAAF teams have scored nothing all season, and the ingest says
+why every night: completed games arrive with no conference on them, so
+conference wins and the regular-season title cannot be scored and the guard
+refuses rather than scoring them low.
 
-    could not pull: MissingConference: 18 completed game(s) arrived with no
-    conference on any team, so conference wins and the regular-season title
-    cannot be scored. This is a feed problem, not an empty week.
+**The first version of this probe read the wrong endpoint.** It asked the
+scoreboard, which carries `team.conferenceId` on both sides of every game --
+25 of 25 -- and concluded the adapter's reading was fine. The nightly ingest
+does not use the scoreboard. It uses `load_rostered_schedules`, which walks
+each rostered team's own schedule, precisely because the scoreboard caps at
+twenty-five events and returns the featured slate rather than all of it. So a
+clean bill of health was collected from a payload nothing in the pipeline
+reads.
 
-That guard is right to refuse. Conference wins and the regular-season title are
-two of the scored terms, so games with no conference on them would score low
-rather than not at all, and a whole league would drift quietly downward instead
-of stopping. What it cannot say is where the conference *should* have come
-from, and `whul probe ncaaf` only reports the coverage as a fraction -- "0/18"
-is the symptom restated, not a diagnosis.
+This asks the endpoint that is actually used, and two others that could supply
+what it lacks:
 
-So this asks the question three ways in one run, because a second round trip
-costs a day:
+  1. `/teams/{id}/schedule` -- what the nightly run reads. Every key on a
+     competition, a competitor and its team, so a conference filed under a
+     name nobody checks is visible rather than absent. `conferenceCompetition`
+     is on the *scoreboard's* competition object; if it is here too, whether a
+     game is a conference game needs no conference at all.
+  2. `/teams/{id}` -- one request per rostered team. Conference membership is a
+     property of a team for a season, so a map built here cannot go missing on
+     the night of a particular slate.
+  3. the scoreboard, for contrast, and to print each rostered team's conference
+     id against its name -- which is how the ACC's id gets confirmed from data
+     rather than from memory.
 
-  1. the scoreboard, which is where the adapter looks now -- every key on a
-     competitor and on its team, so a conference sitting under a name nobody
-     checks is visible rather than absent;
-  2. the teams endpoint, which the adapter already calls for the eligible-team
-     list, in case conference membership is published there;
-  3. the standings endpoint, which is how ESPN's own pages group a division.
-
-Conference membership is a property of a team for a season, not of a game, so
-(2) or (3) answering would be the better fix even if (1) can be made to work:
-a map built once per season cannot go missing on the night of a particular
-slate.
-
-    python scripts/probe-ncaaf.py
-    python scripts/probe-ncaaf.py --date 2026-09-05
+    python scripts/probe-ncaaf.py --db data/whul.sqlite3
+    python scripts/probe-ncaaf.py --db data/whul.sqlite3 --date 2026-09-05
 
 RUN IT WHERE ESPN IS REACHABLE. The sandbox this is developed in answers 403 to
 every outbound CONNECT, so every request fails identically there and the report
@@ -42,164 +42,189 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+#: Read straight off the roster rather than typed in, so the probe follows the
+#: league rather than a snapshot of it.
+FALLBACK_TEAMS = ("Notre Dame Fighting Irish", "Miami Hurricanes",
+                  "Ohio State Buckeyes", "Georgia Bulldogs")
+
 
 def last_saturday(today: date | None = None) -> date:
-    """College football is played on Saturdays; a Tuesday probe sees nothing.
-
-    Defaulting to a date with no games is how a probe reports an empty feed and
-    means an empty calendar.
-    """
+    """College football is played on Saturdays; a Tuesday probe sees nothing."""
     today = today or date.today()
     return today - timedelta(days=(today.weekday() - 5) % 7 or 7)
 
 
-def keys_of(node, want=("conf", "group", "division")) -> dict:
-    """Every key whose name suggests it might carry a conference, with values."""
-    if not isinstance(node, dict):
-        return {}
-    return {
-        key: value for key, value in node.items()
-        if any(word in key.lower() for word in want)
-        and not isinstance(value, (list,)) or key.lower() in ("groups",)
-    }
+def rostered(db_path: str, season: str) -> list[str]:
+    if not Path(db_path).exists():
+        return list(FALLBACK_TEAMS)
+    db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    rows = db.execute(
+        "SELECT DISTINCT a.display_name FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id "
+        "WHERE r.season = ? AND a.league = 'NCAAF' ORDER BY 1", (season,),
+    ).fetchall()
+    return [str(r[0]) for r in rows] or list(FALLBACK_TEAMS)
 
 
-def show_scoreboard(day: date) -> None:
+def conference_ish(*nodes) -> dict:
+    """Every key across the given objects whose name suggests a conference."""
+    out: dict = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        for key, value in node.items():
+            if any(w in key.lower() for w in ("conf", "group", "division")):
+                out[key] = value
+    return out
+
+
+def show_team_schedule(names: list[str], season: int) -> dict[str, str]:
+    """The endpoint the nightly run reads. Returns {team: conference it gave}."""
     from whul.sources.espn import (
-        BASE, LEAGUE_PATHS, _competitor, _conference, scoreboard_variants, _get,
+        BASE, LEAGUE_PATHS, _competitor, _conference, _get, _match_key, team_index,
+    )
+
+    sport, path = LEAGUE_PATHS["ncaaf"]
+    lookup = {_match_key(n): i for n, i in team_index("ncaaf").items()}
+    found: dict[str, str] = {}
+    shown = False
+
+    for name in names:
+        team_id = lookup.get(_match_key(name))
+        if not team_id:
+            print(f"    {name:<32} no ESPN team id -- it scores nothing either way")
+            continue
+        try:
+            payload = _get(f"{BASE}/{sport}/{path}/teams/{team_id}/schedule",
+                           {"season": season}, cache_key=None)
+        except Exception as exc:
+            print(f"    {name:<32} FAILED {type(exc).__name__}")
+            continue
+
+        events = payload.get("events") or []
+        done = [e for e in events
+                if ((e.get("competitions") or [{}])[0].get("status") or {})
+                .get("type", {}).get("completed")]
+        covered = 0
+        mine = ""
+        for event in done:
+            inner = (event.get("competitions") or [{}])[0]
+            home, away = _competitor(inner, "home"), _competitor(inner, "away")
+            if _conference(home) and _conference(away):
+                covered += 1
+            for side in (home, away):
+                if (side.get("team") or {}).get("displayName") == name:
+                    mine = mine or _conference(side)
+        found[name] = mine
+        print(f"    {name:<32} {len(done):>2} completed, conference on both "
+              f"sides in {covered}, own conference {mine!r}")
+
+        if not shown and done:
+            shown = True
+            inner = (done[0].get("competitions") or [{}])[0]
+            home = _competitor(inner, "home")
+            team = home.get("team") or {}
+            print(f"\n      --- one game in full, since this is the payload that matters")
+            print(f"      competition keys: {sorted(inner)}")
+            print(f"      conferenceCompetition: {inner.get('conferenceCompetition')!r}")
+            print(f"      competitor keys : {sorted(home)}")
+            print(f"      team keys       : {sorted(team)}")
+            print(f"      conference-ish  : "
+                  f"{json.dumps(conference_ish(home, team), default=str)[:400]}\n")
+    return found
+
+
+def show_team_detail(names: list[str]) -> None:
+    """One request a team. A season-long map cannot go missing on one night."""
+    from whul.sources.espn import BASE, LEAGUE_PATHS, _get, _match_key, team_index
+
+    sport, path = LEAGUE_PATHS["ncaaf"]
+    lookup = {_match_key(n): i for n, i in team_index("ncaaf").items()}
+    shown = False
+    for name in names:
+        team_id = lookup.get(_match_key(name))
+        if not team_id:
+            continue
+        try:
+            payload = _get(f"{BASE}/{sport}/{path}/teams/{team_id}", {},
+                           cache_key=f"probe-ncaaf/team/{team_id}")
+        except Exception as exc:
+            print(f"    {name:<32} FAILED {type(exc).__name__}")
+            continue
+        team = (payload.get("team") or payload)
+        found = conference_ish(team)
+        print(f"    {name:<32} {json.dumps(found, default=str)[:220] or '(nothing)'}")
+        if not shown:
+            shown = True
+            print(f"      team keys: {sorted(team)}\n")
+
+
+def show_scoreboard(day: date, names: list[str]) -> None:
+    """Known to carry it. Printed to confirm which id belongs to which league."""
+    from whul.sources.espn import (
+        BASE, LEAGUE_PATHS, _competitor, _conference, _get, scoreboard_variants,
     )
 
     sport, path = LEAGUE_PATHS["ncaaf"]
     board = None
     for params in scoreboard_variants("ncaaf", day):
-        shape = ",".join(k for k in params if k != "dates") or "dates only"
         try:
             board = _get(f"{BASE}/{sport}/{path}/scoreboard", params,
-                         cache_key=f"probe-ncaaf/{day.isoformat()}/{shape}")
-            print(f"    accepted request shape: {shape}")
+                         cache_key=f"probe-ncaaf/board/{day.isoformat()}")
             break
-        except Exception as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", "?")
-            print(f"    {shape} -> {status}")
+        except Exception:
+            continue
     if board is None:
         print("    every request shape was rejected.")
         return
-
-    events = board.get("events") or []
-    print(f"    {len(events)} event(s) on {day}")
-    if not events:
-        print("    Nothing was played. Try --date on a Saturday in season.")
-        return
-
-    inner = (events[0].get("competitions") or [{}])[0]
-    print(f"    competition keys: {sorted(inner)}")
-    for side in ("home", "away"):
-        entry = _competitor(inner, side)
-        if not entry:
-            continue
-        team = entry.get("team") or {}
-        print(f"\n    --- {side}: {team.get('displayName', '?')}")
-        print(f"        competitor keys : {sorted(entry)}")
-        print(f"        team keys       : {sorted(team)}")
-        print(f"        conference-ish  : {json.dumps(keys_of(entry) | keys_of(team), default=str)[:400]}")
-        print(f"        _conference()   : {_conference(entry)!r}")
-
-    covered = 0
-    for event in events:
-        block = (event.get("competitions") or [{}])[0]
-        if all(_conference(_competitor(block, s)) for s in ("home", "away")):
-            covered += 1
-    print(f"\n    conference on both sides: {covered}/{len(events)} event(s)")
-
-
-def show_teams() -> None:
-    """The endpoint the adapter already calls for the eligible-team list."""
-    from whul.sources.espn import BASE, DIVISION_I_GROUPS, LEAGUE_PATHS, _get
-
-    sport, path = LEAGUE_PATHS["ncaaf"]
-    payload = _get(f"{BASE}/{sport}/{path}/teams",
-                   {"limit": 1000, "groups": DIVISION_I_GROUPS["ncaaf"]},
-                   cache_key="probe-ncaaf/teams")
-    entries = []
-    for block in payload.get("sports", []):
-        for league_block in block.get("leagues", []):
-            entries.extend(league_block.get("teams", []))
-    print(f"    {len(entries)} team(s) listed")
-    if not entries:
-        return
-    team = (entries[0].get("team") or {})
-    print(f"    entry keys : {sorted(entries[0])}")
-    print(f"    team keys  : {sorted(team)}")
-    print(f"    conference-ish: {json.dumps(keys_of(team), default=str)[:400]}")
-
-
-def show_standings() -> None:
-    """How ESPN's own pages group a division, and the likeliest good answer."""
-    from whul.sources.espn import BASE, LEAGUE_PATHS, _get
-
-    sport, path = LEAGUE_PATHS["ncaaf"]
-    for url, params in (
-        (f"{BASE}/{sport}/{path}/standings", {}),
-        (f"https://site.web.api.espn.com/apis/v2/sports/{sport}/{path}/standings",
-         {"level": 2}),
-    ):
-        try:
-            payload = _get(url, params, cache_key=f"probe-ncaaf/standings/{params}")
-        except Exception as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", "?")
-            print(f"    {url.rsplit('/', 2)[-1]} {params} -> {status}")
-            continue
-        print(f"    {url}")
-        print(f"      top-level keys: {sorted(payload)[:14]}")
-        # A standings payload nests groups; walk for anything that looks like a
-        # conference holding teams, rather than guessing the path.
-        found: list[tuple[str, int]] = []
-
-        def walk(node) -> None:
-            if isinstance(node, list):
-                for item in node:
-                    walk(item)
-                return
-            if not isinstance(node, dict):
-                return
-            name = node.get("name") or node.get("displayName") or node.get("shortName")
-            entries = node.get("standings")
-            if isinstance(entries, dict):
-                rows = entries.get("entries") or []
-                if name and rows:
-                    found.append((str(name), len(rows)))
-            for value in node.values():
-                if isinstance(value, (dict, list)):
-                    walk(value)
-
-        walk(payload)
-        if found:
-            print(f"      {len(found)} group(s) with teams; first few:")
-            for name, count in found[:8]:
-                print(f"        {name} ({count} teams)")
-            print(f"      total teams across groups: {sum(n for _, n in found)}")
-        else:
-            print("      no group/teams structure found by walking")
-        return
+    seen: dict[str, str] = {}
+    for event in board.get("events") or []:
+        inner = (event.get("competitions") or [{}])[0]
+        for side in ("home", "away"):
+            entry = _competitor(inner, side)
+            team = (entry.get("team") or {}).get("displayName", "")
+            if team:
+                seen.setdefault(team, _conference(entry))
+    print(f"    {len(seen)} team(s) on {day}. Rostered ones:")
+    for name in names:
+        if name in seen:
+            print(f"      {name:<32} conference {seen[name]!r}")
+    others = [(t, c) for t, c in sorted(seen.items()) if t not in names][:6]
+    if others:
+        print("    and a few others, for the id-to-league mapping:")
+        for team, conf in others:
+            print(f"      {team:<32} conference {conf!r}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--db", default="data/whul.sqlite3")
+    parser.add_argument("--season", default="2026-27")
     parser.add_argument("--date", help="YYYY-MM-DD; default the last Saturday")
+    parser.add_argument("--feed-season", type=int, default=2026,
+                        help="ESPN's own season label for the schedule request")
     args = parser.parse_args()
     day = date.fromisoformat(args.date) if args.date else last_saturday()
+    names = rostered(args.db, args.season)
 
-    print(__doc__.split("So this asks")[0].strip())
+    print(__doc__.split("This asks the endpoint")[0].strip())
+    print(f"\nRostered NCAAF teams: {len(names)}")
+
     for title, run in (
-        (f"1. THE SCOREBOARD ({day}) -- where the adapter looks now", lambda: show_scoreboard(day)),
-        ("2. THE TEAMS ENDPOINT -- already called for the eligible list", show_teams),
-        ("3. THE STANDINGS ENDPOINT -- how ESPN groups a division", show_standings),
+        ("1. /teams/{id}/schedule -- WHAT THE NIGHTLY RUN ACTUALLY READS",
+         lambda: show_team_schedule(names, args.feed_season)),
+        ("2. /teams/{id} -- a season-long conference map, one request a team",
+         lambda: show_team_detail(names)),
+        (f"3. the scoreboard ({day}) -- known to carry it; which id is which",
+         lambda: show_scoreboard(day, names)),
     ):
         print(f"\n{'=' * 70}\n{title}\n")
         try:
@@ -208,9 +233,12 @@ def main() -> int:
             print(f"    FAILED: {type(exc).__name__}: {exc}")
 
     print(f"\n{'=' * 70}")
-    print("Read (2) and (3) first. A team -> conference map built once a season")
-    print("cannot go missing on the night of a particular slate, which is what")
-    print("reading it off each game leaves open.")
+    print("Section 1 is the one that matters: it is the payload the pipeline")
+    print("reads. If `conferenceCompetition` is on its competition object, a")
+    print("conference game needs no conference id at all. If section 2 carries")
+    print("a conference, that is the map to join on. Section 3 only confirms")
+    print("which id belongs to which league -- Miami's is the ACC's, which is")
+    print("what Notre Dame is scored as.")
     return 0
 
 

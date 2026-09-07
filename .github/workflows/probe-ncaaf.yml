@@ -41,9 +41,18 @@ jobs:
 
       - run: pip install -e .
 
+      # The roster decides which teams are asked about, so it comes from the
+      # data branch rather than a list typed into the script.
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+
       - name: Probe
         run: |
-          python scripts/probe-ncaaf.py ${{ inputs.date && format('--date {0}', inputs.date) || '' }} \
+          python scripts/probe-ncaaf.py --db data/whul.sqlite3 \
+            ${{ inputs.date && format('--date {0}', inputs.date) || '' }} \
             | tee probe-ncaaf.txt
 
       # `whul probe` alongside it: it answers a narrower question -- which
