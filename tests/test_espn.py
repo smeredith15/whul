@@ -698,6 +698,9 @@ def test_two_rostered_teams_playing_each_other_is_one_game(monkeypatch):
         espn, "load_team_schedule",
         lambda league, team_id, season: pd.DataFrame([game]),
     )
+    # The conference join is exercised on its own below; here it would only
+    # reach the network for two teams whose games are already deduplicated.
+    monkeypatch.setattr(espn, "team_conference", lambda league, team_id, season: "8")
 
     rows = espn.load_rostered_schedules(
         "ncaaf", [2026], ["Ohio State Buckeyes", "Texas Longhorns"], verbose=False
@@ -854,3 +857,155 @@ def test_both_sides_of_a_goalless_shootout_score_the_right_way_round():
     assert liverpool["match_points"] == pytest.approx(2 * 4 / 3 + 1)
     assert chelsea["match_points"] == pytest.approx(1 * 4 / 3 + 1)
     assert liverpool["match_points"] > chelsea["match_points"]
+
+
+# --- where a college team's conference lives -------------------------------
+#
+# The endpoint the nightly run reads carries none, which is why ten rostered
+# NCAAF teams scored nothing all season while the ingest raised
+# MissingConference every night. These shapes are the ones ESPN really returned
+# for those teams, copied out of the probe run that found them.
+
+TEAM_RECORDS = {
+    # id: (name, groups)
+    "8":   ("Arkansas Razorbacks", {"id": "8", "isConference": True,
+                                    "parent": {"id": "80"}}),
+    "84":  ("Indiana Hoosiers", {"id": "5", "isConference": True,
+                                 "parent": {"id": "80"}}),
+    "2390": ("Miami Hurricanes", {"id": "1", "isConference": True,
+                                  "parent": {"id": "80"}}),
+    "87":  ("Notre Dame Fighting Irish", {"id": "18", "isConference": True,
+                                          "parent": {"id": "80"}}),
+    # A division, not a conference: 167 is the Sun Belt East and 37 the Sun Belt.
+    "256": ("James Madison Dukes", {"id": "167", "isConference": False,
+                                    "parent": {"id": "37"}}),
+}
+
+
+def test_a_division_is_not_a_conference():
+    """`groups.id` when it is a conference, `groups.parent.id` when it is a
+    division. James Madison is the case that decides it: its own group 167 is
+    the Sun Belt East, and grouping teams by that would split a conference into
+    two and hand out two titles."""
+    from whul.sources.espn import _conference_of_team
+
+    assert _conference_of_team({"groups": TEAM_RECORDS["8"][1]}) == "8"
+    assert _conference_of_team({"groups": TEAM_RECORDS["2390"][1]}) == "1"
+    assert _conference_of_team({"groups": TEAM_RECORDS["256"][1]}) == "37"
+    # Notre Dame is FBS Independents -- a real answer, not a missing one. The
+    # league's ACC rule is a scoring override, not a patched-up feed value.
+    assert _conference_of_team({"groups": TEAM_RECORDS["87"][1]}) == "18"
+
+
+def test_no_groups_at_all_is_blank_rather_than_a_guess():
+    from whul.sources.espn import _conference_of_team
+
+    assert _conference_of_team({}) == ""
+    assert _conference_of_team({"groups": None}) == ""
+    assert _conference_of_team({"groups": []}) == ""
+    # Neither a conference nor a parent: its own id beats nothing, since a blank
+    # drops the team out of scoring entirely.
+    assert _conference_of_team({"groups": {"id": "167", "isConference": False}}) == "167"
+
+
+def _team_endpoint(monkeypatch):
+    """Answer /teams/{id} from TEAM_RECORDS; refuse anything else."""
+    from whul.sources import espn
+
+    asked: list[str] = []
+
+    def fake(url, params, cache_key=None):
+        team_id = url.rsplit("/", 1)[-1]
+        asked.append(team_id)
+        name, groups = TEAM_RECORDS[team_id]
+        return {"team": {"id": team_id, "displayName": name, "groups": groups}}
+
+    monkeypatch.setattr(espn, "_get", fake)
+    monkeypatch.setattr(espn, "team_index", lambda league: {
+        name: team_id for team_id, (name, _) in TEAM_RECORDS.items()})
+    return asked
+
+
+def test_a_schedule_with_no_conference_gets_one_from_the_team_record(monkeypatch):
+    """The whole fix in one assertion: /teams/{id}/schedule carries no
+    conference, so it is joined on from each team's own record."""
+    from whul.sources import espn
+
+    _team_endpoint(monkeypatch)
+    games = pd.DataFrame([{
+        "game_id": "401", "season": 2026, "game_date": "2026-09-05",
+        "home_team": "Miami Hurricanes", "away_team": "Notre Dame Fighting Irish",
+        "home_conference": "", "away_conference": "",
+    }])
+    out = espn.fill_conferences("ncaaf", games, 2026, verbose=False)
+    assert out.iloc[0]["home_conference"] == "1"
+    assert out.iloc[0]["away_conference"] == "18"
+
+
+def test_opponents_are_looked_up_too(monkeypatch):
+    """A map covering only the rostered teams would report every one of their
+    conference games as non-conference and score that term at zero -- which
+    looks exactly like a working feed."""
+    from whul.sources import espn
+
+    asked = _team_endpoint(monkeypatch)
+    games = pd.DataFrame([{
+        "game_id": "401", "season": 2026, "game_date": "2026-09-05",
+        "home_team": "Arkansas Razorbacks", "away_team": "James Madison Dukes",
+        "home_conference": "", "away_conference": "",
+    }])
+    out = espn.fill_conferences("ncaaf", games, 2026, verbose=False)
+    assert "256" in asked, "the opponent was never asked about"
+    assert out.iloc[0]["away_conference"] == "37"
+
+
+def test_a_conference_already_on_the_row_is_left_alone(monkeypatch):
+    """The scoreboard carries conferences and the historical backfill walks it.
+    Nothing here should be re-fetched, still less overwritten."""
+    from whul.sources import espn
+
+    asked = _team_endpoint(monkeypatch)
+    games = pd.DataFrame([{
+        "game_id": "401", "season": 2026, "game_date": "2026-09-05",
+        "home_team": "Miami Hurricanes", "away_team": "Notre Dame Fighting Irish",
+        "home_conference": "1", "away_conference": "18",
+    }])
+    out = espn.fill_conferences("ncaaf", games, 2026, verbose=False)
+    assert asked == [], "a row that already had a conference was re-fetched"
+    assert out.iloc[0]["home_conference"] == "1"
+
+
+def test_a_team_whose_conference_cannot_be_resolved_is_named(monkeypatch, capsys):
+    """A partial map understates silently: fewer conference wins, a title split
+    among the wrong teams, and nothing downstream can tell it from a team that
+    lost those games. So it is said out loud."""
+    from whul.sources import espn
+
+    _team_endpoint(monkeypatch)
+    games = pd.DataFrame([{
+        "game_id": "401", "season": 2026, "game_date": "2026-09-05",
+        "home_team": "Miami Hurricanes", "away_team": "Nowhere State",
+        "home_conference": "", "away_conference": "",
+    }])
+    out = espn.fill_conferences("ncaaf", games, 2026, verbose=True)
+    assert "Nowhere State" in capsys.readouterr().out
+    assert out.iloc[0]["away_conference"] == ""
+    assert out.iloc[0]["home_conference"] == "1", "one failure cost the other side"
+
+
+def test_the_conference_join_runs_on_the_live_path(monkeypatch):
+    """`load_rostered_schedules` is what the nightly ingest calls. If the join
+    is not wired into it, every test above passes and NCAAF still scores zero."""
+    from whul.sources import espn
+
+    _team_endpoint(monkeypatch)
+    monkeypatch.setattr(espn, "load_team_schedule", lambda league, team_id, season:
+        pd.DataFrame([{
+            "game_id": f"g{team_id}", "season": season, "game_date": "2026-09-05",
+            "home_team": "Miami Hurricanes",
+            "away_team": "Notre Dame Fighting Irish",
+            "home_conference": "", "away_conference": "", "completed": True,
+        }]))
+    out = espn.load_rostered_schedules(
+        "ncaaf", [2026], ["Miami Hurricanes"], verbose=False)
+    assert list(out["home_conference"]) == ["1"]
