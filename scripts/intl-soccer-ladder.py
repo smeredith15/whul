@@ -63,7 +63,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 MEN = "https://raw.githubusercontent.com/martj42/international_results/master"
 WOMEN = "https://raw.githubusercontent.com/martj42/womens-international-results/master"
 
-LADDER = Path(__file__).resolve().parent.parent / "whul" / "data" / "intl_tournaments.csv"
+DATA = Path(__file__).resolve().parent.parent / "whul" / "data"
+LADDER = DATA / "intl_tournaments.csv"
+SUPPLEMENT = DATA / "intl_supplement.csv"
+EDITIONS = DATA / "intl_editions.csv"
 
 #: What a perfect run in a competition is worth, by rung.
 #:
@@ -151,7 +154,39 @@ def load(data: Path, refresh: bool = False) -> pd.DataFrame:
         else:
             rows["winner"] = None
         frames.append(rows)
-    return pd.concat(frames, ignore_index=True)
+    return _supplement(pd.concat(frames, ignore_index=True))
+
+
+def _supplement(games: pd.DataFrame) -> pd.DataFrame:
+    """Add the matches the ledgers do not carry, and say so.
+
+    The 2024 CONCACAF W Gold Cup is absent from the women's ledger entirely --
+    its qualification is there and not one match of the tournament -- which
+    left Canada and the United States with four blank years running. A hand
+    file is the answer for a hole in someone else's dataset; the check that it
+    stays one is reporting every row that turns up on both sides, so a block
+    kept after the upstream fix cannot double-count in silence.
+    """
+    if not SUPPLEMENT.exists():
+        return games
+    extra = pd.read_csv(SUPPLEMENT, comment="#")
+    extra["date"] = pd.to_datetime(extra["date"])
+    extra = extra.rename(columns={"shootout_winner": "winner"})
+
+    key = ["date", "home_team", "away_team", "gender"]
+    already = games.merge(extra[key], on=key, how="inner")
+    if len(already):
+        print(f"  !! {len(already)} supplement row(s) are now in the ledger too "
+              f"-- delete that block from {SUPPLEMENT.name}:", flush=True)
+        for row in already.head(5).itertuples():
+            print(f"     {row.date.date()} {row.home_team} v {row.away_team}")
+        extra = extra.merge(already[key], on=key, how="left", indicator=True)
+        extra = extra[extra["_merge"] == "left_only"].drop(columns="_merge")
+    if extra.empty:
+        return games
+    print(f"  + {len(extra)} supplied match(es) the ledgers do not carry: "
+          f"{', '.join(sorted(extra['tournament'].unique()))}", flush=True)
+    return pd.concat([games, extra], ignore_index=True)
 
 
 def _cached(path: Path, url: str, refresh: bool) -> pd.DataFrame:
@@ -313,7 +348,39 @@ def structure(rows: pd.DataFrame) -> pd.DataFrame:
     for column in ("teams", "G", "K"):
         shape[column] = shape.groupby(["gender", "competition"])[column].ffill().bfill()
     shape["shape_from"] = shape["shape_from"].fillna("carried")
-    return shape.dropna(subset=["G", "K"])
+    return _override(shape.dropna(subset=["G", "K"]))
+
+
+def _override(shape: pd.DataFrame) -> pd.DataFrame:
+    """Replace an inferred shape where the ledger cannot supply one.
+
+    Only the Nations Leagues, and for reasons the file states at length: the
+    division is not recorded, so the smallest league sets G and the largest
+    sets K, and an edition does not fit inside a league year predictably enough
+    for any date rule to separate one from the next.
+    """
+    if not EDITIONS.exists():
+        return shape
+    given = pd.read_csv(EDITIONS, comment="#")
+    merged = shape.merge(given, on=["gender", "competition", "edition"], how="left")
+    stated = merged["group"].notna()
+    merged.loc[stated, "G"] = merged.loc[stated, "group"]
+    merged.loc[stated, "K"] = merged.loc[stated, "knockout"]
+    merged.loc[stated, "shape_from"] = merged.loc[stated, "source"]
+
+    # A row nobody uses is a row nobody checks. Say so rather than leaving it
+    # to be discovered when a competition is renamed and its overrides stop
+    # matching anything.
+    keys = set(zip(shape["gender"], shape["competition"], shape["edition"]))
+    unused = given[[
+        (g, c, e) not in keys
+        for g, c, e in zip(given["gender"], given["competition"], given["edition"])
+    ]]
+    for row in unused.itertuples():
+        print(f"  !! {EDITIONS.name}: no {row.gender} {row.competition} "
+              f"{row.edition} in the data -- that override does nothing",
+              flush=True)
+    return merged.drop(columns=["group", "knockout", "source", "note"])
 
 
 def price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
@@ -355,7 +422,7 @@ def price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
     return rows[rows["points"].notna()]
 
 
-def seasons(rows: pd.DataFrame, upscale: bool = False, fold: bool = True) -> pd.DataFrame:
+def seasons(rows: pd.DataFrame, upscale: bool = True, fold: bool = True) -> pd.DataFrame:
     """Team-seasons: the best competition whole, everything else at half.
 
     ``fold=False`` sums every competition instead, which is what produced the
@@ -428,6 +495,13 @@ def main() -> int:
 
     print(f"\n{'=' * 74}\nInferred tournament shape -- check these against the formats\n")
     print("    G is group matches per team, K the champion's knockout path.")
+    stated = shape[shape["shape_from"].isin(("derived", "assumed", "admin"))]
+    if len(stated):
+        print("    Stated rather than inferred, from whul/data/intl_editions.csv:")
+        for row in stated.sort_values(["gender", "competition", "edition"]).itertuples():
+            print(f"      {row.gender}  {row.competition:<32} {int(row.edition)}  "
+                  f"G={int(row.G)}  K={int(row.K)}   [{row.shape_from}]")
+        print()
     look = shape[(shape["edition"] >= 2018) & (shape["shape_from"] == "played")].sort_values(
         ["competition", "edition"]).drop_duplicates(["gender", "competition"], keep="last")
     for row in look.itertuples():
@@ -444,8 +518,8 @@ def main() -> int:
     print(f"\n{'=' * 74}\nThe rostered teams, by league year\n")
     for upscale in (False, True):
         table = seasons(priced, upscale=upscale)
-        label = "best + half the second, WITH fallow-year upscaling" if upscale \
-            else "best + half the second"
+        label = "best + half the rest, WITH the fallow-year lift (adopted)" if upscale \
+            else "best + half the rest, no lift"
         print(f"  --- {label}")
         for gender, names in ROSTERED.items():
             mine = table[(table["gender"] == gender) & table["team"].isin(names)
@@ -463,9 +537,9 @@ def main() -> int:
 
     window = sorted(priced["year"].unique())[-BENCHMARK_SEASONS:]
     for label, kwargs in (
-        ("summed, no fold", dict(fold=False)),
-        ("best + half the rest", dict()),
-        ("...and upscaled", dict(upscale=True)),
+        ("summed, no fold, no lift", dict(fold=False, upscale=False)),
+        ("folded, no lift", dict(upscale=False)),
+        ("folded and lifted -- ADOPTED", dict()),
     ):
         table = seasons(priced, **kwargs)
         scored = normalized(table, window)

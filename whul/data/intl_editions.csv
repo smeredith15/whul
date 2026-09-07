@@ -1,0 +1,66 @@
+# Tournament shape where it cannot be read off the ledger.
+#
+# `structure()` infers a competition's shape from its own matches: G, the group
+# matches, is the fewest any team played, because a side eliminated in the group
+# stage plays exactly the group; K is what the longest run adds on top. That
+# works for every knockout tournament and fails for the Nations Leagues, for two
+# reasons that compound.
+#
+# 1. THE LEDGER DOES NOT RECORD THE DIVISION. League A, B, C and D are all filed
+#    as "UEFA Nations League". So the smallest league sets G and the largest sets
+#    K -- 2024-25 comes out G=4, K=6 where League A is G=6, K=4. The totals agree
+#    and the split does not, and the split is what path_max is built from.
+#
+# 2. AN EDITION DOES NOT FIT A LEAGUE YEAR, AND NOT PREDICTABLY. The 2020-21
+#    league phase was September to November 2020 and its Finals were October
+#    2021 -- eleven months later, in the next league year. The 2022-23 league
+#    phase began in June 2022, which is the league year before the one it
+#    finishes in. No date rule separates an eleven-month gap inside an edition
+#    from an eight-month gap between two.
+#
+# So the shape is stated per LEAGUE YEAR rather than per edition. `group` is the
+# league-phase matches a top-division team can play in this league year, and
+# `knockout` is the knockout matches the winner of that edition plays -- WHETHER
+# OR NOT THEY FALL IN THIS YEAR.
+#
+# That last clause is load-bearing and was got wrong first time. With knockout
+# set to 0 for a year holding only a league phase, a perfect league phase is a
+# perfect competition, so Guatemala winning four CONCACAF League C matches in
+# 2019-20 took a full Nations League ceiling, doubled it on the fallow-year
+# lift, and outscored Spain winning the World Cup -- 106 to 87. The knockout
+# belongs in the denominator because the team could have gone on to play it;
+# that it is played in the next league year changes where the points land, not
+# what the run was worth.
+#
+# Using League A's numbers for every team is deliberate, not a shortcut. A
+# League C side plays the same six league matches and cannot reach the Finals,
+# so measuring it against the winner's path caps it below a full Nations League
+# ceiling -- which is the right answer for winning League C.
+#
+# The `competition` column is the CANONICAL name from intl_tournaments.csv, not
+# the ledger's. The women's file calls its Nations League "UEFA Nations League"
+# and the ladder resolves that to "UEFA Women's Nations League"; two rows keyed
+# on the ledger's spelling matched nothing, and the run said so.
+#
+# `source` says how much to trust the row:
+#   derived  -- read off the competition's own match calendar, month by month
+#   assumed  -- the format as I understand it; CHECK THESE
+#   admin    -- supplied by the league admin
+#
+gender,competition,edition,group,knockout,source,note
+M,UEFA Nations League,2018,4,2,derived,Sep-Nov 2018 League A groups of three; Finals June 2019
+M,UEFA Nations League,2020,6,2,derived,Sep-Nov 2020 groups of four; the Finals slipped to Oct 2021 and are still the path
+M,UEFA Nations League,2021,4,2,derived,Oct 2021 Finals plus four matchdays of the next league phase in June 2022
+M,UEFA Nations League,2022,2,2,derived,the last two matchdays Sep 2022; Finals June 2023
+M,UEFA Nations League,2023,2,2,derived,only the March 2024 play-outs fall in this year
+M,UEFA Nations League,2024,6,4,derived,Sep-Nov 2024 league phase; quarter-finals over two legs Mar 2025; Finals June 2025
+M,CONCACAF Nations League,2019,4,2,assumed,Sep-Nov 2019 league phase; its Finals were delayed to June 2021
+M,CONCACAF Nations League,2020,4,2,derived,the delayed June 2021 Finals; the league phase was the year before
+M,CONCACAF Nations League,2021,4,3,assumed,June 2022 league phase; that edition's knockout is Mar-Jun 2023
+M,CONCACAF Nations League,2022,2,3,assumed,Mar 2023 quarter-finals and the June 2023 Finals
+M,CONCACAF Nations League,2023,6,3,assumed,Sep-Nov 2023 league phase and quarter-finals; Finals Mar 2024
+M,CONCACAF Nations League,2024,6,3,assumed,Sep-Nov 2024 league phase and quarter-finals; Finals Mar 2025
+W,UEFA Women's Nations League,2023,6,2,derived,Sep-Dec 2023 league phase; Finals Feb 2024
+W,UEFA Women's Nations League,2024,6,2,derived,Feb-Jun 2025 league phase; its Finals fall in the next league year
+W,UEFA Women's Nations League,2025,6,2,derived,the Oct-Dec 2025 Finals under the competition's new name
+W,CONMEBOL Women's Nations League,2025,8,0,admin,nine teams single round robin and no knockout stage at all

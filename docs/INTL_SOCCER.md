@@ -194,7 +194,9 @@ scale**: they won the World Cup and the championship that qualified them for it
 inside one league year. The fold and the shallower rung ladder bring that to
 **165**.
 
-### 6. Whether to scale up a fallow year
+### 6. A fallow year is scaled up
+
+**Adopted 2026-09-07.**
 
 ```
 multiplier = top ceiling / the best rung the team actually played that season
@@ -204,11 +206,19 @@ A Nations League year pays ×2, a federation-cup year ×1.33, a World Cup year
 ×1. Without it a European men's team's 2026-27 — a Nations League and the first
 Euro qualifiers, and nothing else — scores half what its World Cup year does.
 
-**It also flattens the top, which is the opposite of what a flat percentile
-suggested.** Lifting every fallow year lifts far more of the pool than it lifts
-the best seasons — a World Cup winner is already on the top rung and gets ×1 —
-so the benchmark rises and the outlier comes down with it. The United States'
-2018-19 goes from 165 to **133**, and nothing in sixteen pool-years clears 150.
+It also flattens the top rather than raising it, which is the opposite of what
+a flat percentile suggested. Lifting fallow years lifts far more of the pool
+than it lifts the best seasons — a World Cup winner is already on the top rung
+and gets ×1 — so the benchmark rises and the outlier comes down with it.
+
+**It has one sharp edge, and it took the Nations League table to find it.**
+Where a competition's knockout is left out of the denominator, a perfect run in
+its league phase is a perfect run in the competition, and the lift then doubles
+it. Guatemala winning four CONCACAF League C matches in 2019-20 scored **106**
+against Spain's **87** for winning the World Cup. The knockout belongs in the
+denominator whether or not it falls in the same league year — the team could
+have gone on to play it, and which year it lands in changes where the points
+go, not what the run was worth. With that fixed the same season scores 62.
 
 ### 7. Then the ordinary machinery
 
@@ -269,41 +279,41 @@ seasons the numbers look about 40% larger and the conclusions invert.
 
 | | benchmark | best season | >100 | >125 | >150 | >200 |
 |---|--:|--:|--:|--:|--:|--:|
-| **summed, no fold** | | | | | | |
-| Men's | 164.4 | 115.6 (Spain 25) | 4 | 0 | 0 | 0 |
-| Women's | 146.8 | **211.2** (USA 18) | 4 | 1 | 1 | 1 |
-| **best + half the rest** | | | | | | |
-| Men's | 136.6 | 120.4 (Spain 25) | 4 | 0 | 0 | 0 |
-| Women's | 142.5 | **164.9** (USA 18) | 4 | 1 | 1 | 0 |
-| **...and fallow years upscaled** | | | | | | |
-| Men's | 163.6 | 126.3 | 4 | 1 | 0 | 0 |
-| Women's | 177.0 | **132.8** | 4 | 1 | 0 | 0 |
+| **summed, no fold, no lift** | | | | | | |
+| Men's | 161.7 | 117.5 | 4 | 0 | 0 | 0 |
+| Women's | 149.5 | **207.3** (USA 18) | 4 | 2 | 1 | 1 |
+| **folded, no lift** | | | | | | |
+| Men's | 136.6 | 120.4 | 4 | 0 | 0 | 0 |
+| Women's | 148.7 | **158.1** | 4 | 1 | 1 | 0 |
+| **folded and lifted — adopted** | | | | | | |
+| Men's | 163.6 | **111.7** (Qatar 18) | 4 | 0 | 0 | 0 |
+| Women's | 177.0 | **132.8** (USA 18) | 4 | 1 | 0 | 0 |
 
 Four seasons of 320 clear 100 in every variant, which is what a 99th percentile
-means. What changes is the tail: summing gives one season at 211, the fold
-brings it to 165, and the fold plus the lift brings it to 133 with nothing at
-all above 150.
+means. What changes is the tail: summing gives one season at 207, the fold
+brings it to 158, and the fold plus the lift brings it to 133 with nothing at
+all above 150 on either side.
 
 The middle of the distribution is nowhere near 100 — the women's pool has a
-median of 26 and a 90th percentile of 63; the men's 40 and 68.
+median of 26 and a 90th percentile of 63; the men's 35 and 64.
 
 ### The highest seasons in the pool, all teams
 
 ```
    Men's                                      Women's
-   2025  Spain           164.4 raw   120.4    2018  United States  235.0   164.9
-   2020  United States   155.0       113.5    2018  New Zealand    150.0   105.3
-   2022  Mexico          149.0       109.1    2021  England        149.9   105.2
-   2018  Qatar           137.0       100.3    2021  Brazil         143.6   100.7
-   2025  France          134.8        98.7    2025  Japan          138.0    96.8
-   2023  Argentina       133.3        97.6    2021  United States  137.5    96.5
-   2022  United States   130.7        95.7    2018  Canada         127.5    89.5
-   2024  Mexico          130.6        95.6    2021  South Africa   112.1    78.7
+   2018  Qatar          182.7 raw   111.7     2018  United States  235.0  132.8
+   2020  United States  173.3       105.9     2021  Brazil         191.4  108.2
+   2024  Mexico         165.8       101.4     2025  Japan          184.0  104.0
+   2025  Spain          164.4       100.5     2021  United States  183.3  103.6
+   2018  Brazil         160.0        97.8     2018  New Zealand    150.0   84.7
+   2023  New Zealand    153.8        94.0     2021  England        149.9   84.7
+   2022  Mexico         144.7        88.5     2021  South Africa   149.5   84.4
 ```
 
-Spain's men won the 2026 World Cup dropping only a group draw to Cape Verde,
-which is the top men's season on the board at 120. England's women won Euro
-2022 six from six, four of them to nil including an 8-0, and take 105 — 122 of
+Qatar's 2019 Asian Cup — seven matches, seven wins, one goal conceded before
+the final — is the top men's season on the board, which is the right answer.
+Spain's men winning the 2026 World Cup is fourth at 100.5. England's women won
+Euro 2022 six from six, four of them to nil including an 8-0, and take 122 of
 the 150 a federation cup can pay, with no qualifying term at all because they
 were hosts.
 
@@ -311,37 +321,38 @@ were hosts.
 
 ```
    Men's           2018 2019 2020 2021 2022 2023 2024 2025
-   England           30   20   76   32   48   41   40   87
-   France            22   17   64   27   74   41   41   99
-   Spain             23   16   59   46   52   77   37  120
+   England           33   23   59   26   40   46   30   73
+   France            25   19   38   23   62   46   67   82
+   Spain             26   17   39   41   42   86   61  101
 
    Women's         2018 2019 2020 2021 2022 2023 2024 2025
-   Brazil            28    0    0  101   22    0   75    0
-   Canada            89    0    0   75   16    0    0    0
-   England           69    0    0  105   64   34   57   26
-   France            51    9   25   48   48   52   77   30
-   Germany           55   18   17   65   22   55   69   42
-   Spain             23   10   23   40   78   63   78   68
-   United States    165    0    0   96   34    0    0    0
+   Brazil            23    0    0  108   18   80   81    0
+   Canada            72    0    0   81   13   68    0    0
+   England           56    0    0   85   52   33   55   21
+   France            41   10   27   39   39   54   59   19
+   Germany           44   20   19   53   18   58   52   29
+   Spain             18   11   25   32   63   70   75   32
+   United States    133    0    0  104   28   80    0    0
 ```
 
 ### What the numbers expose
 
-**Two rostered teams have four blank years in a row.** Canada and the United
-States score nothing from 2022 to 2025. CONCACAF's women play a biennial
-championship and almost nothing else that is not a friendly or the Olympics —
-and the 2024 W Gold Cup they did play is missing from the ledger altogether.
-Whatever the ladder says, half the CONCACAF women's calendar is in the excluded
-pile.
+**Canada and the United States are down to two blank years, not four.** The
+2024 CONCACAF W Gold Cup was supplied by the admin and now scores: Canada
+2023-24 goes from 0 to 68, the USA from 0 to 80, Brazil from 0 to 80. What
+remains blank is 2024-25 and 2025-26, and the cause is the same one — CONCACAF
+women play a biennial championship and little else that is not a friendly or
+the Olympics.
 
 **Brazil's women score nothing in 2025-26 either**, and that one is nobody's
 bug: Brazil host the 2027 World Cup, qualify automatically, and are the one
 CONMEBOL nation absent from the nine-team Nations League that *is* the
 qualifying. A World Cup host plays no competitive football for a year.
 
-**The men's 2018-19 and 2019-20 are the flattest years on the board**, 16 to 30
-for teams that reach World Cup finals. That is the fallow-year problem in its
-natural habitat, and the row to look at when deciding whether to lift.
+**The men's 2018-19 and 2019-20 are still the flattest years on the board** for
+the rostered teams, 17 to 33, even after the lift. Those are Euro qualifying
+years for teams that go deep in tournaments and rarely lose a qualifier, which
+is a season worth little by construction.
 
 ## What must come out equal
 
@@ -391,12 +402,13 @@ this sandbox, which nothing else in this project does:
 |---|--:|---|
 | `martj42/international_results` | 49,547 | 2026-08-26 |
 | `martj42/womens-international-results` | 11,650 | 2026-06-10 |
+| `whul/data/intl_supplement.csv` | 25 | the 2024 W Gold Cup, by hand |
 
 `date, home_team, away_team, home_score, away_score, tournament, city,
 country, neutral`, plus a separate `shootouts.csv` for the penalty rule. Served
 from raw.githubusercontent, the same host nflverse uses.
 
-Three cautions, all of them the silent kind:
+Four cautions, all of them the silent kind:
 
 * **The women's file lags.** It stops at 10 June 2026 against the men's 26
   August. Their seasons genuinely differ, but a stale file and a quiet season
@@ -409,7 +421,9 @@ Three cautions, all of them the silent kind:
   qualification` to 2014, `African Cup of Nations` and `African Cup of Nations
   qualification` from 2016, and then **`Africa Cup of Nations qualification`
   from 2025**, the current spelling and the one the R script's `African Cup`
-  pattern does not match.
+  pattern does not match. The women's Nations League was renamed from `UEFA
+  Nations League` to `UEFA Women's Nations League` in October 2025, the same
+  way.
 
   That is the project's own failure mode in miniature: a pattern written
   against history keeps matching history, returns a full-looking answer, and
@@ -421,43 +435,31 @@ Three cautions, all of them the silent kind:
   Cup. The ladder is therefore `whul/data/intl_tournaments.csv`, an allow-list
   of 39 exact strings, and the script prints every name it did not match so a
   competition that should score cannot go missing quietly.
-* **The 2024 CONCACAF W Gold Cup is not in the ledger at all.** Its
-  qualification is there, 87 matches of it; the tournament itself is not — not
-  one match, though the United States won it and Brazil were runners-up. Three
-  of the ten rostered teams played in it. The `CONCACAF Gold Cup` name in the
-  women's file holds only the old 2000-2010 competition. This is a hole in the
-  source, not in the ladder, and it needs either a second source for CONCACAF
-  or an upstream fix before those slots can be trusted.
-
----
+* **The 2024 CONCACAF W Gold Cup was not in the ledger at all** — its
+  qualification was, 87 matches of it, and not one match of the tournament,
+  though the United States won it and Brazil were runners-up. It is now in
+  `whul/data/intl_supplement.csv`, supplied by the admin. The loader reports
+  any supplement row that later turns up in the ledger too, so a block kept
+  after an upstream fix cannot double-count in silence. **Nobody knows why it
+  is missing, so the next W Gold Cup has to be checked for rather than assumed
+  — that is a diary entry, not a code change.**
 
 ## Still to decide — the admin's, not mine
 
 Settled 2026-09-07: the league-year exception; the club soccer match scale with
 its clean-sheet and margin bonuses; stage ×1/×2/×3 and rung ×1/×1.5/×2; the
 ceiling divided by the champion's path; the best competition whole plus half of
-everything else; no friendlies, no invitational cups, no Olympics; and
-normalizing to history so a good season clears 100 without the scale breaking.
+everything else; the fallow-year lift; the eight-year benchmark window; no
+friendlies, no invitational cups, no Olympics.
 
 What is left:
 
-1. **Whether to upscale fallow years.** It fixes the flat years *and* pulls the
-   top season from 165 to 133, which is not the trade it looked like against a
-   flat percentile. The cost is that a Nations League year and a World Cup year
-   become closer than the rung ladder says they are.
-2. **The eight-year benchmark window.** Every other league uses five seasons.
-   Five here holds one World Cup and either one continental championship or
-   two, so the pool changes character with its start year. Two full cycles is
-   the natural unit and is what the R script used.
-3. **CONCACAF's missing 2024 W Gold Cup**, and whether this source covers the
-   CONCACAF women's calendar well enough for Canada and the USA to be scored
-   fairly. Four blank years in a row is the symptom, and the admin has no lead
-   on where the data might be either. Options, none free: a second source for
-   CONCACAF, an upstream contribution to the ledger, or entering those
-   tournaments by hand.
-4. **The Nations Leagues' internal divisions.** The ledger does not record
-   whether a match is League A, B or C, so an edition's inferred `G` is the
-   smallest league's and its `K` the largest's — UEFA men's 2024-25 comes out
-   `G=4 K=6` where League A is `G=6 K=4`. An ~8% error on one competition, and
-   England, France and Spain are all in it, so it needs a small per-edition
-   override table before this goes live.
+1. **Six rows of `whul/data/intl_editions.csv` marked `assumed`** — every one
+   of them CONCACAF's men's Nations League, which no rostered team is in. They
+   affect the benchmark pool rather than any slot the league holds, so they can
+   be checked at leisure, but they should be checked.
+2. **Whether the 2023-24 CONCACAF W Gold Cup is the only hole.** Nobody knows
+   why it is missing, which means nobody knows whether anything else is.
+3. **Wiring it into the ingest.** None of this writes to the database yet: no
+   source, no benchmark row, no scorer module. That is the next build, and it
+   is only worth starting once the numbers above are settled.
