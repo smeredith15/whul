@@ -763,15 +763,29 @@ def _standings_table(table: pd.DataFrame, mvps: dict[str, str], managers: list[s
     )
 
 
-#: Figures worth leading a day's line with, in the order they read best.
-#: Everything else in the statline still shows, after these -- this is about
-#: what a reader sees first, not about hiding anything.
+#: Figures worth leading a day's line with, in the order they read best. A
+#: dict's own order varies between feeds, so without this the same sport reads
+#: differently from one day to the next.
 HEADLINE = (
-    "wins", "reg_wins", "games_played", "matches", "matches_played",
-    "goals", "assists", "hr", "h", "sb", "ip", "so", "sv",
+    "h", "ab", "hr", "rbi", "bb", "sb", "ip", "so", "sv", "hld",
+    "goals", "assists", "matches", "starts", "minutes",
+    "wins", "reg_wins", "games_played", "big_wins", "reg_big_wins",
+    "point_diff", "run_diff", "conf_wins", "events",
     "passing_yards", "rushing_yards", "receiving_yards", "receptions",
-    "events", "point_diff", "run_diff", "conf_wins",
 )
+
+#: Where the sport's own shorthand is shorter and clearer than the words.
+#: Everywhere else the full label reads better -- "Goals 1" beats "1 G", and
+#: G would collide with games anyway.
+SHORT = {
+    "hr": "HR", "bb": "BB", "so": "K", "sb": "SB", "cs": "CS", "hbp": "HBP",
+    "doubles": "2B", "triples": "3B", "sv": "SV", "hld": "HLD", "rbi": "RBI",
+}
+
+#: Figures that do not difference. A rate is not a count, so yesterday's
+#: subtracted from today's is not what happened today -- it is noise with a
+#: plausible magnitude, which is worse than nothing.
+NOT_COUNTABLE = {"offense", "defense", "war", "position_points", "advanced_share"}
 
 #: How many figures a day's line carries. It is a summary sitting inside a
 #: table cell, not a profile -- the profile window is one click further on and
@@ -779,38 +793,90 @@ HEADLINE = (
 BRIEF = 5
 
 
-def _brief(lines: list[tuple[str, str]], row: dict) -> list[tuple[str, str]]:
-    """The few figures that say what a score was made of.
-
-    Zero-valued ones are dropped first: a batter's line reading "Saves 0,
-    Innings pitched 0, Holds 0" is three quarters of the space and none of the
-    information. What is left is ordered by `HEADLINE` so the same sport reads
-    the same way from one day to the next, which a dict's own order does not
-    guarantee across feeds.
-    """
-    kept = [(label, text) for label, text in lines
-            if text not in ("0", "0.0", "no", "")
-            # The score is its own column in the panel. Repeating it inside the
-            # line spends a fifth of the space saying what is already there.
-            and label not in ("Total points", "Points in this role")]
-    order = {_label_for(c): i for i, c in enumerate(HEADLINE)}
-    kept.sort(key=lambda pair: order.get(pair[0], len(HEADLINE)))
-
-    # Two columns can share a label -- `goals` and `goal_points` are both
-    # "Goals" -- and a line reading "Goals 2 - Goals 8" reads as a fault. The
-    # HEADLINE order above decides which survives, so the count beats the
-    # points it earned.
-    seen: set[str] = set()
-    brief = []
-    for label, text in kept:
-        if label in seen:
+def _countable(row: dict) -> dict[str, float]:
+    """The figures in a stat row that a day can be a difference of."""
+    out: dict[str, float] = {}
+    for column, value in row.items():
+        if column in STAT_SKIP or column in NOT_COUNTABLE:
             continue
-        seen.add(label)
-        # A count is a count: "Matches 2" rather than "Matches 2.0".
-        brief.append((label, text[:-2] if text.endswith(".0") else text))
-        if len(brief) == BRIEF:
+        # A points column is the score, which the panel shows in its own
+        # column. Differencing it would say the same thing twice.
+        if column.endswith("_points"):
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        if value != value:   # NaN, which is how a feed spells "not this role"
+            continue
+        out[column] = float(value)
+    return out
+
+
+def _number(value: float) -> str:
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.1f}"
+
+
+def _innings(value: float) -> str:
+    """Innings pitched, in the notation every box score uses.
+
+    The feed stores thirds as decimals -- 20.33, 20.67 -- so differencing two
+    of them is arithmetic and correct. Printing the result is not: a day's
+    5.33 rounds to "5.3", and baseball has no such figure. Two thirds of an
+    inning is .2, and a reader who knows that reads .3 as a typo, while one
+    who does not reads it as a third of an inning too many.
+    """
+    outs = round(float(value) * 3)
+    return f"{outs // 3}.{outs % 3}"
+
+
+def _day_line(now: dict, before: dict, comparable: bool = True) -> list[str]:
+    """What a player or team did *that day*, not what they have done all year.
+
+    The feeds report season to date, so a day is the difference between two of
+    them. Shown cumulatively the line said "Hits 25, Home runs 13" under a
+    score that moved by one -- true, and not an answer to what happened.
+
+    Baseball gets its own shorthand because the sport has one and it is
+    shorter than the words: a batter's day is 2-for-4, not "Hits 2, At bats 4".
+    """
+    # A day is a difference, and without both ends there is no difference to
+    # take. `raw_stats` reaches back only as far as the first nightly run while
+    # `slot_scores` were backfilled, so the earliest listed days have a score
+    # to compare and no stats to compare -- and subtracting nothing from a
+    # season総 printed a whole year as one day: "19.0 IP, 15 H, 9 K" under a
+    # score that moved by four. Better to say nothing than that.
+    if not comparable:
+        return []
+    today = _countable(now)
+    delta = {c: today[c] - _countable(before).get(c, 0.0) for c in today}
+    delta = {c: v for c, v in delta.items() if abs(v) >= 0.05}
+    if not delta:
+        return []
+
+    parts: list[str] = []
+    if "ip" in delta:
+        # A pitching line, and the order is the sport's own: innings, then
+        # hits, then the rest. `h` is hits *allowed* here, and put anywhere
+        # else it reads as a batter's four hits rather than a pitcher's four
+        # given up.
+        parts.append(f"{_innings(delta.pop('ip'))} IP")
+        if "h" in delta:
+            parts.append(f"{_number(delta.pop('h'))} H")
+        delta.pop("ab", None)
+    else:
+        hits, at_bats = delta.pop("h", None), delta.pop("ab", None)
+        if at_bats:
+            parts.append(f"{_number(hits or 0)}-for-{_number(at_bats)}")
+        elif hits:
+            parts.append(f"{_number(hits)} H")
+
+    order = {c: i for i, c in enumerate(HEADLINE)}
+    for column in sorted(delta, key=lambda c: (order.get(c, len(HEADLINE)), c)):
+        value = delta[column]
+        parts.append(f"{_number(value)} {SHORT[column]}" if column in SHORT
+                     else f"{_label_for(column)} {_number(value)}")
+        if len(parts) == BRIEF:
             break
-    return brief
+    return parts
 
 
 def _day_breakdown(
@@ -873,12 +939,24 @@ def _day_breakdown(
             if abs(delta) < 0.05:
                 continue
             row = stats[day].get(asset_id, {})
+            was = stats.get(listed[index - 1], {}).get(asset_id, {}) if index else {}
             out[f"{manager}|{day}"]["movers"].append({
                 "asset": asset_id,
                 "points": round(score, 1),
                 "delta": round(delta, 1),
-                "lines": _brief(_stat_lines(row), row),
-                "finishes": _finish_list(row)[:3],
+                # Comparable when there is a previous stat row to difference
+                # against, or when the asset had no score at all before -- in
+                # which case everything on it is new and the total is the day.
+                "line": _day_line(
+                    row, was, bool(was) or not before.get(key, (0.0, ""))[0]
+                ),
+                # Only the finishes that fall in this window. The whole list is
+                # what the profile is for; here it would credit a golfer's
+                # August to a Tuesday in September.
+                "finishes": [
+                    f for f in _finish_list(row)
+                    if not index or str(f.get("date", "")) > listed[index - 1]
+                ][:3],
             })
     for entry in out.values():
         entry["movers"].sort(key=lambda m: -abs(m["delta"]))
@@ -1159,15 +1237,20 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
     sampled = days[:: max(1, len(days) // 14)] or days
     if days[-1] not in sampled:
         sampled.append(days[-1])
-    progression_rows = [
-        [str(d)] + [f"{s.values[days.index(d)]:,.1f}" for s in series] for d in sampled
-    ]
     breakdown = _day_breakdown(store, season, sampled, managers)
+    # Newest first. The chart reads left to right because a line has to, but a
+    # table is read from the top, and what a reader wants first is what
+    # happened last. The deltas are still computed forwards -- reversing the
+    # rows must not turn "since the 5th" into "since the 7th".
+    listed = list(reversed(sampled))
+    progression_rows = [
+        [str(d)] + [f"{s.values[days.index(d)]:,.1f}" for s in series] for d in listed
+    ]
     # One key per cell, empty where nothing moved. Built against the same
     # manager order the columns are in, so a cell and its panel cannot drift.
     progression_keys = [
         [(f"{key}|{d}" if f"{key}|{d}" in breakdown else "") for key in managers]
-        for d in sampled
+        for d in listed
     ]
 
     slot_rows, values, slot_depth = _slot_rows(bars, managers)

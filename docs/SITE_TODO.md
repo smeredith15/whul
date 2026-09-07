@@ -24,6 +24,16 @@ result for a team, a finish for an individual athlete. A name in the panel
 opens that asset's profile, which is one click further on and carries
 everything the panel summarises.
 
+The figures are the **day**, not the season. The feeds report season to date,
+so a day is the difference between two of them; shown cumulatively the line
+read "Hits 25, Home runs 13" under a score that moved by one -- true, and not
+an answer to what happened. Baseball gets its own shorthand because the sport
+has one and it is shorter than the words: `4-for-7 · 2 HR · 1 2B` for a batter,
+`5.1 IP · 4 H · 1 BB · 2 K` for a pitcher.
+
+The table is sorted newest first. A line has to be drawn left to right, but a
+table is read from the top.
+
 Only cells with something behind them are marked. Marking every one would
 promise a breakdown for days nothing happened on, which is a click that opens
 an empty panel.

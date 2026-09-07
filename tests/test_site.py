@@ -1367,36 +1367,63 @@ def test_a_finishing_position_is_not_printed_where_a_role_belongs():
 
 # --- what a day was made of -------------------------------------------------
 
-def test_a_brief_line_drops_zeros_and_leads_with_the_headline_figures():
-    """A batter's line reading "Saves 0, Innings 0, Holds 0" is three quarters
-    of the space and none of the information."""
-    from whul.site.build import _brief, _stat_lines
+def test_a_day_line_is_the_day_and_not_the_season():
+    """The feeds report season to date. Shown cumulatively the line said
+    "Hits 25, Home runs 13" under a score that moved by one -- true, and not an
+    answer to what happened."""
+    from whul.site.build import _day_line
 
-    row = {"sv": 0.0, "goals": 2.0, "matches": 3.0, "hld": 0.0,
-           "yellow": 1.0, "assists": 1.0}
-    got = dict(_brief(_stat_lines(row), row))
-    assert "Saves" not in got and "Holds" not in got
-    assert got["Goals"] == "2" and got["Matches"] == "3"
-
-
-def test_a_brief_line_never_repeats_a_label():
-    """`goals` and `goal_points` are both labelled "Goals", and a line reading
-    "Goals 2 - Goals 8" reads as a fault. The count wins."""
-    from whul.site.build import _brief, _stat_lines
-
-    row = {"goals": 2.0, "goal_points": 8.0, "matches": 2.0}
-    labels = [label for label, _ in _brief(_stat_lines(row), row)]
-    assert labels.count("Goals") == 1
-    assert dict(_brief(_stat_lines(row), row))["Goals"] == "2"
+    now = {"h": 25.0, "ab": 88.0, "hr": 13.0, "games": 40.0}
+    before = {"h": 23.0, "ab": 84.0, "hr": 12.0, "games": 39.0}
+    assert _day_line(now, before) == ["2-for-4", "1 HR", "Games 1"]
 
 
-def test_a_brief_line_does_not_repeat_the_score():
-    """The panel shows the score in its own column."""
-    from whul.site.build import _brief, _stat_lines
+def test_a_batter_reads_as_a_batter_and_a_pitcher_as_a_pitcher():
+    """Baseball has its own shorthand and it is shorter than the words. `h` is
+    hits allowed in a pitching line, so put anywhere but after the innings it
+    reads as four hits made rather than four given up."""
+    from whul.site.build import _day_line
 
-    row = {"total_points": 18.0, "role_points": 18.0, "goals": 1.0}
-    labels = [label for label, _ in _brief(_stat_lines(row), row)]
-    assert labels == ["Goals"]
+    batter = _day_line({"h": 2.0, "ab": 4.0, "bb": 1.0}, {})
+    assert batter[0] == "2-for-4" and "1 BB" in batter
+
+    pitcher = _day_line({"ip": 5.33, "h": 4.0, "so": 2.0}, {})
+    assert pitcher[0] == "5.1 IP" and pitcher[1] == "4 H" and "2 K" in pitcher
+
+
+def test_innings_are_thirds_not_decimals():
+    """The feed stores thirds as decimals, so differencing them is arithmetic
+    and correct -- and printing the result is not. A day's 5.33 rounds to
+    "5.3", and baseball has no such figure."""
+    from whul.site.build import _innings
+
+    assert _innings(5.33) == "5.1"
+    assert _innings(5.67) == "5.2"
+    assert _innings(6.0) == "6.0"
+
+
+def test_a_rate_is_not_differenced():
+    """Yesterday's subtracted from today's is not what happened today -- it is
+    noise with a plausible magnitude, which is worse than nothing."""
+    from whul.site.build import _day_line
+
+    line = _day_line({"offense": 1.26, "war": 3.1, "hr": 2.0},
+                     {"offense": 1.10, "war": 2.9, "hr": 1.0})
+    assert line == ["1 HR"]
+
+
+def test_a_day_with_no_previous_stats_says_nothing_rather_than_a_season():
+    """`raw_stats` reaches back only as far as the first nightly run while
+    `slot_scores` were backfilled, so the earliest listed days have a score to
+    compare and no stats to compare. Subtracting nothing from a season printed
+    a whole year as one day."""
+    from whul.site.build import _day_line
+
+    season = {"ip": 19.0, "h": 15.0, "so": 9.0}
+    assert _day_line(season, {}, comparable=False) == []
+    # ...but an asset that had no score at all before is genuinely new, and
+    # then the total really is the day.
+    assert _day_line(season, {}, comparable=True)[0] == "19.0 IP"
 
 
 def test_a_conference_id_is_not_a_statistic():
@@ -1471,7 +1498,9 @@ def test_a_day_breakdown_names_what_moved_and_by_how_much(tmp_path):
     # Only what moved: the slot that stayed on five is not a mover.
     assert [m["asset"] for m in day["movers"]] == ["a1"]
     assert day["movers"][0]["delta"] == 8.0
-    assert dict(day["movers"][0]["lines"])["Wins"] == "2"
+    # No stats row on the previous listed day, so the day cannot be
+    # differenced and the line says nothing rather than a season.
+    assert day["movers"][0]["line"] == []
 
 
 def test_a_day_nothing_moved_on_gets_no_panel(tmp_path):
@@ -1503,3 +1532,43 @@ def test_a_day_nothing_moved_on_gets_no_panel(tmp_path):
     # the movement. It carries no "since", which is what the panel reads off.
     assert out["TG|2026-09-05"]["delta"] is None
     assert out["TG|2026-09-05"]["movers"][0]["delta"] == 10.0
+
+
+def test_the_progression_table_reads_newest_first():
+    """A line has to be drawn left to right, but a table is read from the top,
+    and what a reader wants first is what happened last."""
+    import re
+
+    from whul.site.build import _table_view
+
+    html = _table_view("Show as a table", ["Date", "TG"],
+                       [["2026-09-07", "3.0"], ["2026-09-06", "2.0"]],
+                       columns=["TG"])
+    dates = re.findall(r"<td>(\d{4}-\d\d-\d\d)</td>", html)
+    assert dates == sorted(dates, reverse=True)
+
+
+def test_reversing_the_rows_does_not_reverse_the_deltas(tmp_path):
+    """The table is newest first and the deltas are computed forwards. Read the
+    wrong way round, "since the 5th" would become "since the 7th" and every
+    change would carry the wrong sign."""
+    from whul.site.build import _day_breakdown
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "TG", "display_name": "TG",
+                               "active": 1}], ["manager_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": "s1", "manager_id": "TG", "season": "2026-27",
+         "category": "NFL", "asset_type": "Team", "slot_index": 1},
+    ], ["slot_id"])
+    store.upsert("slot_scores", [
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-05",
+         "asset_id": "a1", "score": 4.0, "counts": 1},
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-07",
+         "asset_id": "a1", "score": 9.0, "counts": 1},
+    ], ["slot_id", "as_of"])
+
+    out = _day_breakdown(store, "2026-27", ["2026-09-05", "2026-09-07"], ["TG"])
+    assert out["TG|2026-09-07"]["delta"] == 5.0
+    assert out["TG|2026-09-07"]["since"] == "2026-09-05"

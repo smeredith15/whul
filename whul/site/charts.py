@@ -966,9 +966,7 @@ SCRIPT = """\
       return f.label;
     }).join(' \u00b7 ');
     if (!detail) {
-      detail = (mover.lines || []).map(function (pair) {
-        return pair[0] + ' ' + pair[1];
-      }).join(' \u00b7 ');
+      detail = (mover.line || []).join(' \u00b7 ');
     }
     var sign = mover.delta > 0 ? '+' : '';
     return '<tr>' +
