@@ -229,3 +229,62 @@ def test_a_season_with_no_games_played_scores_nothing_rather_than_raising():
         "home_score": [None, None], "away_score": [None, None],
     })
     assert score_teams(schedules, pd.DataFrame({"team_abbr": [], "team_division": []})).empty
+
+
+# --- a season nflverse has not reached ------------------------------------
+
+def _nflverse_tables(monkeypatch, standings_seasons, teams_seasons):
+    """Stand in for standings.csv and teams.csv at whatever vintage."""
+    import pandas as pd
+
+    from whul.sources import nflverse
+
+    abbrs = {"SEA": ("NFC West", "Seattle Seahawks"),
+             "SF": ("NFC West", "San Francisco 49ers")}
+    standings = pd.DataFrame([
+        {"season": s, "team": a, "division": d}
+        for s in standings_seasons for a, (d, _) in abbrs.items()
+    ])
+    named = pd.DataFrame([
+        {"season": s, "team": a, "full": n}
+        for s in teams_seasons for a, (_, n) in abbrs.items()
+    ])
+    monkeypatch.setattr(
+        nflverse.pd, "read_csv",
+        lambda path, **kw: standings if path.endswith("standings.csv") else named,
+    )
+    return nflverse
+
+
+def test_a_season_the_tables_have_not_reached_borrows_the_last_one(monkeypatch, capsys):
+    """Both files gain a season when it exists, not when it is scheduled, so on
+    the morning of week one they can stop at last year. Returning nothing is
+    not neutral: every name comes back blank, each team falls back to its
+    abbreviation, and "SEA" is offered to a roster that says "Seattle
+    Seahawks" -- ten slots on zero in a season being played."""
+    nflverse = _nflverse_tables(monkeypatch, [2024, 2025], [2024, 2025])
+
+    teams = nflverse.load_teams([2026])
+    assert set(teams["season"]) == {2026}
+    assert sorted(teams["team_name"]) == ["San Francisco 49ers", "Seattle Seahawks"]
+    assert set(teams["team_division"]) == {"NFC West"}
+    # A carried-forward value is a guess, even a good one, so it is announced.
+    assert "no 2026 teams yet" in capsys.readouterr().out
+
+
+def test_a_season_the_tables_do_have_is_left_alone(monkeypatch, capsys):
+    nflverse = _nflverse_tables(monkeypatch, [2024, 2025], [2024, 2025])
+
+    teams = nflverse.load_teams([2025])
+    assert set(teams["season"]) == {2025}
+    assert sorted(teams["team_name"]) == ["San Francisco 49ers", "Seattle Seahawks"]
+    assert capsys.readouterr().out == "", "nothing was borrowed, so nothing to say"
+
+
+def test_standings_reaching_a_season_the_name_table_has_not(monkeypatch):
+    """The two files are published separately and need not move together. A
+    division without a name is still an abbreviation offered to a roster."""
+    nflverse = _nflverse_tables(monkeypatch, [2024, 2025, 2026], [2024, 2025])
+
+    teams = nflverse.load_teams([2026])
+    assert sorted(teams["team_name"]) == ["San Francisco 49ers", "Seattle Seahawks"]
