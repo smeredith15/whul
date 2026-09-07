@@ -146,6 +146,51 @@ def _identity(stats: dict, league: str, norm_key: str,
     }
 
 
+def badge_names(store: Store, season: str, as_of=None) -> dict[str, str]:
+    """What to badge each asset with, keyed by asset id.
+
+    The feed's spelling first, the spreadsheet's second -- the same precedence
+    the profile line uses, and for the same reason twice over.
+
+    The feed notices a transfer, which the sheet only does when somebody
+    remembers. And the feed's name is ESPN's own, so a crest looked up under it
+    matches by construction: the sheet said "Los Angeles Clippers" and ESPN
+    files them as "LA Clippers", so a perfectly correct name found nothing at
+    all. Preferring the feed makes that class of miss impossible wherever the
+    feed has an answer, and the sheet stays the answer where it does not --
+    every golfer's country, and every league that has not kicked off.
+
+    A club that changes spelling between the two therefore changes the crest's
+    filename too. The old file goes stale rather than wrong; the fetch writes
+    the new one and nothing points at the old.
+    """
+    day = as_of or store.scalar(
+        "SELECT MAX(as_of) FROM raw_stats WHERE season = ?", (season,)
+    )
+    from_feed: dict[str, dict] = {}
+    if day:
+        stats = store.read_stats(season, day)
+        if not stats.empty:
+            from_feed = {row["asset_id"]: row for row in stats.to_dict("records")}
+
+    rows = store.query(
+        "SELECT DISTINCT a.asset_id, a.league, a.norm_key, a.affiliation "
+        "FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id "
+        "WHERE r.season = ?", (season,),
+    )
+    out: dict[str, str] = {}
+    for row in rows.itertuples():
+        who = _identity(
+            from_feed.get(row.asset_id, {}), str(row.league or ""),
+            str(row.norm_key or ""), str(row.affiliation or ""),
+        )
+        if who["team"]:
+            out[str(row.asset_id)] = who["team"]
+    return out
+
+
 def asset_profiles(
     store: Store, season: str, as_of, wanted: set[str], depth: int = 0
 ) -> dict[str, dict]:

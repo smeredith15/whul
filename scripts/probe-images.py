@@ -550,6 +550,18 @@ def main() -> int:
 
     db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     assets = rostered(db, args.season)
+
+    # The feed's spelling of a club beats the sheet's, and is looked up here
+    # rather than taken off `affiliation` so this resolves against the name the
+    # crest will be filed under. The two were separate readings of one fact and
+    # a club ESPN calls "LA Clippers" was searched for as "Los Angeles
+    # Clippers", which is a correct name that finds nothing.
+    from whul.site.build import badge_names
+    from whul.store import open_store
+
+    badges = badge_names(open_store(args.db), args.season)
+    for asset in assets:
+        asset["affiliation"] = badges.get(asset["id"], asset["affiliation"])
     if args.limit:
         assets = assets[:args.limit]
     if not assets:

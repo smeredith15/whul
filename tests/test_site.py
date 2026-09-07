@@ -1240,3 +1240,59 @@ def test_a_missing_image_directory_says_so_rather_than_reporting_nothing_found(t
     said = out.getvalue()
     assert "nowhere" in said
     assert "does not exist" in said
+
+
+# --- which name a crest is filed under ----------------------------------------
+
+def _badge_store(tmp_path, affiliation, feed_team=None):
+    from datetime import date
+
+    from whul.store import open_store, rosters
+
+    store = open_store(str(tmp_path / "b.sqlite3"))
+    rosters.add_manager(store, "JM")
+    rosters.create_slots(store, "JM", "2026-27")
+    store.upsert("assets", [{
+        "asset_id": "p1", "asset_type": "Player", "display_name": "A Player",
+        "league": "Premier League", "role": "", "norm_key": "Premier League",
+        "affiliation": affiliation, "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    slot = store.query(
+        "SELECT slot_id FROM roster_slots WHERE season = ? AND category = ? "
+        "AND asset_type = 'Player'", ("2026-27", "Club Soccer Top 3"))
+    rosters.assign(store, slot.loc[0, "slot_id"], "p1", "2026-08-21")
+    if feed_team is not None:
+        store.record_stats(
+            [{"asset_id": "p1", "team": feed_team, "total_points": 1.0}],
+            source="s", season="2026-27", as_of=date(2026, 9, 6),
+            league="Premier League",
+        )
+    return store
+
+
+def test_the_feeds_spelling_of_a_club_beats_the_sheets(tmp_path):
+    """The feed notices a transfer, and its name is ESPN's own -- so a crest
+    looked up under it matches by construction. The sheet said "Los Angeles
+    Clippers" and ESPN files them as "LA Clippers": a perfectly correct name
+    that found nothing at all."""
+    from whul.site.build import badge_names
+
+    store = _badge_store(tmp_path, "Rennes", feed_team="Stade Rennais")
+    assert badge_names(store, "2026-27")["p1"] == "Stade Rennais"
+
+
+def test_the_sheet_answers_where_the_feed_has_nothing(tmp_path):
+    """Every golfer's country, and every league that has not kicked off."""
+    from whul.site.build import badge_names
+
+    store = _badge_store(tmp_path, "Los Angeles Clippers")
+    assert badge_names(store, "2026-27")["p1"] == "Los Angeles Clippers"
+
+
+def test_an_asset_neither_knows_about_is_left_out(tmp_path):
+    """Not badged, rather than badged with an empty string -- which would ask
+    for a file called `.png`."""
+    from whul.site.build import badge_names
+
+    store = _badge_store(tmp_path, "")
+    assert "p1" not in badge_names(store, "2026-27")

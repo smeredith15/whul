@@ -667,7 +667,7 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
     from pathlib import Path
 
     from whul.site import images
-    from whul.site.build import INDIVIDUAL_CATEGORIES, _slug
+    from whul.site.build import INDIVIDUAL_CATEGORIES, _slug, badge_names
     from whul.store import open_store
 
     store = open_store(args.db)
@@ -684,6 +684,13 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
         print(f"\nNothing rostered in {args.season}.\n")
         return 1
 
+    # What each asset is badged with, the feed's spelling winning over the
+    # sheet's. Named here rather than read off `affiliation` directly so the
+    # filename this asks for is the one the fetch writes -- they were two
+    # readings of the same thing, and the crest a sheet called "Los Angeles
+    # Clippers" and ESPN calls "LA Clippers" fell down the gap.
+    badges = badge_names(store, args.season)
+
     # Keyed, so the club twenty players share is one file rather than twenty.
     # That collapse is most of the difference between a long evening and a
     # short one, and it is invisible in a list of players.
@@ -693,7 +700,7 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
         wanted[("asset", str(row.asset_id))] = (
             f"{name} -- {'headshot' if row.asset_type == 'Player' else 'team logo'}"
         )
-        affiliation = str(row.affiliation or "").strip()
+        affiliation = badges.get(str(row.asset_id), "")
         if row.asset_type == "Team":
             # A national side takes its confederation's shield, not a league.
             if "Intl" not in str(row.category):
@@ -738,7 +745,7 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
 
     blank = sorted(
         str(r.display_name) for r in rows.itertuples()
-        if r.asset_type == "Player" and not str(r.affiliation or "").strip()
+        if r.asset_type == "Player" and not badges.get(str(r.asset_id), "")
     )
     if blank:
         print(f"\n  {len(blank)} player(s) have no club or country in the "
