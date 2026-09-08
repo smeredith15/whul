@@ -1074,3 +1074,58 @@ def test_a_quiet_season_is_not_blamed_on_the_scorer(store):
     report = ingest.ingest(store, source, "2026-27", date(2026, 9, 7), verbose=False)
     assert any("nothing that counts has been played" in p for p in report.problems)
     assert not any("scorer's to explain" in p for p in report.problems)
+
+
+def test_a_season_that_has_not_started_still_gives_up_its_fixtures():
+    """The next fixture matters most before the first game, and the schedule
+    is published weeks ahead.
+
+    The NFL's season opened on a Thursday and this ran on the Tuesday: the
+    scoring pull correctly found no season inside the league year and returned
+    before fetching anything, so 272 fixtures sat in a file nobody asked for
+    and every NFL row on every roster was blank.
+    """
+    import pandas as pd
+
+    from whul import ingest as ing
+
+    schedule = pd.DataFrame([{
+        "season": 2026, "game_date": "2026-09-10", "home_team": "Alpha",
+        "away_team": "Beta", "home_score": None, "away_score": None,
+    }])
+
+    class Source:
+        key = "test"
+        league = "Test"
+        asset_type = "Team"
+        live = None
+        roster_scoped = False
+        seasons_for = staticmethod(lambda day: [] if day.year == 2026 else [2026])
+        build = staticmethod(lambda: (lambda seasons: schedule, lambda raw: raw))
+
+    upcoming: list = []
+    ing._harvest_ahead(Source(), date(2026, 9, 8), False, None, upcoming)
+    assert upcoming, "a schedule was published and nothing was kept from it"
+    assert set(upcoming[0]["team_key"]) == {"alpha", "beta"}
+
+
+def test_a_league_with_no_coming_season_is_not_fetched_speculatively():
+    """This is a request nobody asked for. It must not fire for a league that
+    has no season on the horizon at all."""
+    from whul import ingest as ing
+
+    called: list = []
+
+    class Source:
+        key = "test"
+        league = "Test"
+        asset_type = "Team"
+        live = None
+        roster_scoped = False
+        seasons_for = staticmethod(lambda day: [])
+        build = staticmethod(
+            lambda: (lambda seasons: called.append(seasons), lambda raw: raw))
+
+    upcoming: list = []
+    ing._harvest_ahead(Source(), date(2026, 9, 8), False, None, upcoming)
+    assert called == [] and upcoming == []

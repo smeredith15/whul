@@ -1522,12 +1522,19 @@ def _fixture_cell(fixture: dict | None) -> str:
         day = str(fixture.get("date", ""))
     against = str(fixture.get("opponent", ""))
     versus = "vs" if fixture.get("home") else "at"
-    full = f"{day} {versus} {against}"
+    badge = str(fixture.get("badge", ""))
+    full = f"{day} {versus} {against}" + (f" ({fixture.get('competition','')})"
+                                          if badge else "")
+    # The opponent is its own element so a narrow screen can break the line
+    # there rather than truncating -- a fixture cut to "Sep 20 vs New Or..."
+    # has lost the only part anybody reads it for.
+    mark = (f"<span class='comp' title=\"{escape(str(fixture.get('competition','')))}\">"
+            f"{escape(badge)}</span>") if badge else ""
     return (
         f"<td class='fixture' title=\"{escape(full)}\">"
-        f"<span class='when'>{escape(day)}</span> "
-        f"<span class='versus'>{escape(versus)}</span> "
-        f"<span class='against'>{escape(against)}</span></td>"
+        f"<span class='when'>{escape(day)}</span>"
+        f"<span class='against'><span class='versus'>{escape(versus)}</span> "
+        f"{escape(against)}</span>{mark}</td>"
     )
 
 

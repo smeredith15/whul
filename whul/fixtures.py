@@ -20,6 +20,7 @@ through the club the spreadsheet records against them.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 import pandas as pd
@@ -171,6 +172,58 @@ HARVESTED: frozenset[str] = frozenset({
 })
 
 
+#: Roster categories whose fixtures are worth labelling with the competition.
+#: A club plays in four or five of them in a season and which one it is changes
+#: what the fixture means -- a Tuesday in Europe is not a Saturday in the
+#: league. Everywhere else the competition is the league, so printing it would
+#: repeat the row above.
+SOCCER: frozenset[str] = frozenset({
+    "Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1",
+    "MLS", "NWSL", "EPL", "Club Soccer",
+})
+
+#: How a competition is written in a column this narrow. Anything not listed
+#: falls back to its own initials, which is right far more often than not --
+#: "Coppa Italia" becomes CI, "Copa del Rey" CDR -- and is never a guess about
+#: what the competition *is*.
+COMPETITION_SHORT: dict[str, str] = {
+    "premier league": "PL", "laliga": "LL", "la liga": "LL",
+    "serie a": "SA", "bundesliga": "BUN", "ligue 1": "L1",
+    "mls": "MLS", "nwsl": "NWSL",
+    "champions league": "UCL", "uefa champions league": "UCL",
+    "europa league": "UEL", "uefa europa league": "UEL",
+    "europa conference league": "UECL", "conference league": "UECL",
+    "fa cup": "FA", "efl cup": "EFL", "league cup": "EFL", "carabao cup": "EFL",
+    "copa del rey": "CDR", "dfb pokal": "DFB", "dfb-pokal": "DFB",
+    "coppa italia": "CI", "coupe de france": "CDF",
+    "club world cup": "CWC", "fifa club world cup": "CWC",
+    "supercopa": "SCP", "super cup": "SC", "community shield": "CS",
+    "us open cup": "USOC", "leagues cup": "LC",
+    "concacaf champions cup": "CCC", "champions cup": "CCC",
+    "mls cup": "MLS", "playoffs": "PO",
+}
+
+#: Words that carry no information in an initialism.
+_SKIP_WORDS = frozenset({
+    "of", "the", "and", "de", "del", "di", "du", "da", "la", "le", "les",
+    "el", "il", "der", "des",
+})
+
+
+def short_competition(name: str) -> str:
+    """A competition in three or four characters, for a column this narrow."""
+    text = " ".join(str(name or "").split()).strip()
+    if not text:
+        return ""
+    known = COMPETITION_SHORT.get(text.lower())
+    if known:
+        return known
+    words = [w for w in re.split(r"[\s\-]+", text) if w and w.lower() not in _SKIP_WORDS]
+    if len(words) == 1:
+        return words[0][:4].upper()
+    return "".join(w[0] for w in words[:4]).upper()
+
+
 def feeds_for(league: str) -> set[str]:
     """The feeds allowed to supply this league's fixtures.
 
@@ -258,10 +311,18 @@ def by_asset(store, season: str, as_of: date | str) -> dict[str, dict]:
                 else str(row.affiliation or ""))
         if not name.strip():
             continue
-        allowed = feeds_for(str(row.league or ""))
+        league = str(row.league or "")
+        allowed = feeds_for(league)
         for fixture in upcoming.get(normalize_team(name), []):
             if fixture["league"] in allowed:
-                out[str(row.asset_id)] = fixture
+                found = dict(fixture)
+                # Only the clubs. Elsewhere the competition *is* the league,
+                # and printing it would repeat the category beside it.
+                found["badge"] = (
+                    short_competition(found.get("competition", ""))
+                    if league in SOCCER else ""
+                )
+                out[str(row.asset_id)] = found
                 break
     return out
 
