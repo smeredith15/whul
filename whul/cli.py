@@ -777,6 +777,37 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
         print(f"    {row.league:<20}{row.teams:>6}{row.fixtures:>10}  "
               f"{str(row.first):<12}{str(row.last):<12}")
 
+    # Which leagues this command can fetch, and which get theirs on the way
+    # past during a pull. Separated because the failure looks identical from
+    # the outside -- a blank column -- and the fix is a different command.
+    from whul.sources import flashscore_fixtures as _feed
+
+    held = set(cover["league"])
+    rostered_leagues = {
+        lg for lg in store.query(
+            "SELECT DISTINCT a.league FROM roster_slots r "
+            "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+            "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ?",
+            (args.season,),
+        )["league"].astype(str) if lg
+    }
+    waiting = sorted(
+        lg for lg in rostered_leagues & set(fixtures.HARVESTED) if lg not in held
+    )
+    uncovered = sorted(
+        lg for lg in rostered_leagues
+        if lg not in fixtures.HARVESTED and lg not in _feed.SPORTS
+    )
+    if waiting:
+        print(f"\n  Fixtures ride along with these leagues' own results pull, "
+              f"and none have arrived:\n    {', '.join(waiting)}")
+        print("\n    Run `python -m whul.cli ingest` -- --fetch reads Flashscore "
+              "only, and\n    a schedule is harvested while it is being read "
+              "for scoring.")
+    if uncovered:
+        print(f"\n  Nothing covers these yet, so their cells stay blank:"
+              f"\n    {', '.join(uncovered)}")
+
     matched = fixtures.by_asset(store, args.season, as_of)
     rostered = store.query(
         "SELECT DISTINCT a.asset_id, a.display_name, r.category, a.asset_type "

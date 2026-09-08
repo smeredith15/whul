@@ -109,8 +109,10 @@ def test_the_soonest_fixture_is_the_next_one():
     ])
     fixtures.replace(store, "2026-27", "Test", fixtures.harvest(
         "Test", "2026-27", frame, date(2026, 9, 8), "now"))
-    assert fixtures.next_by_team(store, "2026-27", date(2026, 9, 8))["alpha"]["date"] \
-        == "2026-09-20"
+    upcoming = fixtures.next_by_team(store, "2026-27", date(2026, 9, 8))
+    assert [f["date"] for f in upcoming["alpha"]] == [
+        "2026-09-20", "2026-10-01", "2026-11-02"
+    ]
 
 
 def test_a_fixture_before_today_is_not_offered_as_next():

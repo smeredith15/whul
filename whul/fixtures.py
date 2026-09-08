@@ -140,18 +140,63 @@ def replace(store, season: str, league: str, rows: pd.DataFrame) -> int:
     )
 
 
-def next_by_team(store, season: str, as_of: date | str) -> dict[str, dict]:
-    """The soonest fixture for each team, keyed by its normalized name."""
+#: Which feed may speak for which league. A fixture recorded under any other
+#: feed is not that league's, whatever team it names.
+#:
+#: This is the second guard, and it exists because the first one failed
+#: silently: a soccer match reached three NFL rosters, and because both sides
+#: had been translated into the roster's spelling it read as a plausible NFL
+#: game -- "New England Patriots vs Buffalo Bills", on a Wednesday, in
+#: September. Nothing about the row looked wrong. So rather than trust the
+#: matching alone, a fixture now has to have come from a feed that covers the
+#: asset's league before it can be shown.
+FEEDS: dict[str, set[str]] = {
+    "MLB": {"Flashscore/6"},
+    "NBA": {"Flashscore/3"},
+    "Premier League": {"Flashscore/1"},
+    "La Liga": {"Flashscore/1"},
+    "Serie A": {"Flashscore/1"},
+    "Bundesliga": {"Flashscore/1"},
+    "Ligue 1": {"Flashscore/1"},
+    "MLS": {"Flashscore/1"},
+    "NWSL": {"Flashscore/1"},
+}
+
+
+#: Leagues whose fixtures ride along with their own scoring pull, because
+#: their feed hands over a whole schedule and the scorer discards the half
+#: nobody has played. These arrive with `ingest`, not with `fixtures --fetch`.
+HARVESTED: frozenset[str] = frozenset({
+    "NFL", "NCAAF", "NCAAM", "NCAAW", "NCAA Baseball", "NCAA Softball",
+})
+
+
+def feeds_for(league: str) -> set[str]:
+    """The feeds allowed to supply this league's fixtures.
+
+    A league not listed above takes its fixtures from its own scoring feed,
+    recorded under its own name -- which is every league whose schedule is
+    harvested on the way past.
+    """
+    return FEEDS.get(str(league), {str(league)})
+
+
+def next_by_team(store, season: str, as_of: date | str) -> dict[str, list[dict]]:
+    """Every upcoming fixture for each team, soonest first, by normalized name.
+
+    A list rather than one row, because which of them is *this asset's* next
+    fixture depends on the asset: two clubs in different sports can share a
+    normalized name, and the caller settles it by feed.
+    """
     rows = store.query(
         "SELECT team_key, fixture_date, opponent, home, competition, league "
         "FROM fixtures WHERE season = ? AND fixture_date >= ? "
         "ORDER BY fixture_date",
         (season, str(as_of)),
     )
-    out: dict[str, dict] = {}
+    out: dict[str, list[dict]] = {}
     for row in rows.itertuples():
-        # Ordered by date, so the first row seen for a team is its next game.
-        out.setdefault(str(row.team_key), {
+        out.setdefault(str(row.team_key), []).append({
             "date": str(row.fixture_date),
             "opponent": str(row.opponent),
             "home": bool(row.home),
@@ -200,7 +245,8 @@ def by_asset(store, season: str, as_of: date | str) -> dict[str, dict]:
     if not upcoming:
         return {}
     assets = store.query(
-        "SELECT DISTINCT a.asset_id, a.asset_type, a.display_name, a.affiliation "
+        "SELECT DISTINCT a.asset_id, a.asset_type, a.display_name, a.affiliation, "
+        "       a.league "
         "FROM roster_slots r "
         "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
         "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ?",
@@ -212,9 +258,11 @@ def by_asset(store, season: str, as_of: date | str) -> dict[str, dict]:
                 else str(row.affiliation or ""))
         if not name.strip():
             continue
-        found = upcoming.get(normalize_team(name))
-        if found:
-            out[str(row.asset_id)] = found
+        allowed = feeds_for(str(row.league or ""))
+        for fixture in upcoming.get(normalize_team(name), []):
+            if fixture["league"] in allowed:
+                out[str(row.asset_id)] = fixture
+                break
     return out
 
 
@@ -270,13 +318,23 @@ def allowed_countries(league: str) -> set[str]:
     return COUNTRIES.get(str(league), ANYWHERE)
 
 
-def wanted_teams(store, season: str) -> dict[str, tuple[str, str]]:
+def wanted_teams(store, season: str,
+                 leagues: set[str] | None = None) -> dict[str, tuple[str, str]]:
     """``{normalized: (the roster's spelling, the league it plays in)}``.
 
     Both the clubs somebody rosters *and* the clubs rostered players play for.
     The second is not a nicety: a manager holding four Bayern players and no
     Bayern is the ordinary case, and matching only team assets would leave
     every one of those four blank while looking like it worked.
+
+    ``leagues`` narrows it to the leagues the caller can actually serve, and
+    is the difference between a search and a hazard. Unscoped, this offered
+    the Flashscore matcher all 176 clubs on the roster -- the NFL, the NHL,
+    college football, golfers -- and a soccer feed carrying a club Flashscore
+    writes as "Buffalo" or "New England" then reached the Bills and the
+    Patriots through the abbreviation rule. The country guard did not stop it:
+    those leagues have no country list, and "no list" was being read as
+    "anywhere" rather than as "not from this feed".
     """
     rows = store.query(
         "SELECT DISTINCT a.asset_type, a.display_name, a.affiliation, a.league "
@@ -287,10 +345,13 @@ def wanted_teams(store, season: str) -> dict[str, tuple[str, str]]:
     )
     out: dict[str, tuple[str, str]] = {}
     for row in rows.itertuples():
+        league = str(row.league or "")
+        if leagues is not None and league not in leagues:
+            continue
         name = (str(row.display_name) if row.asset_type == "Team"
                 else str(row.affiliation or ""))
         if name.strip():
-            out.setdefault(normalize_team(name), (name, str(row.league or "")))
+            out.setdefault(normalize_team(name), (name, league))
     return out
 
 
@@ -384,13 +445,13 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
     """
     from whul.sources import flashscore_fixtures as feed
 
-    wanted = wanted_teams(store, season)
+    leagues = list(leagues) if leagues else sorted(feed.SPORTS)
+    wanted = wanted_teams(store, season, leagues=set(leagues))
     if not wanted:
         if verbose:
             print("  nothing rostered, so no club to look for", flush=True)
         return {}
 
-    leagues = list(leagues) if leagues else sorted(feed.SPORTS)
     sports = sorted({feed.SPORTS[l] for l in leagues if l in feed.SPORTS})
     recorded: dict[str, int] = {}
     seen: set[str] = set()
