@@ -237,8 +237,41 @@ WORD_ALIASES = {
 }
 
 
-def wanted_teams(store, season: str) -> dict[str, str]:
-    """``{normalized: the roster's spelling}`` for every club a slot depends on.
+#: Where a league's clubs may legitimately be playing, as Flashscore writes
+#: the country in its competition headers. This is the guard against a name
+#: that means two clubs in two countries: the feed carries the whole world at
+#: once, Brazil's Serie B has an Athletic Club and so does Bilbao, and without
+#: this one of them gets the other's fixtures while the page looks right.
+#:
+#: Continental and world competitions are listed alongside the domestic
+#: country because a club's next game is often one of those. Anything not
+#: listed is refused rather than guessed, and the run says which clubs found
+#: nothing -- a missing fixture surfaces, a wrong one would not.
+COUNTRIES: dict[str, set[str]] = {
+    "Premier League": {"ENGLAND", "EUROPE", "WORLD"},
+    "La Liga": {"SPAIN", "EUROPE", "WORLD"},
+    "Serie A": {"ITALY", "EUROPE", "WORLD"},
+    "Bundesliga": {"GERMANY", "EUROPE", "WORLD"},
+    "Ligue 1": {"FRANCE", "EUROPE", "WORLD"},
+    "MLS": {"USA", "NORTH & CENTRAL AMERICA", "NORTH AMERICA", "WORLD"},
+    "NWSL": {"USA", "NORTH & CENTRAL AMERICA", "NORTH AMERICA", "WORLD"},
+    "MLB": {"USA"},
+    "NBA": {"USA"},
+}
+
+#: A league with no entry above may play anywhere. Used for the leagues whose
+#: fixtures do not come from this feed at all, so it never actually widens
+#: anything -- it is here so an unlisted league degrades to the old behaviour
+#: rather than silently matching nothing.
+ANYWHERE: set[str] = set()
+
+
+def allowed_countries(league: str) -> set[str]:
+    return COUNTRIES.get(str(league), ANYWHERE)
+
+
+def wanted_teams(store, season: str) -> dict[str, tuple[str, str]]:
+    """``{normalized: (the roster's spelling, the league it plays in)}``.
 
     Both the clubs somebody rosters *and* the clubs rostered players play for.
     The second is not a nicety: a manager holding four Bayern players and no
@@ -246,18 +279,18 @@ def wanted_teams(store, season: str) -> dict[str, str]:
     every one of those four blank while looking like it worked.
     """
     rows = store.query(
-        "SELECT DISTINCT a.asset_type, a.display_name, a.affiliation "
+        "SELECT DISTINCT a.asset_type, a.display_name, a.affiliation, a.league "
         "FROM roster_slots r "
         "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
         "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ?",
         (season,),
     )
-    out: dict[str, str] = {}
+    out: dict[str, tuple[str, str]] = {}
     for row in rows.itertuples():
         name = (str(row.display_name) if row.asset_type == "Team"
                 else str(row.affiliation or ""))
         if name.strip():
-            out.setdefault(normalize_team(name), name)
+            out.setdefault(normalize_team(name), (name, str(row.league or "")))
     return out
 
 
@@ -289,7 +322,8 @@ def _initials(words: list[str]) -> str:
     return "".join(w[0] for w in words if w)
 
 
-def match_team(name: str, wanted: dict[str, str]) -> str | None:
+def match_team(name: str, wanted: dict[str, tuple[str, str]],
+               country: str = "") -> str | None:
     """The roster's spelling of a club the feed named, or None.
 
     Three stages, each requiring a *unique* answer: exact, then an
@@ -298,17 +332,33 @@ def match_team(name: str, wanted: dict[str, str]) -> str | None:
     mean is not a near miss to be broken by a further rule, it is a name this
     cannot read -- and guessing would put a Manchester United fixture beside a
     Manchester City badge, which is worse than a blank cell by some distance.
+
+    ``country`` narrows the field to clubs that could be playing there before
+    any of that runs. The feed is the whole world in one payload, so an exact
+    name match is not enough on its own: Brazil's Serie B has an Athletic Club
+    and so does Bilbao, and the first three days of a real payload contained
+    the Brazilian one. Passing no country keeps the old behaviour, which is
+    right for a feed that is not global.
     """
+    if country:
+        wanted = {
+            key: value for key, value in wanted.items()
+            if not allowed_countries(value[1])
+            or country.upper() in allowed_countries(value[1])
+        }
+    if not wanted:
+        return None
+
     key = normalize_team(name)
     if key in wanted:
-        return wanted[key]
+        return wanted[key][0]
     words = [WORD_ALIASES.get(w, w) for w in key.split()]
     expanded = " ".join(words)
     if expanded in wanted:
-        return wanted[expanded]
+        return wanted[expanded][0]
 
     hits = [
-        full for candidate, full in wanted.items()
+        value[0] for candidate, value in wanted.items()
         if _abbreviates(words, candidate.split())
     ]
     if len(hits) == 1:
@@ -316,7 +366,7 @@ def match_team(name: str, wanted: dict[str, str]) -> str | None:
     if len(words) == 1:
         letters = words[0]
         initialled = [
-            full for candidate, full in wanted.items()
+            value[0] for candidate, value in wanted.items()
             if _initials(candidate.split()) == letters and len(letters) > 1
         ]
         if len(initialled) == 1:
@@ -355,27 +405,35 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
         if upcoming.empty:
             continue
 
-        # Translate both sides into the roster's spelling, then drop the
-        # matches where neither side is a club anybody holds.
+        # Matched row by row, not name by name, because the country is what
+        # decides. "Athletic Club" is Bilbao under SPAIN and a Serie B side
+        # under BRAZIL; a name-keyed filter would keep the Brazilian fixture
+        # on the strength of the Spanish match.
         rename: dict[str, str] = {}
-        for column in ("home_team", "away_team"):
-            for name in upcoming[column].astype(str).unique():
-                found = match_team(name, wanted)
+        keep: list = []
+        held: set[str] = set()
+        for row in upcoming.itertuples():
+            country = str(getattr(row, "country", "") or "")
+            sides = [
+                (str(row.home_team), match_team(str(row.home_team), wanted, country)),
+                (str(row.away_team), match_team(str(row.away_team), wanted, country)),
+            ]
+            if not any(found for _, found in sides):
+                continue
+            for spelling, found in sides:
                 if found:
-                    rename[name] = found
-        mine = upcoming[
-            upcoming["home_team"].astype(str).isin(rename)
-            | upcoming["away_team"].astype(str).isin(rename)
-        ]
-        if mine.empty:
+                    rename[spelling] = found
+                    held.add(normalize_team(found))
+            keep.append(row.Index)
+        if not keep:
             continue
+        mine = upcoming.loc[keep]
 
         rows = harvest(
             f"flashscore-{sport}", season, mine, as_of, _timestamp(), rename=rename
         )
         # Only the clubs somebody holds. The other side of the tie was
         # translated for display and must not become a row of its own.
-        held = {normalize_team(v) for v in rename.values()}
         rows = rows[rows["team_key"].isin(held)]
         if rows.empty:
             continue
@@ -388,7 +446,7 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
 
     if verbose:
         missing = sorted(
-            full for key, full in wanted.items() if key not in seen
+            value[0] for key, value in wanted.items() if key not in seen
         )
         print(f"  {len(seen)} of {len(wanted)} rostered club(s) have a fixture "
               f"in the next week.", flush=True)

@@ -117,12 +117,21 @@ def test_the_rows_are_shaped_like_a_schedule_so_harvest_reads_them():
 
 # --- reading the feed's spelling -------------------------------------------
 
+#: ``{normalized: (roster spelling, the league it plays in)}``.
 ROSTER = {
-    normalize_team(n): n for n in (
-        "Manchester City", "Manchester United", "Internazionale", "Arsenal",
-        "Bayern Munich", "Borussia Dortmund", "Paris Saint-Germain",
-        "Tottenham Hotspur", "Wolverhampton Wanderers", "Real Madrid",
-        "Real Betis",
+    normalize_team(name): (name, league) for name, league in (
+        ("Manchester City", "Premier League"),
+        ("Manchester United", "Premier League"),
+        ("Arsenal", "Premier League"),
+        ("Tottenham Hotspur", "Premier League"),
+        ("Wolverhampton Wanderers", "Premier League"),
+        ("Internazionale", "Serie A"),
+        ("Bayern Munich", "Bundesliga"),
+        ("Borussia Dortmund", "Bundesliga"),
+        ("Paris Saint-Germain", "Ligue 1"),
+        ("Real Madrid", "La Liga"),
+        ("Real Betis", "La Liga"),
+        ("Athletic Club", "La Liga"),
     )
 }
 
@@ -189,7 +198,55 @@ def test_a_players_club_is_looked_for_even_when_nobody_rosters_it():
     rostered(store, "player-kane", "Player", "Harry Kane",
              affiliation="Bayern Munich", index=2)
     wanted = fixtures.wanted_teams(store, "2026-27")
-    assert set(wanted.values()) == {"Arsenal", "Bayern Munich"}
+    assert {name for name, _ in wanted.values()} == {"Arsenal", "Bayern Munich"}
+
+
+# --- the world in one payload ----------------------------------------------
+
+def test_a_club_name_shared_across_countries_goes_to_the_right_one():
+    """Found by the probe on a real payload: Brazil's Serie B has an Athletic
+    Club and so does Bilbao. Without the country one gets the other's
+    fixtures, and the page looks entirely right while being wrong."""
+    assert fixtures.match_team("Athletic Club", ROSTER, "SPAIN") == "Athletic Club"
+    assert fixtures.match_team("Athletic Club", ROSTER, "BRAZIL") is None
+
+
+def test_a_club_is_found_in_its_own_country_and_in_europe():
+    """A club's next game is often a European night, not a league match."""
+    assert fixtures.match_team("Arsenal", ROSTER, "ENGLAND") == "Arsenal"
+    assert fixtures.match_team("Arsenal", ROSTER, "EUROPE") == "Arsenal"
+    assert fixtures.match_team("Arsenal", ROSTER, "ARGENTINA") is None
+
+
+def test_no_country_given_searches_everywhere():
+    """Right for a feed that is not global; the caller passes one when it is."""
+    assert fixtures.match_team("Arsenal", ROSTER) == "Arsenal"
+
+
+def test_a_reserve_side_is_not_its_first_team():
+    raw = payload(header("ARGENTINA: Reserve League - Clausura"),
+                  match("a1", "River Plate 2", "Aldosivi 2", SOON))
+    assert list(feed.iter_fixtures(raw)) == []
+
+
+@pytest.mark.parametrize("name", [
+    "Schalke 04", "Hannover 96", "Mainz 05", "Bologna 1909", "Arsenal",
+])
+def test_a_club_named_after_its_founding_year_is_not_a_reserve_side(name):
+    """A bare trailing-number rule would drop three Bundesliga clubs."""
+    assert not feed.RESERVE_PATTERN.search(name)
+
+
+@pytest.mark.parametrize("name", ["River Plate 2", "Barcelona B", "Bayern II",
+                                  "Chelsea U21", "Ajax Youth"])
+def test_a_second_string_is_recognised(name):
+    assert feed.RESERVE_PATTERN.search(name)
+
+
+def test_the_country_is_carried_on_every_parsed_row():
+    raw = payload(header("ENGLAND: Premier League"),
+                  match("a1", "Arsenal", "Chelsea", SOON))
+    assert list(feed.iter_fixtures(raw))[0]["country"] == "ENGLAND"
 
 
 def test_an_athlete_with_no_club_adds_nothing_to_look_for():
