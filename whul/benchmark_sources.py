@@ -311,6 +311,14 @@ def _nhl_players():
 
 
 def _nhl_teams():
+    """Season summaries, plus the standings a division title is read from.
+
+    The divisions are fetched alongside the summaries for the same reason MLB's
+    are: a title is worth ten points and cannot be read off a club's own
+    totals. Missing them would not fail -- it would quietly set the bar ten
+    points low for every club that won one, and a frozen benchmark then carries
+    that all season. So it is checked rather than defaulted.
+    """
     from whul.scoring import nhl
     from whul.sources import nhl as source
 
@@ -318,9 +326,22 @@ def _nhl_teams():
 
     def load(seasons):
         held["playoffs"] = source.load_teams(seasons, source.GAME_TYPE_PLAYOFFS)
+        held["divisions"] = source.load_divisions(seasons)
         return source.load_teams(seasons, source.GAME_TYPE_REGULAR)
 
-    return load, lambda regular: nhl.score_teams(regular, held["playoffs"])
+    def score(regular):
+        divisions = held.get("divisions")
+        if divisions is None or getattr(divisions, "empty", True):
+            raise RuntimeError(
+                "NHL divisions could not be read, and a division title is worth "
+                f"{nhl.PTS_DIV_CHAMP:.0f} points. Computing the benchmark "
+                "without them would set the bar low for every club that won "
+                "one, and the frozen scale would carry that all season. Check "
+                "api-web.nhle.com/v1/standings-season."
+            )
+        return nhl.score_teams(regular, held["playoffs"], divisions=divisions)
+
+    return load, score
 
 
 def _ncaa_score(category: str):

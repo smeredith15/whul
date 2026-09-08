@@ -107,6 +107,7 @@ def _nhl(season: int, assets: str) -> pd.DataFrame:
     return nhl.score_teams(
         source.load_teams([season], source.GAME_TYPE_REGULAR),
         source.load_teams([season], source.GAME_TYPE_PLAYOFFS),
+        divisions=source.load_divisions([season]),
     )
 
 

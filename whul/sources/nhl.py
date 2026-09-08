@@ -28,6 +28,9 @@ import pandas as pd
 import requests
 
 BASE = "https://api.nhle.com/stats/rest/en"
+#: The club-facing API, which is where divisions live. The stats API above
+#: reports a team's season totals and never says who it was competing with.
+WEB = "https://api-web.nhle.com/v1"
 CACHE = Path("data/cache/nhl")
 REQUEST_PAUSE = 0.4
 TIMEOUT = 60
@@ -103,6 +106,100 @@ def load_teams(seasons: list[int], game_type: int = GAME_TYPE_REGULAR) -> pd.Dat
     return _summary("team", seasons, game_type)
 
 
+def _web(path: str, cache_key: str | None = None):
+    """A GET against the club-facing API, cached the same way as the rest."""
+    if cache_key:
+        cached = CACHE / f"{cache_key}.json"
+        if cached.exists():
+            return json.loads(cached.read_text())
+
+    response = requests.get(
+        f"{WEB}{path}", timeout=TIMEOUT, headers={"User-Agent": "whul-fantasy/0.1"}
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    if cache_key:
+        cached = CACHE / f"{cache_key}.json"
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(json.dumps(payload))
+
+    time.sleep(REQUEST_PAUSE)
+    return payload
+
+
+def _standings_dates() -> dict[str, str]:
+    """The last day of each season's standings, by season id.
+
+    Asked for rather than guessed. The standings endpoint is addressed by date,
+    and a date picked by hand -- "some day in April" -- is wrong for the two
+    COVID seasons, wrong for a season that ran late, and silently wrong rather
+    than loudly: a date outside a season returns the neighbouring season's
+    table, so the divisions would look fine and belong to the wrong year.
+    """
+    payload = _web("/standings-season", cache_key="standings_season")
+    seasons = payload.get("seasons", []) if isinstance(payload, dict) else []
+    dates = {}
+    for entry in seasons:
+        sid = entry.get("id")
+        end = entry.get("standingsEnd")
+        if sid and end:
+            dates[str(sid)] = str(end)
+    return dates
+
+
+def load_divisions(seasons: list[int]) -> pd.DataFrame:
+    """Which division each club played in, per season.
+
+    A division title is the one team scoring term that cannot be read off a
+    season summary: a summary says how a club did, not who it was competing
+    with. Fetched per season rather than hardcoded because the alignment moves
+    -- the current four divisions date from 2021-22, the 2020-21 season had a
+    temporary set of its own including an all-Canadian North Division, and
+    Utah replaced Arizona in the Central in 2024-25. A map written today would
+    score an older season against an alignment that never existed.
+
+    Returns ``season``, ``team``, ``division`` -- and an empty frame where the
+    feed gives nothing, which the scoring reads as "no title to award" rather
+    than guessing one.
+
+    UNVERIFIED, like the rest of this module: the host is blocked from the
+    environment this was written in. ``python -m whul.cli probe nhl`` checks it.
+    """
+    try:
+        ends = _standings_dates()
+    except Exception:
+        # No dates, no addressable standings. An empty frame is the honest
+        # answer; the benchmark path turns it into a loud failure.
+        return pd.DataFrame(columns=["season", "team", "division"])
+
+    rows: list[dict] = []
+    for season in seasons:
+        sid = season_id(season)
+        end = ends.get(sid)
+        if not end:
+            # A season the API does not list is a season that has not started.
+            continue
+        try:
+            payload = _web(f"/standings/{end}", cache_key=f"standings/{sid}")
+        except Exception:
+            continue
+        for row in payload.get("standings", []) if isinstance(payload, dict) else []:
+            name = (row.get("teamName") or {}).get("default")
+            division = row.get("divisionName")
+            if not name or not division:
+                # Both are needed and neither can be inferred from the other.
+                continue
+            rows.append({
+                "season": season,
+                "team": str(name),
+                "division": str(division),
+            })
+    if not rows:
+        return pd.DataFrame(columns=["season", "team", "division"])
+    return pd.DataFrame(rows).drop_duplicates(subset=["season", "team"])
+
+
 def daily_update_cost(season: int | None = None) -> float:
     """Seconds to refresh one season -- the nightly job. Cache bypassed."""
     from datetime import date
@@ -130,6 +227,7 @@ def probe(season: int = 2025) -> dict:
         ("skaters_playoffs", lambda: load_skaters([season], GAME_TYPE_PLAYOFFS)),
         ("teams_regular", lambda: load_teams([season], GAME_TYPE_REGULAR)),
         ("teams_playoffs", lambda: load_teams([season], GAME_TYPE_PLAYOFFS)),
+        ("divisions", lambda: load_divisions([season])),
     ]
     frames: dict[str, pd.DataFrame] = {}
     for label, loader in checks:
@@ -146,6 +244,21 @@ def probe(season: int = 2025) -> dict:
         wanted = ["goals", "assists", "shots", "plusMinus", "gamesPlayed", "skaterFullName"]
         result["skater_columns_present"] = [c for c in wanted if c in skaters.columns]
         result["skater_columns_missing"] = [c for c in wanted if c not in skaters.columns]
+
+    divisions = frames.get("divisions")
+    if divisions is not None and not divisions.empty:
+        # The shape matters as much as the row count: four divisions of eight
+        # is what a modern season looks like, and anything else means the
+        # standings came back for the wrong date or in a shape that changed.
+        counts = divisions.groupby("division").size().sort_index()
+        result["divisions_found"] = {str(k): int(v) for k, v in counts.items()}
+        names = load_teams([season], GAME_TYPE_REGULAR)
+        if not names.empty and "teamFullName" in names.columns:
+            unplaced = sorted(set(names["teamFullName"]) - set(divisions["team"]))
+            # The join is on the club's full name, and the two endpoints are
+            # free to spell it differently. A club that fails to join is a club
+            # that cannot win its division, which is invisible in a total.
+            result["teams_without_a_division"] = unplaced
 
     teams = frames.get("teams_regular")
     if teams is not None and not teams.empty:

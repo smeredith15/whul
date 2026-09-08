@@ -322,6 +322,28 @@ table.feeds .feed-never-pulled .state {
 }
 table.results tr[hidden] { display: none; }
 
+/* One asset type's raw scoring. Eighteen of these open at once is a page
+   nobody reads, so each opens on demand and the list inside is deliberately
+   plain text -- the sports do not share a shape, and a grid built for all of
+   them would be mostly empty cells. */
+details.rules { border-top: 1px solid var(--grid); }
+details.rules:last-of-type { border-bottom: 1px solid var(--grid); }
+details.rules > summary { cursor: pointer; padding: 0.55rem 0;
+  font-weight: 600; }
+details.rules > summary::marker { color: var(--muted); }
+details.rules > summary:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 2px; }
+.rulebody { padding: 0 0 0.9rem 1.1rem; }
+.rulebody .sub { margin: 0 0 0.6rem; max-width: 46em; }
+ul.rulelist { margin: 0; padding-left: 1.1rem; max-width: 46em; }
+ul.rulelist li { margin: 0.15rem 0; }
+ul.rulelist li.rulehead { list-style: none; margin: 0.7rem 0 0.25rem -1.1rem;
+  font-weight: 600; font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-secondary); }
+ul.rulenotes { margin: 0.7rem 0 0; padding-left: 1.1rem; max-width: 46em;
+  color: var(--muted); font-size: 12px; }
+ul.rulenotes li { margin: 0.2rem 0; }
+
 /* A collapsible league section. Twenty leagues open at once is a page that is
    long before it is informative. */
 .leaguebox { border-top: 1px solid var(--grid); }
