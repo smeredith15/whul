@@ -353,13 +353,14 @@ td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
      page: a table that pushes the whole document sideways takes the header
      and the nav with it, and the reader loses their place entirely. */
   .card { overflow-x: auto; }
-  td.fixture, th.fixture { max-width: 7.5em; }
+  td.fixture, th.fixture { max-width: 10em; }
   td.fixture .when { display: block; }
   td.fixture .when + .against { margin-left: 0; }
-  /* `anywhere` rather than `break-word`: it lets the *minimum* width of the
-     column collapse too, so a long opponent wraps instead of widening the
-     table and pushing the score off the side of the phone. */
-  td.fixture .against { white-space: normal; overflow-wrap: anywhere; }
+  /* `break-word`, not `anywhere`: a name is broken only when it genuinely
+     cannot fit, so "Carlos Alcaraz" wraps between the words instead of
+     leaving a lone "z" on the next line. The column can afford the width
+     because the card scrolls rather than the page. */
+  td.fixture .against { white-space: normal; overflow-wrap: break-word; }
 }
 
 /* One asset type's raw scoring. Eighteen of these open at once is a page

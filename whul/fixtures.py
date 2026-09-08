@@ -37,7 +37,7 @@ COMPETITION_COLUMNS = ("competition", "notes", "game_type", "season_type")
 
 FIXTURE_COLUMNS = (
     "season", "league", "team_key", "fixture_date", "opponent", "home",
-    "competition", "fetched_at",
+    "competition", "round_name", "fetched_at",
 )
 
 
@@ -111,6 +111,9 @@ def harvest(league: str, season: str, frame: pd.DataFrame,
             "competition": (
                 work[competition].astype(str) if competition else ""
             ),
+            "round_name": (
+                work["round"].astype(str) if "round" in work.columns else ""
+            ),
             "fetched_at": fetched_at,
         })
         rows.append(block)
@@ -135,8 +138,14 @@ def replace(store, season: str, league: str, rows: pd.DataFrame) -> int:
         )
     if rows is None or rows.empty:
         return 0
+    ready = rows.copy()
+    # A caller that predates a column should not have to know about it. Only
+    # the optional ones are filled: a row missing a key still fails, loudly.
+    for column in ("competition", "round_name"):
+        if column not in ready.columns:
+            ready[column] = ""
     return store.insert_frame(
-        "fixtures", rows[list(FIXTURE_COLUMNS)],
+        "fixtures", ready[list(FIXTURE_COLUMNS)],
         ["season", "league", "team_key", "fixture_date", "opponent"],
     )
 
@@ -154,6 +163,9 @@ def replace(store, season: str, league: str, rows: pd.DataFrame) -> int:
 FEEDS: dict[str, set[str]] = {
     "MLB": {"Flashscore/6"},
     "NBA": {"Flashscore/3"},
+    "ATP": {"Flashscore/2"},
+    "WTA": {"Flashscore/2"},
+    "Tennis": {"Flashscore/2"},
     "Premier League": {"Flashscore/1"},
     "La Liga": {"Flashscore/1"},
     "Serie A": {"Flashscore/1"},
@@ -177,6 +189,11 @@ HARVESTED: frozenset[str] = frozenset({
 #: what the fixture means -- a Tuesday in Europe is not a Saturday in the
 #: league. Everywhere else the competition is the league, so printing it would
 #: repeat the row above.
+#: Leagues whose assets are matched on their own name rather than on a club.
+#: A tennis player has no affiliation to join through -- their next fixture is
+#: their own match.
+INDIVIDUAL: frozenset[str] = frozenset({"ATP", "WTA", "Tennis"})
+
 SOCCER: frozenset[str] = frozenset({
     "Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1",
     "MLS", "NWSL", "EPL", "Club Soccer",
@@ -242,7 +259,8 @@ def next_by_team(store, season: str, as_of: date | str) -> dict[str, list[dict]]
     normalized name, and the caller settles it by feed.
     """
     rows = store.query(
-        "SELECT team_key, fixture_date, opponent, home, competition, league "
+        "SELECT team_key, fixture_date, opponent, home, competition, "
+        "       round_name, league "
         "FROM fixtures WHERE season = ? AND fixture_date >= ? "
         "ORDER BY fixture_date",
         (season, str(as_of)),
@@ -254,6 +272,7 @@ def next_by_team(store, season: str, as_of: date | str) -> dict[str, list[dict]]
             "opponent": str(row.opponent),
             "home": bool(row.home),
             "competition": str(row.competition or ""),
+            "round": str(getattr(row, "round_name", "") or ""),
             "league": str(row.league),
         })
     return out
@@ -307,20 +326,36 @@ def by_asset(store, season: str, as_of: date | str) -> dict[str, dict]:
     )
     out: dict[str, dict] = {}
     for row in assets.itertuples():
-        name = (str(row.display_name) if row.asset_type == "Team"
-                else str(row.affiliation or ""))
+        league_of = str(row.league or "")
+        name = (
+            str(row.display_name)
+            if row.asset_type == "Team" or league_of in INDIVIDUAL
+            else str(row.affiliation or "")
+        )
         if not name.strip():
             continue
-        league = str(row.league or "")
+        league = league_of
         allowed = feeds_for(league)
         for fixture in upcoming.get(normalize_team(name), []):
             if fixture["league"] in allowed:
                 found = dict(fixture)
+                # A tennis match has no home side. Both players are listed
+                # because the feed lists them in an order, not because one of
+                # them is at home, and "at Carlos Alcaraz" reads as a venue.
+                if league in INDIVIDUAL:
+                    found["home"] = True
                 # Only the clubs. Elsewhere the competition *is* the league,
                 # and printing it would repeat the category beside it.
+                # A club's competition; a tennis player's round. Both answer
+                # the same question -- what *kind* of match is this -- and a
+                # quarter-final is no more the same as a first round than a
+                # European night is the same as a league Saturday. Nowhere
+                # else, because everywhere else the competition is the league.
                 found["badge"] = (
                     short_competition(found.get("competition", ""))
-                    if league in SOCCER else ""
+                    if league in SOCCER
+                    else str(found.get("round", "") or "") if league in INDIVIDUAL
+                    else ""
                 )
                 out[str(row.asset_id)] = found
                 break
@@ -409,8 +444,11 @@ def wanted_teams(store, season: str,
         league = str(row.league or "")
         if leagues is not None and league not in leagues:
             continue
-        name = (str(row.display_name) if row.asset_type == "Team"
-                else str(row.affiliation or ""))
+        name = (
+            str(row.display_name)
+            if row.asset_type == "Team" or league in INDIVIDUAL
+            else str(row.affiliation or "")
+        )
         if name.strip():
             out.setdefault(normalize_team(name), (name, league))
     return out
@@ -520,6 +558,8 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
     for sport in sports:
         try:
             upcoming = feed.load_upcoming(sport, verbose=verbose)
+            if sport == feed.SPORT_TENNIS and upcoming.empty:
+                pass
         except Exception as exc:  # noqa: BLE001 -- one sport must not lose the rest
             print(f"  flashscore sport {sport}: {type(exc).__name__}: {exc}",
                   flush=True)

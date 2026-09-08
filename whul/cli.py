@@ -741,12 +741,29 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
     store = open_store(args.db)
     as_of = _date.fromisoformat(args.date) if args.date else _date.today()
 
+    if args.discover:
+        from whul.sources import flashscore_fixtures as feed
+
+        print("\nWhat each Flashscore sport id serves.\n")
+        print("  Golf and motorsport are not fixtures -- a golfer's next event "
+              "is a field and a\n  driver's is an entry list -- so the parser "
+              "for those is written from this,\n  not guessed. Send me the "
+              "output.\n")
+        for row in feed.discover():
+            print(f"  {row['sport']:>3}  {str(row['guess']):<20} {row['result']}")
+            for header in row.get("headers", []) or []:
+                print(f"           header: {header}")
+            if row.get("fields"):
+                print(f"           fields: {', '.join(row['fields'])}")
+        return 0
+
     if args.probe:
         from whul.sources import flashscore_fixtures as feed
 
         for name, sport in (("soccer", feed.SPORT_SOCCER),
                             ("basketball", feed.SPORT_BASKETBALL),
-                            ("baseball", feed.SPORT_BASEBALL)):
+                            ("baseball", feed.SPORT_BASEBALL),
+                            ("tennis", feed.SPORT_TENNIS)):
             if args.sport and args.sport != name:
                 continue
             print(f"\nFlashscore fixtures probe -- {name}\n")
@@ -1953,8 +1970,12 @@ def main(argv: list[str] | None = None) -> int:
     fixt.add_argument("--probe", action="store_true",
                       help="report what the Flashscore feed returns, without "
                            "touching the database")
-    fixt.add_argument("--sport", choices=("soccer", "basketball", "baseball"),
-                      help="probe one sport rather than all three")
+    fixt.add_argument("--sport",
+                      choices=("soccer", "basketball", "baseball", "tennis"),
+                      help="probe one sport rather than all of them")
+    fixt.add_argument("--discover", action="store_true",
+                      help="ask every Flashscore sport id what it serves -- how "
+                           "golf and motorsport would be added")
     fixt.set_defaults(func=cmd_fixtures)
 
     needed = sub.add_parser(
