@@ -37,6 +37,17 @@ class ScheduleChange:
         """Multiplier taking a historical pace to the current one."""
         return self.current_games / self.historical_games
 
+    @property
+    def first_current_season(self) -> int:
+        """The season label the new length first applies to.
+
+        Seasons straddling two calendar years are labelled by the year they
+        end in, which is how every feed here numbers them, so ``2026-27`` is
+        2027.
+        """
+        start, _, end = self.effective_season.partition("-")
+        return int(start) + 1 if end else int(start)
+
 
 #: Live schedule changes. The NFL's expansion to 18 games is expected but not
 #: scheduled, so it is absent until a date is known.
@@ -162,6 +173,30 @@ def describe_exclusions(league: str, seasons: list[int]) -> list[str]:
         )
         notes.append(f"{season} excluded: {count}{entry.reason}")
     return notes
+
+
+def scheduled_games(league: str, season: int) -> int | None:
+    """How many regular-season games that league played that season.
+
+    ``None`` where it is not known, which a caller must read as "cannot tell",
+    never as zero. Used to decide whether a season has actually finished: a
+    standing is only a final standing once every club has played its schedule,
+    and a title awarded in February is a title awarded to whoever started well.
+
+    Irregular seasons are listed with their real length, so a COVID year is
+    judged complete at 56 games rather than left permanently unfinished.
+    """
+    for entry in IRREGULAR_SEASONS:
+        if entry.league == league and entry.season == season and entry.games:
+            return entry.games
+    change = SCHEDULE_CHANGES.get(league)
+    if change is None:
+        return None
+    return (
+        change.current_games
+        if season >= change.first_current_season
+        else change.historical_games
+    )
 
 
 def factor_for(league: str) -> float:

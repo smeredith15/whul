@@ -437,6 +437,12 @@ STAT_LABELS = {
     "doubles": "Doubles", "triples": "Triples", "ip": "Innings",
     "so": "Strikeouts", "sv": "Saves", "hld": "Holds", "war": "WAR",
     "offense": "Offense", "defense": "Defense",
+    # NHL teams. The division title is now awarded rather than always zero, so
+    # these reach a profile; without labels they read "Is division champ 1".
+    "is_division_champ": "Division title", "standings_points": "Standings points",
+    "regulation_wins": "Regulation wins", "reg_otl": "Overtime losses",
+    "goal_diff": "Goal differential", "made_playoffs": "Playoff appearance",
+    "series_wins": "Playoff series won",
 }
 
 

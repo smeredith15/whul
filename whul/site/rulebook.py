@@ -362,6 +362,7 @@ def _nhl_teams() -> Rules:
             item("Win", nhl.PTS_WIN),
             item("Overtime or shootout loss", nhl.PTS_OTL),
             item("Each goal of goal differential", nhl.PTS_GOAL_DIFF),
+            item("Winning the division", nhl.PTS_DIV_CHAMP),
             item("Reaching the playoffs", nhl.PTS_PLAYOFF_APP),
             item("Playoff win", nhl.PTS_PLAYOFF_WIN),
             item("Winning a playoff series, on top of the wins", nhl.PTS_SERIES_WIN),
@@ -369,11 +370,11 @@ def _nhl_teams() -> Rules:
         [
             "The NHL goes to 84 games in 2026-27, so past seasons are scaled up "
             "to that length before they are compared with this one.",
-            f"A division title is written into the rules at "
-            f"{num(nhl.PTS_DIV_CHAMP)} points but is never awarded: the feed "
-            "gives season totals per team and no division standings, so there "
-            "is nothing to read a title off. It is worth nothing to anyone "
-            "until that changes.",
+            "The division goes to the club with the most standings points in "
+            "it, ties broken on regulation wins and then on goal difference. "
+            "It is only awarded once every club in the division has played its "
+            "schedule — leading in November is not winning a division, and "
+            "paying for it would mean taking the points back in March.",
         ],
     )
 
@@ -525,7 +526,7 @@ TENNIS_TIERS = (
     ("M1000_128", "Masters 1000", {}),
     ("A500_32", "ATP/WTA 500", {}),
     ("A250_32", "ATP/WTA 250", {}),
-    ("FINALS", "Tour Finals", {"RR": 3}),
+    ("FINALS", "ATP / WTA Tour Finals", {"RR": 3}),
 )
 
 
@@ -541,7 +542,8 @@ def _tennis_players() -> Rules:
             + (f" (×{repeats[r]})" if r in repeats else "")
             for r in rounds
         )
-        lines.append(f"{name} — {num(total)} to the champion ({detail})")
+        whose = "an undefeated champion" if repeats else "the champion"
+        lines.append(f"{name} — {num(total)} to {whose} ({detail})")
     lines.append(item("A Davis Cup, Billie Jean King Cup or United Cup win",
                       tennis.INTERNATIONAL_WIN_POINTS))
     for best_of, multiplier in sorted(tennis.STRAIGHT_SETS_MULTIPLIER.items()):
@@ -557,6 +559,10 @@ def _tennis_players() -> Rules:
             "Qualifying rounds score nothing.",
             "A seed's first-round bye pays only if they win their next match.",
             "Only men's Grand Slam matches are best-of-five.",
+            "The Tour Finals is the one event whose column does not add up to "
+            "what a champion collects: the round robin is played three times, "
+            "so an unbeaten run is 1500 and a champion who dropped a group "
+            "match earns less.",
         ],
     )
 

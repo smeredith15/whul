@@ -12,7 +12,10 @@ from whul.scoring.nhl import (
     score_skaters,
     score_teams,
 )
-from whul.scoring.schedule import SCHEDULE_CHANGES, factor_for, scale_benchmarks
+from whul.scoring.nhl import PTS_DIV_CHAMP
+from whul.scoring.schedule import (
+    SCHEDULE_CHANGES, factor_for, scale_benchmarks, scheduled_games,
+)
 
 
 def skater(**over):
@@ -245,3 +248,161 @@ def test_a_calendar_exclusion_does_not_claim_a_game_count():
     note = describe_exclusions("NCAAM", [2021])[0]
     assert "games" not in note
     assert "COVID" in note
+
+
+# --- division titles -------------------------------------------------------
+
+METRO = "Metropolitan"
+
+
+def divisions(*teams, season=2026, division=METRO):
+    return pd.DataFrame(
+        [{"season": season, "team": name, "division": division} for name in teams]
+    )
+
+
+def finished(name, wins, otl=0, diff=0, season=2026, **over):
+    """A club that has played its whole schedule."""
+    row = team(season=season, teamFullName=name, wins=wins, otLosses=otl,
+               goalsFor=200 + diff, goalsAgainst=200,
+               gamesPlayed=scheduled_games("NHL", season))
+    row.update(over)
+    return row
+
+
+def test_no_division_map_means_no_title():
+    """A club's own totals never say who it was racing."""
+    frame = pd.DataFrame([finished("Alpha", 55), finished("Beta", 30)])
+    out = score_teams(frame, scale_regular_season=False)
+    assert set(out["is_division_champ"]) == {0}
+
+
+def test_the_best_record_in_the_division_wins_it():
+    frame = pd.DataFrame([finished("Alpha", 55), finished("Beta", 30)])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha", "Beta")
+    ).set_index("team")
+    assert out.loc["Alpha", "is_division_champ"] == 1
+    assert out.loc["Beta", "is_division_champ"] == 0
+    assert out.loc["Alpha", "total_points"] == pytest.approx(
+        55 * 2 + 0 + 0 * 0.1 + PTS_DIV_CHAMP
+    )
+
+
+def test_the_title_is_won_on_points_not_wins():
+    """Beta wins fewer games and collects more points, which is the standings."""
+    frame = pd.DataFrame([finished("Alpha", 44, otl=2), finished("Beta", 43, otl=6)])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha", "Beta")
+    ).set_index("team")
+    assert out.loc["Beta", "standings_points"] == 92
+    assert out.loc["Alpha", "standings_points"] == 90
+    assert out.loc["Beta", "is_division_champ"] == 1
+
+
+def test_each_division_gets_its_own_champion():
+    frame = pd.DataFrame([
+        finished("Alpha", 55), finished("Beta", 30),
+        finished("Gamma", 40), finished("Delta", 20),
+    ])
+    placed = pd.concat([
+        divisions("Alpha", "Beta", division="Metropolitan"),
+        divisions("Gamma", "Delta", division="Atlantic"),
+    ])
+    out = score_teams(frame, scale_regular_season=False, divisions=placed)
+    champs = set(out.loc[out["is_division_champ"] == 1, "team"])
+    assert champs == {"Alpha", "Gamma"}
+
+
+def test_a_tie_on_points_is_broken_on_regulation_wins():
+    frame = pd.DataFrame([
+        finished("Alpha", 45, otl=2, regulationWins=30),
+        finished("Beta", 45, otl=2, regulationWins=38),
+    ])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha", "Beta")
+    ).set_index("team")
+    assert out.loc["Beta", "is_division_champ"] == 1
+    assert out.loc["Alpha", "is_division_champ"] == 0
+
+
+def test_a_tie_the_feed_cannot_break_falls_through_to_goal_difference():
+    """Without regulation wins the tiebreak still has somewhere to go."""
+    frame = pd.DataFrame([
+        finished("Alpha", 45, otl=2, diff=10),
+        finished("Beta", 45, otl=2, diff=40),
+    ])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha", "Beta")
+    ).set_index("team")
+    assert out.loc["Beta", "is_division_champ"] == 1
+
+
+def test_clubs_level_on_everything_share_the_title():
+    """Nothing on the ice separated them, so nothing here invents a winner."""
+    frame = pd.DataFrame([finished("Alpha", 45, otl=2), finished("Beta", 45, otl=2)])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha", "Beta")
+    )
+    assert list(out["is_division_champ"]) == [1, 1]
+
+
+def test_no_title_is_awarded_while_the_season_is_running():
+    """The bug this replaces, in the other direction: ten points in November to
+    whoever started well, taken back in March."""
+    frame = pd.DataFrame([
+        dict(finished("Alpha", 20), gamesPlayed=30),
+        dict(finished("Beta", 10), gamesPlayed=30),
+    ])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha", "Beta")
+    )
+    assert set(out["is_division_champ"]) == {0}
+
+
+def test_a_division_with_one_club_short_of_the_finish_awards_nothing():
+    """Not "most clubs have finished" -- a club with games in hand can still win."""
+    frame = pd.DataFrame([
+        finished("Alpha", 44),
+        dict(finished("Beta", 43), gamesPlayed=79),
+    ])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha", "Beta")
+    )
+    assert set(out["is_division_champ"]) == {0}
+
+
+def test_a_club_missing_from_the_division_map_wins_nothing():
+    """An unjoined club is invisible, which must not make it a champion."""
+    frame = pd.DataFrame([finished("Alpha", 55), finished("Unknown Club", 60)])
+    out = score_teams(
+        frame, scale_regular_season=False, divisions=divisions("Alpha")
+    ).set_index("team")
+    assert out.loc["Alpha", "is_division_champ"] == 1
+    assert out.loc["Unknown Club", "is_division_champ"] == 0
+
+
+def test_the_title_does_not_scale_with_the_schedule():
+    """A title is an outcome, not a rate: 84 games do not make it worth more."""
+    frame = pd.DataFrame([finished("Alpha", 50, season=2027), finished("Beta", 30, season=2027)])
+    placed = divisions("Alpha", "Beta", season=2027)
+    scaled = score_teams(frame, scale_regular_season=True, divisions=placed)
+    unscaled = score_teams(frame, scale_regular_season=False, divisions=placed)
+    champ = scaled.set_index("team").loc["Alpha"]
+    plain = unscaled.set_index("team").loc["Alpha"]
+    assert champ["total_points"] - plain["total_points"] == pytest.approx(
+        (50 * 2) * (84 / 82) - (50 * 2)
+    )
+
+
+def test_a_covid_season_is_judged_complete_at_its_own_length():
+    """56 games was the whole 2020-21 season, not two thirds of an unfinished one."""
+    frame = pd.DataFrame([
+        finished("Alpha", 35, season=2021), finished("Beta", 20, season=2021),
+    ])
+    assert set(frame["gamesPlayed"]) == {56}
+    out = score_teams(
+        frame, scale_regular_season=False,
+        divisions=divisions("Alpha", "Beta", season=2021),
+    ).set_index("team")
+    assert out.loc["Alpha", "is_division_champ"] == 1

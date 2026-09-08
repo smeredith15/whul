@@ -6,6 +6,7 @@ table is transcribed correctly.
 """
 
 import pandas as pd
+import pytest
 
 from whul.normalize import assign_norm_key
 from whul.scoring.tennis import (
@@ -84,6 +85,44 @@ def test_the_tour_finals_pay_per_round_robin_win():
     assert round_points("FINALS", RR) == 200
     assert round_points("FINALS", SF) == 400
     assert round_points("FINALS", F) == 500
+
+
+def test_an_undefeated_tour_finals_champion_is_worth_1500():
+    """Five matches, all won: 200 x 3 in the group, then 400 and 500.
+
+    Worth pinning because the round table cannot be read down its column here
+    the way every other tier can. Everywhere else a champion plays each round
+    once, so the column sums to the event's face value; at the Tour Finals a
+    champion plays the round-robin three times, and a reader adding the column
+    up gets 1100 for an event that pays 1500. Both tours award it the same way.
+    """
+    for tour in ("ATP", "WTA"):
+        matches = pd.DataFrame([
+            match(round_name=rnd, tournament="Tour Finals", category=TOUR_FINALS,
+                  draw_size=8, tour=tour, loser=beaten,
+                  # Deliberately not straight sets: the multiplier is a separate
+                  # rule and would hide the base figure this test is about.
+                  score="6-3 3-6 6-4")
+            for rnd, beaten in (
+                (RR, "Alpha"), (RR, "Beta"), (RR, "Gamma"),
+                (SF, "Delta"), (F, "Epsilon"),
+            )
+        ])
+        scored = score_matches(matches)
+        assert len(scored) == 5, tour
+        assert scored["match_points"].sum() == pytest.approx(1500.0), tour
+
+
+def test_a_tour_finals_champion_who_lost_a_group_match_earns_less():
+    """The 1500 belongs to an undefeated run, not to the trophy."""
+    matches = pd.DataFrame([
+        match(round_name=rnd, tournament="Tour Finals", category=TOUR_FINALS,
+              draw_size=8, loser=beaten, score="6-3 3-6 6-4")
+        for rnd, beaten in (
+            (RR, "Alpha"), (RR, "Beta"), (SF, "Delta"), (F, "Epsilon"),
+        )
+    ])
+    assert score_matches(matches)["match_points"].sum() == pytest.approx(1300.0)
 
 
 def test_team_events_pay_a_flat_rate_per_win():
