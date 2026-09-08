@@ -123,6 +123,18 @@ jobs:
         continue-on-error: true
         run: python -m whul.cli ingest $LEAGUES --season "$SEASON"
 
+      - name: Pull upcoming fixtures
+        # MLB, the NBA and club soccer reach this project through a scoreboard
+        # walk, which asks only for dates that have already happened and so
+        # carries no fixtures. Theirs come from Flashscore instead -- seven
+        # requests per sport, and the soccer feed serves every competition at
+        # once, so nine club-soccer categories cost one pass.
+        #
+        # Never fatal, for the same reason the pull above is not: the next
+        # fixture is a convenience on a page and the standings are the record.
+        continue-on-error: true
+        run: python -m whul.cli fixtures --season "$SEASON" --fetch
+
       - name: Roll up the standings
         run: |
           if [ "${{ inputs.backfill }}" = "true" ]; then

@@ -216,3 +216,190 @@ def by_asset(store, season: str, as_of: date | str) -> dict[str, dict]:
         if found:
             out[str(row.asset_id)] = found
     return out
+
+
+# --- clubs whose fixtures come from Flashscore ------------------------------
+
+#: Shortest feed word that may stand in for a longer roster word. Three, so
+#: "Man" reaches Manchester and "Inter" reaches Internazionale, while a
+#: two-letter fragment cannot quietly attach itself to half the division.
+ABBREVIATION_FLOOR = 3
+
+#: Contractions a prefix rule cannot reach, because the short form is not the
+#: start of the long one. Deliberately a short list of the standard ones rather
+#: than a club-by-club table: anything not here shows up in the "no fixture
+#: found" line, which is where a missing name is supposed to surface.
+WORD_ALIASES = {
+    "utd": "united", "weds": "wednesday", "nott'm": "nottingham",
+    "nottm": "nottingham", "sheff": "sheffield", "wolves": "wolverhampton",
+    "spurs": "tottenham", "boro": "middlesbrough", "gunners": "arsenal",
+    "st": "saint", "st.": "saint",
+}
+
+
+def wanted_teams(store, season: str) -> dict[str, str]:
+    """``{normalized: the roster's spelling}`` for every club a slot depends on.
+
+    Both the clubs somebody rosters *and* the clubs rostered players play for.
+    The second is not a nicety: a manager holding four Bayern players and no
+    Bayern is the ordinary case, and matching only team assets would leave
+    every one of those four blank while looking like it worked.
+    """
+    rows = store.query(
+        "SELECT DISTINCT a.asset_type, a.display_name, a.affiliation "
+        "FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ?",
+        (season,),
+    )
+    out: dict[str, str] = {}
+    for row in rows.itertuples():
+        name = (str(row.display_name) if row.asset_type == "Team"
+                else str(row.affiliation or ""))
+        if name.strip():
+            out.setdefault(normalize_team(name), name)
+    return out
+
+
+def _abbreviates(feed_words: list[str], roster_words: list[str]) -> bool:
+    """Is the feed's name a shortening of the roster's?
+
+    Flashscore writes "Man City" where a roster says "Manchester City", and
+    "Inter" where it says Internazionale. Each feed word must open a roster
+    word, in order, and nothing may be left over on the feed's side. Order
+    matters: without it "City Man" would match, and so would half the clubs
+    whose names share a word.
+    """
+    if not feed_words or len(feed_words) > len(roster_words):
+        return False
+    remaining = list(roster_words)
+    for word in feed_words:
+        if len(word) < ABBREVIATION_FLOOR:
+            return False
+        for position, candidate in enumerate(remaining):
+            if candidate.startswith(word):
+                remaining = remaining[position + 1:]
+                break
+        else:
+            return False
+    return True
+
+
+def _initials(words: list[str]) -> str:
+    return "".join(w[0] for w in words if w)
+
+
+def match_team(name: str, wanted: dict[str, str]) -> str | None:
+    """The roster's spelling of a club the feed named, or None.
+
+    Three stages, each requiring a *unique* answer: exact, then an
+    abbreviation ("Man City", "Inter", "Dortmund"), then an initialism ("PSG").
+    Uniqueness is the whole guard. Two roster clubs a feed name could equally
+    mean is not a near miss to be broken by a further rule, it is a name this
+    cannot read -- and guessing would put a Manchester United fixture beside a
+    Manchester City badge, which is worse than a blank cell by some distance.
+    """
+    key = normalize_team(name)
+    if key in wanted:
+        return wanted[key]
+    words = [WORD_ALIASES.get(w, w) for w in key.split()]
+    expanded = " ".join(words)
+    if expanded in wanted:
+        return wanted[expanded]
+
+    hits = [
+        full for candidate, full in wanted.items()
+        if _abbreviates(words, candidate.split())
+    ]
+    if len(hits) == 1:
+        return hits[0]
+    if len(words) == 1:
+        letters = words[0]
+        initialled = [
+            full for candidate, full in wanted.items()
+            if _initials(candidate.split()) == letters and len(letters) > 1
+        ]
+        if len(initialled) == 1:
+            return initialled[0]
+    return None
+
+
+def from_flashscore(store, season: str, as_of: date, leagues=None,
+                    verbose: bool = True) -> dict[str, int]:
+    """Fetch and record fixtures for the leagues Flashscore covers.
+
+    Returns ``{league: rows recorded}``. One request per day of the window per
+    *sport*, not per league: the soccer feed carries every competition at once,
+    so seven requests cover all nine club-soccer categories.
+    """
+    from whul.sources import flashscore_fixtures as feed
+
+    wanted = wanted_teams(store, season)
+    if not wanted:
+        if verbose:
+            print("  nothing rostered, so no club to look for", flush=True)
+        return {}
+
+    leagues = list(leagues) if leagues else sorted(feed.SPORTS)
+    sports = sorted({feed.SPORTS[l] for l in leagues if l in feed.SPORTS})
+    recorded: dict[str, int] = {}
+    seen: set[str] = set()
+
+    for sport in sports:
+        try:
+            upcoming = feed.load_upcoming(sport, verbose=verbose)
+        except Exception as exc:  # noqa: BLE001 -- one sport must not lose the rest
+            print(f"  flashscore sport {sport}: {type(exc).__name__}: {exc}",
+                  flush=True)
+            continue
+        if upcoming.empty:
+            continue
+
+        # Translate both sides into the roster's spelling, then drop the
+        # matches where neither side is a club anybody holds.
+        rename: dict[str, str] = {}
+        for column in ("home_team", "away_team"):
+            for name in upcoming[column].astype(str).unique():
+                found = match_team(name, wanted)
+                if found:
+                    rename[name] = found
+        mine = upcoming[
+            upcoming["home_team"].astype(str).isin(rename)
+            | upcoming["away_team"].astype(str).isin(rename)
+        ]
+        if mine.empty:
+            continue
+
+        rows = harvest(
+            f"flashscore-{sport}", season, mine, as_of, _timestamp(), rename=rename
+        )
+        # Only the clubs somebody holds. The other side of the tie was
+        # translated for display and must not become a row of its own.
+        held = {normalize_team(v) for v in rename.values()}
+        rows = rows[rows["team_key"].isin(held)]
+        if rows.empty:
+            continue
+        rows = rows.copy()
+        rows["league"] = f"Flashscore/{sport}"
+        recorded[f"Flashscore/{sport}"] = replace(
+            store, season, f"Flashscore/{sport}", rows
+        )
+        seen |= set(rows["team_key"])
+
+    if verbose:
+        missing = sorted(
+            full for key, full in wanted.items() if key not in seen
+        )
+        print(f"  {len(seen)} of {len(wanted)} rostered club(s) have a fixture "
+              f"in the next week.", flush=True)
+        if missing:
+            print("  No fixture found for: " + ", ".join(missing[:20]), flush=True)
+            print("  (out of season, between competitions, or a name this "
+                  "could not read)", flush=True)
+    return recorded
+
+
+def _timestamp() -> str:
+    from whul.store.db import _now
+
+    return _now()

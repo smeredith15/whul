@@ -741,6 +741,30 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
     store = open_store(args.db)
     as_of = _date.fromisoformat(args.date) if args.date else _date.today()
 
+    if args.probe:
+        from whul.sources import flashscore_fixtures as feed
+
+        for name, sport in (("soccer", feed.SPORT_SOCCER),
+                            ("basketball", feed.SPORT_BASKETBALL),
+                            ("baseball", feed.SPORT_BASEBALL)):
+            if args.sport and args.sport != name:
+                continue
+            print(f"\nFlashscore fixtures probe -- {name}\n")
+            for key, value in feed.probe(sport).items():
+                if isinstance(value, list):
+                    print(f"  {key}:")
+                    for item in value:
+                        print(f"      {item}")
+                else:
+                    print(f"  {key:<22} {value}")
+        return 0
+
+    if args.fetch:
+        print("\n  Fetching upcoming fixtures from Flashscore ...\n")
+        got = fixtures.from_flashscore(store, args.season, as_of)
+        print(f"\n  {sum(got.values())} fixture row(s) recorded across "
+              f"{len(got)} feed(s).\n")
+
     cover = fixtures.coverage(store, args.season)
     print(f"\n  Fixtures held for {args.season}, as of {as_of}:\n")
     if cover.empty:
@@ -1892,6 +1916,14 @@ def main(argv: list[str] | None = None) -> int:
     fixt.add_argument("--db", default="data/whul.sqlite3", help="database path")
     fixt.add_argument("--season", default="2026-27", help="season to report on")
     fixt.add_argument("--date", help="YYYY-MM-DD to count from (default: today)")
+    fixt.add_argument("--fetch", action="store_true",
+                      help="pull upcoming MLB, NBA and club soccer matches from "
+                           "Flashscore before reporting")
+    fixt.add_argument("--probe", action="store_true",
+                      help="report what the Flashscore feed returns, without "
+                           "touching the database")
+    fixt.add_argument("--sport", choices=("soccer", "basketball", "baseball"),
+                      help="probe one sport rather than all three")
     fixt.set_defaults(func=cmd_fixtures)
 
     needed = sub.add_parser(
