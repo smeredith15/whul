@@ -818,6 +818,22 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
         # type. `find` accepts either.
         print(f"    {images.plain(key) + '.png':<50}{what}")
 
+    # A file that is present and unreadable is worse than one that is absent:
+    # both render as a monogram, and only the absent one is reported anywhere.
+    # An SVG named .png is served as image/png and refused outright; a WebP
+    # named .png survives on browser sniffing, which is luck rather than
+    # design. Both are one `git mv` from correct, so both are named here.
+    wrong = images.mislabelled(source)
+    if wrong:
+        print(f"\n  {len(wrong)} file(s) are not the format their name claims. "
+              f"These are\n  present, so nothing above lists them, and they may "
+              f"render as nothing at\n  all -- an SVG named .png is refused by "
+              f"the browser outright. Rename:\n")
+        for path, claimed, actual in wrong:
+            print(f"    {str(path):<50} .{claimed} -> .{actual}")
+        print(f"\n    (`git mv` each one; the site accepts any of "
+              f"{' '.join(images.EXTENSIONS)}.)")
+
     blank = sorted(
         str(r.display_name) for r in rows.itertuples()
         if r.asset_type == "Player" and not badges.get(str(r.asset_id), "")

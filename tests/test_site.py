@@ -1757,3 +1757,62 @@ def test_the_worst_feeds_are_listed_first(tmp_path):
     }], ["source", "league"])
     states = [r["state"] for r in _feed_rows(store, "2026-27", "2026-09-07")]
     assert states == sorted(states, key=FEED_STATES.index)
+
+
+# --- a file that is present and unreadable ---------------------------------
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
+WEBP = b"RIFF\x00\x00\x00\x00WEBP" + b"\0" * 32
+SVG = b'<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+
+
+def test_a_file_that_is_what_it_says_is_not_reported(tmp_path):
+    (tmp_path / "flag").mkdir()
+    (tmp_path / "flag" / "italy.png").write_bytes(PNG)
+    (tmp_path / "flag" / "spain.webp").write_bytes(WEBP)
+    (tmp_path / "flag" / "france.svg").write_bytes(SVG)
+    assert images.mislabelled(tmp_path) == []
+
+
+def test_an_svg_named_png_is_caught(tmp_path):
+    """The one that actually breaks: served as image/png, the browser refuses
+    it, and it renders as the same monogram a missing file renders as."""
+    (tmp_path / "shield").mkdir()
+    (tmp_path / "shield" / "ofc.png").write_bytes(SVG)
+    caught = images.mislabelled(tmp_path)
+    assert [(p.name, claimed, actual) for p, claimed, actual in caught] == [
+        ("ofc.png", "png", "svg")
+    ]
+
+
+def test_a_webp_named_png_is_caught_too(tmp_path):
+    """It usually survives on browser sniffing, which is luck, not design."""
+    (tmp_path / "flag").mkdir()
+    (tmp_path / "flag" / "italy.png").write_bytes(WEBP)
+    assert [a for _, _, a in images.mislabelled(tmp_path)] == ["webp"]
+
+
+def test_jpg_and_jpeg_are_the_same_format(tmp_path):
+    """Two spellings of one format is not a mismatch."""
+    (tmp_path / "asset").mkdir()
+    (tmp_path / "asset" / "a.jpg").write_bytes(b"\xff\xd8\xff" + b"\0" * 32)
+    (tmp_path / "asset" / "b.jpeg").write_bytes(b"\xff\xd8\xff" + b"\0" * 32)
+    assert images.mislabelled(tmp_path) == []
+
+
+def test_a_format_nobody_recognises_is_left_alone(tmp_path):
+    """This catches files that are provably something else. It does not
+    police the format list, and a false alarm on a working picture would
+    teach the reader to ignore the whole section."""
+    (tmp_path / "asset").mkdir()
+    (tmp_path / "asset" / "odd.png").write_bytes(b"\x00\x01\x02\x03" * 8)
+    assert images.mislabelled(tmp_path) == []
+
+
+def test_every_image_in_the_repository_is_what_its_name_says():
+    """The real tree, because this is how the twenty that were wrong got in:
+    exported "for the web", saved with the extension the list asked for."""
+    wrong = images.mislabelled()
+    assert wrong == [], "\n".join(
+        f"{p}: named .{claimed}, actually {actual}" for p, claimed, actual in wrong
+    )
