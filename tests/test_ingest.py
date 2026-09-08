@@ -24,6 +24,7 @@ class FakeSource:
     seasons_for: object = None
     roster_scoped: bool = False
     windowed: bool = False
+    dated_by_source: bool = False
     live: Callable | None = None
     build: Callable = lambda: (lambda seasons: pd.DataFrame(), lambda raw: raw)
 
@@ -1015,3 +1016,61 @@ def test_a_car_number_survives_scoring(store):
     out = _carry_identity(scored, feed, "Player")
     assert dict(zip(out["player"], out["car_number"])) == {
         "Max Verstappen": "1", "Denny Hamlin": "11"}
+
+
+def test_a_source_that_dates_its_own_rows_is_not_filtered_again(store):
+    """International soccer assigns a whole tournament to the league year it
+    began in, and returns its whole history so each competition's shape can be
+    read off an edition that was played. A date cutoff on top of that strips
+    the history the shapes come from -- and it would cut the 2027 Women's World
+    Cup off at the year's end, which is the one thing the block rule exists to
+    prevent."""
+    rostered(store, "Spain", league="Men's Intl Soccer", asset_type="Team")
+    seen: list[int] = []
+
+    def build():
+        def load(seasons):
+            return pd.DataFrame([
+                # History, dated long before the league year opened.
+                {"team": "Spain", "league": "Men's Intl Soccer", "date": "2019-06-01",
+                 "season": 2018, "total_points": 40.0, "wanted": False},
+                {"team": "Spain", "league": "Men's Intl Soccer", "date": "2026-09-05",
+                 "season": 2026, "total_points": 10.0, "wanted": True},
+            ])
+
+        def score(raw):
+            seen.append(len(raw))
+            return raw[raw["wanted"]]
+
+        return load, score
+
+    source = FakeSource(
+        key="intl-soccer", league="Intl Soccer", asset_type="Team",
+        produces=("Men's Intl Soccer", "Women's Intl Soccer"),
+        build=build, seasons_for=lambda day: [2026], dated_by_source=True,
+    )
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 7), verbose=False)
+    assert seen == [2], "the scorer was handed a filtered frame"
+
+
+def test_a_quiet_season_is_not_blamed_on_the_scorer(store):
+    """A source carrying more than it was asked for marks the rows it was.
+    Diagnosing on all of them said "25,929 completed rows arrived but none of
+    them scored, which is the scorer's to explain" -- an accusation, about a
+    season nobody has played."""
+    rostered(store, "Spain", league="Men's Intl Soccer", asset_type="Team")
+    source = FakeSource(
+        key="intl-soccer", league="Intl Soccer", asset_type="Team",
+        produces=("Men's Intl Soccer", "Women's Intl Soccer"),
+        build=lambda: (
+            lambda seasons: pd.DataFrame([
+                {"team": "Spain", "league": "Men's Intl Soccer",
+                 "date": "2019-06-01", "total_points": 40.0, "wanted": False},
+            ]),
+            lambda raw: pd.DataFrame(),
+        ),
+        seasons_for=lambda day: [2026], dated_by_source=True,
+    )
+    report = ingest.ingest(store, source, "2026-27", date(2026, 9, 7), verbose=False)
+    assert any("nothing that counts has been played" in p for p in report.problems)
+    assert not any("scorer's to explain" in p for p in report.problems)

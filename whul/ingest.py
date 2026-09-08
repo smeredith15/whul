@@ -360,6 +360,21 @@ def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
             f"before this league's results start counting"
         )
 
+    # A source that carries more than it was asked for marks the rows it was.
+    # International soccer returns its whole history so each tournament's shape
+    # can be read off an edition that was played, and diagnosing on all of it
+    # said "25,929 completed rows arrived but none of them scored, which is the
+    # scorer's to explain" -- an accusation, about a season nobody has played.
+    if "wanted" in kept.columns:
+        asked = kept[kept["wanted"].astype(bool)]
+        if asked.empty:
+            return (
+                f"nothing that counts has been played in this league year yet. "
+                f"The feed holds {len(kept):,} row(s) of earlier seasons, which "
+                f"this source carries on purpose"
+            )
+        kept = asked
+
     played, knowable = _played_rows(kept)
     if played.empty:
         upcoming = ""
@@ -532,7 +547,12 @@ def _pull(
                     f"output says which"
                 )
             return pd.DataFrame()
-        kept = _from_season_start(raw, source.league)
+        # A source that has already decided which league year each row belongs
+        # to is not filtered again. International soccer assigns a whole
+        # tournament to the year it began in and returns the history its
+        # tournament shapes are read from; a date cutoff strips that history
+        # and would cut a World Cup off at the year's end.
+        kept = raw if source.dated_by_source else _from_season_start(raw, source.league)
         scored = score(kept)
         if (scored is None or scored.empty) and notes is not None:
             notes.append(_why_nothing_scored(raw, kept))

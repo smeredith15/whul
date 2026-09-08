@@ -489,7 +489,7 @@ applies the ladder; `whul/data/` carries the three tables — the ladder, the
 stated Nations League shapes, and the supplement. Registered as `intl-soccer`,
 in the nightly run's league list, and covered by eighteen tests.
 
-Two faults the build turned up, neither guessable from the design:
+Three faults the build turned up, none guessable from the design:
 
 **A pull for one league year had no tournament shape to read.** The shape comes
 from the edition that was played, so a single-season pull left the 2026 Women's
@@ -503,6 +503,15 @@ empty frame without reaching any of the explanations, so international
 soccer's first pull of 2026-27 — correctly empty, the next international window
 being weeks away — reported a league on zero with no word about why. Fixed for
 every source, not just this one.
+
+**The date filter undid the whole design, silently.** `_pull` trims every
+source's rows to those on or after the league year opened -- correct for a feed
+that reports by date, and wrong for one that has already decided which year
+each match belongs to. It stripped the history the tournament shapes are read
+from, putting the Ghana bug straight back, and it would have cut the 2027
+Women's World Cup off at 13 July, which is the one thing the block rule exists
+to prevent. Sources now declare `dated_by_source` when they have done the
+dating themselves.
 
 Today's pull is empty and right to be: the only counting matches since 14 July
 2026 are the last four of the World Cup, which the block rule holds in 2025-26

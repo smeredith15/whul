@@ -75,6 +75,17 @@ class Source:
     #: seasons (PROJECT_PLAN 2.3). Their ``build`` returns an event-level scorer
     #: -- one dated row per match, tournament or race -- instead of a season one.
     windowed: bool = False
+    #: True where the source has already decided which league year every row
+    #: belongs to, so ``_pull`` must not filter by date afterwards.
+    #:
+    #: International soccer is the case. It assigns a whole tournament to the
+    #: year it began in -- the 2027 Women's World Cup finishes twelve days
+    #: after the year ends and belongs to it entirely -- and it returns the
+    #: whole history so each competition's shape can be read off an edition
+    #: that was played. A date cutoff undoes both: it strips the history the
+    #: shapes come from, and it would cut a tournament off at the year's end,
+    #: which is the one thing the block rule exists to prevent.
+    dated_by_source: bool = False
     #: Rough confidence in the source, shown by ``benchmarks list`` so the
     #: easiest leagues can be frozen first and the shaky ones chased separately.
     reliability: str = "unverified"
@@ -795,7 +806,7 @@ SOURCES: dict[str, Source] = _register(
     # waits for a dated source -- which this one needs anyway, being 403.
     Source("intl-soccer", "Intl Soccer", "Team", _intl_soccer(),
            produces=("Men's Intl Soccer", "Women's Intl Soccer"),
-           seasons_for=_intl_seasons,
+           seasons_for=_intl_seasons, dated_by_source=True,
            note="martj42 ledgers; one pull, two benchmarks -- the men's game "
                 "and the women's are normalized against themselves"),
     Source("soccer-players", "Club Soccer", "Player", _soccer_players,
