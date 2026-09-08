@@ -2,13 +2,14 @@
 
 import json
 import re
+from html import escape
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 from whul import simulate
-from whul.site import charts, images, theme
+from whul.site import charts, images, rulebook, theme
 from whul.site.build import build
 from whul.store import open_store
 
@@ -347,11 +348,41 @@ def test_every_team_is_reachable_from_every_page(site):
             assert f"{manager.lower()}.html" in html, f"{manager} missing from {page.name}"
 
 
-def test_the_about_page_explains_how_a_score_is_reached(site):
+def test_the_scoring_page_explains_how_a_score_is_reached(site):
     out, _ = site
     html = (out / "about.html").read_text()
-    for step in ("League points", "Normalize", "Accrue by owner", "Best ball"):
+    for step in ("Count what happened", "same scale", "What 100 means",
+                 "owned the slot", "Best ball"):
         assert step in html
+
+
+def test_the_scoring_tab_is_called_scoring(site):
+    """The old label described the page; the tab should name it."""
+    out, _ = site
+    for page in out.rglob("*.html"):
+        html = page.read_text()
+        assert "How scoring works" not in html, page.name
+        assert '>Scoring</a>' in html, page.name
+
+
+def test_the_scoring_page_carries_every_asset_type(site):
+    out, _ = site
+    html = (out / "about.html").read_text()
+    for rules in rulebook.sections():
+        assert escape(rules.title) in html, rules.title
+
+
+def test_the_scoring_page_explains_itself_without_naming_the_plumbing(site):
+    """It is read by five people who have never opened the repository.
+
+    A rules page that says "per NFL_Players.R" tells a reader to go and find a
+    file they do not have. Every one of these words appeared on the old page.
+    """
+    out, _ = site
+    html = (out / "about.html").read_text()
+    for jargon in ("R script", ".R", "99th percentile", "benchmark_rate",
+                   "half-PPR"):
+        assert jargon not in html, jargon
 
 
 def test_building_without_standings_says_what_to_run():
