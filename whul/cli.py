@@ -23,6 +23,7 @@ import pandas as pd
 
 from whul.benchmarks import DEFAULT_SEASONS
 from whul.normalize import apply_benchmarks, compute_benchmarks
+from whul.store.db import missing_database_note
 
 
 def _nfl(season: int, assets: str) -> pd.DataFrame:
@@ -593,8 +594,9 @@ def cmd_prune_assets(args: argparse.Namespace) -> int:
     )["asset_id"])
     if not held:
         print(f"\nNothing is rostered in {args.season}, so every asset would "
-              f"look unheld. Run `import-rosters --write` first.\n",
+              f"look unheld. Run `import-rosters --write` first.",
               file=sys.stderr)
+        print(missing_database_note(store), file=sys.stderr)
         return 1
 
     assets = store.query("SELECT asset_id, display_name, league, asset_type FROM assets")
@@ -753,7 +755,8 @@ def cmd_images_needed(args: argparse.Namespace) -> int:
         (args.season,),
     )
     if rows.empty:
-        print(f"\nNothing rostered in {args.season}.\n")
+        print(f"\nNothing rostered in {args.season}.")
+        print(missing_database_note(store))
         return 1
 
     # What each asset is badged with, the feed's spelling winning over the
@@ -944,7 +947,8 @@ def cmd_alias(args: argparse.Namespace) -> int:
     store = open_store(args.db)
     assets = resolver.rostered_assets(store, args.season)
     if assets.empty:
-        print(f"\nNothing rostered in {args.season}.\n", file=sys.stderr)
+        print(f"\nNothing rostered in {args.season}.", file=sys.stderr)
+        print(missing_database_note(store), file=sys.stderr)
         return 1
 
     wanted = resolver.normalize_name(args.asset)
@@ -1246,7 +1250,8 @@ def cmd_benchmarks_coverage(args: argparse.Namespace) -> int:
     store = _benchmark_store(args)
     rows = benchmarks.coverage(store, args.version, args.season)
     if rows.empty:
-        print(f"\nNothing rostered in {args.season}, so nothing to cover.\n")
+        print(f"\nNothing rostered in {args.season}, so nothing to cover.")
+        print(missing_database_note(store))
         return 0
     from whul.benchmark_sources import SOURCES
 

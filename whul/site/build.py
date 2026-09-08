@@ -1222,8 +1222,16 @@ def _why_no_standings(store, season: str) -> str:
     the difference between a message and an instruction.
     """
     from whul.store import benchmarks as bm
+    from whul.store.db import missing_database_note
 
     lines = [f"No standings for {season}, so there is nothing to build yet."]
+
+    # Before any of the four: is there a database at all? An empty one answers
+    # every question below with zero, so without this the message names the
+    # first missing link in a chain that was never there.
+    note = missing_database_note(store)
+    if note:
+        return "\n".join(lines) + "\n" + note
 
     rostered = store.scalar(
         "SELECT COUNT(*) FROM slot_occupancy o "
