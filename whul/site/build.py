@@ -107,6 +107,11 @@ def _page(title: str, body: str, active: str, managers: list[str],
 INDIVIDUAL_CATEGORIES = {"Tennis", "PGA", "Motorsports", "Olympics"}
 
 
+#: Leagues whose "role" is the same word for everyone in them, and whose tour
+#: is the thing worth saying instead. Every tennis player's role is "Singles".
+TOUR_AS_POSITION = ("ATP", "WTA")
+
+
 def _identity(stats: dict, league: str, norm_key: str,
               affiliation: str = "") -> dict[str, str]:
     """What a player is, out of the day's recorded row.
@@ -142,13 +147,28 @@ def _identity(stats: dict, league: str, norm_key: str,
         return ""
 
     group = norm_key.replace("_", " ").strip()
+
+    # A tennis player's role is "Singles", which every tennis player's is, so
+    # it distinguishes nobody. The tour does: ATP or WTA is what a reader wants
+    # in the place a footballer's position goes.
+    position = league if league in TOUR_AS_POSITION \
+        else first("position", "role", words_only=True)
+
+    # A driver has no club, and where a footballer's line carries one his can
+    # carry his car number -- the sport's own identifier, and the one thing on
+    # the car. The hash is what keeps "#1" from reading as a finishing place,
+    # which is the other number a motorsport row is full of.
+    number = first("car_number", "number", "permanent_number")
+    team = f"#{number}" if number else \
+        (first("team_name", "team", "club") or affiliation.strip())
+
     return {
-        "position": first("position", "role", words_only=True),
+        "position": position,
         # The feed first, then the sheet. The feed is the one that notices a
         # January transfer; the sheet is the one that knows a golfer is Spanish,
         # which no feed here carries at all. Neither covers the other's case, so
         # both are read and the fresher wins where they overlap.
-        "team": first("team_name", "team", "club") or affiliation.strip(),
+        "team": team,
         "group": "" if group in ("", league) else group,
     }
 
@@ -691,6 +711,118 @@ def _results_table(
         '<thead><tr><th>Asset</th><th>Owner</th>'
         '<th class="num">Normalized</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table>'
+    )
+
+
+#: What a league's feed is doing, worst first. The order is the order a reader
+#: should look in: a league that has never been pulled is invisible by
+#: construction, and one failing in season is the case this whole panel exists
+#: for.
+FEED_STATES = ("never pulled", "failing", "stale?", "waiting", "scoring")
+
+
+def _feed_state(row: dict, in_season: bool | None) -> tuple[str, str]:
+    """How a feed is doing, and what to say about it.
+
+    The distinction that matters is between a league that is quiet because
+    nothing has been played and one that is quiet because something broke.
+    Both look identical in the standings -- a column of zeroes -- and they need
+    opposite responses. `in_season` is what tells them apart, so it is asked
+    rather than inferred from the message text, which changes.
+    """
+    if row.get("last_run_at") in (None, ""):
+        return "never pulled", ("no run has ever fetched this league; it is not "
+                                "in the nightly list")
+    message = str(row.get("message") or "")
+    if row.get("last_ok"):
+        return "scoring", message
+    if in_season is False:
+        return "waiting", message or "the season has not opened yet"
+    if in_season is None:
+        # An international side has no start date: each plays a different
+        # competition on a different calendar, so only a result can say the
+        # season has begun. Reporting that as a failure would cry wolf all year.
+        return "waiting", message or "no start date; only a result can say"
+    return "failing", message or "the last run returned nothing, in season"
+
+
+def _feed_rows(store: Store, season: str, as_of: str) -> list[dict]:
+    """One row per source that feeds something this roster holds.
+
+    Per source rather than per league, because that is the grain the record has
+    -- `source_status` keeps one row per source, keyed on the source's own
+    league, which for a source serving six competitions is the category rather
+    than any of them. Listing it once per competition instead produced twelve
+    rows reading "never pulled" about feeds that had run an hour earlier.
+
+    A competition can legitimately appear twice: the Premier League is fed by
+    `epl` for its clubs and `soccer-players` for its players, and either can
+    fail without the other.
+    """
+    from whul.benchmark_sources import SOURCES
+    from whul.config.league import competitions_for, in_season
+
+    day = date.fromisoformat(str(as_of))
+    held = set(store.query(
+        "SELECT DISTINCT a.league FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ?", (season,),
+    )["league"])
+    status = {
+        (row.source, row.league): row._asdict()
+        for row in store.query("SELECT * FROM source_status").itertuples(index=False)
+    }
+
+    rows = []
+    for key, source in SOURCES.items():
+        covers = [lg for lg in (source.produces or competitions_for(source.league))
+                  if lg in held]
+        if not covers:
+            continue
+        row = status.get((key, source.league), {})
+        # Whether the season has opened is asked of the competitions this
+        # source actually serves. One of them being under way is enough for a
+        # silent feed to be a fault rather than a quiet week.
+        seasons = [in_season(lg, day) for lg in covers]
+        started = True if any(v is True for v in seasons) else (
+            False if all(v is False for v in seasons) else None
+        )
+        state, note = _feed_state(row, started)
+        rows.append({
+            "covers": covers, "source": key, "state": state, "note": note,
+            "through": str(row.get("last_data_date") or ""),
+            "rows": int(row.get("rows_last_run") or 0),
+        })
+    rank = {state: i for i, state in enumerate(FEED_STATES)}
+    return sorted(rows, key=lambda r: (rank.get(r["state"], 0), r["covers"][0]))
+
+
+def _feed_table(rows: list[dict], as_of: str) -> str:
+    """The panel. Plain table: this is read, not compared."""
+    if not rows:
+        return "<p class='sub'>No feed has run yet.</p>"
+    today = date.fromisoformat(str(as_of))
+    body = []
+    for row in rows:
+        ago = ""
+        if row["through"]:
+            days = (today - date.fromisoformat(row["through"])).days
+            ago = "today" if days <= 0 else f"{days}d ago"
+        body.append(
+            f"<tr class='feed-{_slug(row['state'])}'>"
+            f"<td>{escape(', '.join(row['covers']))}</td>"
+            f"<td class='src'>{escape(row['source'])}</td>"
+            f"<td><span class='state'>{escape(row['state'])}</span></td>"
+            f"<td>{escape(row['through'])}"
+            f"{f' <span class=ago>{ago}</span>' if ago else ''}</td>"
+            f"<td class='num'>{row['rows'] or '—'}</td>"
+            f"<td class='why'>{escape(row['note'])}</td></tr>"
+        )
+    return (
+        "<table class='feeds'><thead><tr><th>Covers</th><th>Source</th>"
+        "<th>State</th><th>Data through</th><th class='num'>Rows</th>"
+        "<th>What it said</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
     )
 
 
@@ -1333,11 +1465,21 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         "a name for the stats behind the score.",
         _results_table(bars, profiles, managers),
     )
+    feeds_figure = _figure(
+        "feeds", "Where the numbers came from",
+        "Every league this roster holds, and what its feed last did. A league "
+        "scoring nothing because its season has not opened and one scoring "
+        "nothing because its feed broke look identical in the standings -- a "
+        "column of zeroes -- and they need opposite responses.",
+        _feed_table(_feed_rows(store, season, latest), latest),
+        open_=False,
+    )
     results_body = (
         _figure_index([("progression", "Progression"),
                        ("slots", "Every counting slot"),
-                       ("everyone", "Every scored asset")])
-        + progression_figure + slots_figure + table_figure
+                       ("everyone", "Every scored asset"),
+                       ("feeds", "Where the numbers came from")])
+        + progression_figure + slots_figure + table_figure + feeds_figure
         + _profile_payload(profiles) + _day_payload(breakdown)
     )
     (out / "results.html").write_text(

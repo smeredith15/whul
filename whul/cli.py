@@ -561,6 +561,77 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
+#: The most of the asset table one run may remove. A spreadsheet that half
+#: parsed, or a season nobody has imported yet, would leave almost every asset
+#: looking unrostered -- and the difference between "twenty-four duplicates"
+#: and "everything" is exactly the difference between a tidy-up and a disaster.
+PRUNE_CEILING = 0.25
+
+
+def cmd_prune_assets(args: argparse.Namespace) -> int:
+    """Remove assets the spreadsheet no longer holds, and their history.
+
+    An asset reaches the database from the spreadsheet and stays there after
+    the spreadsheet stops naming it -- a name corrected, a category moved, a
+    player traded away. Twelve tennis players sat under `Tennis` after the
+    roster moved them to `ATP` and `WTA`; they scored until the correction
+    landed and then went quiet, invisible to the site and still in the table.
+
+    The occupancy *is* the spreadsheet: `import-rosters` writes a slot for
+    every row it reads, so an asset occupying no current slot is one the sheet
+    does not name. That is why this runs after the import and refuses to run
+    before one.
+    """
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    held = set(store.query(
+        "SELECT DISTINCT o.asset_id FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "WHERE r.season = ?", (args.season,),
+    )["asset_id"])
+    if not held:
+        print(f"\nNothing is rostered in {args.season}, so every asset would "
+              f"look unheld. Run `import-rosters --write` first.\n",
+              file=sys.stderr)
+        return 1
+
+    assets = store.query("SELECT asset_id, display_name, league, asset_type FROM assets")
+    stale = assets[~assets["asset_id"].isin(held)]
+    if stale.empty:
+        print(f"\n  Every asset in the table is on a {args.season} roster. "
+              f"Nothing to prune.\n")
+        return 0
+
+    share = len(stale) / max(len(assets), 1)
+    print(f"\n  {len(stale)} of {len(assets)} asset(s) are on no {args.season} "
+          f"roster slot ({share:.0%}):\n")
+    for row in stale.sort_values(["league", "display_name"]).itertuples():
+        counts = store.query(
+            "SELECT (SELECT COUNT(*) FROM daily_scores WHERE asset_id = ?) AS scores, "
+            "(SELECT COUNT(*) FROM raw_stats WHERE asset_id = ?) AS stats",
+            (row.asset_id, row.asset_id),
+        ).iloc[0]
+        trail = f"{int(counts.scores)} scored day(s), {int(counts.stats)} stat row(s)"
+        print(f"    {row.league:<22} {row.display_name:<30} {trail}")
+
+    if share > PRUNE_CEILING:
+        print(f"\n  Refusing: that is more than {PRUNE_CEILING:.0%} of the table, "
+              f"which is what a half-read spreadsheet looks like rather than a "
+              f"tidy-up. Check the import before forcing it.\n", file=sys.stderr)
+        return 1
+    if not args.write:
+        print(f"\n  Nothing removed. Re-run with --write to remove them and "
+              f"every score, stat and alias that names them.\n")
+        return 0
+
+    removed = store.prune_assets(list(stale["asset_id"]))
+    print(f"\n  Removed {len(stale)} asset(s): "
+          + ", ".join(f"{n} from {table}" for table, n in sorted(removed.items()))
+          + "\n")
+    return 0
+
+
 def cmd_import_rosters(args: argparse.Namespace) -> int:
     """Read the draft spreadsheet. Reports the column mapping before writing."""
     from pathlib import Path as _Path
@@ -1708,6 +1779,18 @@ def main(argv: list[str] | None = None) -> int:
         help="actually write; without it the run only reports what it found",
     )
     imp.set_defaults(func=cmd_import_rosters)
+
+    prune = sub.add_parser(
+        "prune-assets",
+        help="remove assets the spreadsheet no longer holds, and their history",
+    )
+    prune.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    prune.add_argument("--season", default="2026-27", help="season whose roster decides")
+    prune.add_argument(
+        "--write", action="store_true",
+        help="actually remove them; without it the run only reports",
+    )
+    prune.set_defaults(func=cmd_prune_assets)
 
     admin = sub.add_parser("admin", help="local page for trades and corrections")
     admin.add_argument("--db", default="data/whul.sqlite3", help="database path")

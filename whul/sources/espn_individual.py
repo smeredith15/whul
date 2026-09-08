@@ -253,6 +253,31 @@ def _competitors(payload: dict) -> list[dict]:
     return []
 
 
+#: Where a racing entry might carry the number on the car. ESPN is not
+#: consistent about this across its sports, so several are tried and a miss is
+#: an empty string rather than a guess: without one the site falls back to the
+#: driver's country, which is what it showed before and is not wrong, only less
+#: useful.
+CAR_NUMBER_KEYS = ("vehicleNumber", "carNumber", "number", "jersey")
+
+
+def _car_number(entry: dict) -> str:
+    """The number on the car, if this feed says. Never a finishing place.
+
+    Deliberately not falling back to `position`: that is the finish, and a
+    driver labelled "#5" for coming fifth would be wrong in the way that looks
+    right -- his real number is on every photograph of the car.
+    """
+    for source in (entry, entry.get("athlete") or {}, entry.get("vehicle") or {}):
+        if not isinstance(source, dict):
+            continue
+        for key in CAR_NUMBER_KEYS:
+            value = source.get(key)
+            if value not in (None, "", []):
+                return str(value).lstrip("#").strip()
+    return ""
+
+
 def _athlete_name(entry: dict) -> str:
     athlete = entry.get("athlete") or {}
     for key in ("displayName", "fullName", "shortName", "name"):
@@ -349,6 +374,7 @@ def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.Da
                         "player": name,
                         "driver": name,
                         "position": _position(entry),
+                        "car_number": _car_number(entry),
                     }
                 )
         _report_unserved(league, season, unserved, len(finished), verbose)

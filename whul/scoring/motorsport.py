@@ -77,6 +77,7 @@ def nascar_events(results: pd.DataFrame) -> pd.DataFrame:
             # wants from a profile, and a bare finish is a number in a column.
             "tournament": resolve_str(
                 results, ["race", "race_name", "event", "event_name", "tournament"]),
+            "car_number": resolve_str(results, ["car_number", "number", "car"]),
         }
     )
     work = work[work["finish"] > 0].copy()
@@ -127,6 +128,9 @@ def f1_events(results: pd.DataFrame) -> pd.DataFrame:
             "date": resolve_str(results, ["date", "race_date"]),
             "tournament": resolve_str(
                 results, ["race", "race_name", "event", "event_name", "tournament"]),
+            # Carried, not scored: it is identity, and the site reads it where
+            # a team sport's line carries a club.
+            "car_number": resolve_str(results, ["car_number", "number"]),
         }
     )
     # A sprint is its own race with its own, smaller points table. The feed
