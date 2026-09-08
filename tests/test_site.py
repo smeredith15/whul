@@ -1620,3 +1620,109 @@ def test_a_footballer_still_shows_a_club():
     who = _identity({"position": "F", "team": "Arsenal"}, "Premier League",
                     "Premier League", "")
     assert who == {"position": "F", "team": "Arsenal", "group": ""}
+
+
+# --- where the numbers came from --------------------------------------------
+
+def test_a_quiet_season_and_a_broken_feed_are_told_apart():
+    """Both look identical in the standings -- a column of zeroes -- and they
+    need opposite responses. Whether the season has opened is what separates
+    them, so it is asked rather than read out of the message text, which
+    changes."""
+    from whul.site.build import _feed_state
+
+    silent = {"last_run_at": "2026-09-07T09:00Z", "last_ok": 0, "message": ""}
+    assert _feed_state(silent, in_season=True)[0] == "failing"
+    assert _feed_state(silent, in_season=False)[0] == "waiting"
+    # An international side has no start date -- each plays a different
+    # competition on a different calendar -- so only a result can say. Calling
+    # that a failure would cry wolf all year.
+    assert _feed_state(silent, in_season=None)[0] == "waiting"
+
+
+def test_a_feed_that_has_never_run_is_the_loud_case():
+    """It is invisible by construction: no row, no message, no zero to notice.
+    A league left out of the nightly list looks exactly like one nobody has
+    drafted."""
+    from whul.site.build import _feed_state
+
+    state, note = _feed_state({}, in_season=True)
+    assert state == "never pulled"
+    assert "nightly list" in note
+
+
+def test_a_scoring_feed_says_so():
+    from whul.site.build import _feed_state
+
+    assert _feed_state(
+        {"last_run_at": "2026-09-07T09:00Z", "last_ok": 1}, True)[0] == "scoring"
+
+
+def _rostered_store(tmp_path, leagues):
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "TG", "display_name": "TG",
+                               "active": 1}], ["manager_id"])
+    store.upsert("assets", [
+        {"asset_id": f"a{i}", "asset_type": "Team", "display_name": f"T{i}",
+         "league": lg, "norm_key": lg, "created_at": "2026-08-21"}
+        for i, lg in enumerate(leagues)
+    ], ["asset_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": f"s{i}", "manager_id": "TG", "season": "2026-27",
+         "category": "NFL", "asset_type": "Team", "slot_index": i}
+        for i, _ in enumerate(leagues)
+    ], ["slot_id"])
+    store.upsert("slot_occupancy", [
+        {"slot_id": f"s{i}", "asset_id": f"a{i}", "start_date": "2026-08-21",
+         "end_date": None, "cost": 0.0, "note": ""}
+        for i, _ in enumerate(leagues)
+    ], ["slot_id", "start_date"])
+    return store
+
+
+def test_a_source_keyed_on_its_category_is_not_reported_as_never_run(tmp_path):
+    """`source_status` keeps one row per source, keyed on the source's own
+    league -- which for one serving six competitions is the category rather
+    than any of them. Looking it up per competition produced twelve rows
+    reading "never pulled" about feeds that had run an hour earlier."""
+    from whul.site.build import _feed_rows
+
+    store = _rostered_store(tmp_path, ["Premier League", "La Liga"])
+    store.upsert("source_status", [{
+        "source": "soccer-players", "league": "Club Soccer",
+        "last_run_at": "2026-09-07T09:00:00Z", "last_data_date": "2026-09-07",
+        "last_ok": 1, "rows_last_run": 39, "message": "",
+    }], ["source", "league"])
+
+    rows = {r["source"]: r for r in _feed_rows(store, "2026-27", "2026-09-07")}
+    assert rows["soccer-players"]["state"] == "scoring"
+    assert rows["soccer-players"]["rows"] == 39
+    # One row for the source, listing what it covers -- not one per league.
+    assert rows["soccer-players"]["covers"] == ["Premier League", "La Liga"]
+
+
+def test_only_sources_that_feed_the_roster_are_listed(tmp_path):
+    """Twenty-four feeds is a page. Every source in the table would be a
+    catalogue, and the leagues nobody drafted are not the reader's problem."""
+    from whul.site.build import _feed_rows
+
+    store = _rostered_store(tmp_path, ["NCAAF"])
+    covered = {lg for row in _feed_rows(store, "2026-27", "2026-09-07")
+               for lg in row["covers"]}
+    assert covered == {"NCAAF"}
+
+
+def test_the_worst_feeds_are_listed_first(tmp_path):
+    """The order is the order to look in."""
+    from whul.site.build import FEED_STATES, _feed_rows
+
+    store = _rostered_store(tmp_path, ["NCAAF", "MLB"])
+    store.upsert("source_status", [{
+        "source": "mlb", "league": "MLB", "last_run_at": "2026-09-07T09:00:00Z",
+        "last_data_date": "2026-09-07", "last_ok": 1, "rows_last_run": 19,
+        "message": "",
+    }], ["source", "league"])
+    states = [r["state"] for r in _feed_rows(store, "2026-27", "2026-09-07")]
+    assert states == sorted(states, key=FEED_STATES.index)

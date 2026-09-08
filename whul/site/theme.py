@@ -52,6 +52,20 @@ STYLESHEET = """\
   --series-6: #008300;
   --series-7: #4a3aa7;
   --series-8: #e34948;
+  /* Status, reserved. Never a series colour: a feed's state is not a manager,
+     and the two must not be confused on a page carrying both.
+
+     Both pairs are validated rather than chosen by eye. The first attempt read
+     fine and failed under simulated deuteranopia in dark mode -- the green and
+     the red came out 4.4 apart, which is two pills nobody could tell apart --
+     so the pairs were re-stepped until the worst adjacent separation cleared
+     8 in both modes (light 11.0, dark 8.6) and the pill text cleared 4.5:1 on
+     its own background. The state is also always written in words inside the
+     pill, so the colour never carries the meaning alone. */
+  --ok: #0e7a5f;
+  --ok-bg: #e6f4ee;
+  --alert: #c03403;
+  --alert-bg: #fceceb;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -71,6 +85,10 @@ STYLESHEET = """\
     --series-6: #008300;
     --series-7: #9085e9;
     --series-8: #e66767;
+    --ok: #48c9a0;
+    --ok-bg: #14312a;
+    --alert: #ff8f6b;
+    --alert-bg: #3a1d1c;
   }
 }
 :root[data-theme="dark"] {
@@ -90,6 +108,10 @@ STYLESHEET = """\
   --series-6: #008300;
   --series-7: #9085e9;
   --series-8: #e66767;
+  --ok: #48c9a0;
+  --ok-bg: #14312a;
+  --alert: #ff8f6b;
+  --alert-bg: #3a1d1c;
 }
 
 * { box-sizing: border-box; }
@@ -280,6 +302,24 @@ table.daylist .micro {
   font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4;
 }
 table.daylist .gain { font-variant-numeric: tabular-nums; }
+
+/* Feed health. The state is a word rather than a colour alone -- a reader who
+   cannot tell the two greens apart still reads "failing" -- and the colour is
+   on the word rather than the row, so a table of twenty-two leagues does not
+   become a wall of tint. */
+table.feeds td { vertical-align: top; }
+table.feeds .src, table.feeds .ago { color: var(--muted); font-size: 12px; }
+table.feeds .why { color: var(--muted); font-size: 12px; max-width: 34em; }
+table.feeds .state {
+  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--grid); color: var(--text-secondary);
+}
+table.feeds .feed-scoring .state { background: var(--ok-bg); color: var(--ok); }
+table.feeds .feed-failing .state,
+table.feeds .feed-never-pulled .state {
+  background: var(--alert-bg); color: var(--alert);
+}
 table.results tr[hidden] { display: none; }
 
 /* A collapsible league section. Twenty leagues open at once is a page that is
