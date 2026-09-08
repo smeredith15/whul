@@ -28,11 +28,12 @@ from datetime import date
 
 import pandas as pd
 
+from whul import fixtures
 from whul import resolve as resolver
 from whul.normalize import apply_benchmarks
 from whul.pipeline import write_daily_scores
 from whul.store import benchmarks as store_benchmarks
-from whul.store.db import Store
+from whul.store.db import Store, _now
 
 
 @dataclass
@@ -45,6 +46,7 @@ class IngestReport:
     matched: int = 0
     scored: int = 0
     recorded: int = 0
+    fixtures: int = 0
     version: str = ""
     resolution: resolver.Resolution | None = None
     problems: list[str] = field(default_factory=list)
@@ -54,6 +56,8 @@ class IngestReport:
             f"{self.league} {self.asset_type.lower()}s: {self.pulled:,} feed rows, "
             f"{self.matched} rostered matched, {self.scored} scored"
         ]
+        if self.fixtures:
+            lines.append(f"  {self.fixtures} upcoming fixture row(s) recorded")
         if self.resolution is not None:
             lines += [
                 line for line in str(self.resolution).splitlines()[1:]
@@ -80,14 +84,22 @@ def ingest(
         return report
 
     notes: list[str] = []
+    upcoming: list[pd.DataFrame] = []
     try:
         scored = _pull(
-            source, as_of, verbose, names=list(assets["display_name"]), notes=notes
+            source, as_of, verbose, names=list(assets["display_name"]),
+            notes=notes, upcoming=upcoming,
         )
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
         _record_nothing(store, source, as_of, report)
         return report
+
+    # Before the early return below. A league that has not kicked off scores
+    # nothing and is precisely when its next fixture is the only thing the
+    # page can say about it.
+    report.fixtures = _record_fixtures(store, source, season, as_of, upcoming)
+
     if scored is None or scored.empty:
         report.problems.append(
             notes[0] if notes else "the source has no results yet for this season"
@@ -496,7 +508,7 @@ def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
 
 def _pull(
     source, as_of: date, verbose: bool, names: list[str] | None = None,
-    notes: list[str] | None = None,
+    notes: list[str] | None = None, upcoming: list | None = None,
 ) -> pd.DataFrame:
     """Season-to-date totals for one league, however that league counts them.
 
@@ -552,6 +564,7 @@ def _pull(
         # tournament to the year it began in and returns the history its
         # tournament shapes are read from; a date cutoff strips that history
         # and would cut a World Cup off at the year's end.
+        _harvest(source, raw, as_of, seasons, upcoming)
         kept = raw if source.dated_by_source else _from_season_start(raw, source.league)
         scored = score(kept)
         if (scored is None or scored.empty) and notes is not None:
@@ -603,6 +616,30 @@ def _pull(
 CARRIED_IDENTITY = ("team", "team_name", "position", "role", "car_number")
 
 
+def _harvest(source, raw: pd.DataFrame, as_of: date, seasons, upcoming) -> None:
+    """Keep the unplayed half of a schedule the scorer is about to discard.
+
+    Team sources only. A player's next fixture is their club's, joined through
+    the club the spreadsheet records against them, so harvesting the player
+    feed as well would either duplicate the team rows or -- worse, since a
+    player feed carries no fixtures at all -- quietly overwrite them with
+    nothing.
+    """
+    if upcoming is None or source.asset_type != "Team":
+        return
+    try:
+        rows = fixtures.harvest(
+            source.league, "", raw, as_of, "",
+            rename=fixtures.spelling_for(source.key, seasons),
+        )
+    except Exception as exc:  # noqa: BLE001 -- a fixture is never worth a pull
+        print(f"  {source.league}: no fixtures harvested "
+              f"({type(exc).__name__}: {exc})", flush=True)
+        return
+    if not rows.empty:
+        upcoming.append(rows)
+
+
 def _carry_identity(scored: pd.DataFrame, feed: pd.DataFrame,
                     asset_type: str) -> pd.DataFrame:
     """Put the feed's identity columns back on the scored rows.
@@ -639,6 +676,26 @@ def _carry_identity(scored: pd.DataFrame, feed: pd.DataFrame,
     if len(merged) != len(scored):
         return scored
     return merged
+
+
+def _record_fixtures(store: Store, source, season: str, as_of: date,
+                     upcoming: list) -> int:
+    """Swap in what this league plays next. Never fatal.
+
+    A fixture is a convenience on a page; a pull is the season's record. If
+    this raises, the pull it rode in on must still land.
+    """
+    if not upcoming:
+        return 0
+    try:
+        rows = pd.concat(upcoming, ignore_index=True)
+        rows["season"] = season
+        rows["fetched_at"] = _now()
+        return fixtures.replace(store, season, source.league, rows)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  {source.league}: fixtures not recorded "
+              f"({type(exc).__name__}: {exc})", flush=True)
+        return 0
 
 
 def _record_nothing(store: Store, source, as_of: date, report: IngestReport) -> None:

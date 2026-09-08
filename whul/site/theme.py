@@ -322,6 +322,19 @@ table.feeds .feed-never-pulled .state {
 }
 table.results tr[hidden] { display: none; }
 
+/* A team's next game, between its name and its score. Deliberately quiet:
+   it is context for the number beside it, not a number of its own, so it
+   wears muted ink and never a series colour. The opponent truncates rather
+   than wrapping -- sixty rows each growing a line would push the score off a
+   phone -- and the whole cell carries the untruncated text as a title. */
+td.fixture, th.fixture { font-size: 11.5px; color: var(--muted);
+  white-space: nowrap; max-width: 15em; overflow: hidden;
+  text-overflow: ellipsis; }
+th.fixture { font-weight: 600; letter-spacing: .02em; }
+td.fixture .when { color: var(--text-secondary); }
+td.fixture .versus { opacity: 0.7; }
+@media (max-width: 620px) { td.fixture, th.fixture { max-width: 8em; } }
+
 /* One asset type's raw scoring. Eighteen of these open at once is a page
    nobody reads, so each opens on demand and the list inside is deliberately
    plain text -- the sports do not share a shape, and a grid built for all of

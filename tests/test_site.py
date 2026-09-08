@@ -1816,3 +1816,42 @@ def test_every_image_in_the_repository_is_what_its_name_says():
     assert wrong == [], "\n".join(
         f"{p}: named .{claimed}, actually {actual}" for p, claimed, actual in wrong
     )
+
+
+# --- the next-fixture column ------------------------------------------------
+
+def test_the_roster_table_has_a_next_column_between_name_and_score(site):
+    out, _ = site
+    html = (out / "team" / "ss.html").read_text()
+    assert "<th class='fixture'>Next</th>" in html
+    # Order matters: the user asked for it between the asset and the score.
+    header = html[html.index("<th>Asset</th>"):]
+    assert header.index("class='fixture'") < header.index("Normalized")
+
+
+def test_an_asset_with_no_fixture_gets_an_empty_cell_not_a_guess(site):
+    """The simulated league has no fixtures at all, so every cell is blank --
+    and blank is the answer, not a dash that reads as a known absence."""
+    out, _ = site
+    html = (out / "team" / "ss.html").read_text()
+    assert "<td class='fixture'></td>" in html
+
+
+def test_a_fixture_reads_as_a_date_and_an_opponent():
+    from whul.site.build import _fixture_cell
+
+    cell = _fixture_cell({"date": "2026-09-20", "opponent": "New Orleans Saints",
+                          "home": True, "competition": "REG"})
+    assert "Sep 20" in cell and "vs" in cell and "New Orleans Saints" in cell
+    away = _fixture_cell({"date": "2026-09-20", "opponent": "Houston Texans",
+                          "home": False, "competition": "REG"})
+    assert "at" in away and "vs" not in away
+
+
+def test_an_unreadable_fixture_date_is_shown_as_it_came():
+    """Better a raw string than a crash on the page, and better than dropping
+    the opponent along with it."""
+    from whul.site.build import _fixture_cell
+
+    cell = _fixture_cell({"date": "week 3", "opponent": "Alpha", "home": True})
+    assert "week 3" in cell and "Alpha" in cell

@@ -34,7 +34,16 @@ from whul.scoring.tennis import (
     GRAND_SLAM, INTERNATIONAL, MASTERS_1000, TOUR_250, TOUR_500, TOUR_FINALS,
 )
 
-API_URL = "https://global.flashscore.ninja/2/x/feed/f_2_{day}_-4_en_1"
+#: The feed is keyed by sport id. Tennis is 2; the team sports this project
+#: also reads are below. The rest of the path is the day offset, the timezone
+#: and the language.
+FEED_URL = "https://global.flashscore.ninja/2/x/feed/f_{sport}_{day}_-4_en_1"
+SPORT_TENNIS = 2
+SPORT_SOCCER = 1
+SPORT_BASKETBALL = 3
+SPORT_BASEBALL = 6
+
+API_URL = FEED_URL.format(sport=SPORT_TENNIS, day="{day}")
 #: The feed's own window. Fetching wider gains nothing -- days outside it come
 #: back empty.
 DAY_RANGE = range(-7, 8)
@@ -319,13 +328,14 @@ def apply_rounds(matches: list[dict], session: requests.Session | None = None) -
     return matches
 
 
-def _get(day: int, cache_key: str | None = None) -> str:
+def _get(day: int, cache_key: str | None = None, sport: int = SPORT_TENNIS) -> str:
     if cache_key:
         cached = CACHE / f"{cache_key}.txt"
         if cached.exists():
             return cached.read_text()
 
-    response = requests.get(API_URL.format(day=day), headers=HEADERS, timeout=TIMEOUT)
+    url = FEED_URL.format(sport=sport, day=day)
+    response = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
     response.raise_for_status()
     payload = response.text
 

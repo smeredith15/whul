@@ -726,6 +726,79 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     return 0 if produced else 1
 
 
+def cmd_fixtures(args: argparse.Namespace) -> int:
+    """Which leagues have upcoming fixtures, and which rostered assets do not.
+
+    The column on the roster page is blank wherever nothing is known, which is
+    right and is also indistinguishable from a bug. This is where a reader
+    finds out which it is.
+    """
+    from datetime import date as _date
+
+    from whul import fixtures
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    as_of = _date.fromisoformat(args.date) if args.date else _date.today()
+
+    if args.probe:
+        from whul.sources import flashscore_fixtures as feed
+
+        for name, sport in (("soccer", feed.SPORT_SOCCER),
+                            ("basketball", feed.SPORT_BASKETBALL),
+                            ("baseball", feed.SPORT_BASEBALL)):
+            if args.sport and args.sport != name:
+                continue
+            print(f"\nFlashscore fixtures probe -- {name}\n")
+            for key, value in feed.probe(sport).items():
+                if isinstance(value, list):
+                    print(f"  {key}:")
+                    for item in value:
+                        print(f"      {item}")
+                else:
+                    print(f"  {key:<22} {value}")
+        return 0
+
+    if args.fetch:
+        print("\n  Fetching upcoming fixtures from Flashscore ...\n")
+        got = fixtures.from_flashscore(store, args.season, as_of)
+        print(f"\n  {sum(got.values())} fixture row(s) recorded across "
+              f"{len(got)} feed(s).\n")
+
+    cover = fixtures.coverage(store, args.season)
+    print(f"\n  Fixtures held for {args.season}, as of {as_of}:\n")
+    if cover.empty:
+        print("    none. No league has been pulled since fixtures were added,")
+        print("    or every league's schedule feed carries results only.")
+        print(missing_database_note(store))
+        return 0
+    print(f"    {'League':<20}{'Teams':>6}{'Fixtures':>10}  {'First':<12}{'Last':<12}")
+    for row in cover.itertuples():
+        print(f"    {row.league:<20}{row.teams:>6}{row.fixtures:>10}  "
+              f"{str(row.first):<12}{str(row.last):<12}")
+
+    matched = fixtures.by_asset(store, args.season, as_of)
+    rostered = store.query(
+        "SELECT DISTINCT a.asset_id, a.display_name, r.category, a.asset_type "
+        "FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ? "
+        "ORDER BY r.category, a.display_name",
+        (args.season,),
+    )
+    blank = rostered[~rostered["asset_id"].isin(matched)]
+    print(f"\n  {len(matched)} of {len(rostered)} rostered asset(s) have a next "
+          f"fixture.")
+    if not blank.empty:
+        by_category = blank.groupby("category").size().sort_values(ascending=False)
+        print("\n  No fixture, by category:\n")
+        for category, count in by_category.items():
+            print(f"    {category:<24}{count:>4}")
+        print("\n    A blank is not always a gap: an individual athlete's next "
+              "event is a\n    tournament, which no fixture describes.")
+    return 0
+
+
 def cmd_images_needed(args: argparse.Namespace) -> int:
     """Every image file the site would use, and whether it is there yet.
 
@@ -1836,6 +1909,22 @@ def main(argv: list[str] | None = None) -> int:
     site.add_argument("--season", default="2026-27-SIM", help="season to publish")
     site.add_argument("--out", default="site", help="output directory")
     site.set_defaults(func=cmd_site)
+
+    fixt = sub.add_parser(
+        "fixtures", help="which leagues have upcoming fixtures, and which assets do not"
+    )
+    fixt.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    fixt.add_argument("--season", default="2026-27", help="season to report on")
+    fixt.add_argument("--date", help="YYYY-MM-DD to count from (default: today)")
+    fixt.add_argument("--fetch", action="store_true",
+                      help="pull upcoming MLB, NBA and club soccer matches from "
+                           "Flashscore before reporting")
+    fixt.add_argument("--probe", action="store_true",
+                      help="report what the Flashscore feed returns, without "
+                           "touching the database")
+    fixt.add_argument("--sport", choices=("soccer", "basketball", "baseball"),
+                      help="probe one sport rather than all three")
+    fixt.set_defaults(func=cmd_fixtures)
 
     needed = sub.add_parser(
         "images-needed", help="every image file the site wants, and what is missing"
