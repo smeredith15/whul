@@ -117,12 +117,21 @@ def test_the_rows_are_shaped_like_a_schedule_so_harvest_reads_them():
 
 # --- reading the feed's spelling -------------------------------------------
 
+#: ``{normalized: (roster spelling, the league it plays in)}``.
 ROSTER = {
-    normalize_team(n): n for n in (
-        "Manchester City", "Manchester United", "Internazionale", "Arsenal",
-        "Bayern Munich", "Borussia Dortmund", "Paris Saint-Germain",
-        "Tottenham Hotspur", "Wolverhampton Wanderers", "Real Madrid",
-        "Real Betis",
+    normalize_team(name): (name, league) for name, league in (
+        ("Manchester City", "Premier League"),
+        ("Manchester United", "Premier League"),
+        ("Arsenal", "Premier League"),
+        ("Tottenham Hotspur", "Premier League"),
+        ("Wolverhampton Wanderers", "Premier League"),
+        ("Internazionale", "Serie A"),
+        ("Bayern Munich", "Bundesliga"),
+        ("Borussia Dortmund", "Bundesliga"),
+        ("Paris Saint-Germain", "Ligue 1"),
+        ("Real Madrid", "La Liga"),
+        ("Real Betis", "La Liga"),
+        ("Athletic Club", "La Liga"),
     )
 }
 
@@ -162,11 +171,12 @@ def test_a_two_letter_fragment_is_too_short_to_stand_for_a_club():
 
 # --- the roster side --------------------------------------------------------
 
-def rostered(store, asset_id, asset_type, name, affiliation="", index=1):
+def rostered(store, asset_id, asset_type, name, affiliation="", index=1,
+             league="Premier League"):
     store.upsert("managers", [{"manager_id": "SS", "display_name": "Scott"}],
                  ["manager_id"])
     store.upsert("assets", [{
-        "asset_id": asset_id, "asset_type": asset_type, "league": "Test",
+        "asset_id": asset_id, "asset_type": asset_type, "league": league,
         "display_name": name, "affiliation": affiliation,
         "created_at": "2026-08-21",
     }], ["asset_id"])
@@ -187,9 +197,57 @@ def test_a_players_club_is_looked_for_even_when_nobody_rosters_it():
     store = open_store(":memory:")
     rostered(store, "team-arsenal", "Team", "Arsenal", index=1)
     rostered(store, "player-kane", "Player", "Harry Kane",
-             affiliation="Bayern Munich", index=2)
+             affiliation="Bayern Munich", index=2, league="Bundesliga")
     wanted = fixtures.wanted_teams(store, "2026-27")
-    assert set(wanted.values()) == {"Arsenal", "Bayern Munich"}
+    assert {name for name, _ in wanted.values()} == {"Arsenal", "Bayern Munich"}
+
+
+# --- the world in one payload ----------------------------------------------
+
+def test_a_club_name_shared_across_countries_goes_to_the_right_one():
+    """Found by the probe on a real payload: Brazil's Serie B has an Athletic
+    Club and so does Bilbao. Without the country one gets the other's
+    fixtures, and the page looks entirely right while being wrong."""
+    assert fixtures.match_team("Athletic Club", ROSTER, "SPAIN") == "Athletic Club"
+    assert fixtures.match_team("Athletic Club", ROSTER, "BRAZIL") is None
+
+
+def test_a_club_is_found_in_its_own_country_and_in_europe():
+    """A club's next game is often a European night, not a league match."""
+    assert fixtures.match_team("Arsenal", ROSTER, "ENGLAND") == "Arsenal"
+    assert fixtures.match_team("Arsenal", ROSTER, "EUROPE") == "Arsenal"
+    assert fixtures.match_team("Arsenal", ROSTER, "ARGENTINA") is None
+
+
+def test_no_country_given_searches_everywhere():
+    """Right for a feed that is not global; the caller passes one when it is."""
+    assert fixtures.match_team("Arsenal", ROSTER) == "Arsenal"
+
+
+def test_a_reserve_side_is_not_its_first_team():
+    raw = payload(header("ARGENTINA: Reserve League - Clausura"),
+                  match("a1", "River Plate 2", "Aldosivi 2", SOON))
+    assert list(feed.iter_fixtures(raw)) == []
+
+
+@pytest.mark.parametrize("name", [
+    "Schalke 04", "Hannover 96", "Mainz 05", "Bologna 1909", "Arsenal",
+])
+def test_a_club_named_after_its_founding_year_is_not_a_reserve_side(name):
+    """A bare trailing-number rule would drop three Bundesliga clubs."""
+    assert not feed.RESERVE_PATTERN.search(name)
+
+
+@pytest.mark.parametrize("name", ["River Plate 2", "Barcelona B", "Bayern II",
+                                  "Chelsea U21", "Ajax Youth"])
+def test_a_second_string_is_recognised(name):
+    assert feed.RESERVE_PATTERN.search(name)
+
+
+def test_the_country_is_carried_on_every_parsed_row():
+    raw = payload(header("ENGLAND: Premier League"),
+                  match("a1", "Arsenal", "Chelsea", SOON))
+    assert list(feed.iter_fixtures(raw))[0]["country"] == "ENGLAND"
 
 
 def test_an_athlete_with_no_club_adds_nothing_to_look_for():
@@ -228,3 +286,84 @@ def test_a_sport_that_fails_does_not_lose_the_others(monkeypatch):
     # Must return rather than raise: a fixture is a convenience on a page.
     assert fixtures.from_flashscore(
         store, "2026-27", date(2026, 9, 8), verbose=False) == {}
+
+
+# --- the leagues this feed must not reach ----------------------------------
+
+def test_a_league_the_feed_does_not_serve_is_not_even_searched_for():
+    """The bug this fixes, at its root.
+
+    Unscoped, the matcher was offered all 176 clubs on the roster -- the NFL,
+    the NHL, college football, golfers -- and Flashscore's bare city names
+    ("Buffalo", "New England", "Denver") then reached NFL clubs through the
+    abbreviation rule. The country guard did not stop it: those leagues have
+    no country list, and an empty list was read as "anywhere".
+    """
+    store = open_store(":memory:")
+    rostered(store, "team-bills", "Team", "Buffalo Bills", index=1, league="NFL")
+    rostered(store, "team-arsenal", "Team", "Arsenal", index=2,
+             league="Premier League")
+
+    everything = fixtures.wanted_teams(store, "2026-27")
+    assert {n for n, _ in everything.values()} == {"Buffalo Bills", "Arsenal"}
+
+    soccer_only = fixtures.wanted_teams(
+        store, "2026-27", leagues={"Premier League"})
+    assert {n for n, _ in soccer_only.values()} == {"Arsenal"}
+
+
+def test_a_bare_city_name_no_longer_reaches_an_nfl_club():
+    store = open_store(":memory:")
+    rostered(store, "team-bills", "Team", "Buffalo Bills", index=1, league="NFL")
+    rostered(store, "team-arsenal", "Team", "Arsenal", index=2,
+             league="Premier League")
+    wanted = fixtures.wanted_teams(store, "2026-27",
+                                   leagues=set(feed.SPORTS))
+    assert fixtures.match_team("Buffalo", wanted, "USA") is None
+
+
+def test_a_fixture_from_the_wrong_feed_is_never_shown():
+    """The second guard, and the one that matters most.
+
+    Both sides of a Flashscore tie are translated into the roster's spelling,
+    so a soccer match that reached an NFL club read as a plausible NFL game --
+    "New England Patriots vs Buffalo Bills", on a Wednesday in September.
+    Nothing about the row looked wrong, which is why matching alone is not
+    trusted: the fixture has to have come from a feed that covers the league.
+    """
+    store = open_store(":memory:")
+    rostered(store, "team-bills", "Team", "Buffalo Bills", index=1, league="NFL")
+    fixtures.replace(store, "2026-27", "Flashscore/1", pd.DataFrame([{
+        "season": "2026-27", "league": "Flashscore/1", "team_key": "buffalo bills",
+        "fixture_date": "2026-09-16", "opponent": "New England Patriots",
+        "home": 0, "competition": "MLS", "fetched_at": "now",
+    }]))
+    assert fixtures.by_asset(store, "2026-27", date(2026, 9, 8)) == {}
+
+
+def test_the_leagues_own_feed_is_shown_even_when_a_stray_row_is_sooner():
+    """A wrong row must not merely lose the tie-break -- it must not count."""
+    store = open_store(":memory:")
+    rostered(store, "team-bills", "Team", "Buffalo Bills", index=1, league="NFL")
+    fixtures.replace(store, "2026-27", "Flashscore/1", pd.DataFrame([{
+        "season": "2026-27", "league": "Flashscore/1", "team_key": "buffalo bills",
+        "fixture_date": "2026-09-16", "opponent": "Somebody", "home": 0,
+        "competition": "MLS", "fetched_at": "now",
+    }]))
+    fixtures.replace(store, "2026-27", "NFL", pd.DataFrame([{
+        "season": "2026-27", "league": "NFL", "team_key": "buffalo bills",
+        "fixture_date": "2026-09-17", "opponent": "Detroit Lions", "home": 1,
+        "competition": "REG", "fetched_at": "now",
+    }]))
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["team-bills"]["opponent"] == "Detroit Lions"
+    assert got["team-bills"]["league"] == "NFL"
+
+
+def test_which_feeds_may_speak_for_which_league():
+    assert fixtures.feeds_for("MLB") == {"Flashscore/6"}
+    assert fixtures.feeds_for("Premier League") == {"Flashscore/1"}
+    # A league not listed takes its fixtures from its own scoring pull,
+    # recorded under its own name.
+    assert fixtures.feeds_for("NFL") == {"NFL"}
+    assert fixtures.feeds_for("NCAAF") == {"NCAAF"}

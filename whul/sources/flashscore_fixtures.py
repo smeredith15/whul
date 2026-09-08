@@ -70,14 +70,43 @@ AHEAD = range(0, 8)
 STATUS_UPCOMING = {"1", "18"}
 
 #: A competition header is "COUNTRY: Competition Name", sometimes with a stage
-#: after it. Only the part after the colon is worth showing.
+#: after it. Both halves matter: the name is what a reader sees, and the
+#: country is what stops a club being given somebody else's fixture.
 _HEADER_SPLIT = re.compile(r"^\s*[^:]*:\s*")
+_COUNTRY = re.compile(r"^\s*([^:]+):")
 
 
 def competition_of(header: str) -> str:
     """'ENGLAND: Premier League - Round 5' -> 'Premier League'."""
     without_country = _HEADER_SPLIT.sub("", str(header or "")).strip()
     return re.split(r"\s+[-–]\s+", without_country)[0].strip()
+
+
+def country_of(header: str) -> str:
+    """'ENGLAND: Premier League - Round 5' -> 'ENGLAND'.
+
+    This feed is the whole world at once -- the probe's first three days came
+    back with Argentine Primera C, Armenian second tier and Western Australian
+    play-offs -- and club names are not unique across it. Brazil's Serie B has
+    an Athletic Club; so does Bilbao. Without the country, one of them gets the
+    other's fixture and the page looks right while being wrong.
+    """
+    found = _COUNTRY.match(str(header or ""))
+    return found.group(1).strip().upper() if found else ""
+
+
+#: Names that are a club's second string rather than the club. Flashscore
+#: writes River Plate's reserves as "River Plate 2"; the age-group sides carry
+#: their bracket. Excluded outright: a reserve fixture beside a first-team
+#: badge is a wrong answer, not a partial one.
+#: A *single* trailing digit, 2 to 9. Not any number: Schalke 04, Hannover 96
+#: and Mainz 05 are first teams whose names end in a year, and a bare "\s\d+"
+#: rule would quietly drop all three. A reserve side is never "1".
+RESERVE_PATTERN = re.compile(
+    r"(\s[2-9]|\bU\s?1[5-9]\b|\bU\s?2[0-3]\b|\breserves?\b|\byouth\b|"
+    r"\bII\b|\sB)$",
+    re.IGNORECASE,
+)
 
 
 def _when(segment: str) -> date | None:
@@ -103,9 +132,12 @@ def iter_fixtures(raw: str):
     follows, and for the same reason.
     """
     competition = ""
+    country = ""
     for segment in (s for s in str(raw).split("~") if s):
         if segment.startswith("ZA÷"):
-            competition = competition_of(_field(segment, "ZA") or "")
+            header = _field(segment, "ZA") or ""
+            competition = competition_of(header)
+            country = country_of(header)
             continue
         if not segment.startswith("AA÷"):
             continue
@@ -116,12 +148,15 @@ def iter_fixtures(raw: str):
         when = _when(segment)
         if not home or not away or when is None:
             continue
+        if RESERVE_PATTERN.search(home) or RESERVE_PATTERN.search(away):
+            continue
         yield {
             "match_uid": _field(segment, "AA") or "",
             "game_date": when.isoformat(),
             "home_team": home,
             "away_team": away,
             "competition": competition,
+            "country": country,
             # A schedule frame's shape, so `whul.fixtures.harvest` reads this
             # exactly as it reads nflverse's. Null both sides: these are the
             # games nobody has played.
@@ -213,7 +248,9 @@ def probe(sport: int = SPORT_SOCCER, days: range = range(0, 3)) -> dict:
     parsed = list(iter_fixtures(raw))
     out["parsed"] = len(parsed)
     out["sample_fixtures"] = [
-        f"{p['game_date']}  {p['home_team']} v {p['away_team']}  ({p['competition']})"
+        f"{p['game_date']}  {p['home_team']} v {p['away_team']}  "
+        f"({p['country']}: {p['competition']})"
         for p in parsed[:8]
     ]
+    out["countries"] = sorted({p["country"] for p in parsed if p["country"]})[:25]
     return out
