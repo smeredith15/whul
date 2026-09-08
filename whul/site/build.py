@@ -29,6 +29,7 @@ import pandas as pd
 from whul.config.league import (
     ALL_SLOTS, LEAGUE_ABBR, LEAGUE_NAME, SEASON, active_slots, manager_name,
 )
+from whul import fixtures
 from whul.site import charts, images, rulebook, theme
 from whul.store import benchmarks as bm
 from whul.store.db import Store
@@ -1503,6 +1504,33 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
     )
 
 
+def _fixture_cell(fixture: dict | None) -> str:
+    """A team's next game, small, between its name and its score.
+
+    Empty where nothing is known, and empty deliberately: a golfer's next
+    event is a tournament and no fixture describes one, a league whose feed
+    reports season totals rather than games has no schedule to read, and
+    filling any of those with a guess would make the column untrustworthy for
+    the leagues where it is right.
+    """
+    if not fixture:
+        return "<td class='fixture'></td>"
+    try:
+        when = date.fromisoformat(str(fixture["date"]))
+        day = f"{when:%b} {when.day}"
+    except (TypeError, ValueError):
+        day = str(fixture.get("date", ""))
+    against = str(fixture.get("opponent", ""))
+    versus = "vs" if fixture.get("home") else "at"
+    full = f"{day} {versus} {against}"
+    return (
+        f"<td class='fixture' title=\"{escape(full)}\">"
+        f"<span class='when'>{escape(day)}</span> "
+        f"<span class='versus'>{escape(versus)}</span> "
+        f"<span class='against'>{escape(against)}</span></td>"
+    )
+
+
 def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                 simulated, profiles) -> None:
     """One manager's roster: every slot, with the normalized score it is worth.
@@ -1517,6 +1545,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
         "WHERE season = ? AND as_of = ?",
         (season, str(latest)),
     ).set_index("asset_id")
+    upcoming = fixtures.by_asset(store, season, latest)
 
     sections = []
     total = 0.0
@@ -1540,6 +1569,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                         f"<tr class='empty'>"
                         f"<td class='slotname'>{escape(category)}</td>"
                         f"<td class='undrafted'>Undrafted</td>"
+                        f"<td class='fixture'></td>"
                         f"<td class='num'>—</td></tr>"
                     )
                     continue
@@ -1559,6 +1589,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     f"<tr class='{'' if counts else 'bench'}'>"
                     f"<td class='slotname'>{escape(category)}</td>"
                     f"<td>{_asset_button(asset, name, counts, depth=1, profile=profile)}</td>"
+                    f"{_fixture_cell(upcoming.get(asset))}"
                     f"<td class='num'>{value}</td></tr>"
                 )
         sections.append(
@@ -1567,6 +1598,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
             f"draftable pool. Benched slots are struck through. Click a name for the "
             f"raw stats behind the score.</p>"
             "<table><thead><tr><th>Category</th><th>Asset</th>"
+            "<th class='fixture'>Next</th>"
             "<th class='num'>Normalized</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div>"
         )

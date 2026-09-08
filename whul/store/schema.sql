@@ -257,3 +257,33 @@ CREATE TABLE IF NOT EXISTS admin_overrides (
     note       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (scope, key, season)
 );
+
+-- --------------------------------------------------------------------------
+-- Fixtures
+-- --------------------------------------------------------------------------
+
+-- What each rostered team plays next. Harvested from the schedule frames the
+-- pipeline already downloads for scoring -- a schedule carries the games not
+-- yet played alongside the ones that are, and until now the unplayed half was
+-- read and dropped.
+--
+-- Keyed by the team rather than by the asset, so a club and the four players
+-- who play for it share one row: a player's next fixture is their club's.
+-- `team_key` is `whul.resolve.normalize_team` applied to the name the feed
+-- used, which is the same key everything else in the project matches on.
+--
+-- Rows are replaced wholesale per league on each pull, so a postponed game
+-- disappears rather than lingering as a fixture that will never be played.
+CREATE TABLE IF NOT EXISTS fixtures (
+    season       TEXT NOT NULL,
+    league       TEXT NOT NULL,
+    team_key     TEXT NOT NULL,
+    fixture_date TEXT NOT NULL,
+    opponent     TEXT NOT NULL,
+    home         INTEGER NOT NULL DEFAULT 1,
+    competition  TEXT NOT NULL DEFAULT '',
+    fetched_at   TEXT NOT NULL,
+    PRIMARY KEY (season, league, team_key, fixture_date, opponent)
+);
+
+CREATE INDEX IF NOT EXISTS fixtures_next_idx ON fixtures (season, fixture_date);
