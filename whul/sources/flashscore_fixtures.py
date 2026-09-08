@@ -41,7 +41,8 @@ import pandas as pd
 import requests
 
 from whul.sources.flashscore import (
-    REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_SOCCER, _field, _get,
+    REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_SOCCER, SPORT_TENNIS,
+    _field, _get, parse_tournament_header, slug_to_name,
 )
 
 #: Which sport id serves each league's fixtures.
@@ -56,6 +57,14 @@ SPORTS: dict[str, int] = {
     "MLS": SPORT_SOCCER,
     "NWSL": SPORT_SOCCER,
     "Club Soccer": SPORT_SOCCER,
+    # Tennis is the one individual sport this reader covers, because it is the
+    # one whose next event is a *match*: a named opponent in a named round,
+    # which is the same shape as everything above. Golf and motorsport are an
+    # entry list against a field, and nothing here describes that -- see
+    # `discover` for what would be needed.
+    "ATP": SPORT_TENNIS,
+    "WTA": SPORT_TENNIS,
+    "Tennis": SPORT_TENNIS,
 }
 
 #: How far ahead to look. The feed's window is a fortnight wide and only the
@@ -189,7 +198,8 @@ def load_upcoming(sport: int, days: range = AHEAD, verbose: bool = True) -> pd.D
     a competition nobody listed.
     """
     raw = fetch_window(sport, days, verbose=verbose)
-    rows = list(iter_fixtures(raw))
+    reader = iter_tennis_fixtures if sport == SPORT_TENNIS else iter_fixtures
+    rows = list(reader(raw))
     if verbose:
         competitions = sorted({r["competition"] for r in rows if r["competition"]})
         print(f"  flashscore sport {sport}: {len(rows)} upcoming match(es) "
@@ -253,4 +263,120 @@ def probe(sport: int = SPORT_SOCCER, days: range = range(0, 3)) -> dict:
         for p in parsed[:8]
     ]
     out["countries"] = sorted({p["country"] for p in parsed if p["country"]})[:25]
+    return out
+
+
+# --- tennis -----------------------------------------------------------------
+
+def iter_tennis_fixtures(raw: str):
+    """Upcoming main-draw singles matches, one dict per match.
+
+    The tennis half of this feed is already parsed in production by
+    ``whul.sources.flashscore``, which reads exactly these payloads and throws
+    the upcoming records away. This keeps them, and reuses that module's own
+    header reader so the tour, the category and the qualifying test stay
+    defined once -- a second copy of "which events are main-tour singles" is a
+    second copy to keep right.
+
+    Players arrive as ``WU``/``WV`` slugs rather than ``AE``/``AF``, surname
+    first, which is why ``slug_to_name`` exists.
+    """
+    header = None
+    for segment in (s for s in str(raw).split("~") if s):
+        if segment.startswith("ZA÷"):
+            header = parse_tournament_header(segment)
+            continue
+        if header is None or not segment.startswith("AA÷"):
+            continue
+        if header.get("is_qualifying"):
+            continue
+        if (_field(segment, "AC") or "") not in STATUS_UPCOMING:
+            continue
+        home = slug_to_name(_field(segment, "WU"))
+        away = slug_to_name(_field(segment, "WV"))
+        when = _when(segment)
+        if not home or not away or when is None:
+            continue
+        # The header's tournament keeps its trailing round ("Rome -
+        # Quarterfinal") because the scorer that reads it wants the string
+        # whole. Trimmed here rather than there: that name is matched against
+        # the tournament calendar, and shortening it upstream would be a
+        # change to what scores.
+        tournament = header["tournament"]
+        if header.get("round"):
+            tournament = re.sub(r"\s*[-–]\s*[^-–]+$", "", tournament).strip()
+        yield {
+            "match_uid": _field(segment, "AA") or "",
+            "game_date": when.isoformat(),
+            "home_team": home,
+            "away_team": away,
+            # The tournament, and the round where the header carries one. A
+            # round is what a tennis fixture means -- a quarter-final is not a
+            # first round -- so it rides alongside the competition and is
+            # shown the way a club's competition is.
+            "competition": tournament or header["tournament"],
+            "round": header.get("round", ""),
+            # Tennis headers name a tour, not a country ("ATP - SINGLES:
+            # Rome"), so there is none to narrow by. The roster scoping is
+            # what keeps this to tennis players.
+            "country": "",
+            "home_score": None,
+            "away_score": None,
+        }
+
+
+#: Sport ids worth asking about when looking for golf and motorsport. Flashscore
+#: serves more than a dozen sports off one feed and does not publish the map, so
+#: these are candidates rather than answers -- `discover` reports what each one
+#: actually returns.
+CANDIDATE_SPORTS: tuple[tuple[int, str], ...] = (
+    (1, "soccer"), (2, "tennis"), (3, "basketball"), (4, "hockey"),
+    (5, "american football"), (6, "baseball"), (7, "handball"),
+    (8, "rugby union"), (9, "floorball"), (10, "bandy"), (11, "futsal"),
+    (12, "volleyball"), (13, "cricket"), (14, "darts"), (15, "snooker"),
+    (16, "boxing"), (17, "beach volleyball"), (18, "aussie rules"),
+    (19, "rugby league"), (20, "badminton"), (21, "water polo"),
+    (22, "golf"), (23, "field hockey"), (24, "table tennis"),
+    (25, "beach soccer"), (26, "mma"), (27, "netball"), (28, "pesapallo"),
+    (29, "motorsport"), (30, "motorsport 2"), (31, "esports"),
+)
+
+
+def discover(days: range = range(0, 2)) -> list[dict]:
+    """Ask every candidate sport id what it serves, and report the shape.
+
+    Golf and motorsport are not fixtures. A golfer's next event is a tournament
+    with a field, and a driver's is a race with an entry list -- neither is two
+    named sides and a kickoff, which is all this module knows how to read. So
+    rather than guess a record shape from a sport id guessed in turn, this
+    prints what each id returns: how many headers and records, what the headers
+    say, and which field codes a sample record carries.
+
+    That output is what a parser for those two would be written from. Run it
+    from a machine with access:
+
+        python -m whul.cli fixtures --discover
+    """
+    out = []
+    for sport, guess in CANDIDATE_SPORTS:
+        row: dict[str, object] = {"sport": sport, "guess": guess}
+        try:
+            raw = fetch_window(sport, days, verbose=False)
+        except Exception as exc:  # noqa: BLE001
+            row["result"] = f"FAILED: {type(exc).__name__}"
+            out.append(row)
+            continue
+        if not raw.strip():
+            row["result"] = "empty"
+            out.append(row)
+            continue
+        segments = [s for s in raw.split("~") if s]
+        headers = [_field(s, "ZA") for s in segments if s.startswith("ZA÷")]
+        matches = [s for s in segments if s.startswith("AA÷")]
+        row["result"] = f"{len(headers)} header(s), {len(matches)} record(s)"
+        row["headers"] = [h for h in headers[:4] if h]
+        if matches:
+            row["fields"] = sorted(set(re.findall(r"([A-Z]{2})÷", matches[0])))
+            row["sample"] = matches[0][:200]
+        out.append(row)
     return out

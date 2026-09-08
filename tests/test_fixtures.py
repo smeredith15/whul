@@ -172,3 +172,39 @@ def test_coverage_says_which_leagues_have_fixtures():
     cover = fixtures.coverage(store, "2026-27")
     assert list(cover["league"]) == ["Test"]
     assert int(cover.iloc[0]["teams"]) == 2
+
+
+# --- the competition, for a club that plays in five of them -----------------
+
+def test_a_competition_is_shortened_to_something_a_column_can_hold():
+    assert fixtures.short_competition("Champions League") == "UCL"
+    assert fixtures.short_competition("Premier League") == "PL"
+    assert fixtures.short_competition("Copa del Rey") == "CDR"
+
+
+def test_an_unlisted_competition_falls_back_to_its_initials():
+    """Right far more often than not, and never a guess about what the
+    competition is."""
+    assert fixtures.short_competition("Coupe de la Ligue") == "CL"
+    assert fixtures.short_competition("Eredivisie") == "ERED"
+    assert fixtures.short_competition("") == ""
+
+
+def test_only_a_soccer_asset_is_labelled_with_its_competition():
+    """Everywhere else the competition *is* the league, so printing it would
+    repeat the category in the cell beside it."""
+    store = stocked()
+    rostered(store, "team-alpha", "Team", "Alpha FC")
+    store.conn.execute("UPDATE assets SET league='Premier League' "
+                       "WHERE asset_id='team-alpha'")
+    store.conn.execute("UPDATE fixtures SET league='Flashscore/1', "
+                       "competition='Champions League'")
+    store.conn.commit()
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["team-alpha"]["badge"] == "UCL"
+
+    store.conn.execute("UPDATE assets SET league='NFL' WHERE asset_id='team-alpha'")
+    store.conn.execute("UPDATE fixtures SET league='NFL'")
+    store.conn.commit()
+    again = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert again["team-alpha"]["badge"] == ""

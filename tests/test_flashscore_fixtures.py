@@ -367,3 +367,77 @@ def test_which_feeds_may_speak_for_which_league():
     # recorded under its own name.
     assert fixtures.feeds_for("NFL") == {"NFL"}
     assert fixtures.feeds_for("NCAAF") == {"NCAAF"}
+
+
+# --- tennis: a named opponent in a named round -----------------------------
+
+def tennis_match(uid, home_slug, away_slug, when, status="1"):
+    """A tennis record: players are WU/WV slugs, surname first."""
+    return (f"AA÷{uid}¬AD÷{stamp(when)}¬AC÷{status}¬"
+            f"WU÷{home_slug}¬WV÷{away_slug}¬")
+
+
+def test_an_upcoming_tennis_match_carries_its_opponent_and_round():
+    raw = payload(
+        header("ATP - SINGLES: Rome - Quarterfinal"),
+        tennis_match("t1", "sinner-jannik", "alcaraz-carlos", SOON),
+    )
+    got = list(feed.iter_tennis_fixtures(raw))
+    assert len(got) == 1
+    assert got[0]["home_team"] == "Jannik Sinner"
+    assert got[0]["away_team"] == "Carlos Alcaraz"
+    assert got[0]["competition"] == "Rome"
+    assert got[0]["round"] == "QF"
+
+
+def test_a_finished_tennis_match_is_not_a_fixture():
+    raw = payload(header("ATP - SINGLES: Rome - Quarterfinal"),
+                  tennis_match("t1", "sinner-jannik", "alcaraz-carlos", SOON, "3"))
+    assert list(feed.iter_tennis_fixtures(raw)) == []
+
+
+def test_qualifying_and_doubles_are_not_the_main_draw():
+    """Reusing the production header reader means the definition of
+    "main-tour singles" lives in one place rather than two."""
+    for name in ("ATP - SINGLES: Rome - Qualification",
+                 "ATP - DOUBLES: Rome - Quarterfinal",
+                 "ATP - SINGLES: Some Challenger"):
+        raw = payload(header(name),
+                      tennis_match("t1", "sinner-jannik", "alcaraz-carlos", SOON))
+        assert list(feed.iter_tennis_fixtures(raw)) == [], name
+
+
+def test_a_tennis_player_is_matched_on_their_own_name():
+    """They have no club to join through -- their next fixture is their own
+    match, so the roster name is the key."""
+    store = open_store(":memory:")
+    rostered(store, "player-sinner", "Player", "Jannik Sinner", league="ATP")
+    wanted = fixtures.wanted_teams(store, "2026-27", leagues={"ATP"})
+    assert [n for n, _ in wanted.values()] == ["Jannik Sinner"]
+
+
+def test_a_tennis_fixture_reaches_the_player_and_shows_the_round(monkeypatch):
+    store = open_store(":memory:")
+    rostered(store, "player-sinner", "Player", "Jannik Sinner", league="ATP")
+    raw = payload(
+        header("ATP - SINGLES: Rome - Semifinal"),
+        tennis_match("t1", "sinner-jannik", "alcaraz-carlos", SOON),
+    )
+    monkeypatch.setattr(
+        feed, "load_upcoming",
+        lambda sport, days=None, verbose=True:
+            pd.DataFrame(list(feed.iter_tennis_fixtures(raw))),
+    )
+    fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                             leagues=["ATP"], verbose=False)
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["player-sinner"]["opponent"] == "Carlos Alcaraz"
+    assert got["player-sinner"]["badge"] == "SF"
+    assert got["player-sinner"]["competition"] == "Rome"
+
+
+def test_the_candidate_sports_are_distinct_ids():
+    """`discover` walks these; a duplicate id would silently ask twice and
+    report the second answer as the first sport's."""
+    ids = [sport for sport, _ in feed.CANDIDATE_SPORTS]
+    assert len(ids) == len(set(ids))

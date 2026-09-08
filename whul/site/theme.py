@@ -328,12 +328,40 @@ table.results tr[hidden] { display: none; }
    than wrapping -- sixty rows each growing a line would push the score off a
    phone -- and the whole cell carries the untruncated text as a title. */
 td.fixture, th.fixture { font-size: 11.5px; color: var(--muted);
-  white-space: nowrap; max-width: 15em; overflow: hidden;
-  text-overflow: ellipsis; }
-th.fixture { font-weight: 600; letter-spacing: .02em; }
-td.fixture .when { color: var(--text-secondary); }
+  max-width: 16em; }
+th.fixture { font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+td.fixture .when { color: var(--text-secondary); white-space: nowrap; }
+td.fixture .against { white-space: nowrap; }
+td.fixture .when + .against { margin-left: 0.35em; }
 td.fixture .versus { opacity: 0.7; }
-@media (max-width: 620px) { td.fixture, th.fixture { max-width: 8em; } }
+/* The competition, for a club that plays in five of them. Smaller and quieter
+   than the fixture it qualifies: it says which competition, not what happened.
+   A pill rather than plain text so "UCL" does not read as part of the
+   opponent's name. */
+td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
+  font-weight: 600; letter-spacing: .03em; color: var(--muted);
+  background: var(--grid); border-radius: 3px; padding: 0 4px;
+  vertical-align: 1px; white-space: nowrap; }
+
+/* Narrow screens wrap rather than truncate. A fixture cut to "Sep 20 vs New
+   Or..." has lost the only part anybody reads it for, and the row has the
+   vertical space -- every one of them is already two lines tall for the
+   asset's name and affiliation. */
+@media (max-width: 620px) {
+  /* Four columns on a phone is more than 390px holds, and it was already one
+     column over before this one arrived. The card scrolls rather than the
+     page: a table that pushes the whole document sideways takes the header
+     and the nav with it, and the reader loses their place entirely. */
+  .card { overflow-x: auto; }
+  td.fixture, th.fixture { max-width: 10em; }
+  td.fixture .when { display: block; }
+  td.fixture .when + .against { margin-left: 0; }
+  /* `break-word`, not `anywhere`: a name is broken only when it genuinely
+     cannot fit, so "Carlos Alcaraz" wraps between the words instead of
+     leaving a lone "z" on the next line. The column can afford the width
+     because the card scrolls rather than the page. */
+  td.fixture .against { white-space: normal; overflow-wrap: break-word; }
+}
 
 /* One asset type's raw scoring. Eighteen of these open at once is a page
    nobody reads, so each opens on demand and the list inside is deliberately

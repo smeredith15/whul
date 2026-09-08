@@ -534,6 +534,12 @@ def _pull(
                 f"league year yet (it opened {season_start(source.league)}); "
                 f"nothing to pull"
             )
+        # Nothing to score, but this is exactly when the next fixture is the
+        # only thing the page can say about the league -- and the schedule is
+        # published weeks before the first game. The NFL's opens on a Thursday
+        # and this ran on the Tuesday: 272 fixtures sat in a file nobody asked
+        # for, and every NFL row on every roster was blank.
+        _harvest_ahead(source, as_of, verbose, names, upcoming)
         return pd.DataFrame()
     # A roster-scoped loader is asked only for what the roster holds, which for
     # a team league is eight requests rather than a season of dates.
@@ -614,6 +620,47 @@ def _pull(
 #: silently -- the later definition won, this function read the group-by keys
 #: instead, and a position went missing with nothing raised anywhere.
 CARRIED_IDENTITY = ("team", "team_name", "position", "role", "car_number")
+
+
+def _harvest_ahead(source, as_of: date, verbose: bool, names, upcoming) -> None:
+    """Fetch a not-yet-started season's schedule, for its fixtures alone.
+
+    Only for the leagues that carry a schedule and only for their fixtures:
+    nothing here is scored, because nothing has been played. The season asked
+    for is the one the *whole* league year touches rather than the part of it
+    already gone, which is the difference between "no season yet" and "the
+    season that starts on Thursday".
+
+    Never fatal, and quiet about it. This is a pull nobody asked for, made on
+    the chance that a schedule exists; a league whose feed has not published
+    one yet is the ordinary case, not a fault.
+    """
+    if upcoming is None or source.asset_type != "Team":
+        return
+    from whul.config.league import SEASON
+
+    try:
+        ahead = source.seasons_for(SEASON.end) if source.seasons_for else []
+        if not ahead:
+            return
+        load, _ = (source.live or source.build)()
+        fetch = (
+            (lambda years: load(years, names or []))
+            if source.live is not None and source.roster_scoped
+            else load
+        )
+        raw = fetch(ahead)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"  {source.league}: no schedule published yet for the coming "
+                  f"season ({type(exc).__name__})", flush=True)
+        return
+    if raw is None or raw.empty:
+        return
+    _harvest(source, raw, as_of, ahead, upcoming)
+    if verbose and upcoming:
+        print(f"  {source.league}: season not started; kept "
+              f"{len(upcoming[-1])} upcoming fixture row(s)", flush=True)
 
 
 def _harvest(source, raw: pd.DataFrame, as_of: date, seasons, upcoming) -> None:
