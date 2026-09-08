@@ -44,6 +44,67 @@ EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".svg")
 KINDS = ("manager", "asset", "badge", "club", "flag", "shield")
 
 
+#: The first bytes of each format the site serves. A browser is handed a file
+#: with a Content-Type derived from its extension, so a file whose name and
+#: contents disagree is a file that may never render -- and it renders as a
+#: monogram, which is what a file that is simply absent renders as. That is the
+#: whole problem: `images-needed` says the picture is there, the page shows a
+#: monogram, and nothing anywhere says why.
+#:
+#: Raster formats survive the mismatch in practice, because browsers sniff an
+#: `<img>` and will show a WebP called `.png`. **SVG does not.** An SVG served
+#: as `image/png` is refused, and every flag and shield a designer exports
+#: "for the web" is a candidate.
+SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "png"),
+    (b"\xff\xd8\xff", "jpg"),
+    (b"GIF8", "gif"),
+)
+
+#: Extensions naming the same format.
+SAME_FORMAT: dict[str, set[str]] = {"jpg": {"jpg", "jpeg"}, "jpeg": {"jpg", "jpeg"}}
+
+
+def format_of(head: bytes) -> str:
+    """What a file actually is, from its first bytes. ``""`` when unrecognised.
+
+    Unrecognised is deliberately not an error: the point is to catch a file
+    that is provably something else, not to police a format list.
+    """
+    for signature, name in SIGNATURES:
+        if head.startswith(signature):
+            return name
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    opening = head.lstrip()[:200].lower()
+    if opening.startswith(b"<svg") or opening.startswith(b"<?xml"):
+        return "svg"
+    return ""
+
+
+def mislabelled(source: Path | None = None) -> list[tuple[Path, str, str]]:
+    """Every image whose contents are not the format its name claims.
+
+    Returns ``(path, claimed, actual)``, so a caller can say what to rename it
+    to rather than only that something is wrong.
+    """
+    root = source or SOURCE_DIR
+    if not root.exists():
+        return []
+    out = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in EXTENSIONS:
+            continue
+        claimed = path.suffix.lower().lstrip(".")
+        try:
+            actual = format_of(path.open("rb").read(512))
+        except OSError:
+            continue
+        if actual and actual not in SAME_FORMAT.get(claimed, {claimed}):
+            out.append((path, claimed, actual))
+    return out
+
+
 def plain(key: str) -> str:
     """A key with its accents folded away, for people naming files by hand.
 
