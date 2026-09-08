@@ -235,3 +235,68 @@ def test_prune_takes_the_history_with_it(tmp_path):
     for table in ("daily_scores", "raw_stats"):
         left = store.query(f"SELECT asset_id FROM {table} WHERE asset_id = 'gone'")
         assert left.empty, f"{table} still names a removed asset"
+
+
+# --- the database that was never there -------------------------------------
+
+def test_a_missing_database_says_so_rather_than_reading_as_empty(tmp_path, capsys):
+    """The one failure this project cares about most, in the CLI itself.
+
+    ``open_store`` creates the file when it is not there -- which is right for
+    ``simulate`` and for a first run in CI, and wrong for every read: the new
+    database answers every question with "nothing", and "Nothing rostered in
+    2026-27" is exactly what a real empty roster looks like. The database is
+    gitignored and lives on the `data` branch, so a fresh clone hits this on
+    the first command it runs.
+    """
+    import argparse
+
+    from whul.cli import cmd_images_needed
+
+    missing = tmp_path / "not-here.sqlite3"
+    args = argparse.Namespace(db=str(missing), season="2026-27", images=None)
+    assert cmd_images_needed(args) == 1
+    out = capsys.readouterr().out
+    assert "Nothing rostered" in out
+    assert "There is no database" in out
+    assert "git show origin/data:data/whul.sqlite3" in out
+
+
+def test_a_database_that_is_there_and_empty_does_not_blame_the_clone(tmp_path, capsys):
+    """An empty database somebody built is a different problem, and saying
+    "fetch the data branch" to a league that simply has not imported its draft
+    would send them to overwrite the one they have."""
+    import argparse
+
+    from whul.cli import cmd_images_needed
+    from whul.store import open_store
+
+    present = tmp_path / "empty.sqlite3"
+    open_store(present)  # creates it; the next open finds it there
+    args = argparse.Namespace(db=str(present), season="2026-27", images=None)
+    assert cmd_images_needed(args) == 1
+    out = capsys.readouterr().out
+    assert "Nothing rostered" in out
+    assert "There is no database" not in out
+
+
+def test_the_store_records_whether_it_found_a_database_or_made_one(tmp_path):
+    from whul.store import open_store
+    from whul.store.db import missing_database_note
+
+    path = tmp_path / "whul.sqlite3"
+    made = open_store(path)
+    assert made.existed is False
+    assert missing_database_note(made)
+
+    found = open_store(path)
+    assert found.existed is True
+    assert missing_database_note(found) == ""
+
+
+def test_an_in_memory_store_is_never_a_missing_one():
+    """Every test opens one of these, and none of them is a broken checkout."""
+    from whul.store import open_store
+    from whul.store.db import missing_database_note
+
+    assert missing_database_note(open_store(":memory:")) == ""

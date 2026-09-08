@@ -115,6 +115,14 @@ class Store:
 
     conn: sqlite3.Connection
 
+    #: Where this database lives, and whether it was already there when it was
+    #: opened. ``open_store`` creates a file that is not there yet, which is
+    #: right for ``simulate`` and for a first run in CI and wrong for every
+    #: read: an empty database answers every question with "nothing", which
+    #: reads exactly like a season that has not started.
+    path: str = str(DEFAULT_PATH)
+    existed: bool = True
+
     # -- writing ----------------------------------------------------------
     def upsert(self, table: str, rows: Iterable[dict], keys: Sequence[str]) -> int:
         """Insert rows, replacing any that collide on the primary key.
@@ -330,6 +338,31 @@ class Store:
 
 def open_store(path: Path | str | None = None) -> Store:
     """Open a database and bring its schema up to date."""
+    target = str(path or DEFAULT_PATH)
+    existed = target == ":memory:" or Path(target).exists()
     conn = connect(path)
     apply_schema(conn)
-    return Store(conn)
+    return Store(conn, path=target, existed=existed)
+
+
+#: What to do about it, when the reason a command found nothing is that there
+#: was no database to look in. ``git show`` rather than ``git checkout``: the
+#: latter writes the file *and stages it*, and .gitignore keeps this file out
+#: of the index deliberately.
+NO_DATABASE = """\
+  There is no database at {path} -- an empty one was created just now,
+  which is why everything reads as empty. The league's data lives on the
+  `data` branch, not in the code:
+
+      git fetch origin data
+      git show origin/data:data/whul.sqlite3 > {path}
+
+  Or build a placeholder league instead: `python -m whul.cli simulate`.
+"""
+
+
+def missing_database_note(store: Store) -> str:
+    """The paragraph above, when it applies, and nothing when it does not."""
+    if store.existed:
+        return ""
+    return "\n" + NO_DATABASE.format(path=store.path)
