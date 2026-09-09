@@ -31,6 +31,9 @@ class Tier(str, Enum):
     CHAMPIONS_LEAGUE = "champions_league"
     EUROPA = "europa"
     CONFERENCE = "conference"
+    #: A confederation's top club competition outside UEFA -- for this league,
+    #: the CONCACAF Champions Cup that MLS clubs play.
+    CONTINENTAL_CUP = "continental_cup"
     QUALIFYING = "qualifying"
 
 
@@ -44,6 +47,11 @@ WIN_POINTS: dict[Tier, int] = {
     Tier.DOMESTIC_POSTSEASON: 5,
     Tier.EUROPA: 4,
     Tier.CONFERENCE: 4,
+    #: Four, alongside the Europa League and a domestic cup rather than beside
+    #: the Champions League. It is a confederation's premier competition, which
+    #: argues for five; the field it is won against is far more uneven than
+    #: UEFA's, which argues for less. Four is the admin's call to overrule.
+    Tier.CONTINENTAL_CUP: 4,
     Tier.DOMESTIC_CUP: 4,
     Tier.LEAGUE: 3,
     Tier.QUALIFYING: 0,
@@ -112,6 +120,12 @@ KNOCKOUT_PLAYOFF_PATTERN = re.compile(
 #: contains "Cup", so testing cups first would score a postseason tie as a cup
 #: tie -- 4 points instead of 5.
 TIER_PATTERNS: tuple[tuple[Tier, re.Pattern], ...] = (
+    # Before the Champions League, not after. The CONCACAF competition was
+    # called the Champions *League* until 2024 and feeds still say so, so
+    # testing UEFA's pattern first hands Seattle's continental run the
+    # Champions League's premium. Nothing UEFA plays matches these words.
+    (Tier.CONTINENTAL_CUP, re.compile(
+        r"concacaf|champions cup|leagues cup", re.IGNORECASE)),
     (Tier.CHAMPIONS_LEAGUE, re.compile(r"champions league|uefa champions|ucl", re.IGNORECASE)),
     (Tier.DOMESTIC_POSTSEASON, POSTSEASON_PATTERN),
     (Tier.CONFERENCE, re.compile(r"conference league|uecl", re.IGNORECASE)),
@@ -150,6 +164,8 @@ KEY_TIERS: dict[str, Tier] = {
     "dfbpokal": Tier.DOMESTIC_CUP,
     "coppaitalia": Tier.DOMESTIC_CUP,
     "coupedefrance": Tier.DOMESTIC_CUP,
+    "usopencup": Tier.DOMESTIC_CUP,
+    "concacafchampions": Tier.CONTINENTAL_CUP,
     "epl": Tier.LEAGUE,
     "laliga": Tier.LEAGUE,
     "seriea": Tier.LEAGUE,

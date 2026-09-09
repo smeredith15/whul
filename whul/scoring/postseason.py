@@ -34,8 +34,24 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-#: Share of a regular season a postseason run is worth, identical across leagues.
+#: Share of a regular season a postseason run is worth, where nothing is known
+#: about the field at draft time.
 DEFAULT_BONUS_SHARE = 0.10
+
+#: For the leagues drafted mid-season. By July a manager can see who is heading
+#: for the playoffs, so a postseason run is less of a discovery and is paid
+#: accordingly. The league admin set these; they are not derived from anything.
+MID_SEASON_BONUS_SHARE = 0.075
+
+#: For European competition, where the field is not merely likely but settled:
+#: a club's place in next season's Champions League is known before this one
+#: ends, so there is nothing left to find out at the draft.
+SETTLED_BONUS_SHARE = 0.05
+
+#: For the CONCACAF Champions Cup, which is both settled *and* a small part of
+#: an MLS club's year -- a handful of ties against a field of very uneven
+#: strength.
+CONTINENTAL_CUP_BONUS_SHARE = 0.025
 
 REGULAR = "regular"
 POSTSEASON = "postseason"
@@ -66,17 +82,31 @@ class PostseasonRule:
 BYE_COUNTS_AS_SWEEP = True
 
 RULES: dict[str, PostseasonRule] = {
+    # Drafted before a ball is bowled, so the field is genuinely unknown.
     "NFL": PostseasonRule("NFL", 17),
-    "MLB": PostseasonRule("MLB", 162),
     "NBA": PostseasonRule("NBA", 82),
     # The NHL regular season expands to 84 games in 2026-27. All sixteen
     # qualifiers play a first round, so no bye credit arises here.
     "NHL": PostseasonRule("NHL", 84),
-    # Club soccer has no playoffs; European competition proper plays the role.
-    # Referenced to a 38-game domestic league. Qualifying rounds do not count.
-    "UCL": PostseasonRule("UCL", 38),
-    "Europa League": PostseasonRule("Europa League", 38),
-    "Europa Conference League": PostseasonRule("Europa Conference League", 38),
+
+    # Drafted mid-season. The standings in July already say a great deal about
+    # who plays in October, so the run is worth less as a surprise.
+    "MLB": PostseasonRule("MLB", 162, MID_SEASON_BONUS_SHARE),
+    "WNBA": PostseasonRule("WNBA", 44, MID_SEASON_BONUS_SHARE),
+    "NWSL": PostseasonRule("NWSL", 26, MID_SEASON_BONUS_SHARE),
+    "MLS": PostseasonRule("MLS", 34, MID_SEASON_BONUS_SHARE),
+
+    # European competition, refereced to a 38-game domestic league. The field
+    # is settled before the draft: qualification is decided by the season that
+    # has just finished, so nobody is guessing.
+    "UCL": PostseasonRule("UCL", 38, SETTLED_BONUS_SHARE),
+    "Europa League": PostseasonRule("Europa League", 38, SETTLED_BONUS_SHARE),
+    "Europa Conference League": PostseasonRule(
+        "Europa Conference League", 38, SETTLED_BONUS_SHARE),
+
+    # Settled the same way, and a smaller part of the year besides.
+    "CONCACAF Champions Cup": PostseasonRule(
+        "CONCACAF Champions Cup", 34, CONTINENTAL_CUP_BONUS_SHARE),
 }
 
 PHASE_COLUMNS = (
@@ -121,6 +151,50 @@ def split_phases(
             out[col] = 0.0
         out[col] = out[col].fillna(0.0)
     return out
+
+
+#: Which rule pays for a club soccer competition that is *not* part of the
+#: benchmark. A tier absent here is ordinary football: it counts in the season
+#: total and in the pool the benchmark is drawn from.
+#:
+#: The domestic postseason is deliberately keyed by league rather than by tier,
+#: because MLS and the NWSL play one and the European leagues do not -- and a
+#: rule that guessed would quietly pay a Premier League club for a "playoff"
+#: that was a promotion play-off in a competition nobody drafted.
+BONUS_TIERS: dict[str, str] = {
+    "champions_league": "UCL",
+    "europa": "Europa League",
+    "conference": "Europa Conference League",
+    "continental_cup": "CONCACAF Champions Cup",
+}
+
+POSTSEASON_LEAGUES: dict[str, str] = {"MLS": "MLS", "NWSL": "NWSL"}
+
+
+def rule_for(tier: str, league: str = "") -> PostseasonRule | None:
+    """The bonus rule for a competition, or ``None`` if it counts in full.
+
+    ``tier`` is ``whul.scoring.competition.Tier``'s value, so the same
+    classifier that prices a club's win decides whether a player's appearance
+    in it belongs in the benchmark. One reading of "what competition is this",
+    not two.
+    """
+    if tier == "domestic_postseason":
+        named = POSTSEASON_LEAGUES.get(str(league))
+        return RULES.get(named) if named else None
+    return RULES.get(BONUS_TIERS.get(str(tier), ""))
+
+
+def bonus_for(points: float, games: float, rule: PostseasonRule | None) -> float:
+    """What a run at this rate adds, for one competition.
+
+    Rate, not tally: the points are divided by the games that produced them and
+    credited as though the player had played ``rule.scalar`` more of them. A
+    competition nobody appeared in adds nothing rather than dividing by zero.
+    """
+    if rule is None or not games:
+        return 0.0
+    return float(points) / float(games) * rule.scalar
 
 
 def apply_bonus(agg: pd.DataFrame, rule: PostseasonRule | None) -> pd.DataFrame:

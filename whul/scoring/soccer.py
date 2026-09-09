@@ -28,6 +28,7 @@ from whul.scoring.competition import (
     Outcome, Tier, bye_credit, classify, classify_key, outcome_points,
     uefa_entry_points,
 )
+from whul.scoring.postseason import bonus_for, rule_for
 
 # --- teams ----------------------------------------------------------------
 BIG_MARGIN = 2
@@ -463,12 +464,16 @@ def unmatched_uefa_entry(
     return sorted(set(missed))
 
 
-def score_players(players: pd.DataFrame) -> pd.DataFrame:
-    """Season totals per player.
+def score_players(players: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
+    """Season totals per player, one row per player rather than per competition.
 
     Appearance points are per game. Where the input carries per-match minutes in
     a ``match_minutes`` column they are used exactly; otherwise starts and
     substitute outings approximate them from season aggregates.
+
+    ``postseason=False`` leaves the bonus off, which is what a benchmark is
+    computed from -- see ``_fold_competitions`` for which competitions that
+    excludes and why.
     """
     if players is None or players.empty:
         return pd.DataFrame()
@@ -497,11 +502,82 @@ def score_players(players: pd.DataFrame) -> pd.DataFrame:
         )
 
     work["goal_points"] = work["goals"] * work["position"].map(goal_points_for)
-    work["total_points"] = (
+    work["competition"] = resolve_str(
+        players, ["competition", "competition_name"], default="")
+    work["points"] = (
         work["appearance_points"]
         + work["goal_points"]
         + work["assists"] * PTS_ASSIST
         + work["yellow"] * PTS_YELLOW
         + work["red"] * PTS_RED
     )
-    return work.reset_index(drop=True)
+    return _fold_competitions(work, postseason).reset_index(drop=True)
+
+
+#: What a player's row keeps its identity by. The competition is deliberately
+#: absent: a player is one asset however many competitions they appeared in.
+PLAYER_KEYS = ["player", "league", "season", "position"]
+
+
+def _fold_competitions(work: pd.DataFrame, postseason: bool) -> pd.DataFrame:
+    """One row per player, with European football paid as a bonus.
+
+    Domestic football -- the league and its cups -- is counted in full and is
+    what the benchmark is drawn from. European competition, an MLS or NWSL
+    playoff run and the CONCACAF Champions Cup are *not* in the benchmark: the
+    field for each is settled or nearly so before the draft, so they are
+    credited as a rate on top, at a share of a season set per competition in
+    ``whul.scoring.postseason``.
+
+    ``postseason=False`` returns the domestic half alone, which is what
+    computing a benchmark asks for. The two paths therefore differ by exactly
+    the term that must not be in the pool, rather than by a second code path
+    somebody has to keep in step.
+    """
+    tiers = [
+        (classify_key(key, label) if key else classify(label)).tier.value
+        for key, label in zip(
+            work.get("competition_key", pd.Series("", index=work.index)),
+            work["competition"],
+        )
+    ]
+    work = work.assign(_tier=tiers)
+    rules = [rule_for(tier, league)
+             for tier, league in zip(work["_tier"], work["league"])]
+    work = work.assign(_bonus=[r is not None for r in rules])
+
+    counted = work[~work["_bonus"]]
+    totals = counted.groupby(PLAYER_KEYS, as_index=False).agg(
+        matches=("matches", "sum"), starts=("starts", "sum"),
+        minutes=("minutes", "sum"), goals=("goals", "sum"),
+        assists=("assists", "sum"), yellow=("yellow", "sum"),
+        red=("red", "sum"), appearance_points=("appearance_points", "sum"),
+        goal_points=("goal_points", "sum"), regular_points=("points", "sum"),
+    )
+
+    extra = work[work["_bonus"]].assign(
+        _rule=[r for r, keep in zip(rules, work["_bonus"]) if keep])
+    if extra.empty:
+        totals["bonus_matches"] = 0.0
+        totals["bonus_points"] = 0.0
+        totals["postseason_bonus"] = 0.0
+    else:
+        extra = extra.assign(_credit=[
+            bonus_for(points, matches, rule)
+            for points, matches, rule in zip(
+                extra["points"], extra["matches"], extra["_rule"])
+        ])
+        by_player = extra.groupby(PLAYER_KEYS, as_index=False).agg(
+            bonus_matches=("matches", "sum"), bonus_points=("points", "sum"),
+            postseason_bonus=("_credit", "sum"),
+        )
+        # An outer merge, because a player can appear in a European tie having
+        # played no domestic football at all -- a January signing, or a squad
+        # rotated for a cup. Dropping them would score the run at nothing.
+        totals = totals.merge(by_player, on=PLAYER_KEYS, how="outer")
+
+    numeric = [c for c in totals.columns if c not in PLAYER_KEYS]
+    totals[numeric] = totals[numeric].fillna(0.0)
+    totals["total_points"] = totals["regular_points"] + (
+        totals["postseason_bonus"] if postseason else 0.0)
+    return totals
