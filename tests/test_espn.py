@@ -1036,7 +1036,50 @@ def test_a_date_that_cannot_be_read_is_counted_not_skipped(monkeypatch, capsys):
     assert len(calls) == 2, "one retry, because a second attempt saves a day"
     printed = capsys.readouterr().out
     assert "could not be read" in printed
+
+
+def test_a_lost_date_is_judged_by_what_its_competition_returned(
+    monkeypatch, capsys
+):
+    """Three dates missing from a feed that answered every other date with
+    nothing are three more nothings; three missing from the league are a week
+    of results. Reporting only the total makes those read alike, and the
+    cautious reading of the harmless one is a re-run that changes nothing."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    monkeypatch.setattr(espn, "season_dates",
+                        lambda season, league="nba": [date(2025, 3, d)
+                                                      for d in (1, 2, 3)])
+
+    def one_day_refused(competition, day):
+        if day.day == 3:
+            raise RuntimeError("403")
+        if competition == "mls":
+            return {"events": [_finished_match()]}
+        return {"events": []}
+
+    monkeypatch.setattr(espn, "scoreboard", one_day_refused)
+
+    # The league itself lost a date, and it had been returning matches.
+    espn.load_soccer_matches("mls", [2025], include_cups=False)
+    printed = capsys.readouterr().out
     assert "Re-run before freezing" in printed
+    assert "row(s) on the dates that did answer" in printed
+
+
+def _finished_match() -> dict:
+    return {
+        "competitions": [{
+            "status": {"type": {"completed": True}},
+            "competitors": [
+                {"homeAway": "home", "score": "2",
+                 "team": {"displayName": "Inter Miami CF"}},
+                {"homeAway": "away", "score": "1",
+                 "team": {"displayName": "LA Galaxy"}},
+            ],
+        }],
+    }
 
 
 def test_a_date_that_reads_on_the_second_try_is_not_reported(monkeypatch, capsys):

@@ -69,6 +69,12 @@ class BenchmarkRun:
     #: True when the pool was drawn over league-year windows rather than
     #: calendar seasons, which is how the continuous sports are benchmarked.
     windowed: bool = False
+    #: How many scored rows each season contributed, in season order. The pool
+    #: is truncated per season, so a season that comes back thin is not diluted
+    #: by the others -- it silently shortens the pool. MLS drew 567 of a
+    #: possible 675 across every run for weeks and nothing said which season was
+    #: short, or that one was.
+    rows_by_season: dict[int, int] = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
@@ -91,8 +97,38 @@ class BenchmarkRun:
                     f"  {row.norm_key:<22}{row.benchmark:>12,.1f}"
                     f"{row.pool_size:>8}{flag}"
                 )
+        if self.rows_by_season:
+            counts = "  ".join(f"{season} {n:,}"
+                               for season, n in sorted(self.rows_by_season.items()))
+            lines.append(f"  rows a {unit[:-1]}: {counts}")
+            for season in self.thin_seasons():
+                lines.append(
+                    f"  ! {season} contributed {self.rows_by_season[season]:,} rows "
+                    f"against a median of {self.median_rows():,}. The pool is "
+                    f"truncated a {unit[:-1]} at a time, so this one is short "
+                    f"rather than blended away"
+                )
         lines += [f"  ! {p}" for p in self.problems]
         return "\n".join(lines)
+
+    def median_rows(self) -> int:
+        counts = sorted(self.rows_by_season.values())
+        if not counts:
+            return 0
+        return counts[len(counts) // 2]
+
+    def thin_seasons(self) -> list[int]:
+        """Seasons that returned far less than the others did.
+
+        Half the median is the line. A season genuinely lighter than its
+        neighbours -- a shortened one, an expansion year -- does not fall that
+        far; a season the feed only partly answered does.
+        """
+        median = self.median_rows()
+        if not median:
+            return []
+        return sorted(season for season, n in self.rows_by_season.items()
+                      if n * 2 < median)
 
 
 #: A pool this small makes the 99th percentile close to the single best season
@@ -399,6 +435,8 @@ def compute(
 
     run.used = sorted(int(s) for s in scored["season"].dropna().unique())
     run.rows = len(scored)
+    run.rows_by_season = {int(season): int(n) for season, n
+                          in scored["season"].dropna().value_counts().items()}
 
     bench = store_benchmarks.compute(
         scored, asset_type, season="", season_col="season", managers=managers

@@ -898,10 +898,12 @@ def load_soccer_matches(
         )
 
     rows: list[dict] = []
-    lost = 0
+    lost: dict[str, int] = {}
+    produced: dict[str, int] = {}
     for competition in competitions:
         if competition not in LEAGUE_PATHS:
             continue
+        before_competition = len(rows)
         for season in seasons:
             days = season_dates(season, competition)
             if verbose:
@@ -921,10 +923,11 @@ def load_soccer_matches(
                 if verbose and index and index % 60 == 0:
                     print(f"    {index}/{len(days)} dates, {len(rows):,} rows", flush=True)
             if failed:
-                lost += failed
+                lost[competition] = lost.get(competition, 0) + failed
                 print(f"    {competition} {season}: {failed} of {len(days)} date(s) "
                       f"could not be read, so their matches are missing",
                       flush=True)
+        produced[competition] = len(rows) - before_competition
     if lost:
         # This is the failure the whole file is written against. A benchmark
         # built from fewer matches than were played is not an error anywhere --
@@ -933,10 +936,31 @@ def load_soccer_matches(
         # disagreeing: 121.35 and then 117.18, the second of which had *more*
         # scoring in it. Before this, every one of those dates was skipped by a
         # bare `except: continue`.
-        print(f"\n  {lost} date(s) in total could not be read. The pool below is "
-              f"drawn from fewer matches than were played, which lowers the "
-              f"benchmark and raises every score measured against it. Re-run "
-              f"before freezing.\n", flush=True)
+        # Which competition lost them decides whether it matters. Three dates
+        # missing from a feed that answered every other date with nothing are
+        # three more nothings; three missing from the league is a week of
+        # results. Saying only the total makes those read alike, and the
+        # cautious reading of the harmless one is a re-run that changes nothing.
+        total = sum(lost.values())
+        empty = [c for c in lost if not produced.get(c)]
+        for competition, count in sorted(lost.items()):
+            got = produced.get(competition, 0)
+            note = ("and that competition returned no matches at all on the "
+                    "dates that did answer, so these are probably more of the "
+                    "same" if not got else
+                    f"and that competition returned {got:,} row(s) on the dates "
+                    f"that did answer")
+            print(f"  {competition}: {count} date(s) unread, {note}", flush=True)
+        if len(empty) == len(lost):
+            print(f"\n  {total} date(s) could not be read, all of them in "
+                  f"competitions that produced nothing anywhere. The pool is "
+                  f"very likely complete, but this cannot be proven from here.\n",
+                  flush=True)
+        else:
+            print(f"\n  {total} date(s) in total could not be read. The pool below "
+                  f"is drawn from fewer matches than were played, which lowers "
+                  f"the benchmark and raises every score measured against it. "
+                  f"Re-run before freezing.\n", flush=True)
     return pd.DataFrame(rows)
 
 
