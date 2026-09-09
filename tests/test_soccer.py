@@ -599,10 +599,10 @@ def test_reaching_europe_is_worth_points_a_season_of_wins_does_not_say():
     """Nothing in a club's own results says it earned a place. Without this the
     biggest outcome of a domestic season short of the title is worth nothing."""
     row = soccer.score_teams(
-        one_win(), uefa_entry=pd.DataFrame([entry_row("Arsenal")])
+        one_win(), continental_entry=pd.DataFrame([entry_row("Arsenal")])
     ).iloc[0]
-    assert row["uefa_entry"] == "Champions League -- League phase"
-    assert row["pts_uefa_entry"] == 12.0
+    assert row["continental_entry"] == "Champions League -- League phase"
+    assert row["pts_continental_entry"] == 12.0
     # 3 for the win, 1 for the two-goal margin, 1 for the clean sheet, 12 for Europe
     assert row["total_points"] == 17.0
 
@@ -619,29 +619,29 @@ def test_where_a_club_comes_in_is_what_it_is_worth(competition, entry_round, exp
     same thing, and the participant list states which is which."""
     row = soccer.score_teams(
         one_win(),
-        uefa_entry=pd.DataFrame([entry_row("Arsenal", competition=competition,
+        continental_entry=pd.DataFrame([entry_row("Arsenal", competition=competition,
                                            entry_round=entry_round)]),
     ).iloc[0]
-    assert row["pts_uefa_entry"] == expected
+    assert row["pts_continental_entry"] == expected
 
 
 def test_the_conference_league_play_off_is_not_discounted():
     """It *is* how a club from a top-five league enters, against opposition it
     is overwhelmingly expected to beat. Halving it prices a near-certainty as a
     coin toss."""
-    from whul.scoring.competition import uefa_entry_points
+    from whul.scoring.competition import continental_entry_points
 
-    assert uefa_entry_points("Conference League", "Play-off round") == \
-        uefa_entry_points("Conference League", "League phase")
-    assert uefa_entry_points("Champions League", "Play-off round") < \
-        uefa_entry_points("Champions League", "League phase")
+    assert continental_entry_points("Conference League", "Play-off round") == \
+        continental_entry_points("Conference League", "League phase")
+    assert continental_entry_points("Champions League", "Play-off round") < \
+        continental_entry_points("Champions League", "League phase")
 
 
 def test_a_club_with_no_place_in_europe_is_unaffected():
-    row = soccer.score_teams(one_win(), uefa_entry=pd.DataFrame([
+    row = soccer.score_teams(one_win(), continental_entry=pd.DataFrame([
         entry_row("Liverpool")
     ])).iloc[0]
-    assert row["uefa_entry"] == "" and row["pts_uefa_entry"] == 0.0
+    assert row["continental_entry"] == "" and row["pts_continental_entry"] == 0.0
     assert row["total_points"] == 5.0
 
 
@@ -649,9 +649,9 @@ def test_entry_is_matched_on_a_normalized_name():
     """The participant list and the match feed do not spell clubs alike."""
     row = soccer.score_teams(
         one_win(team="Monaco", league="Ligue 1"),
-        uefa_entry=pd.DataFrame([entry_row("AS Monaco")]),
+        continental_entry=pd.DataFrame([entry_row("AS Monaco")]),
     ).iloc[0]
-    assert row["pts_uefa_entry"] == 12.0
+    assert row["pts_continental_entry"] == 12.0
 
 
 # Every one of these came out of a live benchmark run and was wrong there
@@ -666,9 +666,9 @@ def test_entry_is_matched_on_a_normalized_name():
 ])
 def test_a_club_the_two_sources_spell_differently_still_matches(entrant, feed, why):
     row = soccer.score_teams(
-        one_win(team=feed), uefa_entry=pd.DataFrame([entry_row(entrant)])
+        one_win(team=feed), continental_entry=pd.DataFrame([entry_row(entrant)])
     ).iloc[0]
-    assert row["pts_uefa_entry"] == 12.0, why
+    assert row["pts_continental_entry"] == 12.0, why
 
 
 def test_inter_milan_is_never_scored_as_ac_milan():
@@ -682,10 +682,10 @@ def test_inter_milan_is_never_scored_as_ac_milan():
         for t in ("Milan", "Internazionale")
     ])
     out = soccer.score_teams(
-        both, uefa_entry=pd.DataFrame([entry_row("Inter Milan")])
+        both, continental_entry=pd.DataFrame([entry_row("Inter Milan")])
     ).set_index("team")
-    assert out.loc["Internazionale", "pts_uefa_entry"] == 12.0
-    assert out.loc["Milan", "pts_uefa_entry"] == 0.0
+    assert out.loc["Internazionale", "pts_continental_entry"] == 12.0
+    assert out.loc["Milan", "pts_continental_entry"] == 0.0
 
 
 def test_a_name_that_did_not_match_names_what_it_came_nearest_to():
@@ -693,7 +693,7 @@ def test_a_name_that_did_not_match_names_what_it_came_nearest_to():
     Villa that is not there. Naming Villarreal makes the false alarm obvious."""
     ours = pd.DataFrame([{"team": "Villarreal", "season": 2027}])
     entry = pd.DataFrame([entry_row("Aston Villa"), entry_row("Slovan Bratislava")])
-    assert soccer.unmatched_uefa_entry(ours, entry) == \
+    assert soccer.unmatched_continental_entry(ours, entry) == \
         [("Aston Villa", 2027, "Villarreal")]
 
 
@@ -707,14 +707,14 @@ def test_a_word_too_common_to_identify_a_club_is_not_reported(entrant, ours):
     nobody reads is worth nothing when the thing it hides is twelve points."""
     frame = pd.DataFrame([{"team": ours, "season": 2027}])
     entry = pd.DataFrame([entry_row(entrant)])
-    assert soccer.unmatched_uefa_entry(frame, entry) == []
+    assert soccer.unmatched_continental_entry(frame, entry) == []
 
 
 def test_a_different_club_that_shares_a_word_is_not_reported():
     """Real Betis is not Real Madrid."""
     ours = pd.DataFrame([{"team": "Real Madrid", "season": 2027}])
     entry = pd.DataFrame([entry_row("Real Betis")])
-    assert soccer.unmatched_uefa_entry(ours, entry) == []
+    assert soccer.unmatched_continental_entry(ours, entry) == []
 
 
 def test_a_domestic_season_earns_a_place_in_the_following_uefa_year():
@@ -852,3 +852,38 @@ def test_one_player_across_four_competitions_is_still_one_row():
     assert len(out) == 1
     assert out.iloc[0]["matches"] == 35     # league + both cups
     assert out.iloc[0]["bonus_matches"] == 8
+
+
+# --- MLS's continental place ----------------------------------------------
+
+
+def test_the_champions_cup_pays_what_a_europa_league_place_pays():
+    from whul.scoring.competition import continental_entry_points
+
+    assert continental_entry_points("CONCACAF Champions Cup", "League phase") == \
+        continental_entry_points("Europa League", "League phase")
+
+
+def test_the_champions_cup_is_not_discounted_for_entering_early():
+    """It has no league phase to be outside of: an MLS club enters the
+    competition proper whatever round the draw puts it in, and there is no
+    lower competition for it to drop into if it loses."""
+    from whul.scoring.competition import continental_entry_points
+
+    full = continental_entry_points("CONCACAF Champions Cup", "League phase")
+    for entry_round in ("Round One", "Round of 16", ""):
+        assert continental_entry_points("CONCACAF Champions Cup", entry_round) == full
+    # The Champions League is discounted, so this is not a blanket change.
+    assert continental_entry_points("Champions League", "Round One") < \
+        continental_entry_points("Champions League", "League phase")
+
+
+def test_an_mls_club_is_credited_its_champions_cup_place():
+    entry = pd.DataFrame([{
+        "team": "Inter Miami CF", "season": 2025,
+        "competition": "CONCACAF Champions Cup", "entry_round": "Round One",
+    }])
+    matches = one_win(team="Inter Miami CF", league="MLS", date="2025-08-10")
+    row = soccer.score_teams(matches, continental_entry=entry).iloc[0]
+    assert row["pts_continental_entry"] == 8.0
+    assert "CONCACAF Champions Cup" in row["continental_entry"]

@@ -66,6 +66,19 @@ COMPETITION_TITLES = {
     ),
 }
 
+#: MLS's continental competition, which was the CONCACAF Champions *League*
+#: until 2024 -- the same renaming trap as the Conference League, and the same
+#: fix: try both names, newest first.
+#:
+#: Its season is a single year, not a range, because the competition runs
+#: February to June inside one calendar year rather than across two.
+CONCACAF_TITLES = {
+    "CONCACAF Champions Cup": (
+        "{year} CONCACAF Champions Cup",
+        "{year} CONCACAF Champions League",
+    ),
+}
+
 #: The one section worth reading. Anchored, so it cannot also match
 #: "Qualified teams" elsewhere in a long article.
 TEAMS_SECTION = re.compile(r"^teams$", re.IGNORECASE)
@@ -139,7 +152,14 @@ def _is_a_count(name: str) -> bool:
 
 
 def titles_for(competition: str, season: str) -> list[str]:
-    """Every article title a competition has gone by, newest naming first."""
+    """Every article title a competition has gone by, newest naming first.
+
+    ``season`` is a range ("2025-26") for the UEFA competitions and a single
+    year ("2026") for the Champions Cup, matching how each is named.
+    """
+    if competition in CONCACAF_TITLES:
+        return [pattern.format(year=int(str(season).split("-")[0]))
+                for pattern in CONCACAF_TITLES[competition]]
     first, second = season.replace(DASH, "-").split("-")
     return [
         pattern.format(first=int(first), second=f"{int(second):02d}", dash=DASH)
@@ -200,6 +220,34 @@ def entrants_from(frame: pd.DataFrame) -> dict[str, str]:
                     or is_placeholder(name)):
                 continue
             out.setdefault(name, entry)
+    return out
+
+
+def entrants_anywhere(frame: pd.DataFrame) -> dict[str, str]:
+    """Every club-shaped cell in a table, with no entry round.
+
+    The UEFA articles put clubs in columns named ``Teams`` and the round they
+    enter at in ``Entry round``. The Champions Cup article does not: its Teams
+    section is organised by association and qualification method, and column
+    names that are guessed at rather than read return an empty dict, which is
+    indistinguishable from a competition nobody entered.
+
+    So this reads cells rather than columns. It is deliberately generous --
+    a qualification method or an association name will come back as a club --
+    because a name that is not a club matches nothing on the roster and is
+    discarded there, while a column heading that moved costs every club its
+    place. The entry round comes back empty, which is correct for a competition
+    scored the same at every round.
+    """
+    if frame is None or frame.empty:
+        return {}
+    out: dict[str, str] = {}
+    for value in frame.to_numpy().ravel():
+        name = clean(value)
+        if (not name or name.lower() in NOT_A_CLUB or _is_a_count(name)
+                or is_placeholder(name)):
+            continue
+        out.setdefault(name, "")
     return out
 
 
@@ -271,9 +319,10 @@ def load_entrants(competition: str, season: str, session=None) -> dict[str, str]
             f"gone by -- {'; '.join(failures)}. Guessing which other section "
             f"holds them is how a coefficient table gets read as a club list."
         )
+    read = entrants_anywhere if competition in CONCACAF_TITLES else entrants_from
     entrants: dict[str, str] = {}
     for frame in section_tables(title, str(section.get("index")), session):
-        entrants.update(entrants_from(frame))
+        entrants.update(read(frame))
     return entrants
 
 

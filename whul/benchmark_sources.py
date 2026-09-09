@@ -459,7 +459,7 @@ def _soccer_players():
 
     def load(seasons):
         from whul.sources.espn import (
-            CONTINENTAL_CUPS, DOMESTIC_CUPS, EUROPEAN_COMPETITIONS, LEAGUE_PATHS,
+            DOMESTIC_CUPS, LEAGUE_PATHS, continental_for,
         )
 
         def pull(competition):
@@ -534,10 +534,8 @@ def _soccer_players():
         # Premier League player holding his European bonus -- a player on
         # nobody's roster, which is where the bonus went.
         others: list[str] = []
-        for cups in (DOMESTIC_CUPS, CONTINENTAL_CUPS):
-            for key in PLAYER_LEAGUES.values():
-                others += list(cups.get(key, ()))
-        others += list(EUROPEAN_COMPETITIONS)
+        for key in PLAYER_LEAGUES.values():
+            others += list(DOMESTIC_CUPS.get(key, ())) + list(continental_for(key))
         # Each competition once, however many leagues send clubs to it.
         for competition in dict.fromkeys(others):
             if competition not in LEAGUE_PATHS:
@@ -552,10 +550,15 @@ def _soccer_players():
                 # Not a complaint: a cup is full of clubs from below the top
                 # flight, and a European competition is full of clubs from
                 # leagues nobody here drafts from. Counted out loud because
-                # "correctly ignored" and "silently lost" look the same.
+                # "correctly ignored" and "silently lost" look the same -- and
+                # named, because the two are told apart by whether a club you
+                # recognise is in the list.
+                names = sorted(dropped["team"].astype(str).unique())
+                shown = ", ".join(names[:6])
+                more = f", and {len(names) - 6} more" if len(names) > 6 else ""
                 print(f"  {competition}: {len(kept):,} row(s) from our "
                       f"leagues' clubs, {len(dropped):,} from "
-                      f"{dropped['team'].nunique()} club(s) outside them",
+                      f"{len(names)} club(s) outside them ({shown}{more})",
                       flush=True)
             if kept.empty:
                 continue
@@ -570,11 +573,36 @@ def _soccer_players():
         # folds. A duplicate *within* a competition would not be, and would
         # double a season -- so the club is part of the key, to keep a January
         # transfer's two halves apart rather than collapsing them.
-        return rows.drop_duplicates(
+        rows = rows.drop_duplicates(
             subset=[c for c in ("player", "season", "competition_key", "team_id")
                     if c in rows.columns])
+        _report_competition_coverage(rows)
+        return rows
 
     return load, lambda raw: soccer.score_players(raw, postseason=False)
+
+
+def _report_competition_coverage(rows: pd.DataFrame) -> None:
+    """How many rows each league got from each competition, before scoring.
+
+    The one number that says whether a competition arrived. A benchmark that
+    comes back bit-identical to the one before it has either found nothing new
+    or lost what it found, and those read the same from the outside -- so the
+    counts are printed where a reader can see which.
+    """
+    if rows.empty or "competition_key" not in rows.columns:
+        return
+    grid = (rows.pivot_table(index="league", columns="competition_key",
+                             values="player", aggfunc="size", fill_value=0)
+            .astype(int))
+    print("\n  rows by league and competition:", flush=True)
+    width = max((len(str(c)) for c in grid.columns), default=8)
+    header = "  ".join(f"{str(c):>{width}}" for c in grid.columns)
+    print(f"    {'':<16}{header}", flush=True)
+    for league, row in grid.iterrows():
+        cells = "  ".join(f"{v:>{width}}" for v in row)
+        print(f"    {str(league):<16}{cells}", flush=True)
+    print(flush=True)
 
 
 def _soccer_players_live():
@@ -695,6 +723,76 @@ def _uefa_entrants(season: int):
     return pd.DataFrame(rows, columns=["team", "season", "competition", "entry_round"])
 
 
+def _concacaf_season(season: int) -> int:
+    """The Champions Cup an MLS season earns a place in.
+
+    MLS runs inside a calendar year and the Champions Cup runs February to June
+    of the next one, so the 2025 season's finishers play the 2026 edition. The
+    same off-by-one as the UEFA mapping and the same consequence if it is
+    reversed: last year's qualification credited to this year's finish, both
+    real numbers, nothing looking wrong.
+    """
+    return season + 1
+
+
+@lru_cache(maxsize=None)
+def _concacaf_entrants(season: int):
+    """Which clubs entered the Champions Cup off the season labelled ``season``.
+
+    UNVERIFIED, in the sense this repository uses: the Champions Cup article's
+    Teams section has not been read from a machine that can reach Wikipedia --
+    this sandbox answers 403 to it. The reader is written not to depend on the
+    table's column names for exactly that reason. Run
+    `python scripts/probe-concacaf-wikipedia.py` from somewhere with access
+    before trusting a season's numbers.
+    """
+    import pandas as pd
+
+    from whul.sources import wikipedia
+
+    competition = "CONCACAF Champions Cup"
+    year = _concacaf_season(season)
+    try:
+        entrants = wikipedia.load_entrants(competition, str(year))
+    except Exception as exc:  # noqa: BLE001 -- one competition, not the league
+        print(f"  Champions Cup entry: {year} unavailable "
+              f"({type(exc).__name__}), so no MLS club is credited a place in it",
+              flush=True)
+        entrants = {}
+    if not entrants:
+        print(f"  Champions Cup entry: {year} listed nobody, so every MLS club "
+              f"scores zero for qualifying -- eight points each, in silence, "
+              f"if that is wrong", flush=True)
+    return pd.DataFrame(
+        [{"team": club, "season": season, "competition": competition,
+          "entry_round": entry_round} for club, entry_round in entrants.items()],
+        columns=["team", "season", "competition", "entry_round"],
+    )
+
+
+def _continental_entrants(key: str, seasons):
+    """The continental places a league's own season earns, league by league.
+
+    MLS was being handed the UEFA participant lists, which is how five seasons
+    of Inter Milan came to be offered to the club matcher as Inter Miami.
+    """
+    import pandas as pd
+
+    from whul.sources.espn import EUROPEAN_LEAGUES
+
+    years = sorted(set(int(year) for year in seasons))
+    if key in EUROPEAN_LEAGUES:
+        frames = [_uefa_entrants(year) for year in years]
+    elif key == "mls":
+        frames = [_concacaf_entrants(year) for year in years]
+    else:
+        frames = []
+    if not frames:
+        return pd.DataFrame(
+            columns=["team", "season", "competition", "entry_round"])
+    return pd.concat(frames, ignore_index=True)
+
+
 def _soccer(key: str, category: str):
     """A club's league, cup and European matches, gathered into one total.
 
@@ -726,23 +824,20 @@ def _soccer(key: str, category: str):
                     f"will include every opponent it met",
                     flush=True,
                 )
-            held["entry"] = pd.concat(
-                [_uefa_entrants(int(year)) for year in sorted(set(seasons))],
-                ignore_index=True,
-            )
+            held["entry"] = _continental_entrants(key, seasons)
             return matches.assign(league=category)
 
         def score(matches):
             entry = held.get("entry")
-            scored = soccer.score_teams(matches, uefa_entry=entry)
-            missed = soccer.unmatched_uefa_entry(scored, entry)
+            scored = soccer.score_teams(matches, continental_entry=entry)
+            missed = soccer.unmatched_continental_entry(scored, entry)
             if missed:
                 # A name that does not match costs the club up to twelve points
                 # and reads as nothing at all.
                 print(
-                    f"  {key}: {len(missed)} European entrant(s) look like one of "
-                    f"this league's clubs but matched none. The nearest club is "
-                    f"named so a false alarm is obvious:",
+                    f"  {key}: {len(missed)} continental entrant(s) look like one "
+                    f"of this league's clubs but matched none. The nearest club "
+                    f"is named so a false alarm is obvious:",
                     flush=True,
                 )
                 for name, season, near in missed[:10]:

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from whul.scoring import golf, mlb, motorsport, nba, ncaa, nfl, nhl, soccer, tennis
 from whul.scoring.competition import (
-    LEAGUE_WIN, OUTCOME_SHARE, UEFA_LEAGUE_PHASE_POINTS, UEFA_QUALIFYING_DISCOUNT,
+    LEAGUE_WIN, OUTCOME_SHARE, CONTINENTAL_ENTRY_POINTS, CONTINENTAL_QUALIFYING_DISCOUNT,
     WIN_POINTS, Outcome, Tier,
 )
 from whul.scoring.intl_soccer import BEYOND_BEST_SHARE, MATCH_MAX, RUNG, STAGE
@@ -101,9 +101,10 @@ def _club_soccer_teams() -> Rules:
     ]
     europe = [
         item(f"A place in the {name} proper", points)
-        for name, points in UEFA_LEAGUE_PHASE_POINTS.items()
+        for name, points in CONTINENTAL_ENTRY_POINTS.items()
     ]
-    halved = [n for n, d in UEFA_QUALIFYING_DISCOUNT.items() if d < 1]
+    unhalved = [n for n, d in CONTINENTAL_QUALIFYING_DISCOUNT.items() if d >= 1]
+    halved = [n for n, d in CONTINENTAL_QUALIFYING_DISCOUNT.items() if d < 1]
     return Rules(
         "club-soccer-teams",
         "Club soccer — teams",
@@ -119,7 +120,8 @@ def _club_soccer_teams() -> Rules:
         ]
         + [Heading(f"Each result, out of the {num(LEAGUE_WIN)} a league win pays")]
         + endings
-        + [Heading("Reaching Europe, earned by last season's league finish")]
+        + [Heading("Reaching a continental competition, earned by last "
+                   "season's league finish")]
         + europe,
         [
             "Qualifying rounds score nothing. Only the competition proper "
@@ -127,10 +129,17 @@ def _club_soccer_teams() -> Rules:
             "onward.",
             "Losing on penalties pays the same as a draw, because the match "
             "itself was drawn.",
-            "Reaching Europe is halved if the club still has to come through a "
-            f"qualifying tie ({', '.join(halved)}). It is not halved for the "
-            "Conference League, where a top-five-league club is expected to win "
-            "that tie comfortably.",
+            "A continental place is halved if the club still has to come "
+            f"through a qualifying tie ({', '.join(halved)}). It is not halved "
+            f"for the others ({', '.join(unhalved)}): a top-five-league club is "
+            "expected to win a Conference League play-off comfortably, and the "
+            "Champions Cup has no league phase to be outside of — an MLS club "
+            "is in the competition proper whatever round it enters at, with no "
+            "lower competition to drop into.",
+            "MLS clubs earn their place in the CONCACAF Champions Cup, which "
+            "pays what a Europa League place pays. Reaching one is the same "
+            "size of achievement inside its own league, and every club is "
+            "measured against its own league.",
             "Skipping a round by finishing high enough is paid as though the club "
             "had played it and won.",
         ],
