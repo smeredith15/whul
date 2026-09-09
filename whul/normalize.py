@@ -73,6 +73,7 @@ def buffer_pool(
     asset_type: str,
     managers: int = BENCHMARK_MANAGER_COUNT,
     season_col: str | None = None,
+    dropped: list | None = None,
 ) -> pd.DataFrame:
     """Truncate each normalization group to its fantasy-relevant buffer pool.
 
@@ -110,6 +111,8 @@ def buffer_pool(
 
     out["norm_key"] = assign_norm_key(out, asset_type)
     out["buffer_n"] = out["draft_pool"].map(lambda p: round(rates[p] * managers * mult)).astype(int)
+    if season_col:
+        out = drop_undelivered_seasons(out, season_col, dropped)
     out = out.sort_values("total_points", ascending=False)
     # Rank within the normalization group so every position keeps its own pool.
     rank_by = ([season_col] if season_col else []) + ["norm_key"]
@@ -117,11 +120,57 @@ def buffer_pool(
     return out[out["pool_rank"] <= out["buffer_n"]].reset_index(drop=True)
 
 
+#: A season below this share of the group's median is taken as a season the
+#: feed did not deliver rather than a season that was played that way.
+DELIVERED_SHARE = 0.5
+
+#: Below this many seasons there is no median worth trusting, so nothing is
+#: dropped: two seasons cannot tell which of them is the odd one.
+MIN_SEASONS_TO_JUDGE = 3
+
+
+def drop_undelivered_seasons(
+    frame: pd.DataFrame, season_col: str, dropped: list | None = None
+) -> pd.DataFrame:
+    """Remove a group's seasons that the feed barely answered.
+
+    Truncation happens a season at a time, so a season is meant to contribute
+    its own best ``buffer_n``. One that comes back with a fraction of the usual
+    number contributes an arbitrary handful instead -- not that season's best,
+    just whoever the feed happened to return -- and those rows sit in the pool
+    the percentile is taken from.
+
+    ESPN's MLS 2021 is the case: 30 clubs listed, 27 players returned against a
+    median of 894 across the other four seasons. It is not zero, so nothing
+    caught it; it was a twentieth of the MLS pool for weeks.
+
+    Judged per group, because a season thin for one league is ordinary for the
+    five others pulled beside it.
+    """
+    if frame.empty or season_col not in frame.columns:
+        return frame
+    counts = frame.groupby(["norm_key", season_col]).size()
+    keep = pd.Series(True, index=frame.index)
+    for norm_key, by_season in counts.groupby(level=0):
+        seasons = by_season.droplevel(0)
+        if len(seasons) < MIN_SEASONS_TO_JUDGE:
+            continue
+        floor = seasons.median() * DELIVERED_SHARE
+        undelivered = [s for s, n in seasons.items() if n < floor]
+        for season in undelivered:
+            keep &= ~((frame["norm_key"] == norm_key) & (frame[season_col] == season))
+            if dropped is not None:
+                dropped.append((str(norm_key), season, int(seasons[season]),
+                                int(seasons.median())))
+    return frame[keep]
+
+
 def compute_benchmarks(
     df: pd.DataFrame,
     asset_type: str,
     managers: int = BENCHMARK_MANAGER_COUNT,
     season_col: str | None = None,
+    dropped: list | None = None,
 ) -> pd.DataFrame:
     """Frozen 99th-percentile benchmark per normalization group.
 
@@ -129,7 +178,8 @@ def compute_benchmarks(
     ``season_col`` when ``df`` spans several seasons, so each season is truncated
     to its own top-N before the percentile is taken across the pooled result.
     """
-    pool = buffer_pool(df, asset_type, managers, season_col=season_col)
+    pool = buffer_pool(df, asset_type, managers, season_col=season_col,
+                       dropped=dropped)
     # pandas' linear interpolation matches R's default quantile type 7.
     bench = (
         pool.groupby("norm_key")["total_points"]
