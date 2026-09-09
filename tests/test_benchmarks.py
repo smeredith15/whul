@@ -898,3 +898,64 @@ def test_the_source_database_is_not_written_to(tmp_path):
     bm.adopt(here, str(laptop), "2026-27-x")
 
     assert laptop.read_bytes() == before
+
+
+# --- how deep a pool each league draws from ------------------------------
+#
+# This used to live in the workflow's input box, defaulted to the league it
+# was last used for, and produced a run whose numbers came back identical to
+# the frozen ones -- which reads exactly like a change that did nothing rather
+# than like a run aimed at the wrong league. Depth is a property of the league,
+# so it belongs on the Source.
+
+
+def seasons_asked_for(monkeypatch) -> dict[str, int]:
+    """Record the pool depth each source is computed at, without computing."""
+    from whul import benchmarks as benchmarks_module
+
+    seen: dict[str, int] = {}
+
+    def record(league, load, score, **kw):
+        seen[league] = kw["seasons"]
+        return benchmarks.BenchmarkRun(
+            league=league, asset_type=kw.get("asset_type", "Player")
+        )
+
+    monkeypatch.setattr(benchmarks_module, "compute", record)
+    monkeypatch.setattr(benchmarks_module, "compute_windowed", record)
+    return seen
+
+
+def test_a_league_that_wants_a_deeper_pool_gets_one_unasked(tmp_path, monkeypatch):
+    seen = seasons_asked_for(monkeypatch)
+    run_cli("compute", "intl-soccer", "--db", str(tmp_path / "w.sqlite3"))
+    # Five seasons hold one World Cup and either one continental championship
+    # or two, depending where the window starts -- so the pool would change
+    # shape with the calendar rather than with the football.
+    assert seen["Intl Soccer"] == 8
+
+
+def test_a_league_without_an_opinion_draws_from_the_usual_five(tmp_path, monkeypatch):
+    seen = seasons_asked_for(monkeypatch)
+    run_cli("compute", "nfl", "--db", str(tmp_path / "w.sqlite3"))
+    assert seen["NFL"] == benchmarks.DEFAULT_SEASONS
+
+
+def test_naming_a_depth_still_overrides_every_league(tmp_path, monkeypatch):
+    seen = seasons_asked_for(monkeypatch)
+    run_cli("compute", "intl-soccer", "nfl", "--seasons", "3",
+            "--db", str(tmp_path / "w.sqlite3"))
+    assert seen == {"Intl Soccer": 3, "NFL": 3}
+
+
+def test_computing_two_leagues_at_once_does_not_give_them_one_depth(
+    tmp_path, monkeypatch
+):
+    # The failure this guards is the quiet one: club soccer recomputed at
+    # eight seasons reaches back past the pandemic, and nothing about the
+    # output would say so.
+    seen = seasons_asked_for(monkeypatch)
+    run_cli("compute", "intl-soccer", "soccer-players",
+            "--db", str(tmp_path / "w.sqlite3"))
+    assert seen["Intl Soccer"] == 8
+    assert seen["Club Soccer"] == benchmarks.DEFAULT_SEASONS

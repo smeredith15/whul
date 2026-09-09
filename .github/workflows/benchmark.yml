@@ -28,14 +28,21 @@ on:
         description: >-
           Keys from `benchmarks list`, space separated. Only these are
           recomputed; every other group is inherited from the frozen scale.
-        default: "intl-soccer"
+          Required -- there is deliberately no default, because a default here
+          once sent a run at the league it was last used for and returned
+          numbers identical to the frozen ones, which reads exactly like a
+          change that did nothing. Type `all` to recompute every league.
+          Leave empty only on a freeze-only run, where Version names the draft.
+        default: ""
       seasons:
         description: >-
-          How many seasons to draw the pool from. Five everywhere else;
-          international soccer wants eight, two full four-year cycles, because
-          five holds one World Cup and either one continental championship or
-          two depending on where it starts.
-        default: "8"
+          How many seasons to draw the pool from. Leave empty, which is right:
+          each league carries its own depth (five for most, eight for
+          international soccer, two full four-year cycles, because five holds
+          one World Cup and either one continental championship or two
+          depending on where it starts). Set a number only to override every
+          league at once.
+        default: ""
       freeze:
         description: >-
           Adopt the draft as the scale. Leave this unticked on the first run,
@@ -65,6 +72,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Say which leagues
+        # A compute run with no leagues named would silently mean "all of
+        # them" -- twenty leagues, some of which walk dates for an hour. The
+        # box is empty on purpose so that the operator has to say.
+        if: ${{ !inputs.version && !inputs.leagues }}
+        run: |
+          echo "::error::Name the leagues to recompute (keys from" \
+               "\`benchmarks list\`, space separated), or type 'all'."
+          exit 1
 
       - uses: actions/setup-python@v5
         with:
@@ -106,9 +123,17 @@ jobs:
 
       - name: Compute
         if: ${{ !inputs.version }}
+        env:
+          LEAGUES: ${{ inputs.leagues }}
+          SEASONS: ${{ inputs.seasons }}
         run: |
-          python -m whul.cli benchmarks compute ${{ inputs.leagues }} \
-            --seasons "${{ inputs.seasons }}" --save --into "$DRAFT" \
+          # `all` is spelled out rather than left as an empty box, so that
+          # recomputing twenty leagues is something a person chose.
+          if [ "$LEAGUES" = "all" ]; then LEAGUES=""; fi
+          # An empty --seasons is not the same as the default: omitting the
+          # flag lets each Source name its own pool depth.
+          python -m whul.cli benchmarks compute $LEAGUES \
+            ${SEASONS:+--seasons "$SEASONS"} --save --into "$DRAFT" \
             | tee -a benchmarks.txt
 
       # Both of these are the review, and both are worth reading before the
