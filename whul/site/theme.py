@@ -395,6 +395,10 @@ td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
   background: var(--surface-1); color: var(--text-secondary);
   border: 1px solid var(--grid); border-radius: 6px; padding: 5px 10px; }
 .calcadd:hover, .calcdrop:hover { color: var(--text-primary); }
+.calcswitches { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 2px; }
+.calctoggle { display: flex; gap: 8px; align-items: baseline; font-size: 13px;
+  cursor: pointer; }
+.calctoggle input { margin: 0; }
 .calcout { display: flex; flex-wrap: wrap; gap: 10px 32px; align-items: baseline;
   margin-top: 16px; padding-top: 14px; border-top: 2px solid var(--grid); }
 .calcnum { display: flex; flex-direction: column; gap: 2px; }

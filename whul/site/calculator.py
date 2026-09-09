@@ -36,6 +36,10 @@ from whul.scoring import golf, mlb, motorsport, nba, ncaa, nfl, nhl, soccer, ten
 from whul.scoring.competition import (
     LEAGUE_WIN, OUTCOME_SHARE, WIN_POINTS, Outcome, Tier,
 )
+from whul.scoring.intl_soccer import (
+    BEYOND_BEST_SHARE, MATCH_MAX, RUNG, SCALE, STAGE,
+)
+from whul.scoring.postseason import RULES
 from whul.site import rulebook
 
 
@@ -50,6 +54,12 @@ class Field:
     #: A win is worth more in Europe; a clean sheet is worth one everywhere.
     scaled: bool = False
     step: float = 1
+    #: ``game``, ``season``, or empty for both. A double-double count belongs
+    #: to a season: in one game it is not a number anybody types, it is a fact
+    #: about the line already entered.
+    mode: str = ""
+    #: For the stage a match was played at, in international football.
+    stage: str = ""
 
 
 @dataclass
@@ -58,6 +68,41 @@ class Choice:
 
     label: str
     value: float
+
+
+@dataclass
+class Bisection:
+    """MLB's two stretches, and what each is worth.
+
+    The league drafts in July, so a season in progress is bisected: what is
+    left of it is partly known and discounted, and the following season's
+    pre-draft stretch is inflated to make the two reconcile to a full season.
+    A single game is worth different amounts depending which side it falls, and
+    a manager reading a box score deserves to be told which.
+    """
+
+    year_n: float
+    year_n1: float
+    year_n_label: str
+    year_n1_label: str
+
+
+@dataclass
+class Postseason:
+    """What one playoff game at this rate adds on top of a regular season."""
+
+    scalar: float
+    note: str
+
+
+@dataclass
+class Doubles:
+    """The categories a double-double is counted across, and the threshold."""
+
+    keys: list[str]
+    threshold: int
+    double: float
+    triple: float
 
 
 @dataclass
@@ -81,6 +126,35 @@ class Calc:
     multiplier_label: str = ""
     multipliers: list[Choice] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: ``season`` alone, or both -- a game and a season are different
+    #: questions and, for MLB and the postseason bonus, different arithmetic.
+    modes: list[str] = field(default_factory=lambda: ["season"])
+    mode_notes: dict = field(default_factory=dict)
+    postseason: Postseason | None = None
+    bisection: Bisection | None = None
+    doubles: Doubles | None = None
+    #: For ``intl``: the ladder, in full.
+    ladder: dict = field(default_factory=dict)
+
+
+def _postseason(league: str) -> Postseason:
+    """The bonus one playoff game at a given rate is worth.
+
+    A postseason is credited as a *rate*, not as extra counting stats: a
+    player's playoff points per game are paid as though they had played a
+    fixed share of a regular season more. So one playoff game with this line
+    is worth this line again, times the share. That is a surprising number
+    until it is shown -- an NFL playoff game is worth 1.7 of itself -- and
+    surprising is exactly what a calculator is for.
+    """
+    rule = RULES[league]
+    return Postseason(
+        scalar=float(rule.scalar),
+        note=(f"A postseason is paid as a rate: {rule.bonus_share:.0%} of a "
+              f"{rule.regular_games}-game season at whatever rate the player "
+              f"managed. One game at this line is worth "
+              f"{rule.scalar:.4g}x itself on top of the regular season."),
+    )
 
 
 def _fields(table: dict, labels: dict[str, str], step: float = 1) -> list[Field]:
@@ -105,6 +179,8 @@ def _nfl_players() -> Calc:
         groups=[["Quarterback", "NFL_QB"], ["Running back", "NFL_RB"],
                 ["Wide receiver", "NFL_WR"], ["Tight end", "NFL_TE"]],
         fields=_fields(nfl.PLAYER_WEIGHTS, rulebook.NFL_PLAYER_LABELS),
+        modes=["game", "season"],
+        postseason=_postseason("NFL"),
     )
 
 
@@ -125,13 +201,27 @@ def _nba_players() -> Calc:
         "bonuses are per game, so enter how many of each.",
         groups=[["Guard", "NBA_Backcourt"], ["Forward or centre", "NBA_Frontcourt"]],
         fields=_fields(nba.BOX_WEIGHTS, rulebook.NBA_PLAYER_LABELS) + [
-            Field("dd", "Double-doubles", float(nba.DOUBLE_DOUBLE_BONUS)),
+            Field("dd", "Double-doubles", float(nba.DOUBLE_DOUBLE_BONUS),
+                  mode="season"),
             Field("td", "Triple-doubles (on top of the double-double)",
-                  float(nba.TRIPLE_DOUBLE_BONUS)),
-            Field("plus_minus", "Net plus-minus across the season",
-                  float(nba.PLUS_MINUS_WEIGHT)),
+                  float(nba.TRIPLE_DOUBLE_BONUS), mode="season"),
+            Field("plus_minus", "Plus-minus", float(nba.PLUS_MINUS_WEIGHT)),
         ],
-        notes=[f"A season needs {nba.MIN_GAMES} games to enter the pool at all."],
+        modes=["game", "season"],
+        postseason=_postseason("NBA"),
+        doubles=Doubles(
+            keys=list(nba.DOUBLE_CATEGORIES), threshold=10,
+            double=float(nba.DOUBLE_DOUBLE_BONUS),
+            triple=float(nba.TRIPLE_DOUBLE_BONUS),
+        ),
+        mode_notes={
+            "game": ["The double-double and triple-double are read off the "
+                     "line rather than asked for: they are a fact about it."],
+            "season": [f"A season needs {nba.MIN_GAMES} games to enter the "
+                       f"pool at all.",
+                       "Doubles are per game, so a season total has to be "
+                       "counted rather than derived."],
+        },
     )
 
 
@@ -145,6 +235,16 @@ def _nba_teams() -> Calc:
     )
 
 
+def _bisection() -> Bisection:
+    """MLB's two halves, named the way a manager thinks about them."""
+    return Bisection(
+        year_n=float(mlb.MULT_YEAR_N),
+        year_n1=float(mlb.MULT_YEAR_N1),
+        year_n_label="After the All-Star break, this year",
+        year_n1_label="Before the All-Star break, next year",
+    )
+
+
 def _mlb_batters() -> Calc:
     return Calc(
         "calc-mlb-batters", "MLB — batter", "linear",
@@ -152,11 +252,23 @@ def _mlb_batters() -> Calc:
         "not for swinging.",
         groups=[["Batter", "MLB_Batter"]],
         fields=_fields(mlb.BATTER_WEIGHTS, rulebook.MLB_BATTER_LABELS),
-        notes=[
-            "Fielding and overall value are folded in from FanGraphs' run "
-            "estimates, which are worth roughly 1-5% of a score and are not "
-            "modelled here.",
-        ],
+        modes=["game", "season"],
+        postseason=_postseason("MLB"),
+        bisection=_bisection(),
+        mode_notes={
+            "game": ["Fielding and baserunning run values are a share of a "
+                     "whole season apportioned by games played, so they do not "
+                     "belong to any one game and are left out here."],
+            "season": [
+                "Fielding and overall value are folded in from FanGraphs' run "
+                "estimates, worth roughly 1-5% of a score, and are not "
+                "modelled here.",
+                "A season is not split into halves here. Which of these hits "
+                "fell after the break decides how much each is worth, and a "
+                "season total does not say -- so this is the undiscounted "
+                "figure, and the real one depends on when the runs came.",
+            ],
+        },
     )
 
 
@@ -167,7 +279,19 @@ def _mlb_pitchers() -> Calc:
         "strikeout earns, by a factor of six.",
         groups=[["Pitcher", "MLB_Pitcher"]],
         fields=_fields(mlb.PITCHER_WEIGHTS, rulebook.MLB_PITCHER_LABELS, step=0.1),
-        notes=["WAR is folded in from FanGraphs and is not modelled here."],
+        modes=["game", "season"],
+        postseason=_postseason("MLB"),
+        bisection=_bisection(),
+        mode_notes={
+            "game": ["WAR is a season-long estimate and is not apportioned to "
+                     "a start, so it is left out here."],
+            "season": [
+                "WAR is folded in from FanGraphs and is not modelled here.",
+                "A season is not split into halves here. Which of these "
+                "innings fell after the break decides how much each is worth, "
+                "and a season total does not say.",
+            ],
+        },
     )
 
 
@@ -201,9 +325,10 @@ def _nhl_players() -> Calc:
             Field("goals", "Goal", float(nhl.PTS_GOAL)),
             Field("assists", "Assist", float(nhl.PTS_ASSIST)),
             Field("shots", "Shot on goal", float(nhl.PTS_SHOT)),
-            Field("plus_minus", "Each point of plus-minus",
-                  float(nhl.PTS_PLUS_MINUS)),
+            Field("plus_minus", "Plus-minus", float(nhl.PTS_PLUS_MINUS)),
         ],
+        modes=["game", "season"],
+        postseason=_postseason("NHL"),
     )
 
 
@@ -300,11 +425,11 @@ def _soccer_players() -> Calc:
             Field("yellow", "Yellow cards", float(soccer.PTS_YELLOW)),
             Field("red", "Red cards", float(soccer.PTS_RED)),
         ],
+        modes=["game", "season"],
+        postseason=_postseason("UCL"),
         notes=[
             "Enter goals on the row matching where the player lines up; the "
             "other two stay at zero.",
-            "European competition is credited as a bonus on top of this, at a "
-            "rate rather than per match, and is not modelled here.",
         ],
     )
 
@@ -452,9 +577,101 @@ def _tennis() -> Calc:
     )
 
 
+# --- international football -------------------------------------------------
+
+#: What each rung is called, in the order a reader ranks them.
+RUNG_NAMES = (
+    ("World Cup (and its qualifying)", "world"),
+    ("Euros, Copa América, AFCON, Asian Cup, Gold Cup", "federation"),
+    ("Nations League", "nations_league"),
+)
+
+
+def _intl_soccer() -> Calc:
+    """One competition's worth of results, then the season around it.
+
+    This looked unmodellable and is not; it is only unlike the others. A
+    national team's score is not a sum of match points, it is a *share of a
+    ceiling*: a competition pays a fixed amount divided along the champion's
+    own path, so winning the Gold Cup in six matches and AFCON in seven are
+    worth the same. Everything needed to compute that is a number a manager
+    can state -- how far they went, how long the format is, and what else they
+    played that year.
+
+    The two season-level controls are the parts that surprise people, which is
+    why they are here rather than in a footnote:
+
+    * **Was this the season's best competition?** The best counts whole and
+      everything after it at half, so a team that wins two trophies does not
+      simply double.
+    * **The biggest rung played all season** sets the lift. A team whose year
+      contained no World Cup has its year scaled up so the best thing it did
+      play can still reach a full ceiling -- otherwise a European side's
+      Nations League year scores half its World Cup year for reasons of the
+      calendar alone.
+    """
+    outcome = {
+        "win": OUTCOME_SHARE[Outcome.WIN],
+        "shootout_win": OUTCOME_SHARE[Outcome.SHOOTOUT_WIN],
+        "draw": OUTCOME_SHARE[Outcome.DRAW],
+    }
+    stages = (("qualifying", "Qualifying"), ("group", "Group stage"),
+              ("knockout", "Knockout"))
+    fields: list[Field] = []
+    for key, name in stages:
+        fields += [
+            Field(f"{key}_win", f"{name}: wins", outcome["win"], stage=key),
+            Field(f"{key}_shootout_win", f"{name}: wins on penalties",
+                  outcome["shootout_win"], stage=key),
+            Field(f"{key}_draw", f"{name}: draws or shootout losses",
+                  outcome["draw"], stage=key),
+            Field(f"{key}_loss", f"{name}: losses", 0.0, stage=key),
+            Field(f"{key}_big", f"{name}: wins by 2 or more",
+                  float(soccer.PTS_BIG_MARGIN), stage=key),
+            Field(f"{key}_clean", f"{name}: clean sheets",
+                  float(soccer.PTS_CLEAN_SHEET), stage=key),
+        ]
+    return Calc(
+        "calc-intl-soccer", "International soccer — national team", "intl",
+        "A national team is not scored on how many matches it won but on how "
+        "far it got: a competition pays a fixed ceiling, shared out along the "
+        "champion's own path. Enter one competition, then say what else the "
+        "year held.",
+        groups=[["Men's", "Men's Intl Soccer"], ["Women's", "Women's Intl Soccer"]],
+        scale_label="This competition",
+        scales=[Choice(label, float(RUNG[key])) for label, key in RUNG_NAMES],
+        fields=fields,
+        ladder={
+            "stages": {key: float(STAGE[key]) for key in STAGE},
+            "match_max": float(MATCH_MAX),
+            "scale": float(SCALE),
+            "beyond_best": float(BEYOND_BEST_SHARE),
+            "best_rung": float(max(RUNG.values())),
+            "rungs": [[label, float(RUNG[key])] for label, key in RUNG_NAMES],
+            "format": [
+                {"key": "group_matches", "label": "Matches in the group stage",
+                 "default": 3},
+                {"key": "knockout_rounds",
+                 "label": "Knockout rounds the champion plays", "default": 4},
+            ],
+        },
+        notes=[
+            "The format fields describe the *tournament*, not this team: the "
+            "denominator is the champion's whole path, which is why going out "
+            "in the group of a long tournament pays less than going out in "
+            "the group of a short one.",
+            "Qualifying length is the team's own, because a CONMEBOL campaign "
+            "is eighteen matches and a CAF one is six and both are the same "
+            "achievement -- so it is counted from what you enter.",
+            "Friendlies, the Olympics and invitational tournaments score "
+            "nothing and should be left out.",
+        ],
+    )
+
+
 def calculators() -> list[Calc]:
     return [
-        _soccer_teams(), _soccer_players(),
+        _soccer_teams(), _soccer_players(), _intl_soccer(),
         _nfl_teams(), _nfl_players(),
         _nba_teams(), _nba_players(),
         _mlb_teams(), _mlb_batters(), _mlb_pitchers(),
