@@ -898,6 +898,7 @@ def load_soccer_matches(
         )
 
     rows: list[dict] = []
+    lost = 0
     for competition in competitions:
         if competition not in LEAGUE_PATHS:
             continue
@@ -905,17 +906,55 @@ def load_soccer_matches(
             days = season_dates(season, competition)
             if verbose:
                 print(f"  {competition} {season}: {len(days)} dates ...", flush=True)
+            failed = 0
             for index, day in enumerate(days):
-                try:
-                    board = scoreboard(competition, day)
-                except Exception:
+                board = _scoreboard_or_none(competition, day)
+                if board is None:
+                    # A date that cannot be read is a day of matches missing
+                    # from the pool, not a day without matches. Counted here
+                    # and reported below; see the note on `lost`.
+                    failed += 1
                     continue
                 name = scoreboard_league_name(board)
                 for event in board.get("events", []):
                     rows.extend(_soccer_rows(event, competition, day, name))
                 if verbose and index and index % 60 == 0:
                     print(f"    {index}/{len(days)} dates, {len(rows):,} rows", flush=True)
+            if failed:
+                lost += failed
+                print(f"    {competition} {season}: {failed} of {len(days)} date(s) "
+                      f"could not be read, so their matches are missing",
+                      flush=True)
+    if lost:
+        # This is the failure the whole file is written against. A benchmark
+        # built from fewer matches than were played is not an error anywhere --
+        # it is a lower number, and a lower benchmark makes every score above
+        # it larger. It was found by two runs of the same five MLS seasons
+        # disagreeing: 121.35 and then 117.18, the second of which had *more*
+        # scoring in it. Before this, every one of those dates was skipped by a
+        # bare `except: continue`.
+        print(f"\n  {lost} date(s) in total could not be read. The pool below is "
+              f"drawn from fewer matches than were played, which lowers the "
+              f"benchmark and raises every score measured against it. Re-run "
+              f"before freezing.\n", flush=True)
     return pd.DataFrame(rows)
+
+
+#: A second attempt costs one request and saves a day of matches. The pause is
+#: deliberately longer than the ordinary one: the failures worth retrying are
+#: the ones where the feed wants to be left alone for a moment.
+RETRY_PAUSE = 2.0
+
+
+def _scoreboard_or_none(competition: str, day: date) -> dict | None:
+    """One day's board, or None having tried twice."""
+    for attempt in range(2):
+        try:
+            return scoreboard(competition, day)
+        except Exception:  # noqa: BLE001 -- one date, not the season
+            if attempt == 0:
+                time.sleep(RETRY_PAUSE)
+    return None
 
 
 def _soccer_rows(

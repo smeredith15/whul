@@ -98,3 +98,21 @@ def no_network(request):
     finally:
         socket.socket.connect = _connect
         socket.socket.connect_ex = _connect_ex
+
+
+@pytest.fixture(autouse=True)
+def _forget_pulled_competitions():
+    """Empty the competition cache around every test.
+
+    ``benchmark_sources._players_in`` memoises one competition's players for
+    the length of a run, so that computing four leagues that all play in the
+    Champions League asks for it once. A run is a process; a test session is
+    hundreds of runs sharing one, and without this a stubbed feed's answer --
+    including an empty one -- is served to the next test that stubs a
+    different feed.
+    """
+    from whul import benchmark_sources
+
+    benchmark_sources._players_in.cache_clear()
+    yield
+    benchmark_sources._players_in.cache_clear()

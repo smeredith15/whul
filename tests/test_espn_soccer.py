@@ -741,3 +741,35 @@ def test_an_empty_champions_cup_list_is_never_silent(monkeypatch, capsys):
 
     assert got.empty
     assert "eight points each, in silence" in capsys.readouterr().out
+
+
+def test_a_competition_that_returns_squads_without_statistics_says_so(
+    monkeypatch, capsys
+):
+    """MLS's US Open Cup rows arrived -- 1,492 of them, correctly attributed --
+    and the benchmark stayed 197.68000000000006 across three versions, one of
+    which predated cups entirely. ESPN returns a club's whole squad for a
+    competition and fills statistics in only where they exist, so a cup can
+    hand back a roster of zeroes: it folds into each player's season adding
+    nothing and creating nobody new. Arriving and counting for nothing look
+    identical in a row count, which is why the appearance count is printed
+    beside it."""
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn_soccer as source
+
+    def some(league, seasons, verbose=True, session=None):
+        if league == "epl":
+            return squad_row(league, seasons)
+        if league == "facup":
+            return squad_row(league, seasons).assign(
+                matches=0, starts=0, goals=0, assists=0)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(source, "load_players", some)
+    load, _ = SOURCES["soccer-players"].build()
+    load([2025])
+
+    printed = capsys.readouterr().out
+    assert "with an appearance" in printed
+    assert "not one appearance among them" in printed
+    assert "facup" in printed

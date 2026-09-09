@@ -33,6 +33,11 @@ on:
           numbers identical to the frozen ones, which reads exactly like a
           change that did nothing. Type `all` to recompute every league.
           Leave empty only on a freeze-only run, where Version names the draft.
+          To correct one league without walking the rest, name its own key:
+          `mls-players` pulls MLS and its two cups where `soccer-players`
+          pulls six leagues and eleven competitions. Never name both -- the
+          group would be computed twice and the run would keep whichever
+          finished last.
         default: ""
       seasons:
         description: >-

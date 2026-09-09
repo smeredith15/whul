@@ -1218,6 +1218,21 @@ def cmd_benchmarks_list(_: argparse.Namespace) -> int:
             f"{'window' if source.windowed else 'season':<8}"
             f"{source.reliability:<12}{source.note}"
         )
+    from whul.benchmark_sources import ORDER, SOURCES
+
+    # Subsets of a source above, so a full run must not include them: it would
+    # compute the same group twice. Named here because they are what a person
+    # dispatching a recompute of one league actually wants.
+    subsets = [SOURCES[key] for key in sorted(SOURCES) if key not in ORDER]
+    if subsets:
+        print("\n  Recomputing one group only -- name these instead, never "
+              "alongside the source they come from:")
+        for source in subsets:
+            print(
+                f"  {source.key:<20}{source.league:<20}"
+                f"{source.asset_type.lower() + 's':<9}{source.note}"
+            )
+
     print("\n  Cheap and verified first, so a failure late in the list still")
     print("  leaves a reviewable set of the leagues that did work.")
     print("  `window` means the pool is drawn over the season's own Aug-Jul")

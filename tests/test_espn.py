@@ -1009,3 +1009,50 @@ def test_the_conference_join_runs_on_the_live_path(monkeypatch):
     out = espn.load_rostered_schedules(
         "ncaaf", [2026], ["Miami Hurricanes"], verbose=False)
     assert list(out["home_conference"]) == ["1"]
+
+
+def test_a_date_that_cannot_be_read_is_counted_not_skipped(monkeypatch, capsys):
+    """Two runs over the same five MLS seasons produced 121.35 and then 117.18,
+    the second of which had *more* scoring in it. The difference was dates the
+    feed refused, dropped by a bare `except: continue` -- and a benchmark drawn
+    from fewer matches than were played is not an error anywhere. It is a lower
+    number, and a lower benchmark makes every score above it larger."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    monkeypatch.setattr(espn, "season_dates",
+                        lambda season, league="nba": [date(2025, 3, 1)])
+
+    calls = []
+
+    def refuses(competition, day):
+        calls.append(day)
+        raise RuntimeError("403")
+
+    monkeypatch.setattr(espn, "scoreboard", refuses)
+    out = espn.load_soccer_matches("mls", [2025], include_cups=False)
+
+    assert out.empty
+    assert len(calls) == 2, "one retry, because a second attempt saves a day"
+    printed = capsys.readouterr().out
+    assert "could not be read" in printed
+    assert "Re-run before freezing" in printed
+
+
+def test_a_date_that_reads_on_the_second_try_is_not_reported(monkeypatch, capsys):
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    monkeypatch.setattr(espn, "season_dates",
+                        lambda season, league="nba": [date(2025, 3, 1)])
+    seen = []
+
+    def flaky(competition, day):
+        seen.append(day)
+        if len(seen) == 1:
+            raise RuntimeError("timeout")
+        return {"events": []}
+
+    monkeypatch.setattr(espn, "scoreboard", flaky)
+    espn.load_soccer_matches("mls", [2025], include_cups=False)
+    assert "could not be read" not in capsys.readouterr().out
