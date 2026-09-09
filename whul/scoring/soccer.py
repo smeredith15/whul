@@ -352,15 +352,27 @@ def _find_club(name: str, ours: dict[str, str]) -> str | None:
     Three rules, in order of how much they assume:
 
     1. The reduced names agree.
-    2. One name's words are all in the other's *and they start with the same
-       word*, which is what separates "West Ham United" from "West Ham" and
-       "Athletic Bilbao" from "Athletic Club".
+    2. One name's words are all in the other's, *they start with the same
+       word*, and the entrant is more than one word -- which is what separates
+       "West Ham United" from "West Ham" and "Athletic Bilbao" from "Athletic
+       Club".
     3. A recorded alias, for pairs no rule can reach.
 
     The first-word condition in (2) is the guard that matters. Without it,
     "Inter Milan" contains every word of "Milan" and would be scored as AC
     Milan -- twelve points to the wrong club, which is worse than none to the
     right one. A match must also be unique: two candidates is not an answer.
+
+    The word-count condition guards the same mistake from the other side, and
+    only on the entrant. An entrant that reduces to one word has offered a city
+    or a common noun, which does not identify a club where a league has two in
+    that city: "Vancouver FC" reduces to "vancouver", which is inside
+    "Vancouver Whitecaps" and starts with the same word -- and Vancouver FC
+    play in the Canadian Premier League. It is deliberately not symmetric. A
+    one-word *feed* name is the ordinary way this list is short -- "Atalanta"
+    against "Atalanta EL", "Athletic" against "Athletic Bilbao" -- and those
+    are real pairs. Refusing an entrant costs nothing unreported, because one
+    matching nobody is printed; a false match is silent.
     """
     key = _compare_key(name)
     if key in ours:
@@ -371,6 +383,8 @@ def _find_club(name: str, ours: dict[str, str]) -> str | None:
     for other, full in ours.items():
         theirs = other.split()
         if not words or not theirs or words[0] != theirs[0]:
+            continue
+        if len(words) < 2:
             continue
         if set(words) <= set(theirs) or set(theirs) <= set(words):
             candidates.append(full)
@@ -412,6 +426,45 @@ def _with_continental_entry(
         club = _find_club(str(row.team), by_season.get(season, {}))
         if club is not None:
             wanted[(club, season)] = (str(row.competition), str(row.entry_round))
+    return _apply_entry(totals, wanted)
+
+
+def duplicate_continental_entry(
+    totals: pd.DataFrame, entry: pd.DataFrame | None
+) -> list[tuple[str, int, list[str]]]:
+    """Clubs two different entrants both resolved to, in the same season.
+
+    One club cannot enter a competition twice, so this is always a matching
+    error and never football. It is the shape a *false* match takes, and false
+    matches are the silent half: an entrant matching nobody is reported by
+    ``unmatched_continental_entry``, while one matching the wrong club just
+    quietly pays somebody.
+
+    Found in a live run. The 2026 Champions Cup lists Vancouver FC, of the
+    Canadian Premier League, alongside the Vancouver Whitecaps -- and both
+    landed on the Whitecaps, because "Vancouver FC" reduces to the bare city.
+    """
+    if entry is None or entry.empty or totals.empty:
+        return []
+    by_season: dict[int, dict[str, str]] = {}
+    for row in totals.itertuples():
+        by_season.setdefault(int(row.season), {})[_compare_key(str(row.team))] = \
+            str(row.team)
+
+    seen: dict[tuple[str, int], list[str]] = {}
+    for row in entry.itertuples():
+        season = int(row.season)
+        club = _find_club(str(row.team), by_season.get(season, {}))
+        if club is not None:
+            seen.setdefault((club, season), []).append(str(row.team))
+    return [(club, season, names)
+            for (club, season), names in sorted(seen.items())
+            if len(names) > 1]
+
+
+def _apply_entry(
+    totals: pd.DataFrame, wanted: dict[tuple[str, int], tuple[str, str]]
+) -> pd.DataFrame:
 
     labels, points = [], []
     for row in totals.itertuples():
