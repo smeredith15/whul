@@ -74,7 +74,10 @@ class BenchmarkRun:
     #: by the others -- it silently shortens the pool. MLS drew 567 of a
     #: possible 675 across every run for weeks and nothing said which season was
     #: short, or that one was.
-    rows_by_season: dict[int, int] = field(default_factory=dict)
+    rows_by_season: dict = field(default_factory=dict)
+    #: ``(group, season, rows, median)`` for each season left out of the pool
+    #: because the feed barely answered it.
+    undelivered: list = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
@@ -101,34 +104,16 @@ class BenchmarkRun:
             counts = "  ".join(f"{season} {n:,}"
                                for season, n in sorted(self.rows_by_season.items()))
             lines.append(f"  rows a {unit[:-1]}: {counts}")
-            for season in self.thin_seasons():
-                lines.append(
-                    f"  ! {season} contributed {self.rows_by_season[season]:,} rows "
-                    f"against a median of {self.median_rows():,}. The pool is "
-                    f"truncated a {unit[:-1]} at a time, so this one is short "
-                    f"rather than blended away"
-                )
+        for group, season, rows, median in sorted(self.undelivered):
+            lines.append(
+                f"  ! {group} {season} left out of the pool: {rows:,} rows "
+                f"against a median of {median:,}. Truncation is a {unit[:-1]} "
+                f"at a time, so a {unit[:-1]} the feed barely answered would "
+                f"otherwise contribute an arbitrary handful rather than its best"
+            )
         lines += [f"  ! {p}" for p in self.problems]
         return "\n".join(lines)
 
-    def median_rows(self) -> int:
-        counts = sorted(self.rows_by_season.values())
-        if not counts:
-            return 0
-        return counts[len(counts) // 2]
-
-    def thin_seasons(self) -> list[int]:
-        """Seasons that returned far less than the others did.
-
-        Half the median is the line. A season genuinely lighter than its
-        neighbours -- a shortened one, an expansion year -- does not fall that
-        far; a season the feed only partly answered does.
-        """
-        median = self.median_rows()
-        if not median:
-            return []
-        return sorted(season for season, n in self.rows_by_season.items()
-                      if n * 2 < median)
 
 
 #: A pool this small makes the 99th percentile close to the single best season
@@ -365,9 +350,14 @@ def compute_windowed(
         return run
     run.used = [w.label for w in windows]
     run.rows = len(totals)
+    run.rows_by_season = {season: int(n) for season, n
+                          in totals["season"].dropna().value_counts().items()}
+    undelivered: list = []
     bench = store_benchmarks.compute(
-        totals, "Player", season="", season_col="season", managers=managers
+        totals, "Player", season="", season_col="season", managers=managers,
+        dropped=undelivered,
     )
+    run.undelivered = undelivered
     run.benchmarks = bench.sort_values("norm_key").reset_index(drop=True)
 
     thin = run.benchmarks[run.benchmarks["pool_size"] < THIN_POOL]
@@ -438,9 +428,12 @@ def compute(
     run.rows_by_season = {int(season): int(n) for season, n
                           in scored["season"].dropna().value_counts().items()}
 
+    undelivered: list = []
     bench = store_benchmarks.compute(
-        scored, asset_type, season="", season_col="season", managers=managers
+        scored, asset_type, season="", season_col="season", managers=managers,
+        dropped=undelivered,
     )
+    run.undelivered = undelivered
     if scale_for and scale_for in SCHEDULE_CHANGES:
         # ``scale_benchmarks`` records the factor it used in an extra column;
         # the stored table has no room for it, and the version's notes already

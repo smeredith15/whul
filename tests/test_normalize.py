@@ -217,3 +217,91 @@ def test_each_club_soccer_league_stands_on_its_own():
 def test_positions_still_split_a_league_that_has_them():
     df = pd.DataFrame({"league": ["NFL", "NFL"], "role": ["QB", "TE"]})
     assert list(assign_norm_key(df, "Player")) == ["NFL_QB", "NFL_TE"]
+
+
+# --- a season the feed barely answered -------------------------------------
+
+
+def undelivered_frame():
+    """MLS's real shape: four seasons answered, one returning a handful.
+
+    ESPN listed 30 clubs for MLS 2021 and returned 27 players against a median
+    of 894 across the other four. Not zero, so nothing caught it -- it was a
+    twentieth of the MLS pool for weeks.
+    """
+    rows = []
+    for season, n in ((2021, 5), (2022, 200), (2023, 200), (2024, 200), (2025, 200)):
+        for i in range(n):
+            rows.append({"league": "MLS", "season": season, "role": "",
+                         "player": f"P{season}-{i}",
+                         # The thin season's few rows score high, so their
+                         # effect on the percentile is not merely dilution.
+                         "total_points": 900 - i if season == 2021 else i})
+    return pd.DataFrame(rows)
+
+
+def test_a_season_the_feed_barely_answered_is_left_out_of_the_pool():
+    frame = undelivered_frame()
+    dropped = []
+    pool = buffer_pool(frame, "Player", season_col="season",
+                                 dropped=dropped)
+    assert 2021 not in set(pool["season"])
+    assert dropped == [("MLS", 2021, 5, 200)]
+
+
+def test_the_seasons_that_were_answered_are_untouched():
+    pool = buffer_pool(undelivered_frame(), "Player", season_col="season")
+    assert sorted(set(pool["season"])) == [2022, 2023, 2024, 2025]
+
+
+def test_a_season_merely_lighter_than_its_neighbours_is_kept():
+    """Half the median is the line. A shortened season or an expansion year
+    does not fall that far, and a pool that drops real seasons is worse than
+    one that keeps a thin one."""
+    rows = []
+    for season, n in ((2021, 140), (2022, 200), (2023, 200), (2024, 200), (2025, 190)):
+        rows += [{"league": "MLS", "season": season, "role": "",
+                  "player": f"P{season}-{i}", "total_points": i} for i in range(n)]
+    dropped = []
+    pool = buffer_pool(pd.DataFrame(rows), "Player", season_col="season",
+                                 dropped=dropped)
+    assert dropped == []
+    assert 2021 in set(pool["season"])
+
+
+def test_two_seasons_cannot_judge_each_other():
+    """With one season against another there is no median worth trusting, and
+    dropping the smaller would halve the pool on no evidence."""
+    rows = []
+    for season, n in ((2024, 10), (2025, 200)):
+        rows += [{"league": "MLS", "season": season, "role": "",
+                  "player": f"P{season}-{i}", "total_points": i} for i in range(n)]
+    dropped = []
+    buffer_pool(pd.DataFrame(rows), "Player", season_col="season",
+                          dropped=dropped)
+    assert dropped == []
+
+
+def test_a_season_thin_for_one_group_does_not_touch_another():
+    """A six-league pull judges each league against itself: MLS 2021 being
+    empty says nothing about the Premier League's 2021."""
+    rows = []
+    for league, thin in (("MLS", True), ("Premier League", False)):
+        for season, n in ((2021, 5 if thin else 200), (2022, 200),
+                          (2023, 200), (2024, 200), (2025, 200)):
+            rows += [{"league": league, "season": season, "role": "",
+                      "player": f"{league}-{season}-{i}", "total_points": i}
+                     for i in range(n)]
+    dropped = []
+    pool = buffer_pool(pd.DataFrame(rows), "Player", season_col="season",
+                                 dropped=dropped)
+    assert dropped == [("MLS", 2021, 5, 200)]
+    kept = pool[pool["league"] == "Premier League"]
+    assert 2021 in set(kept["season"])
+
+
+def test_a_pool_with_no_season_column_is_judged_not_at_all():
+    """Live scoring passes one season, where there is nothing to compare."""
+    frame = undelivered_frame()
+    pool = buffer_pool(frame, "Player")
+    assert len(pool) > 0

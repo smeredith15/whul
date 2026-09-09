@@ -55,6 +55,7 @@ def compute(
     season: str,
     season_col: str | None = "season",
     managers: int = BENCHMARK_MANAGER_COUNT,
+    dropped: list | None = None,
 ) -> pd.DataFrame:
     """Benchmarks for one asset type, ready to store.
 
@@ -64,7 +65,8 @@ def compute(
     because a benchmark from four players and one from sixty deserve different
     amounts of trust, and only the row can say which this was.
     """
-    bench = compute_benchmarks(scored, asset_type, managers=managers, season_col=season_col)
+    bench = compute_benchmarks(scored, asset_type, managers=managers,
+                               season_col=season_col, dropped=dropped)
     if bench.empty:
         return pd.DataFrame(columns=["asset_type", "norm_key", "benchmark", "pool_size", "seasons"])
 
