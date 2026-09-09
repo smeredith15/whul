@@ -112,6 +112,11 @@ NBA_SEASON_END = (6, 30)
 #: is a league win.
 SOCCER_LEAGUES = ("epl", "laliga", "seriea", "bundesliga", "ligue1", "mls", "nwsl")
 EUROPEAN_COMPETITIONS = ("ucl", "uel", "uecl")
+#: Whose clubs can appear in EUROPEAN_COMPETITIONS. MLS walking the Champions
+#: League cost 4,560 requests and about an hour a run for nothing, and turned up
+#: only near-misses for the club matcher to reject -- Inter Milan against Inter
+#: Miami, five seasons running.
+EUROPEAN_LEAGUES = ("epl", "laliga", "seriea", "bundesliga", "ligue1")
 DOMESTIC_CUPS = {
     "epl": ("facup", "efl_cup"),
     "laliga": ("copadelrey",),
@@ -128,6 +133,12 @@ DOMESTIC_CUPS = {
 CONTINENTAL_CUPS = {
     "mls": ("concacafchampions",),
 }
+
+
+def continental_for(league: str) -> tuple[str, ...]:
+    """The continental competitions a league's clubs can actually play in."""
+    european = EUROPEAN_COMPETITIONS if league in EUROPEAN_LEAGUES else ()
+    return tuple(european) + tuple(CONTINENTAL_CUPS.get(league, ()))
 
 #: (start month, day) -> (end month, day) -> how the season is numbered.
 #:
@@ -883,8 +894,7 @@ def load_soccer_matches(
     if include_cups:
         competitions += (
             list(DOMESTIC_CUPS.get(league, ()))
-            + list(CONTINENTAL_CUPS.get(league, ()))
-            + list(EUROPEAN_COMPETITIONS)
+            + list(continental_for(league))
         )
 
     rows: list[dict] = []

@@ -640,3 +640,61 @@ def test_every_competition_we_pull_can_have_its_dates_walked():
     assert not missing, f"no season window for {missing}"
     for key in sorted(wanted):
         assert season_dates(2024, key), f"{key} walks no dates in 2024"
+
+
+def test_the_feeds_key_decides_the_tier_not_the_label(monkeypatch):
+    """`work` was rebuilt without competition_key, so classify_key read a blank
+    key and fell back to the label every time -- KEY_TIERS was dead code, and
+    nothing said so. The label is the ambiguous one: the CONCACAF Champions Cup
+    was the Champions *League* until 2024, and reading that name puts MLS clubs
+    in Europe on a 5% share instead of their own 2.5%."""
+    from whul.scoring import soccer
+
+    row = dict(player="A", league="MLS", season=2025, position="F",
+               matches=6, starts=6, goals=4, assists=1, yellow=0, red=0)
+    misleading = pd.DataFrame([dict(row, competition_key="usopencup",
+                                    competition="Champions League")])
+
+    by_key = soccer.score_players(misleading, postseason=True)
+    assert by_key["regular_points"].iloc[0] > 0, "a domestic cup is counted"
+    assert by_key["postseason_bonus"].iloc[0] == 0
+
+    by_label = soccer.score_players(
+        misleading.drop(columns=["competition_key"]), postseason=True)
+    assert by_label["regular_points"].iloc[0] == 0, "the label alone gets it wrong"
+
+
+def test_a_league_is_not_sent_to_a_continent_its_clubs_never_reach(monkeypatch):
+    """MLS walking the Champions League cost 4,560 requests and about an hour a
+    run, and produced only near-misses for the club matcher to reject."""
+    from whul.sources.espn import continental_for
+
+    assert continental_for("mls") == ("concacafchampions",)
+    assert continental_for("nwsl") == ()
+    for league in ("epl", "laliga", "seriea", "bundesliga", "ligue1"):
+        assert continental_for(league) == ("ucl", "uel", "uecl")
+
+
+def test_the_run_says_how_many_rows_each_competition_actually_delivered(
+    monkeypatch, capsys
+):
+    """A benchmark that comes back bit-identical has either found nothing new or
+    lost what it found, and from the outside those read the same."""
+    out = attribution_fixture(monkeypatch, {
+        "epl": [("Saka", "Arsenal")],
+        "facup": [("Saka", "Arsenal")],
+    })
+    assert not out.empty
+    printed = capsys.readouterr().out
+    assert "rows by league and competition" in printed
+    assert "facup" in printed
+
+
+def test_a_dropped_club_is_named_not_just_counted(monkeypatch, capsys):
+    """A count alone cannot distinguish a cup full of non-league clubs from one
+    whose own league's clubs failed to match."""
+    attribution_fixture(monkeypatch, {
+        "epl": [("Saka", "Arsenal")],
+        "facup": [("Someone", "Wrexham")],
+    })
+    assert "Wrexham" in capsys.readouterr().out

@@ -504,6 +504,14 @@ def score_players(players: pd.DataFrame, postseason: bool = True) -> pd.DataFram
     work["goal_points"] = work["goals"] * work["position"].map(goal_points_for)
     work["competition"] = resolve_str(
         players, ["competition", "competition_name"], default="")
+    # The feed's own key for the competition, where there is one. It decides
+    # the tier ahead of the label, because a label can be honestly ambiguous:
+    # the CONCACAF Champions Cup was the Champions *League* until 2024, and
+    # classifying that by name puts MLS clubs in Europe. Rebuilding `work`
+    # without this column left `classify_key` reading a blank key and falling
+    # back to the label every time -- KEY_TIERS was dead, and silently so.
+    if "competition_key" in players.columns:
+        work["competition_key"] = players["competition_key"].astype(str).values
     work["points"] = (
         work["appearance_points"]
         + work["goal_points"]

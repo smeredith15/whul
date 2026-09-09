@@ -459,7 +459,7 @@ def _soccer_players():
 
     def load(seasons):
         from whul.sources.espn import (
-            CONTINENTAL_CUPS, DOMESTIC_CUPS, EUROPEAN_COMPETITIONS, LEAGUE_PATHS,
+            DOMESTIC_CUPS, LEAGUE_PATHS, continental_for,
         )
 
         def pull(competition):
@@ -534,10 +534,8 @@ def _soccer_players():
         # Premier League player holding his European bonus -- a player on
         # nobody's roster, which is where the bonus went.
         others: list[str] = []
-        for cups in (DOMESTIC_CUPS, CONTINENTAL_CUPS):
-            for key in PLAYER_LEAGUES.values():
-                others += list(cups.get(key, ()))
-        others += list(EUROPEAN_COMPETITIONS)
+        for key in PLAYER_LEAGUES.values():
+            others += list(DOMESTIC_CUPS.get(key, ())) + list(continental_for(key))
         # Each competition once, however many leagues send clubs to it.
         for competition in dict.fromkeys(others):
             if competition not in LEAGUE_PATHS:
@@ -552,10 +550,15 @@ def _soccer_players():
                 # Not a complaint: a cup is full of clubs from below the top
                 # flight, and a European competition is full of clubs from
                 # leagues nobody here drafts from. Counted out loud because
-                # "correctly ignored" and "silently lost" look the same.
+                # "correctly ignored" and "silently lost" look the same -- and
+                # named, because the two are told apart by whether a club you
+                # recognise is in the list.
+                names = sorted(dropped["team"].astype(str).unique())
+                shown = ", ".join(names[:6])
+                more = f", and {len(names) - 6} more" if len(names) > 6 else ""
                 print(f"  {competition}: {len(kept):,} row(s) from our "
                       f"leagues' clubs, {len(dropped):,} from "
-                      f"{dropped['team'].nunique()} club(s) outside them",
+                      f"{len(names)} club(s) outside them ({shown}{more})",
                       flush=True)
             if kept.empty:
                 continue
@@ -570,11 +573,36 @@ def _soccer_players():
         # folds. A duplicate *within* a competition would not be, and would
         # double a season -- so the club is part of the key, to keep a January
         # transfer's two halves apart rather than collapsing them.
-        return rows.drop_duplicates(
+        rows = rows.drop_duplicates(
             subset=[c for c in ("player", "season", "competition_key", "team_id")
                     if c in rows.columns])
+        _report_competition_coverage(rows)
+        return rows
 
     return load, lambda raw: soccer.score_players(raw, postseason=False)
+
+
+def _report_competition_coverage(rows: pd.DataFrame) -> None:
+    """How many rows each league got from each competition, before scoring.
+
+    The one number that says whether a competition arrived. A benchmark that
+    comes back bit-identical to the one before it has either found nothing new
+    or lost what it found, and those read the same from the outside -- so the
+    counts are printed where a reader can see which.
+    """
+    if rows.empty or "competition_key" not in rows.columns:
+        return
+    grid = (rows.pivot_table(index="league", columns="competition_key",
+                             values="player", aggfunc="size", fill_value=0)
+            .astype(int))
+    print("\n  rows by league and competition:", flush=True)
+    width = max((len(str(c)) for c in grid.columns), default=8)
+    header = "  ".join(f"{str(c):>{width}}" for c in grid.columns)
+    print(f"    {'':<16}{header}", flush=True)
+    for league, row in grid.iterrows():
+        cells = "  ".join(f"{v:>{width}}" for v in row)
+        print(f"    {str(league):<16}{cells}", flush=True)
+    print(flush=True)
 
 
 def _soccer_players_live():
