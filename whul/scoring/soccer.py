@@ -307,9 +307,18 @@ def score_teams(
 #: Wikipedia and the match feed do not always share a word, let alone a
 #: spelling. Only pairs that no rule can reach belong here -- every entry is a
 #: decision someone has to keep true, so the list should stay short.
-UEFA_NAME_ALIASES = {
+#: Values are the spellings to try, in order -- a tuple because a feed's name
+#: for a club is not always knowable in advance from here, and offering both
+#: candidates is honest where picking one would be a guess that fails silently.
+CLUB_NAME_ALIASES: dict[str, tuple[str, ...]] = {
     # No word in common at all, in either direction.
-    "inter milan": "internazionale",
+    "inter milan": ("internazionale",),
+    # An acronym against the words it stands for. Found by
+    # scripts/probe-concacaf-wikipedia.py: the Champions Cup article lists
+    # "Los Angeles FC" and nine other MLS clubs matched while this one did not,
+    # which is eight points a season and no error anywhere. A general acronym
+    # rule would be worse than this line -- it would reach names it should not.
+    "los angeles": ("lafc", "los angeles football club"),
 }
 
 #: Words too common to identify a club on their own. Used only when reporting a
@@ -368,8 +377,10 @@ def _find_club(name: str, ours: dict[str, str]) -> str | None:
     if len(candidates) == 1:
         return candidates[0]
 
-    aliased = UEFA_NAME_ALIASES.get(key)
-    return ours.get(aliased) if aliased else None
+    for aliased in CLUB_NAME_ALIASES.get(key, ()):
+        if aliased in ours:
+            return ours[aliased]
+    return None
 
 
 def _with_continental_entry(

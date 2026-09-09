@@ -887,3 +887,29 @@ def test_an_mls_club_is_credited_its_champions_cup_place():
     row = soccer.score_teams(matches, continental_entry=entry).iloc[0]
     assert row["pts_continental_entry"] == 8.0
     assert "CONCACAF Champions Cup" in row["continental_entry"]
+
+
+def test_an_acronym_reaches_the_club_it_stands_for():
+    """The Champions Cup article lists "Los Angeles FC". Nine other MLS clubs
+    matched and this one did not, which is eight points a season and no error
+    anywhere -- found only because the probe prints what failed to match.
+
+    Both spellings are offered because which one the feed uses is not knowable
+    from a sandbox that cannot reach it, and picking one would be a guess that
+    fails the same silent way."""
+    from whul.scoring.soccer import _compare_key, _find_club
+
+    for feed_name in ("LAFC", "Los Angeles Football Club"):
+        ours = {_compare_key(c): c for c in (feed_name, "LA Galaxy")}
+        assert _find_club("Los Angeles FC", ours) == feed_name
+        # The neighbour it must not reach: two Los Angeles clubs, one alias.
+        assert _find_club("LA Galaxy", ours) == "LA Galaxy"
+
+
+def test_an_alias_never_fires_ahead_of_a_real_match():
+    """It is the last rule, after the reduced names agreeing and after the
+    word-subset rule, so it can only add a match, never redirect one."""
+    from whul.scoring.soccer import _compare_key, _find_club
+
+    ours = {_compare_key(c): c for c in ("Los Angeles FC", "LAFC")}
+    assert _find_club("Los Angeles FC", ours) == "Los Angeles FC"

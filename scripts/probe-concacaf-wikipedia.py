@@ -17,8 +17,12 @@ This probe is what checks that. It was written from a sandbox that answers 403
 to Wikipedia, so until it has been run the reader is UNVERIFIED.
 
     python scripts/probe-concacaf-wikipedia.py                 # a played season
-    python scripts/probe-concacaf-wikipedia.py --season 2026
+    python scripts/probe-concacaf-wikipedia.py --season 2022 2023 2024 2025 2026
     python scripts/probe-concacaf-wikipedia.py --dump          # the raw tables
+
+The default covers every edition the five benchmark seasons earn a place in:
+MLS 2021-2025 play the 2022-2026 Champions Cups. Checking one season proves one
+season -- a club renamed between editions goes missing in the others in silence.
 
 What to look for: every MLS entrant you expect, named as ESPN names it. The
 "unmatched" list at the end is the one that matters -- an MLS club sitting in
@@ -75,17 +79,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     # A season already played, whose table is complete and checkable against
     # memory. A forthcoming one carries slots rather than clubs.
-    parser.add_argument("--season", default="2025")
+    parser.add_argument("--season", nargs="+",
+                        default=["2022", "2023", "2024", "2025", "2026"])
     parser.add_argument("--dump", action="store_true")
     parser.add_argument("--league", default="mls",
                         help="whose clubs the entrants are matched against")
     args = parser.parse_args()
 
     session = requests.Session()
-    entrants = probe(args.season, args.dump, session)
-    if not entrants:
-        print("\nNothing read. That is the failure this probe exists to catch.")
-        return 1
 
     # The half that matters: do the names reach our clubs?
     from whul.scoring.soccer import _compare_key, _find_club
@@ -94,23 +95,44 @@ def main() -> int:
     try:
         ours = {_compare_key(club): club for club in espn.load_eligible_teams(args.league)}
     except Exception as exc:  # noqa: BLE001
-        print(f"\nCould not read {args.league}'s clubs ({type(exc).__name__}); "
+        print(f"Could not read {args.league}'s clubs ({type(exc).__name__}); "
               f"the match half of this probe is unchecked.")
         return 1
 
-    matched, unmatched = [], []
-    for name in sorted(entrants):
-        club = _find_club(name, ours)
-        (matched if club else unmatched).append((name, club))
+    empty, missing = [], []
+    for season in args.season:
+        entrants = probe(season, args.dump, session)
+        if not entrants:
+            print("\n  Nothing read. That is the failure this probe exists to catch.")
+            empty.append(season)
+            continue
 
-    print(f"\n{RULE}\nMatched to {args.league} clubs ({len(matched)}):")
-    for name, club in matched:
-        print(f"      {name}  ->  {club}")
-    print(f"\nNot matched ({len(unmatched)}) -- expected for every club outside "
-          f"{args.league}, and eight silent points for any inside it:")
-    for name, _ in unmatched:
-        print(f"      {name}")
-    return 0
+        matched, unmatched = [], []
+        for name in sorted(entrants):
+            club = _find_club(name, ours)
+            (matched if club else unmatched).append((name, club))
+
+        print(f"\n  Matched to {args.league} clubs ({len(matched)}):")
+        for name, club in matched:
+            print(f"      {name}  ->  {club}")
+        print(f"\n  Not matched ({len(unmatched)}) -- expected for every club "
+              f"outside {args.league}, and eight silent points for any inside it:")
+        for name, _ in unmatched:
+            print(f"      {name}")
+        if not matched:
+            missing.append(season)
+
+    print(f"\n{RULE}\nSummary\n{RULE}")
+    if empty:
+        print(f"  Read nothing at all for: {', '.join(empty)}")
+    if missing:
+        print(f"  Read clubs but matched no {args.league} club for: "
+              f"{', '.join(missing)}")
+    if not empty and not missing:
+        print(f"  Every season read clubs and matched at least one {args.league} "
+              f"club. Read the unmatched lists above anyway -- a club that is "
+              f"missing from one is worth eight points and raises nothing.")
+    return 1 if empty or missing else 0
 
 
 if __name__ == "__main__":
