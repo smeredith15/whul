@@ -592,16 +592,39 @@ def _report_competition_coverage(rows: pd.DataFrame) -> None:
     """
     if rows.empty or "competition_key" not in rows.columns:
         return
-    grid = (rows.pivot_table(index="league", columns="competition_key",
-                             values="player", aggfunc="size", fill_value=0)
+    counted = rows.assign(
+        _played=pd.to_numeric(rows.get("matches"), errors="coerce").fillna(0) > 0)
+    grid = (counted.pivot_table(index="league", columns="competition_key",
+                                values="player", aggfunc="size", fill_value=0)
             .astype(int))
-    print("\n  rows by league and competition:", flush=True)
-    width = max((len(str(c)) for c in grid.columns), default=8)
+    played = (counted[counted["_played"]]
+              .pivot_table(index="league", columns="competition_key",
+                           values="player", aggfunc="size", fill_value=0)
+              .reindex(index=grid.index, columns=grid.columns, fill_value=0)
+              .astype(int))
+
+    # Rows and, in brackets, how many of them record an appearance. The second
+    # number is the one that matters: ESPN returns a club's whole squad for a
+    # competition and fills the statistics in only where they exist, so a cup
+    # can hand back a full roster of zeroes. That folds into each player's
+    # season adding nothing and creating nobody new -- a competition which
+    # arrives, is counted, and moves no benchmark by a hundredth.
+    print("\n  rows by league and competition, (with an appearance):", flush=True)
+    width = max(max((len(str(c)) for c in grid.columns), default=8), 12)
     header = "  ".join(f"{str(c):>{width}}" for c in grid.columns)
     print(f"    {'':<16}{header}", flush=True)
-    for league, row in grid.iterrows():
-        cells = "  ".join(f"{v:>{width}}" for v in row)
+    for league in grid.index:
+        cells = "  ".join(f"{grid.loc[league, c]:>6} ({played.loc[league, c]:>4})"
+                          for c in grid.columns)
         print(f"    {str(league):<16}{cells}", flush=True)
+
+    silent = [(str(league), str(c))
+              for league in grid.index for c in grid.columns
+              if grid.loc[league, c] and not played.loc[league, c]]
+    for league, competition in silent:
+        print(f"    {competition} returned {grid.loc[league, competition]:,} "
+              f"{league} row(s) and not one appearance among them, so it adds "
+              f"nothing to any total", flush=True)
     print(flush=True)
 
 
