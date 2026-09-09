@@ -913,3 +913,62 @@ def test_an_alias_never_fires_ahead_of_a_real_match():
 
     ours = {_compare_key(c): c for c in ("Los Angeles FC", "LAFC")}
     assert _find_club("Los Angeles FC", ours) == "Los Angeles FC"
+
+
+def test_a_city_alone_does_not_identify_a_club():
+    """The 2026 Champions Cup lists Vancouver FC, of the Canadian Premier
+    League, alongside the Vancouver Whitecaps. "Vancouver FC" reduces to the
+    bare city, which sits inside "Vancouver Whitecaps" and starts with the same
+    word, so it matched -- eight points to a club that had not qualified, in a
+    season where the Whitecaps might not have."""
+    from whul.scoring.soccer import _compare_key, _find_club
+
+    ours = {_compare_key(c): c for c in ("Vancouver Whitecaps",)}
+    assert _find_club("Vancouver FC", ours) is None
+    assert _find_club("Vancouver Whitecaps FC", ours) == "Vancouver Whitecaps"
+
+
+def test_the_word_count_guard_is_only_on_the_entrant():
+    """Not symmetric, deliberately. A one-word feed name is the ordinary way
+    this list is short, and those are real pairs -- applying the guard to both
+    sides broke Atalanta and Athletic Club in the same commit that fixed
+    Vancouver."""
+    from whul.scoring.soccer import _compare_key, _find_club
+
+    for entrant, feed in [("Atalanta EL", "Atalanta"),
+                          ("Athletic Bilbao", "Athletic Club")]:
+        ours = {_compare_key(feed): feed}
+        assert _find_club(entrant, ours) == feed
+
+
+def test_two_entrants_resolving_to_one_club_is_reported():
+    """A club cannot enter a competition twice, so this is always a matching
+    error -- and it is the shape a false match takes, which is the half that
+    says nothing on its own."""
+    totals = pd.DataFrame([
+        {"team": "Vancouver Whitecaps", "season": 2025, "league": "MLS",
+         "total_points": 100.0},
+    ])
+    entry = pd.DataFrame([
+        {"team": "Vancouver Whitecaps FC", "season": 2025,
+         "competition": "CONCACAF Champions Cup", "entry_round": "Round One"},
+        {"team": "Vancouver Whitecaps", "season": 2025,
+         "competition": "CONCACAF Champions Cup", "entry_round": "Round One"},
+    ])
+    clashes = soccer.duplicate_continental_entry(totals, entry)
+    assert len(clashes) == 1
+    club, season, names = clashes[0]
+    assert club == "Vancouver Whitecaps" and season == 2025
+    assert sorted(names) == ["Vancouver Whitecaps", "Vancouver Whitecaps FC"]
+
+
+def test_a_clean_entry_list_reports_no_clashes():
+    totals = pd.DataFrame([
+        {"team": "Vancouver Whitecaps", "season": 2025, "league": "MLS",
+         "total_points": 100.0},
+    ])
+    entry = pd.DataFrame([{
+        "team": "Vancouver Whitecaps FC", "season": 2025,
+        "competition": "CONCACAF Champions Cup", "entry_round": "Round One",
+    }])
+    assert soccer.duplicate_continental_entry(totals, entry) == []

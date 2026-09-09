@@ -842,6 +842,20 @@ def _soccer(key: str, category: str):
                 )
                 for name, season, near in missed[:10]:
                     print(f"      {name} ({season})  nearest: {near}", flush=True)
+            clashes = soccer.duplicate_continental_entry(scored, entry)
+            if clashes:
+                # One club cannot enter a competition twice, so this is always
+                # a matching error. It is also the silent half: an entrant that
+                # matches nobody is reported above, one that matches the wrong
+                # club just quietly pays somebody.
+                print(
+                    f"  {key}: {len(clashes)} club(s) that two different "
+                    f"entrants both resolved to, which one of them is not:",
+                    flush=True,
+                )
+                for club, season, names in clashes[:10]:
+                    print(f"      {club} ({season})  <-  {', '.join(names)}",
+                          flush=True)
             return scored
 
         return load, score
