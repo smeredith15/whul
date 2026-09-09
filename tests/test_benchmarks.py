@@ -959,3 +959,36 @@ def test_computing_two_leagues_at_once_does_not_give_them_one_depth(
             "--db", str(tmp_path / "w.sqlite3"))
     assert seen["Intl Soccer"] == 8
     assert seen["Club Soccer"] == benchmarks.DEFAULT_SEASONS
+
+
+def test_a_league_that_fails_does_not_leave_the_run_looking_successful(
+    tmp_path, monkeypatch, capsys
+):
+    """A failed league's group is not empty -- it holds whatever the draft was
+    derived from, a number that looks computed and is not. A real run saved the
+    five leagues that worked, reported the sixth as FAILED, and exited 0, and a
+    green run is how a person decides a draft is ready to freeze."""
+    from dataclasses import replace
+
+    from whul import benchmark_sources
+
+    patched_source(monkeypatch)
+    broken = replace(
+        benchmark_sources.SOURCES["nhl"],
+        build=lambda: (
+            lambda seasons: (_ for _ in ()).throw(KeyError("usopencup")),
+            lambda raw: raw,
+        ),
+    )
+    monkeypatch.setitem(benchmark_sources.SOURCES, "nhl", broken)
+
+    db = str(tmp_path / "w.sqlite3")
+    code = run_cli("compute", "nfl", "nhl", "--latest", "2025", "--save", "--db", db)
+
+    out = capsys.readouterr()
+    assert "FAILED NHL" in out.out
+    assert code == 1, "a partial failure must not report success"
+    # The leagues that worked are still saved: redoing twenty of them to
+    # correct one is how corrections stop getting made.
+    saved = open_store(db).query("SELECT norm_key FROM benchmarks")
+    assert not saved.empty

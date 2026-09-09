@@ -1329,6 +1329,16 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
     print(f"\n  Check what it still needs: benchmarks coverage {version}")
     print(f"  Add another league to it:  benchmarks compute <league> --save --into {version}")
     print(f"  Adopt it:                  benchmarks freeze {version}\n")
+    # A league that failed leaves its group inherited from whatever was copied
+    # into this draft, which is a number that looks computed and is not. Saving
+    # the leagues that worked is right; exiting 0 on top of it is not, because
+    # a green run is how a person decides the draft is ready to freeze.
+    if failed:
+        print(f"  {len(failed)} league(s) above did not compute. Their groups still",
+              file=sys.stderr)
+        print("  hold whatever this draft was derived from -- fix and re-run "
+              "before freezing.\n", file=sys.stderr)
+        return 1
     return 0
 
 

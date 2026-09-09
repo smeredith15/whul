@@ -215,6 +215,11 @@ def load_squad(
             "player": str(athlete.get("displayName") or athlete.get("fullName") or ""),
             "player_id": str(athlete.get("id") or ""),
             "team": club,
+            # ESPN's club id is global, so the same club carries it in its
+            # league's request and in the Champions League's. That is what lets
+            # a shared competition be attributed to the club's own league
+            # rather than to whichever league happened to ask for it first.
+            "team_id": str(team_id),
             "season": int(season),
             "season_said": said,
             "position": str((athlete.get("position") or {}).get("abbreviation") or ""),

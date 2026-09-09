@@ -122,7 +122,13 @@ jobs:
         run: echo "DRAFT=${{ inputs.version }}" >> "$GITHUB_ENV"
 
       - name: Compute
+        id: compute
         if: ${{ !inputs.version }}
+        # Failing here would skip the review and throw away the draft, so the
+        # failure is carried to the end of the job instead -- see "A league did
+        # not compute". The database is still saved and the comparison still
+        # printed; the job just does not go green.
+        continue-on-error: true
         env:
           LEAGUES: ${{ inputs.leagues }}
           SEASONS: ${{ inputs.seasons }}
@@ -150,7 +156,10 @@ jobs:
           python -m whul.cli benchmarks compare "$FROM" "$DRAFT" | tee -a benchmarks.txt
 
       - name: Freeze
-        if: ${{ inputs.freeze }}
+        # Never freeze a draft one of whose groups was inherited rather than
+        # computed. On a version-only run compute is skipped, not failed, so
+        # this still allows the second-pass freeze it was built for.
+        if: ${{ inputs.freeze && steps.compute.outcome != 'failure' }}
         run: python -m whul.cli benchmarks freeze "$DRAFT" | tee -a benchmarks.txt
 
       - name: Save the database
@@ -175,6 +184,18 @@ jobs:
             echo "    $DRAFT"
           fi
           echo "==================================================="
+
+      - name: A league did not compute
+        # A green run is how a person decides a draft is ready to freeze, so a
+        # draft with an inherited group standing in for a computed one must not
+        # produce one. The group is not empty -- it holds whatever the draft was
+        # derived from -- which is exactly why this has to be said out loud.
+        if: ${{ steps.compute.outcome == 'failure' }}
+        run: |
+          echo "::error::At least one league failed to compute. Its group still" \
+               "holds the value inherited from the frozen scale. Read the FAILED" \
+               "line above, fix it, and re-run before freezing $DRAFT."
+          exit 1
 
       - uses: actions/upload-artifact@v4
         if: always()
