@@ -222,10 +222,27 @@ def test_the_player_source_covers_every_club_league_with_a_roster():
         "epl", "laliga", "seriea", "bundesliga", "ligue1", "mls"}
 
 
-def squad_row(league, seasons):
+#: Which of our leagues sends its clubs to a competition. A cup's rows are
+#: attributed by the club they belong to, so a fixture whose cup rows carry a
+#: club nobody drafts from is correctly discarded rather than counted -- which
+#: is the behaviour under test, and needs the club to line up.
+PLAYED_BY = {
+    "epl": "epl", "facup": "epl", "efl_cup": "epl", "ucl": "epl",
+    "uel": "epl", "uecl": "epl",
+    "laliga": "laliga", "copadelrey": "laliga",
+    "seriea": "seriea", "coppaitalia": "seriea",
+    "bundesliga": "bundesliga", "dfbpokal": "bundesliga",
+    "ligue1": "ligue1", "coupedefrance": "ligue1",
+    "mls": "mls", "usopencup": "mls", "concacafchampions": "mls",
+}
+
+
+def squad_row(league, seasons, club=None):
+    club = club or f"{PLAYED_BY.get(league, league)} FC"
     return pd.DataFrame([{
         "player": f"{league} player", "season": seasons[0],
         "season_said": f"{seasons[0] - 1}-{seasons[0] % 100:02d}",
+        "team": club, "team_id": club,
         "matches": 10, "starts": 8, "goals": 1, "assists": 1,
         "yellow": 0, "red": 0, "position": "M",
     }])
@@ -251,8 +268,10 @@ def test_a_league_that_returns_nothing_costs_that_league_only(monkeypatch, capsy
 
 def test_a_cup_that_returns_nothing_does_not_cost_the_league(monkeypatch, capsys):
     """A domestic cup is out of season most of the year and a European
-    competition is out of it for most clubs, so an empty answer from one is
-    the ordinary case -- not a fault, and not worth a line in the log."""
+    competition is out of it for most clubs, so an empty answer from one costs
+    the league nothing. It is still said out loud: a cup that returns nothing
+    all season because its path is wrong looks exactly like one that is merely
+    out of season, and the CONCACAF Champions Cup was quietly the former."""
     from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
@@ -501,3 +520,123 @@ def test_no_custom_user_agent_is_sent():
     session = _Refuses(refuse_seasoned=False)
     espn_soccer.team_ids("epl", 2027, session)
     assert session.asked  # and no headers reached the call at all
+
+
+# --- which league a competition's rows belong to --------------------------
+#
+# The first benchmark run over the new competition folding raised the Premier
+# League's pool by 10.9%, which read like the FA Cup finally counting. It was
+# not: the Premier League's request pulls 124 FA Cup clubs and 92 EFL Cup ones,
+# and every National League player in them had been stamped a Premier League
+# player. The European competitions were worse -- pulled once per league and
+# deduplicated down to whichever league ran first, so a La Liga player's
+# Champions League matches became a separate Premier League player who held his
+# European bonus and appeared on nobody's roster.
+
+
+def attribution_fixture(monkeypatch, squads):
+    """Run the loader over ``{competition: [(player, club), ...]}``."""
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn_soccer as source
+
+    def some(league, seasons, verbose=True, session=None):
+        rows = [squad_row(league, seasons, club=club).assign(player=player)
+                for player, club in squads.get(league, ())]
+        return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+    monkeypatch.setattr(source, "load_players", some)
+    load, _ = SOURCES["soccer-players"].build()
+    return load([2025])
+
+
+def test_a_cup_run_belongs_to_the_club_not_to_whoever_asked(monkeypatch):
+    out = attribution_fixture(monkeypatch, {
+        "epl": [("Saka", "Arsenal")],
+        # The FA Cup's entrants go down to the National League. Only one of
+        # these two is a Premier League player.
+        "facup": [("Saka", "Arsenal"), ("Someone", "Wrexham")],
+    })
+    assert set(out.loc[out.competition_key == "facup", "player"]) == {"Saka"}
+    assert "Wrexham" not in set(out["team"])
+
+
+def test_a_european_run_lands_on_the_players_own_league(monkeypatch):
+    out = attribution_fixture(monkeypatch, {
+        "epl": [("Saka", "Arsenal")],
+        "laliga": [("Bellingham", "Real Madrid")],
+        "ucl": [("Saka", "Arsenal"), ("Bellingham", "Real Madrid")],
+    })
+    european = out[out.competition_key == "ucl"].set_index("player")["league"]
+    assert european["Bellingham"] == "La Liga"
+    assert european["Saka"] == "Premier League"
+
+
+def test_a_european_run_reaches_the_same_player_as_his_league_matches(monkeypatch):
+    """The bonus is worthless if it lands on a second copy of the player: the
+    scorer keys on (player, league, season, position), so a Champions League
+    row tagged with the wrong league is a different footballer entirely."""
+    from whul.scoring import soccer
+
+    out = attribution_fixture(monkeypatch, {
+        "laliga": [("Bellingham", "Real Madrid")],
+        "ucl": [("Bellingham", "Real Madrid")],
+    })
+    scored = soccer.score_players(out, postseason=True)
+    assert len(scored) == 1, "one footballer, not one per competition"
+    row = scored.iloc[0]
+    assert row["league"] == "La Liga"
+    assert row["regular_points"] > 0, "his league matches"
+    assert row["postseason_bonus"] > 0, "and his European ones, on the same man"
+
+
+def test_a_club_from_outside_our_leagues_is_counted_out_loud(monkeypatch, capsys):
+    """Correctly ignored and silently lost read the same in a benchmark."""
+    attribution_fixture(monkeypatch, {
+        "epl": [("Saka", "Arsenal")],
+        "facup": [("Someone", "Wrexham")],
+    })
+    out = capsys.readouterr().out
+    assert "facup" in out and "outside them" in out
+
+
+def test_a_shared_competition_is_pulled_once_however_many_leagues_play_it(
+    monkeypatch
+):
+    """Six leagues asking for the Champions League separately is six times the
+    requests, and it was the deduplication of those six answers that decided a
+    row's league."""
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn_soccer as source
+
+    asked = []
+
+    def note(league, seasons, verbose=True, session=None):
+        asked.append(league)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(source, "load_players", note)
+    load, _ = SOURCES["soccer-players"].build()
+    load([2025])
+
+    assert asked.count("ucl") == 1
+    assert len(asked) == len(set(asked)), f"asked twice for something: {asked}"
+
+
+def test_every_competition_we_pull_can_have_its_dates_walked():
+    """The team side walks dates rather than rosters, so a competition added to
+    LEAGUE_PATHS without a season window crashes it -- which it did, twenty-two
+    minutes into a benchmark run, on a bare KeyError naming only 'usopencup'."""
+    from whul.sources.espn import (
+        CONTINENTAL_CUPS, DOMESTIC_CUPS, EUROPEAN_COMPETITIONS, SEASON_WINDOWS,
+        SOCCER_LEAGUES, season_dates,
+    )
+
+    wanted = set(SOCCER_LEAGUES) | set(EUROPEAN_COMPETITIONS)
+    for cups in (DOMESTIC_CUPS, CONTINENTAL_CUPS):
+        for entries in cups.values():
+            wanted |= set(entries)
+
+    missing = sorted(key for key in wanted if key not in SEASON_WINDOWS)
+    assert not missing, f"no season window for {missing}"
+    for key in sorted(wanted):
+        assert season_dates(2024, key), f"{key} walks no dates in 2024"

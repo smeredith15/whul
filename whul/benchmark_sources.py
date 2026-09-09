@@ -462,54 +462,116 @@ def _soccer_players():
             CONTINENTAL_CUPS, DOMESTIC_CUPS, EUROPEAN_COMPETITIONS, LEAGUE_PATHS,
         )
 
-        frames = []
+        def pull(competition):
+            """One competition's players, or an empty frame having said why.
+
+            One competition at a time, because they fail one at a time. A 403
+            on the Premier League's club list used to raise straight out of
+            here and take the other five leagues with it -- thirty-two players
+            scoring nothing over one refused request.
+            """
+            try:
+                frame = espn_soccer.load_players(competition, list(seasons))
+            except Exception as exc:  # noqa: BLE001 -- one request, not all
+                print(f"  {competition}: could not pull "
+                      f"({type(exc).__name__}: {exc}); the rest continue",
+                      flush=True)
+                return pd.DataFrame()
+            if frame is None or frame.empty:
+                # Said for every competition, not just a league's own. A cup
+                # that quietly returns nothing is the failure this whole file
+                # is written against: it scores low rather than erroring, and
+                # the run reads as though the competition simply went badly.
+                print(f"  {competition}: no players returned across "
+                      f"{len(list(seasons))} season(s)", flush=True)
+                return pd.DataFrame()
+            return frame
+
+        def club_key(frame):
+            """What identifies a club across two competitions' requests.
+
+            ESPN's club id, which is global and so survives the trip from a
+            league's request to the Champions League's. The club name is the
+            fallback for a feed that omits the id -- weaker, because a rename
+            splits a club in two, but far better than the alternative of
+            attributing a row to whichever league asked for it.
+            """
+            if "team_id" in frame.columns:
+                return frame["team_id"].astype(str)
+            return frame["team"].astype(str)
+
+        def tagged(frame, category, competition):
+            return frame.assign(
+                league=category, competition_key=competition,
+                competition=competition_label(competition))
+
+        frames: list[pd.DataFrame] = []
+        #: ESPN club id -> which of our leagues that club plays in. Built from
+        #: the league pulls, and the only thing that may decide a row's league.
+        club_league: dict[str, str] = {}
+
+        # Pass one: each league itself. This is the only competition whose
+        # entrants are by definition that league's clubs, so it is also where
+        # the club -> league map comes from.
         for category, key in PLAYER_LEAGUES.items():
-            # Every competition the league's clubs play, not just the league.
-            # Restricted to league fixtures this scored a Champions League
-            # night at nothing -- the team side had gathered them since the
-            # start and the player side never had, so a club's European run
-            # showed in the standings and its players' lines did not.
-            wanted = [key] + [
-                other for other in (
-                    list(DOMESTIC_CUPS.get(key, ()))
-                    + list(CONTINENTAL_CUPS.get(key, ()))
-                    + list(EUROPEAN_COMPETITIONS)
-                ) if other in LEAGUE_PATHS
-            ]
-            for competition in wanted:
-                # One competition at a time, because they fail one at a time.
-                # A 403 on the Premier League's club list used to raise
-                # straight out of here and take the other five leagues with
-                # it -- thirty-two players scoring nothing over one refused
-                # request.
-                try:
-                    frame = espn_soccer.load_players(competition, list(seasons))
-                except Exception as exc:  # noqa: BLE001 -- one request, not all
-                    print(f"  {competition}: could not pull "
-                          f"({type(exc).__name__}: {exc}); {category} loses "
-                          f"this competition and the rest continue", flush=True)
-                    continue
-                if frame is None or frame.empty:
-                    # A European competition with no rows is the ordinary case
-                    # for most of the season, so this is not a complaint.
-                    if competition == key:
-                        print(f"  {key}: no players returned, so {category} "
-                              f"scores none", flush=True)
-                    continue
-                if competition == key:
-                    _check_season_convention(key, frame)
-                frames.append(frame.assign(
-                    league=category, competition_key=competition,
-                    competition=competition_label(competition)))
+            frame = pull(key)
+            if frame.empty:
+                print(f"  {key}: so {category} scores none", flush=True)
+                continue
+            _check_season_convention(key, frame)
+            club_league.update(dict.fromkeys(club_key(frame), category))
+            frames.append(tagged(frame, category, key))
+
+        # Pass two: every other competition, attributed by the club a player
+        # was listed under rather than by whose request fetched him.
+        #
+        # Stamping the asking league on the answer is what went wrong before:
+        # the Premier League's request pulls 124 FA Cup clubs and 92 EFL Cup
+        # ones, and every National League player in them entered the Premier
+        # League's benchmark pool. Worse, the European competitions were pulled
+        # once per league and deduplicated down to whichever ran first, so a
+        # La Liga player's Champions League matches became a *separate*
+        # Premier League player holding his European bonus -- a player on
+        # nobody's roster, which is where the bonus went.
+        others: list[str] = []
+        for cups in (DOMESTIC_CUPS, CONTINENTAL_CUPS):
+            for key in PLAYER_LEAGUES.values():
+                others += list(cups.get(key, ()))
+        others += list(EUROPEAN_COMPETITIONS)
+        # Each competition once, however many leagues send clubs to it.
+        for competition in dict.fromkeys(others):
+            if competition not in LEAGUE_PATHS:
+                continue
+            frame = pull(competition)
+            if frame.empty:
+                continue
+            belongs = club_key(frame).map(club_league)
+            kept = frame[belongs.notna()].assign(league=belongs.dropna())
+            dropped = frame[belongs.isna()]
+            if not dropped.empty:
+                # Not a complaint: a cup is full of clubs from below the top
+                # flight, and a European competition is full of clubs from
+                # leagues nobody here drafts from. Counted out loud because
+                # "correctly ignored" and "silently lost" look the same.
+                print(f"  {competition}: {len(kept):,} row(s) from our "
+                      f"leagues' clubs, {len(dropped):,} from "
+                      f"{dropped['team'].nunique()} club(s) outside them",
+                      flush=True)
+            if kept.empty:
+                continue
+            frames.append(kept.assign(
+                competition_key=competition,
+                competition=competition_label(competition)))
+
         if not frames:
             return pd.DataFrame()
         rows = pd.concat(frames, ignore_index=True)
-        # A club in Europe appears in both its league's request and the
-        # Champions League's, so a player has one row per competition. That is
-        # the shape the scorer folds; a duplicate *within* a competition would
-        # not be, and would double a season.
+        # A player has one row per competition, which is the shape the scorer
+        # folds. A duplicate *within* a competition would not be, and would
+        # double a season -- so the club is part of the key, to keep a January
+        # transfer's two halves apart rather than collapsing them.
         return rows.drop_duplicates(
-            subset=[c for c in ("player", "season", "competition_key", "club")
+            subset=[c for c in ("player", "season", "competition_key", "team_id")
                     if c in rows.columns])
 
     return load, lambda raw: soccer.score_players(raw, postseason=False)

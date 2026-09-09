@@ -157,6 +157,13 @@ SEASON_WINDOWS = {
     # MLS and NWSL run within a calendar year.
     "mls": ((2, 20), (12, 15), "within"),
     "nwsl": ((3, 1), (11, 30), "within"),
+    # The US Open Cup runs inside the MLS calendar year, its qualifying rounds
+    # from March and its final in September.
+    "usopencup": ((3, 1), (10, 15), "within"),
+    # The CONCACAF Champions Cup runs February to June. The 2021 edition, played
+    # April to October around the pandemic, falls partly outside this window and
+    # will come back short rather than empty.
+    "concacafchampions": ((2, 1), (6, 30), "within"),
     "nba": (NBA_SEASON_START, NBA_SEASON_END, "ends"),
 }
 
@@ -196,6 +203,15 @@ def season_dates(season: int, league: str = "nba") -> list[date]:
 
     Never runs past today, so a season that has not started yields nothing.
     """
+    if league not in SEASON_WINDOWS:
+        # Adding a competition to LEAGUE_PATHS without a window here used to
+        # raise a bare KeyError from inside a date walk, twenty-two minutes
+        # into a benchmark run, naming only the key. Say what is missing and
+        # where it goes.
+        raise KeyError(
+            f"no season window for {league!r}: add its (start, end, numbering) "
+            f"to espn.SEASON_WINDOWS, or its dates cannot be walked"
+        )
     start_md, end_md, numbering = SEASON_WINDOWS[league]
     if numbering == "ends":
         start, end = date(season - 1, *start_md), date(season, *end_md)
