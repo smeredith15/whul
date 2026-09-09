@@ -1237,22 +1237,33 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
         print(f"\n{exc.args[0]}\n", file=sys.stderr)
         return 2
 
-    print(f"\nComputing benchmarks from {args.seasons} seasons per league.\n")
+    if args.seasons != DEFAULT_SEASONS:
+        print(f"\nComputing benchmarks from {args.seasons} seasons per league.\n")
+    else:
+        print("\nComputing benchmarks from each league's own pool depth.\n")
     runs = []
     for source in sources:
         load, score = source.build()
+        # Each league's own pool depth, unless the caller named one. Eight
+        # seasons is right for international football and wrong for club
+        # soccer, where it reaches back past the pandemic; asking a person to
+        # remember which is asking for the wrong number.
+        seasons = (
+            args.seasons if args.seasons != DEFAULT_SEASONS
+            else (source.benchmark_seasons or DEFAULT_SEASONS)
+        )
         if source.windowed:
             # A continuously running sport is benchmarked over the league
             # year's own window, so --latest (a calendar year) does not apply.
             run = benchmarks.compute_windowed(
                 source.league, load, score,
-                produces=source.produces, seasons=args.seasons,
+                produces=source.produces, seasons=seasons,
             )
         else:
             run = benchmarks.compute(
                 source.league, load, score,
                 asset_type=source.asset_type,
-                seasons=args.seasons,
+                seasons=seasons,
                 latest=args.latest,
                 scale_for=source.scale_for,
             )

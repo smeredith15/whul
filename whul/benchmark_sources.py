@@ -86,6 +86,14 @@ class Source:
     #: shapes come from, and it would cut a tournament off at the year's end,
     #: which is the one thing the block rule exists to prevent.
     dated_by_source: bool = False
+    #: How many seasons this league's pool wants, where the usual five is
+    #: wrong. A property of the league, not of the run: international football
+    #: needs eight because five holds one World Cup and either one continental
+    #: championship or two depending where it starts. Kept here so a person
+    #: dispatching a recompute does not have to remember it -- the workflow
+    #: default was eight for everything, and a club soccer pool drawn over
+    #: eight years reaches back past the pandemic seasons.
+    benchmark_seasons: int | None = None
     #: Rough confidence in the source, shown by ``benchmarks list`` so the
     #: easiest leagues can be frozen first and the shaky ones chased separately.
     reliability: str = "unverified"
@@ -894,6 +902,7 @@ SOURCES: dict[str, Source] = _register(
     Source("intl-soccer", "Intl Soccer", "Team", _intl_soccer(),
            produces=("Men's Intl Soccer", "Women's Intl Soccer"),
            seasons_for=_intl_seasons, dated_by_source=True,
+           benchmark_seasons=8,
            note="martj42 ledgers; one pull, two benchmarks -- the men's game "
                 "and the women's are normalized against themselves"),
     Source("soccer-players", "Club Soccer", "Player", _soccer_players,
