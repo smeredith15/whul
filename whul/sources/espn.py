@@ -59,6 +59,12 @@ LEAGUE_PATHS = {
     "dfbpokal": ("soccer", "ger.dfb_pokal"),
     "coppaitalia": ("soccer", "ita.coppa_italia"),
     "coupedefrance": ("soccer", "fra.coupe_de_france"),
+    "usopencup": ("soccer", "usa.open"),
+    # MLS's continental competition, renamed from the Champions League in 2024.
+    # UNVERIFIED path, like the rest of this table's newer entries: run
+    # `python -m whul.cli discover concacafchampions` from a machine with
+    # access before trusting it.
+    "concacafchampions": ("soccer", "concacaf.champions_cup"),
     "ncaabaseball": ("baseball", "college-baseball"),
     # College softball lives under the *baseball* sport path; every
     # softball/... variant answers 404.
@@ -112,8 +118,15 @@ DOMESTIC_CUPS = {
     "bundesliga": ("dfbpokal",),
     "seriea": ("coppaitalia",),
     "ligue1": ("coupedefrance",),
-    "mls": (),
+    "mls": ("usopencup",),
     "nwsl": (),
+}
+
+#: A league's continental competition, where it is not UEFA's. Kept apart from
+#: DOMESTIC_CUPS because these are not domestic and not scored as one: they are
+#: paid as a bonus rather than counted, like the European competitions.
+CONTINENTAL_CUPS = {
+    "mls": ("concacafchampions",),
 }
 
 #: (start month, day) -> (end month, day) -> how the season is numbered.
@@ -852,7 +865,11 @@ def load_soccer_matches(
     """
     competitions = [league]
     if include_cups:
-        competitions += list(DOMESTIC_CUPS.get(league, ())) + list(EUROPEAN_COMPETITIONS)
+        competitions += (
+            list(DOMESTIC_CUPS.get(league, ()))
+            + list(CONTINENTAL_CUPS.get(league, ()))
+            + list(EUROPEAN_COMPETITIONS)
+        )
 
     rows: list[dict] = []
     for competition in competitions:

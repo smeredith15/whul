@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from whul.scoring import soccer
+from whul.scoring.postseason import RULES
 from whul.scoring.competition import Tier, bye_credit, classify
 from whul.scoring.soccer import (
     goal_points_for,
@@ -759,3 +760,95 @@ def test_a_feed_that_stopped_supplying_goals_fails_loudly():
     }])
     with pytest.raises(KeyError, match="goals_for"):
         score_team_matches(rows)
+
+
+# --- European football is paid, not counted --------------------------------
+
+def player_row(competition, matches=10, goals=2, assists=1, **over):
+    row = {"player": "A Winger", "league": "Premier League", "season": 2027,
+           "position": "FW", "competition": competition, "matches": matches,
+           "starts": matches, "minutes": matches * 90, "goals": goals,
+           "assists": assists, "yellow": 0, "red": 0}
+    row.update(over)
+    return row
+
+
+def test_domestic_football_counts_in_full():
+    """The league and its cups are ordinary football and are what the
+    benchmark is drawn from."""
+    frame = pd.DataFrame([player_row("Premier League", matches=30, goals=12),
+                          player_row("FA Cup", matches=4, goals=2)])
+    live = soccer.score_players(frame).iloc[0]
+    bench = soccer.score_players(frame, postseason=False).iloc[0]
+    assert live["matches"] == 34
+    assert live["postseason_bonus"] == 0.0
+    assert live["total_points"] == pytest.approx(bench["total_points"])
+
+
+def test_a_champions_league_run_is_a_bonus_at_five_percent():
+    """Five per cent of a 38-game season, because the field was settled before
+    the draft: 1.9 games' worth of whatever rate the player managed."""
+    frame = pd.DataFrame([player_row("Premier League", matches=30, goals=12),
+                          player_row("UEFA Champions League", matches=8, goals=5)])
+    live = soccer.score_players(frame).iloc[0]
+    rate = live["bonus_points"] / live["bonus_matches"]
+    assert live["postseason_bonus"] == pytest.approx(rate * RULES["UCL"].scalar)
+    assert live["bonus_matches"] == 8
+
+
+def test_european_football_is_out_of_the_benchmark_entirely():
+    """The whole point of the change: the pool is domestic football, so a
+    player's European run cannot raise the bar it is later measured against."""
+    frame = pd.DataFrame([player_row("Premier League", matches=30, goals=12),
+                          player_row("UEFA Champions League", matches=8, goals=5)])
+    bench = soccer.score_players(frame, postseason=False).iloc[0]
+    domestic = soccer.score_players(
+        pd.DataFrame([player_row("Premier League", matches=30, goals=12)]),
+        postseason=False).iloc[0]
+    assert bench["total_points"] == pytest.approx(domestic["total_points"])
+    assert bench["matches"] == 30
+
+
+def test_an_mls_playoff_run_pays_more_than_the_champions_cup():
+    """7.5% against 2.5%: the playoffs are most of what an MLS season is for,
+    and the continental cup is a handful of ties against an uneven field."""
+    playoffs = pd.DataFrame([
+        player_row("MLS", league="MLS", matches=30, goals=10),
+        player_row("MLS Cup Playoffs", league="MLS", matches=4, goals=3)])
+    continental = pd.DataFrame([
+        player_row("MLS", league="MLS", matches=30, goals=10),
+        player_row("CONCACAF Champions Cup", league="MLS", matches=4, goals=3)])
+    a = soccer.score_players(playoffs).iloc[0]["postseason_bonus"]
+    b = soccer.score_players(continental).iloc[0]["postseason_bonus"]
+    assert a > b
+    assert a / b == pytest.approx(
+        RULES["MLS"].scalar / RULES["CONCACAF Champions Cup"].scalar)
+
+
+def test_a_premier_league_club_has_no_domestic_playoffs_to_be_paid_for():
+    """The postseason tier is keyed by league, not by name. A promotion
+    play-off in a competition nobody drafted must not be read as a run."""
+    from whul.scoring.postseason import rule_for
+
+    assert rule_for("domestic_postseason", "MLS") is not None
+    assert rule_for("domestic_postseason", "Premier League") is None
+
+
+def test_a_player_who_only_appeared_in_europe_still_scores():
+    """A January signing, or a squad rotated for a cup tie. An inner join here
+    would score the run at nothing."""
+    frame = pd.DataFrame([player_row("UEFA Champions League", matches=3, goals=2)])
+    live = soccer.score_players(frame).iloc[0]
+    assert live["regular_points"] == 0.0
+    assert live["postseason_bonus"] > 0
+    assert live["total_points"] == pytest.approx(live["postseason_bonus"])
+
+
+def test_one_player_across_four_competitions_is_still_one_row():
+    frame = pd.DataFrame([
+        player_row("Premier League", matches=30), player_row("FA Cup", matches=3),
+        player_row("EFL Cup", matches=2), player_row("UEFA Champions League", matches=8)])
+    out = soccer.score_players(frame)
+    assert len(out) == 1
+    assert out.iloc[0]["matches"] == 35     # league + both cups
+    assert out.iloc[0]["bonus_matches"] == 8

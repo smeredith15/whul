@@ -222,27 +222,90 @@ def test_the_player_source_covers_every_club_league_with_a_roster():
         "epl", "laliga", "seriea", "bundesliga", "ligue1", "mls"}
 
 
+def squad_row(league, seasons):
+    return pd.DataFrame([{
+        "player": f"{league} player", "season": seasons[0],
+        "season_said": f"{seasons[0] - 1}-{seasons[0] % 100:02d}",
+        "matches": 10, "starts": 8, "goals": 1, "assists": 1,
+        "yellow": 0, "red": 0, "position": "M",
+    }])
+
+
 def test_a_league_that_returns_nothing_costs_that_league_only(monkeypatch, capsys):
+    """Nothing from the Premier League or anything its clubs also play."""
     from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
+    silent = {"epl", "facup", "efl_cup", "ucl", "uel", "uecl"}
+
     def some(league, seasons, verbose=True, session=None):
-        if league == "epl":
-            return pd.DataFrame()
-        return pd.DataFrame([{
-            "player": f"{league} player", "season": seasons[0],
-            "season_said": f"{seasons[0] - 1}-{seasons[0] % 100:02d}",
-            "matches": 10, "starts": 8, "goals": 1, "assists": 1,
-            "yellow": 0, "red": 0, "position": "M",
-        }])
+        return pd.DataFrame() if league in silent else squad_row(league, seasons)
 
     monkeypatch.setattr(source, "load_players", some)
     load, _ = SOURCES["soccer-players"].build()
     out = load([2025])
 
     assert "Premier League" not in set(out["league"])
-    assert len(out) == 5
     assert "so Premier League scores none" in capsys.readouterr().out
+
+
+def test_a_cup_that_returns_nothing_does_not_cost_the_league(monkeypatch, capsys):
+    """A domestic cup is out of season most of the year and a European
+    competition is out of it for most clubs, so an empty answer from one is
+    the ordinary case -- not a fault, and not worth a line in the log."""
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn_soccer as source
+
+    def some(league, seasons, verbose=True, session=None):
+        return pd.DataFrame() if league != "epl" else squad_row(league, seasons)
+
+    monkeypatch.setattr(source, "load_players", some)
+    load, _ = SOURCES["soccer-players"].build()
+    out = load([2025])
+
+    assert "Premier League" in set(out["league"])
+    # The other five leagues legitimately say so; the Premier League must not.
+    assert "so Premier League scores none" not in capsys.readouterr().out
+
+
+def test_every_competition_a_clubs_players_appear_in_is_asked_for(monkeypatch):
+    """The gap this closes: the team side gathered European matches from the
+    first day and the player side never did, so a Champions League night moved
+    the standings and left every player's line untouched."""
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn_soccer as source
+
+    asked = []
+
+    def note(league, seasons, verbose=True, session=None):
+        asked.append(league)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(source, "load_players", note)
+    load, _ = SOURCES["soccer-players"].build()
+    load([2025])
+
+    assert {"ucl", "uel", "uecl"} <= set(asked)
+    assert {"facup", "efl_cup", "copadelrey", "dfbpokal"} <= set(asked)
+    assert "concacafchampions" in asked, "MLS plays a continental competition"
+
+
+def test_each_row_says_which_competition_it_came_from(monkeypatch):
+    """Without it the scorer cannot tell a league goal from a European one,
+    and the whole benchmark distinction collapses."""
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn_soccer as source
+
+    monkeypatch.setattr(source, "load_players",
+                        lambda league, seasons, verbose=True, session=None:
+                        squad_row(league, seasons))
+    load, _ = SOURCES["soccer-players"].build()
+    out = load([2025])
+
+    labels = set(out["competition"])
+    assert "UEFA Champions League" in labels
+    assert "Premier League" in labels
+    assert "CONCACAF Champions Cup" in labels
 
 
 def test_a_feed_that_numbers_seasons_differently_is_announced(monkeypatch, capsys):

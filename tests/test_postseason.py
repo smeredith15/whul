@@ -28,17 +28,48 @@ def phase_frame(reg_pts, reg_games, post_pts, post_games):
     }])
 
 
-def test_share_is_ten_percent_everywhere():
+#: What each competition pays, and why it differs. The share is not a property
+#: of the sport but of how much is *known at the draft*: a league drafted
+#: before it starts pays the full share, one drafted mid-season pays less
+#: because the standings already hint at the field, and a competition whose
+#: entrants were decided last season pays least of all.
+EXPECTED_SHARES = {
+    "NFL": 0.10, "NBA": 0.10, "NHL": 0.10,
+    "MLB": 0.075, "WNBA": 0.075, "NWSL": 0.075, "MLS": 0.075,
+    "UCL": 0.05, "Europa League": 0.05, "Europa Conference League": 0.05,
+    "CONCACAF Champions Cup": 0.025,
+}
+
+
+def test_every_competition_pays_the_share_the_admin_set():
     assert DEFAULT_BONUS_SHARE == 0.10
-    for name, rule in RULES.items():
-        assert rule.bonus_share == pytest.approx(0.10), name
+    assert set(RULES) == set(EXPECTED_SHARES), "a rule was added without a share"
+    for name, want in EXPECTED_SHARES.items():
+        assert RULES[name].bonus_share == pytest.approx(want), name
 
 
-def test_scalars_are_ten_percent_of_each_regular_season():
-    expected = {"NFL": 1.7, "MLB": 16.2, "NBA": 8.2, "NHL": 8.4,
-                "UCL": 3.8, "Europa League": 3.8, "Europa Conference League": 3.8}
+def test_a_scalar_is_its_share_of_its_own_season():
+    expected = {"NFL": 1.7, "MLB": 12.15, "NBA": 8.2, "NHL": 8.4,
+                "WNBA": 3.3, "NWSL": 1.95, "MLS": 2.55,
+                "UCL": 1.9, "Europa League": 1.9,
+                "Europa Conference League": 1.9,
+                "CONCACAF Champions Cup": 0.85}
     for name, want in expected.items():
         assert RULES[name].scalar == pytest.approx(want), name
+
+
+def test_a_league_drafted_mid_season_pays_less_than_one_drafted_before_it():
+    """The reason the shares differ at all: by July the standings already say
+    a great deal about who plays in October."""
+    assert RULES["MLB"].bonus_share < RULES["NFL"].bonus_share
+
+
+def test_a_settled_field_pays_least():
+    """European entrants are decided by the season that has just finished, so
+    at the draft there is nothing left to find out."""
+    assert RULES["UCL"].bonus_share < RULES["MLB"].bonus_share
+    assert (RULES["CONCACAF Champions Cup"].bonus_share
+            < RULES["UCL"].bonus_share)
 
 
 def test_nhl_uses_the_expanded_84_game_season():
@@ -58,22 +89,25 @@ def test_two_playoff_games_use_the_combined_points_over_two():
     assert out["postseason_bonus"] == pytest.approx(34.0)
 
 
-def test_a_full_run_at_your_regular_rate_is_worth_ten_percent_of_the_season():
-    """The defining property: same proportional reward in every league."""
-    for name in ("NFL", "MLB", "NBA", "NHL"):
+def test_a_full_run_at_your_regular_rate_is_worth_its_own_share():
+    """The defining property, still: a player who performs in the postseason
+    exactly as well as they did in the regular season earns their
+    competition's share of a season, whatever the length of that season."""
+    for name, share in EXPECTED_SHARES.items():
         rule = RULES[name]
         reg_games = rule.regular_games
         rate = 10.0
         out = apply_bonus(
             phase_frame(rate * reg_games, reg_games, rate * 4, 4), rule
         ).iloc[0]
-        assert out["postseason_bonus"] / out["regular_points"] == pytest.approx(0.10), name
+        assert out["postseason_bonus"] / out["regular_points"] == pytest.approx(
+            share), name
 
 
 def test_outperforming_your_regular_rate_earns_more_than_the_share():
     rule = RULES["NFL"]
     out = apply_bonus(phase_frame(170.0, 17, 40.0, 1), rule).iloc[0]  # 40/game vs 10
-    assert out["postseason_bonus"] / out["regular_points"] > 0.10
+    assert out["postseason_bonus"] / out["regular_points"] > rule.bonus_share
 
 
 def test_raw_postseason_points_never_enter_the_total_directly():

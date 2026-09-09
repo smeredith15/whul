@@ -450,27 +450,93 @@ def _soccer_players():
     from whul.sources import espn_soccer
 
     def load(seasons):
+        from whul.sources.espn import (
+            CONTINENTAL_CUPS, DOMESTIC_CUPS, EUROPEAN_COMPETITIONS, LEAGUE_PATHS,
+        )
+
         frames = []
         for category, key in PLAYER_LEAGUES.items():
-            # One league at a time, because they fail one at a time. A 403 on
-            # the Premier League's club list used to raise straight out of here
-            # and take the other five leagues with it -- thirty-two players
-            # scoring nothing over one refused request.
-            try:
-                frame = espn_soccer.load_players(key, list(seasons))
-            except Exception as exc:  # noqa: BLE001 -- one league, not all six
-                print(f"  {key}: could not pull ({type(exc).__name__}: {exc}); "
-                      f"{category} scores none and the rest continue", flush=True)
-                continue
-            if frame is None or frame.empty:
-                print(f"  {key}: no players returned, so {category} scores none",
-                      flush=True)
-                continue
-            _check_season_convention(key, frame)
-            frames.append(frame.assign(league=category))
-        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+            # Every competition the league's clubs play, not just the league.
+            # Restricted to league fixtures this scored a Champions League
+            # night at nothing -- the team side had gathered them since the
+            # start and the player side never had, so a club's European run
+            # showed in the standings and its players' lines did not.
+            wanted = [key] + [
+                other for other in (
+                    list(DOMESTIC_CUPS.get(key, ()))
+                    + list(CONTINENTAL_CUPS.get(key, ()))
+                    + list(EUROPEAN_COMPETITIONS)
+                ) if other in LEAGUE_PATHS
+            ]
+            for competition in wanted:
+                # One competition at a time, because they fail one at a time.
+                # A 403 on the Premier League's club list used to raise
+                # straight out of here and take the other five leagues with
+                # it -- thirty-two players scoring nothing over one refused
+                # request.
+                try:
+                    frame = espn_soccer.load_players(competition, list(seasons))
+                except Exception as exc:  # noqa: BLE001 -- one request, not all
+                    print(f"  {competition}: could not pull "
+                          f"({type(exc).__name__}: {exc}); {category} loses "
+                          f"this competition and the rest continue", flush=True)
+                    continue
+                if frame is None or frame.empty:
+                    # A European competition with no rows is the ordinary case
+                    # for most of the season, so this is not a complaint.
+                    if competition == key:
+                        print(f"  {key}: no players returned, so {category} "
+                              f"scores none", flush=True)
+                    continue
+                if competition == key:
+                    _check_season_convention(key, frame)
+                frames.append(frame.assign(
+                    league=category, competition_key=competition,
+                    competition=competition_label(competition)))
+        if not frames:
+            return pd.DataFrame()
+        rows = pd.concat(frames, ignore_index=True)
+        # A club in Europe appears in both its league's request and the
+        # Champions League's, so a player has one row per competition. That is
+        # the shape the scorer folds; a duplicate *within* a competition would
+        # not be, and would double a season.
+        return rows.drop_duplicates(
+            subset=[c for c in ("player", "season", "competition_key", "club")
+                    if c in rows.columns])
 
-    return load, soccer.score_players
+    return load, lambda raw: soccer.score_players(raw, postseason=False)
+
+
+def _soccer_players_live():
+    """The same pull, with European competition credited on top.
+
+    The benchmark path above leaves the bonus off, so the pool is domestic
+    football alone; this one puts it back. The two differ by exactly the term
+    that must not be in the pool, which is the only way they can be checked
+    against each other.
+    """
+    from whul.scoring import soccer
+
+    load, _ = _soccer_players()
+    return load, lambda raw: soccer.score_players(raw, postseason=True)
+
+
+#: What a competition is called, for the classifier that decides whether it is
+#: paid or counted. The keys are ESPN's; the labels are ordinary English,
+#: because `whul.scoring.competition` reads names rather than keys.
+COMPETITION_LABELS = {
+    "ucl": "UEFA Champions League", "uel": "UEFA Europa League",
+    "uecl": "UEFA Europa Conference League",
+    "facup": "FA Cup", "efl_cup": "EFL Cup", "copadelrey": "Copa del Rey",
+    "dfbpokal": "DFB-Pokal", "coppaitalia": "Coppa Italia",
+    "coupedefrance": "Coupe de France", "usopencup": "US Open Cup",
+    "concacafchampions": "CONCACAF Champions Cup",
+}
+
+
+def competition_label(key: str) -> str:
+    """ESPN's key as the name the classifier reads. A league keeps its own."""
+    return COMPETITION_LABELS.get(key, SOCCER_CATEGORIES.get(key, key))
 
 
 #: Which ESPN league key serves each scored club-soccer category. Declared
@@ -831,6 +897,7 @@ SOURCES: dict[str, Source] = _register(
            note="martj42 ledgers; one pull, two benchmarks -- the men's game "
                 "and the women's are normalized against themselves"),
     Source("soccer-players", "Club Soccer", "Player", _soccer_players,
+           live=_soccer_players_live,
            produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
                      "Ligue 1", "MLS"),
            seasons_for=_espn_seasons("epl", "Premier League"),
