@@ -255,3 +255,69 @@ def test_the_conference_league_is_tried_under_both_its_names():
 def test_a_holders_marker_is_stripped(name, club):
     """EL and CL mark a club in as the holder of that competition."""
     assert wikipedia.clean(name) == club
+
+
+# --- the CONCACAF Champions Cup -------------------------------------------
+#
+# MLS clubs earn a place in it with their league season, worth what a Europa
+# League place is worth. The article is shaped differently from the UEFA ones,
+# and this is UNVERIFIED until scripts/probe-concacaf-wikipedia.py has been run
+# from a machine that can reach Wikipedia.
+
+
+def concacaf_teams_table():
+    """The Teams section as the article plausibly shapes it: by association and
+    qualification method, with no column called "Teams" and no "Entry round"."""
+    return pd.DataFrame({
+        "Association": ["United States", "United States", "Canada", "Mexico"],
+        "Team": ["Inter Miami CF", "LA Galaxy", "Toronto FC", "Cruz Azul"],
+        "Qualification method": [
+            "2025 Supporters' Shield", "2025 MLS Cup",
+            "2025 Canadian Championship", "Apertura 2025",
+        ],
+    })
+
+
+def test_the_uefa_reader_returns_nothing_on_the_champions_cup_table():
+    """Which is the point of a separate reader. Reusing it would have returned
+    an empty dict -- indistinguishable from a competition nobody entered, and
+    eight points a club with nothing said."""
+    assert wikipedia.entrants_from(concacaf_teams_table()) == {}
+
+
+def test_the_champions_cup_reader_finds_the_clubs_wherever_the_column_sits():
+    read = wikipedia.entrants_anywhere(concacaf_teams_table())
+    for club in ("Inter Miami CF", "LA Galaxy", "Toronto FC", "Cruz Azul"):
+        assert club in read
+    # No entry round, which is correct: the Champions Cup pays the same at
+    # every round it can be entered at.
+    assert set(read.values()) == {""}
+
+
+def test_the_champions_cup_reader_is_generous_and_that_is_safe():
+    """It takes cells rather than columns, so an association name comes back as
+    a club. That is deliberate: a name that is not a club matches nothing on the
+    roster and is dropped there, while a column heading that moved would cost
+    every club its place."""
+    from whul.scoring.soccer import _compare_key, _find_club
+
+    read = wikipedia.entrants_anywhere(concacaf_teams_table())
+    ours = {_compare_key(c): c for c in ("Inter Miami CF", "LA Galaxy", "Toronto FC")}
+    matched = {name: _find_club(name, ours) for name in read}
+    assert matched["Inter Miami CF"] == "Inter Miami CF"
+    # The noise reaches nothing.
+    for noise in ("United States", "Canada", "Mexico"):
+        assert matched.get(noise) is None
+
+
+def test_the_champions_cup_is_tried_under_both_names_it_has_gone_by():
+    """It was the Champions *League* until 2024 -- the Conference League trap
+    again, where a renaming reads exactly like a missing season."""
+    titles = wikipedia.titles_for("CONCACAF Champions Cup", "2023")
+    assert titles == ["2023 CONCACAF Champions Cup", "2023 CONCACAF Champions League"]
+
+
+def test_the_champions_cup_season_is_a_year_not_a_range():
+    """It runs February to June inside one calendar year."""
+    assert wikipedia.titles_for("CONCACAF Champions Cup", "2026")[0] == \
+        "2026 CONCACAF Champions Cup"

@@ -243,7 +243,7 @@ def bye_credit(tier: Tier, legs: int = LEGS_PER_KNOCKOUT_TIE) -> int:
     return WIN_POINTS.get(tier, 0) * legs
 
 
-# --- European entry -------------------------------------------------------
+# --- Continental entry -------------------------------------------------------
 #: What reaching a European competition is worth, before a ball is kicked in it.
 #:
 #: A domestic season earns a place in Europe, and that place is the biggest
@@ -261,10 +261,16 @@ def bye_credit(tier: Tier, legs: int = LEGS_PER_KNOCKOUT_TIE) -> int:
 #: The 12/8/4 ladder is deliberately wider than the 5/4/4/3 win ladder. The gap
 #: between reaching the Champions League and reaching the Conference League is
 #: far larger than the gap between a win in each.
-UEFA_LEAGUE_PHASE_POINTS: dict[str, float] = {
+CONTINENTAL_ENTRY_POINTS: dict[str, float] = {
     "Champions League": 12.0,
     "Europa League": 8.0,
     "Conference League": 4.0,
+    # MLS's continental competition, priced at the Europa League's level. It is
+    # the same kind of prize -- a place in the confederation's second tier of
+    # difficulty, earned by where a club finished at home -- and MLS clubs are
+    # benchmarked against MLS clubs, so what matters is that it sits at the
+    # right height within their own season, not against Europe's.
+    "CONCACAF Champions Cup": 8.0,
 }
 
 #: Entering before the league phase, which is a place in a draw rather than in
@@ -277,21 +283,27 @@ UEFA_LEAGUE_PHASE_POINTS: dict[str, float] = {
 #: play-off round *is* how a club from a top-five league enters it, against
 #: opposition it is overwhelmingly expected to beat. Halving it would price a
 #: near-certainty as a coin toss.
-UEFA_QUALIFYING_DISCOUNT: dict[str, float] = {
+CONTINENTAL_QUALIFYING_DISCOUNT: dict[str, float] = {
     "Champions League": 0.5,
     "Europa League": 0.5,
     "Conference League": 1.0,
+    # Not discounted, and for the Conference League's reason twice over. The
+    # Champions Cup has no league phase to be outside of: an MLS club enters
+    # the competition proper, at Round One or with a bye, and there is no lower
+    # competition to drop into if it loses. Qualifying for it is qualifying for
+    # it, whatever round the draw puts the club in.
+    "CONCACAF Champions Cup": 1.0,
 }
 
 #: The entry round that means the competition proper.
 UEFA_LEAGUE_PHASE = "League phase"
 
 
-def uefa_entry_points(competition: str, entry_round: str) -> float:
-    """Points for entering a European competition at a given round."""
-    full = UEFA_LEAGUE_PHASE_POINTS.get(str(competition))
+def continental_entry_points(competition: str, entry_round: str) -> float:
+    """Points for entering a continental competition at a given round."""
+    full = CONTINENTAL_ENTRY_POINTS.get(str(competition))
     if full is None:
         return 0.0
     if str(entry_round).strip() == UEFA_LEAGUE_PHASE:
         return full
-    return full * UEFA_QUALIFYING_DISCOUNT.get(str(competition), 0.5)
+    return full * CONTINENTAL_QUALIFYING_DISCOUNT.get(str(competition), 0.5)

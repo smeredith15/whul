@@ -339,8 +339,8 @@ class Audit:
                     "is impossible -- a side that concedes nothing cannot lose",
                     f"{clean:.0f} clean sheet(s), {not_lost:.0f} match(es) not lost",
                 ))
-            entry = str(stats.get("uefa_entry") or "")
-            entry_points = float(stats.get("pts_uefa_entry") or 0.0)
+            entry = str(stats.get("continental_entry") or "")
+            entry_points = float(stats.get("pts_continental_entry") or 0.0)
             if entry or entry_points:
                 total += entry_points
                 print(f"    {entry[:33]:<34}{'':>6}{'':>9}{entry_points:>11.2f}")

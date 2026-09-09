@@ -723,6 +723,76 @@ def _uefa_entrants(season: int):
     return pd.DataFrame(rows, columns=["team", "season", "competition", "entry_round"])
 
 
+def _concacaf_season(season: int) -> int:
+    """The Champions Cup an MLS season earns a place in.
+
+    MLS runs inside a calendar year and the Champions Cup runs February to June
+    of the next one, so the 2025 season's finishers play the 2026 edition. The
+    same off-by-one as the UEFA mapping and the same consequence if it is
+    reversed: last year's qualification credited to this year's finish, both
+    real numbers, nothing looking wrong.
+    """
+    return season + 1
+
+
+@lru_cache(maxsize=None)
+def _concacaf_entrants(season: int):
+    """Which clubs entered the Champions Cup off the season labelled ``season``.
+
+    UNVERIFIED, in the sense this repository uses: the Champions Cup article's
+    Teams section has not been read from a machine that can reach Wikipedia --
+    this sandbox answers 403 to it. The reader is written not to depend on the
+    table's column names for exactly that reason. Run
+    `python scripts/probe-concacaf-wikipedia.py` from somewhere with access
+    before trusting a season's numbers.
+    """
+    import pandas as pd
+
+    from whul.sources import wikipedia
+
+    competition = "CONCACAF Champions Cup"
+    year = _concacaf_season(season)
+    try:
+        entrants = wikipedia.load_entrants(competition, str(year))
+    except Exception as exc:  # noqa: BLE001 -- one competition, not the league
+        print(f"  Champions Cup entry: {year} unavailable "
+              f"({type(exc).__name__}), so no MLS club is credited a place in it",
+              flush=True)
+        entrants = {}
+    if not entrants:
+        print(f"  Champions Cup entry: {year} listed nobody, so every MLS club "
+              f"scores zero for qualifying -- eight points each, in silence, "
+              f"if that is wrong", flush=True)
+    return pd.DataFrame(
+        [{"team": club, "season": season, "competition": competition,
+          "entry_round": entry_round} for club, entry_round in entrants.items()],
+        columns=["team", "season", "competition", "entry_round"],
+    )
+
+
+def _continental_entrants(key: str, seasons):
+    """The continental places a league's own season earns, league by league.
+
+    MLS was being handed the UEFA participant lists, which is how five seasons
+    of Inter Milan came to be offered to the club matcher as Inter Miami.
+    """
+    import pandas as pd
+
+    from whul.sources.espn import EUROPEAN_LEAGUES
+
+    years = sorted(set(int(year) for year in seasons))
+    if key in EUROPEAN_LEAGUES:
+        frames = [_uefa_entrants(year) for year in years]
+    elif key == "mls":
+        frames = [_concacaf_entrants(year) for year in years]
+    else:
+        frames = []
+    if not frames:
+        return pd.DataFrame(
+            columns=["team", "season", "competition", "entry_round"])
+    return pd.concat(frames, ignore_index=True)
+
+
 def _soccer(key: str, category: str):
     """A club's league, cup and European matches, gathered into one total.
 
@@ -754,23 +824,20 @@ def _soccer(key: str, category: str):
                     f"will include every opponent it met",
                     flush=True,
                 )
-            held["entry"] = pd.concat(
-                [_uefa_entrants(int(year)) for year in sorted(set(seasons))],
-                ignore_index=True,
-            )
+            held["entry"] = _continental_entrants(key, seasons)
             return matches.assign(league=category)
 
         def score(matches):
             entry = held.get("entry")
-            scored = soccer.score_teams(matches, uefa_entry=entry)
-            missed = soccer.unmatched_uefa_entry(scored, entry)
+            scored = soccer.score_teams(matches, continental_entry=entry)
+            missed = soccer.unmatched_continental_entry(scored, entry)
             if missed:
                 # A name that does not match costs the club up to twelve points
                 # and reads as nothing at all.
                 print(
-                    f"  {key}: {len(missed)} European entrant(s) look like one of "
-                    f"this league's clubs but matched none. The nearest club is "
-                    f"named so a false alarm is obvious:",
+                    f"  {key}: {len(missed)} continental entrant(s) look like one "
+                    f"of this league's clubs but matched none. The nearest club "
+                    f"is named so a false alarm is obvious:",
                     flush=True,
                 )
                 for name, season, near in missed[:10]:

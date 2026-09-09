@@ -26,7 +26,7 @@ import pandas as pd
 from whul.scoring.base import resolve_num, resolve_str
 from whul.scoring.competition import (
     Outcome, Tier, bye_credit, classify, classify_key, outcome_points,
-    uefa_entry_points,
+    continental_entry_points,
 )
 from whul.scoring.postseason import bonus_for, rule_for
 
@@ -216,7 +216,7 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
 def score_teams(
     matches: pd.DataFrame,
     byes: pd.DataFrame | None = None,
-    uefa_entry: pd.DataFrame | None = None,
+    continental_entry: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Season totals per club.
 
@@ -224,7 +224,7 @@ def score_teams(
     scored as a sweep. Expects ``team``, ``season``, ``tier`` and optionally
     ``legs``; without it a bye is indistinguishable from an early exit.
 
-    ``uefa_entry`` credits a place in Europe earned by the season's league
+    ``continental_entry`` credits a continental place earned by the season's league
     finish -- ``team``, ``season``, ``competition``, ``entry_round``. Nothing in
     a club's own results says it earned one, so without this the biggest
     outcome of a domestic season short of the title is worth nothing.
@@ -297,7 +297,7 @@ def score_teams(
     else:
         totals["bye_points"] = 0.0
 
-    totals = _with_uefa_entry(totals, uefa_entry)
+    totals = _with_continental_entry(totals, continental_entry)
 
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
@@ -372,21 +372,22 @@ def _find_club(name: str, ours: dict[str, str]) -> str | None:
     return ours.get(aliased) if aliased else None
 
 
-def _with_uefa_entry(
+def _with_continental_entry(
     totals: pd.DataFrame, entry: pd.DataFrame | None
 ) -> pd.DataFrame:
-    """Add the points for a place in Europe earned by this season's finish.
+    """Add the points for a continental place earned by this season's finish.
 
+    Europe for the five European leagues, the CONCACAF Champions Cup for MLS.
     Matched on a reduced name rather than the feed's exact string, because the
     participant list and the match feed spell clubs differently -- and a name
     that fails to match costs the club up to twelve points while reading as
-    nothing at all. ``unmatched_uefa_entry`` is what names those.
+    nothing at all. ``unmatched_continental_entry`` is what names those.
     """
     totals = totals.copy()
-    totals["uefa_entry"] = ""
-    totals["pts_uefa_entry"] = 0.0
+    totals["continental_entry"] = ""
+    totals["pts_continental_entry"] = 0.0
     if entry is None or entry.empty:
-        totals["total_points"] = totals["total_points"] + totals["pts_uefa_entry"]
+        totals["total_points"] = totals["total_points"] + totals["pts_continental_entry"]
         return totals
 
     by_season: dict[int, dict[str, str]] = {}
@@ -410,14 +411,14 @@ def _with_uefa_entry(
             continue
         competition, entry_round = found
         labels.append(f"{competition} -- {entry_round}")
-        points.append(uefa_entry_points(competition, entry_round))
-    totals["uefa_entry"] = labels
-    totals["pts_uefa_entry"] = points
-    totals["total_points"] = totals["total_points"] + totals["pts_uefa_entry"]
+        points.append(continental_entry_points(competition, entry_round))
+    totals["continental_entry"] = labels
+    totals["pts_continental_entry"] = points
+    totals["total_points"] = totals["total_points"] + totals["pts_continental_entry"]
     return totals
 
 
-def unmatched_uefa_entry(
+def unmatched_continental_entry(
     totals: pd.DataFrame, entry: pd.DataFrame | None
 ) -> list[tuple[str, int, str]]:
     """Entrants that look like one of our clubs but matched none of them.

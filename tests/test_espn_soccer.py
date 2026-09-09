@@ -698,3 +698,46 @@ def test_a_dropped_club_is_named_not_just_counted(monkeypatch, capsys):
         "facup": [("Someone", "Wrexham")],
     })
     assert "Wrexham" in capsys.readouterr().out
+
+
+def test_a_league_is_offered_only_its_own_continental_entrants(monkeypatch):
+    """MLS was handed the UEFA participant lists, which is how five seasons of
+    Inter Milan came to be offered to the club matcher as Inter Miami."""
+    from whul import benchmark_sources as bs
+
+    monkeypatch.setattr(bs, "_uefa_entrants", lambda season: pd.DataFrame(
+        [{"team": "Arsenal", "season": season, "competition": "Champions League",
+          "entry_round": "League phase"}]))
+    monkeypatch.setattr(bs, "_concacaf_entrants", lambda season: pd.DataFrame(
+        [{"team": "Inter Miami CF", "season": season,
+          "competition": "CONCACAF Champions Cup", "entry_round": "Round One"}]))
+
+    assert set(bs._continental_entrants("epl", [2025])["competition"]) == \
+        {"Champions League"}
+    assert set(bs._continental_entrants("mls", [2025])["competition"]) == \
+        {"CONCACAF Champions Cup"}
+    assert bs._continental_entrants("nwsl", [2025]).empty
+
+
+def test_the_champions_cup_a_season_earns_is_the_following_years():
+    """MLS runs inside a calendar year and the Champions Cup runs February to
+    June of the next one, so 2025's finishers play the 2026 edition. Reversed,
+    last year's qualification lands on this year's finish and both are real
+    numbers, so nothing looks wrong."""
+    from whul.benchmark_sources import _concacaf_season
+
+    assert _concacaf_season(2025) == 2026
+
+
+def test_an_empty_champions_cup_list_is_never_silent(monkeypatch, capsys):
+    """Eight points a club, and a benchmark that just looks a bit low."""
+    from whul import benchmark_sources as bs
+    from whul.sources import wikipedia
+
+    monkeypatch.setattr(wikipedia, "load_entrants", lambda *a, **k: {})
+    bs._concacaf_entrants.cache_clear()
+    got = bs._concacaf_entrants(2025)
+    bs._concacaf_entrants.cache_clear()
+
+    assert got.empty
+    assert "eight points each, in silence" in capsys.readouterr().out
