@@ -1042,3 +1042,36 @@ def test_a_subset_beside_an_unrelated_source_is_fine():
     """MLS players and MLS teams are different asset types and different
     groups, and running them together is the ordinary case."""
     assert [s.key for s in resolve(["mls-players", "mls"])] == ["mls", "mls-players"]
+
+
+def test_a_season_that_comes_back_thin_is_named():
+    """The pool is truncated a season at a time, so a season the feed only
+    partly answered shortens the pool rather than being blended away by the
+    others. MLS drew 567 rows of a possible 675 in every run for weeks, and
+    nothing said which season was short, or that one was."""
+    run = benchmarks.BenchmarkRun(
+        league="MLS", asset_type="Player", rows=3704,
+        used=[2021, 2022, 2023, 2024, 2025],
+        rows_by_season={2021: 27, 2022: 920, 2023: 920, 2024: 920, 2025: 917},
+    )
+    assert run.thin_seasons() == [2021]
+    said = str(run)
+    assert "rows a season" in said
+    assert "2021 contributed 27 rows" in said
+
+
+def test_seasons_that_merely_differ_are_not_called_thin():
+    """Half the median is the line. An expansion year or a shortened season
+    does not fall that far, and a report that cries wolf is not read."""
+    run = benchmarks.BenchmarkRun(
+        league="MLS", asset_type="Player",
+        rows_by_season={2021: 700, 2022: 920, 2023: 880, 2024: 900, 2025: 640},
+    )
+    assert run.thin_seasons() == []
+    assert "contributed" not in str(run)
+
+
+def test_a_run_with_no_season_counts_says_nothing_about_them():
+    run = benchmarks.BenchmarkRun(league="NFL", asset_type="Player")
+    assert run.thin_seasons() == []
+    assert "rows a season" not in str(run)
