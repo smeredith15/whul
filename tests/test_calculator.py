@@ -158,14 +158,18 @@ def test_every_calculator_names_a_benchmark_that_exists():
             assert key in known, f"{calc.slug}: {label} -> {key}"
 
 
-def test_a_linear_calculator_has_fields_and_a_ladder_has_options():
+def test_each_kind_of_calculator_carries_what_its_kind_needs():
     for calc in calculator.calculators():
         assert calc.groups, calc.slug
         assert calc.title and calc.intro, calc.slug
-        if calc.kind == "linear":
-            assert calc.fields and not calc.options, calc.slug
-        else:
+        if calc.kind == "events":
             assert calc.options and not calc.fields, calc.slug
+        else:
+            assert calc.fields and not calc.options, calc.slug
+        if calc.kind == "intl":
+            assert calc.ladder, calc.slug
+        else:
+            assert not calc.ladder, calc.slug
 
 
 def test_only_the_result_scales_in_a_league_with_a_premium():
@@ -179,3 +183,150 @@ def test_the_payload_carries_the_benchmarks_it_will_divide_by():
     assert got["benchmarks"]["NFL_QB"] == pytest.approx(389.6)
     assert got["version"] == "v1"
     assert any(c["slug"] == "calc-nfl-players" for c in got["calcs"])
+
+
+# --- international football -------------------------------------------------
+
+def intl_matches():
+    """A complete small tournament, so the scorer can read its own shape.
+
+    Four teams, a round robin, then semi-finals and a final. Every team
+    reaches the knockout, so the *group* is four matches and the champion's
+    knockout path is one -- which is what the scorer derives, and is the pair
+    the calculator asks a reader for. Getting this wrong is the whole risk in
+    the panel: the denominator is the champion's path, not the team's.
+    """
+    rows = []
+
+    def match(date, home, away, home_score, away_score, kind):
+        rows.append({"date": date, "season": 2026, "gender": "M",
+                     "home_team": home, "away_team": away,
+                     "home_score": home_score, "away_score": away_score,
+                     "competition": "Test Cup", "rung": "federation",
+                     "kind": kind, "shootout_winner": None})
+
+    match("2026-06-01", "Alpha", "Beta", 2, 0, "finals")
+    match("2026-06-01", "Gamma", "Delta", 1, 1, "finals")
+    match("2026-06-05", "Alpha", "Gamma", 2, 0, "finals")
+    match("2026-06-05", "Beta", "Delta", 1, 0, "finals")
+    match("2026-06-09", "Alpha", "Delta", 3, 0, "finals")
+    match("2026-06-09", "Beta", "Gamma", 0, 0, "finals")
+    match("2026-06-14", "Alpha", "Delta", 1, 0, "finals")
+    match("2026-06-14", "Beta", "Gamma", 2, 1, "finals")
+    match("2026-06-18", "Alpha", "Beta", 1, 0, "finals")
+    match("2025-09-01", "Alpha", "Zeta", 2, 0, "qualifying")
+    match("2025-09-05", "Alpha", "Eta", 1, 0, "qualifying")
+    match("2025-09-09", "Alpha", "Theta", 1, 1, "qualifying")
+    match("2025-10-01", "Alpha", "Iota", 3, 1, "qualifying")
+    return pd.DataFrame(rows)
+
+
+def intl_total(units, quals, group, knockout, rung, best_rung, best=True):
+    """The calculator's arithmetic, in Python. The browser does exactly this."""
+    from whul.scoring.intl_soccer import BEYOND_BEST_SHARE, MATCH_MAX, RUNG, SCALE, STAGE
+
+    path_max = MATCH_MAX * (quals * STAGE["qualifying"] + group * STAGE["group"]
+                            + knockout * STAGE["knockout"])
+    points = RUNG[rung] * SCALE * units / path_max
+    folded = points * (1.0 if best else BEYOND_BEST_SHARE)
+    return folded * (max(RUNG.values()) / RUNG[best_rung])
+
+
+def test_an_international_season_matches_the_scorer():
+    from whul.scoring import intl_soccer as isoc
+    from whul.scoring.intl_soccer import STAGE
+
+    scored = isoc.score_teams(intl_matches())
+    alpha = float(scored[scored["team"] == "Alpha"].iloc[0]["total_points"])
+
+    # Alpha's units, stage by stage, exactly as the panel adds them up.
+    quals = (3 * 3 + 1 * 1 + 2 * 1 + 2 * 1) * STAGE["qualifying"]
+    group = ((3 * 3 + 3 * 1 + 3 * 1) + (1 * 3 + 0 + 1 * 1)) * STAGE["group"]
+    knockout = (1 * 3 + 0 + 1 * 1) * STAGE["knockout"]
+    # The season's biggest rung is the federation cup, because it is the only
+    # thing Alpha played. Saying "World Cup" here would be describing a
+    # different season, and the lift would be 1 instead of 2/1.5 -- which is
+    # exactly the mistake the selector exists to let a reader make on purpose.
+    got = intl_total(quals + group + knockout, quals=4, group=4, knockout=1,
+                     rung="federation", best_rung="federation")
+    assert got == pytest.approx(alpha)
+
+
+def test_a_lesser_competition_counts_at_half():
+    """The best competition whole and everything after it at half, so winning
+    two trophies does not simply double."""
+    whole = intl_total(60, 4, 4, 1, "federation", "world", best=True)
+    lesser = intl_total(60, 4, 4, 1, "federation", "world", best=False)
+    from whul.scoring.intl_soccer import BEYOND_BEST_SHARE
+    assert lesser == pytest.approx(whole * BEYOND_BEST_SHARE)
+
+
+def test_a_fallow_year_is_lifted_so_its_best_rung_reaches_a_full_ceiling():
+    """A Nations League year is not worth half a World Cup year for reasons of
+    the calendar alone."""
+    from whul.scoring.intl_soccer import RUNG
+
+    world = intl_total(60, 4, 4, 1, "world", "world")
+    nations = intl_total(60, 4, 4, 1, "nations_league", "nations_league")
+    assert nations == pytest.approx(world)
+    # But a Nations League run in a year that also held a World Cup is not.
+    alongside = intl_total(60, 4, 4, 1, "nations_league", "world")
+    assert alongside == pytest.approx(
+        nations * RUNG["nations_league"] / RUNG["world"])
+
+
+def test_the_international_calculator_carries_the_whole_ladder():
+    calc = spec("calc-intl-soccer")
+    from whul.scoring.intl_soccer import MATCH_MAX, RUNG, STAGE
+
+    assert calc.kind == "intl"
+    assert calc.ladder["stages"] == {k: float(v) for k, v in STAGE.items()}
+    assert calc.ladder["match_max"] == pytest.approx(MATCH_MAX)
+    assert calc.ladder["best_rung"] == pytest.approx(max(RUNG.values()))
+    assert {f["key"] for f in calc.ladder["format"]} == {
+        "group_matches", "knockout_rounds"}
+
+
+# --- one game rather than a season -----------------------------------------
+
+def test_a_postseason_game_is_worth_its_own_rate_again():
+    """The bonus is a rate, not a tally: one playoff game at a given line is
+    worth that line times a fixed share of a regular season."""
+    from whul.scoring.postseason import RULES
+
+    for slug, league in (("calc-nfl-players", "NFL"), ("calc-nba-players", "NBA"),
+                         ("calc-mlb-batters", "MLB"), ("calc-nhl-players", "NHL")):
+        calc = spec(slug)
+        assert calc.postseason is not None, slug
+        assert calc.postseason.scalar == pytest.approx(RULES[league].scalar), slug
+
+
+def test_mlb_shows_both_halves_of_a_bisected_season():
+    from whul.scoring import mlb as scoring
+
+    for slug in ("calc-mlb-batters", "calc-mlb-pitchers"):
+        calc = spec(slug)
+        assert calc.bisection.year_n == pytest.approx(scoring.MULT_YEAR_N)
+        assert calc.bisection.year_n1 == pytest.approx(scoring.MULT_YEAR_N1)
+
+
+def test_the_doubles_a_single_game_derives_are_the_ones_the_scorer_counts():
+    calc = spec("calc-nba-players")
+    assert calc.doubles.keys == list(nba.DOUBLE_CATEGORIES)
+    assert calc.doubles.double == pytest.approx(nba.DOUBLE_DOUBLE_BONUS)
+    assert calc.doubles.triple == pytest.approx(nba.TRIPLE_DOUBLE_BONUS)
+
+
+def test_a_double_double_count_is_only_asked_for_over_a_season():
+    """In one game it is a fact about the line, not a number anybody types."""
+    calc = spec("calc-nba-players")
+    seasonal = {f.key for f in calc.fields if f.mode == "season"}
+    assert seasonal == {"dd", "td"}
+
+
+def test_every_calculator_offering_a_game_says_something_about_each_span():
+    """A mode that changes the arithmetic and says nothing about why is a
+    calculator that looks broken."""
+    for calc in calculator.calculators():
+        if len(calc.modes) > 1:
+            assert calc.postseason or calc.bisection or calc.mode_notes, calc.slug

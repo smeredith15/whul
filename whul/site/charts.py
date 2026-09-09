@@ -1022,37 +1022,94 @@ SCRIPT = """\
 
 
 /* --- the scoring calculator ------------------------------------------------
-   Rules in, arithmetic here. Everything below reads the spec in #calcdata and
-   nothing below knows what a touchdown is worth: the numbers arrive from
-   whul.site.calculator, which reads them off the scorers. If a weight changes
-   in Python, this changes with it and no one has to remember. */
+   Rules in, arithmetic here. Nothing below knows what a touchdown is worth:
+   the numbers arrive from whul.site.calculator, which reads them off the
+   scorers. If a weight changes in Python, this changes with it. */
 (function () {
   var host = document.getElementById('calcpanel');
   var source = document.getElementById('calcdata');
   if (!host || !source) return;
 
   var spec = JSON.parse(source.textContent);
-  var state = { calc: spec.calcs[0], group: 0, scale: 0, values: {}, events: [] };
+  var state = null;
 
+  function reset(calc) {
+    state = {
+      calc: calc, group: 0, scale: 0, values: {}, events: [],
+      mode: calc.modes[0], postseason: false,
+      /* International football's two season-level controls. */
+      best: true, seasonRung: 0, format: {}
+    };
+    (calc.ladder.format || []).forEach(function (f) {
+      state.format[f.key] = f['default'];
+    });
+  }
+  reset(spec.calcs[0]);
+
+  function num(value) {
+    var n = parseFloat(value);
+    return isFinite(n) ? n : 0;
+  }
   function money(value, places) {
     return value.toLocaleString(undefined, {
       minimumFractionDigits: places, maximumFractionDigits: places });
   }
-
   function benchmark() {
     var group = state.calc.groups[state.group];
     return group ? spec.benchmarks[group[1]] : null;
   }
+  function shown(f) {
+    return !f.mode || f.mode === state.mode;
+  }
+
+  /* A double-double is not a number anybody types about one game -- it is a
+     fact about the line already entered, and the scorer reads it the same
+     way. Counted here so a game and the pipeline agree. */
+  function doubles() {
+    var d = state.calc.doubles;
+    if (!d || state.mode !== 'game') return { dd: 0, td: 0, hit: [] };
+    var hit = d.keys.filter(function (k) { return num(state.values[k]) >= d.threshold; });
+    return { dd: hit.length >= 2 ? 1 : 0, td: hit.length >= 3 ? 1 : 0, hit: hit };
+  }
+
+  function intlUnits() {
+    var calc = state.calc, stages = calc.ladder.stages, units = 0, quals = 0;
+    calc.fields.forEach(function (f) {
+      var n = num(state.values[f.key]);
+      units += n * f.points * stages[f.stage];
+      if (f.stage === 'qualifying' && /_(win|shootout_win|draw|loss)$/.test(f.key)) {
+        quals += n;
+      }
+    });
+    return { units: units, quals: quals };
+  }
+
+  function intlTotals() {
+    var calc = state.calc, L = calc.ladder;
+    var got = intlUnits();
+    var G = num(state.format.group_matches), K = num(state.format.knockout_rounds);
+    var pathMax = L.match_max * (got.quals * L.stages.qualifying
+      + G * L.stages.group + K * L.stages.knockout);
+    var ceiling = calc.scales[state.scale].value * L.scale;
+    var points = pathMax > 0 ? ceiling * got.units / pathMax : 0;
+    var folded = points * (state.best ? 1 : L.beyond_best);
+    var lift = L.best_rung / L.rungs[state.seasonRung][1];
+    return { points: points, folded: folded, lift: lift, total: folded * lift,
+             pathMax: pathMax, ceiling: ceiling, units: got.units };
+  }
 
   function raw() {
     var calc = state.calc, sum = 0;
+    if (calc.kind === 'intl') return intlTotals().total;
     if (calc.kind === 'linear') {
       var scale = calc.scales.length ? calc.scales[state.scale].value : 1;
       calc.fields.forEach(function (f) {
-        var n = parseFloat(state.values[f.key]);
-        if (!isFinite(n)) n = 0;
-        sum += n * f.points * (f.scaled ? scale : 1);
+        if (!shown(f)) return;
+        sum += num(state.values[f.key]) * f.points * (f.scaled ? scale : 1);
       });
+      var d = doubles();
+      sum += d.dd * (calc.doubles ? calc.doubles.double : 0);
+      sum += d.td * (calc.doubles ? calc.doubles.triple : 0);
       return sum;
     }
     state.events.forEach(function (row) {
@@ -1060,24 +1117,22 @@ SCRIPT = """\
       if (!option) return;
       var extra = calc.multipliers.length ? calc.multipliers[row.multiplier] : null;
       /* Golf and tennis multiply the result; motorsport adds a point for the
-         fastest lap. Which one it is follows from the value: a multiplier is
-         never zero and an addition never one, so the spec says it without a
-         flag nobody would remember to set. */
+         fastest lap. Which one follows from the label rather than a flag
+         nobody would remember to set. */
       if (!extra) sum += option.value;
-      else if (extra.value >= 1 && calc.multiplier_label !== 'Fastest lap') {
-        sum += option.value * extra.value;
-      } else sum += option.value + extra.value;
+      else if (calc.multiplier_label === 'Fastest lap') sum += option.value + extra.value;
+      else sum += option.value * extra.value;
     });
     return sum;
   }
 
+  /* --- widgets ------------------------------------------------------------ */
+
   function field(f) {
     var calc = state.calc;
     var scale = (f.scaled && calc.scales.length) ? calc.scales[state.scale].value : 1;
-    /* What one of them is worth *here*. Showing the unscaled 3 beside "Win"
-       with Champions League selected would contradict the total underneath,
-       and the premium is the thing this picker exists to demonstrate. */
-    var each = Math.round(f.points * scale * 1000) / 1000;
+    var stage = f.stage ? calc.ladder.stages[f.stage] : 1;
+    var each = Math.round(f.points * scale * stage * 1000) / 1000;
     var wrap = document.createElement('label');
     wrap.className = 'calcfield';
     var name = document.createElement('span');
@@ -1095,9 +1150,24 @@ SCRIPT = """\
       state.values[f.key] = input.value;
       show();
     });
-    wrap.appendChild(name);
-    wrap.appendChild(worth);
-    wrap.appendChild(input);
+    wrap.appendChild(name); wrap.appendChild(worth); wrap.appendChild(input);
+    return wrap;
+  }
+
+  function plain(label, value, onchange, step) {
+    var wrap = document.createElement('label');
+    wrap.className = 'calcfield';
+    var name = document.createElement('span');
+    name.className = 'calclabel';
+    name.textContent = label;
+    var gap = document.createElement('span');
+    gap.className = 'calcworth';
+    var input = document.createElement('input');
+    input.type = 'number';
+    input.step = step || 1;
+    input.value = value;
+    input.addEventListener('input', function () { onchange(input.value); });
+    wrap.appendChild(name); wrap.appendChild(gap); wrap.appendChild(input);
     return wrap;
   }
 
@@ -1117,8 +1187,20 @@ SCRIPT = """\
     select.addEventListener('change', function () {
       onchange(parseInt(select.value, 10));
     });
-    wrap.appendChild(name);
-    wrap.appendChild(select);
+    wrap.appendChild(name); wrap.appendChild(select);
+    return wrap;
+  }
+
+  function toggle(label, checked, onchange) {
+    var wrap = document.createElement('label');
+    wrap.className = 'calctoggle';
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = checked;
+    box.addEventListener('change', function () { onchange(box.checked); });
+    var text = document.createElement('span');
+    text.textContent = label;
+    wrap.appendChild(box); wrap.appendChild(text);
     return wrap;
   }
 
@@ -1139,12 +1221,20 @@ SCRIPT = """\
     drop.className = 'calcdrop';
     drop.textContent = 'Remove';
     drop.addEventListener('click', function () {
-      state.events.splice(index, 1);
-      show();
+      state.events.splice(index, 1); show();
     });
     line.appendChild(drop);
     return line;
   }
+
+  function figure(key, value) {
+    var box = document.createElement('div');
+    box.className = 'calcnum';
+    box.innerHTML = '<span class="calckey">' + key + '</span><strong>' + value + '</strong>';
+    return box;
+  }
+
+  /* --- the panel ---------------------------------------------------------- */
 
   function show() {
     var calc = state.calc;
@@ -1155,10 +1245,16 @@ SCRIPT = """\
     top.appendChild(picker('Asset',
       spec.calcs.map(function (c) { return c.title; }),
       spec.calcs.indexOf(calc), function (value) {
-        state.calc = spec.calcs[value];
-        state.group = 0; state.scale = 0; state.values = {}; state.events = [];
-        show();
+        reset(spec.calcs[value]); show();
       }));
+    if (calc.modes.length > 1) {
+      top.appendChild(picker('Span', ['One game', 'A whole season'],
+        state.mode === 'game' ? 0 : 1, function (value) {
+          state.mode = value === 0 ? 'game' : 'season';
+          state.postseason = false;
+          show();
+        }));
+    }
     if (calc.groups.length > 1) {
       top.appendChild(picker(calc.kind === 'events' ? 'Series' : 'Measured against',
         calc.groups.map(function (g) { return g[0]; }), state.group,
@@ -1169,6 +1265,11 @@ SCRIPT = """\
         calc.scales.map(function (s) { return s.label; }), state.scale,
         function (value) { state.scale = value; show(); }));
     }
+    if (calc.kind === 'intl') {
+      top.appendChild(picker('Biggest competition all season',
+        calc.ladder.rungs.map(function (r) { return r[0]; }), state.seasonRung,
+        function (value) { state.seasonRung = value; show(); }));
+    }
     host.appendChild(top);
 
     var intro = document.createElement('p');
@@ -1176,12 +1277,7 @@ SCRIPT = """\
     intro.textContent = calc.intro;
     host.appendChild(intro);
 
-    if (calc.kind === 'linear') {
-      var grid = document.createElement('div');
-      grid.className = 'calcgrid';
-      calc.fields.forEach(function (f) { grid.appendChild(field(f)); });
-      host.appendChild(grid);
-    } else {
+    if (calc.kind === 'events') {
       var list = document.createElement('div');
       list.className = 'calcevents';
       state.events.forEach(function (row, index) {
@@ -1193,37 +1289,97 @@ SCRIPT = """\
       add.className = 'calcadd';
       add.textContent = state.events.length ? 'Add another' : 'Add a result';
       add.addEventListener('click', function () {
-        state.events.push({ option: 0, multiplier: 0 });
-        show();
+        state.events.push({ option: 0, multiplier: 0 }); show();
       });
       host.appendChild(add);
+    } else {
+      var grid = document.createElement('div');
+      grid.className = 'calcgrid';
+      calc.fields.forEach(function (f) { if (shown(f)) grid.appendChild(field(f)); });
+      (calc.ladder.format || []).forEach(function (f) {
+        grid.appendChild(plain(f.label, state.format[f.key], function (value) {
+          state.format[f.key] = value; show();
+        }));
+      });
+      host.appendChild(grid);
     }
+
+    var switches = document.createElement('div');
+    switches.className = 'calcswitches';
+    if (calc.kind === 'intl') {
+      switches.appendChild(toggle(
+        'This was the season’s best competition (a lesser one counts at '
+        + Math.round(calc.ladder.beyond_best * 100) + '%)',
+        state.best, function (on) { state.best = on; show(); }));
+    }
+    if (calc.postseason && state.mode === 'game') {
+      switches.appendChild(toggle('This was a postseason game',
+        state.postseason, function (on) { state.postseason = on; show(); }));
+    }
+    if (switches.children.length) host.appendChild(switches);
 
     var points = raw();
     var bar = benchmark();
     var out = document.createElement('div');
     out.className = 'calcout';
-    out.innerHTML =
-      '<div class="calcnum"><span class="calckey">Raw points</span>' +
-      '<strong>' + money(points, 1) + '</strong></div>' +
-      '<div class="calcnum"><span class="calckey">Normalized</span><strong>' +
-      (bar ? money(points / bar * 100, 1) : '--') + '</strong></div>' +
-      '<p class="calcwhy">' + (bar
-        ? money(points, 1) + ' \u00f7 ' + money(bar, 1) +
-          ' \u00d7 100. The benchmark is an elite season for this group.'
-        : 'No frozen benchmark for this group, so there is no scale to put it on.')
-      + '</p>';
+    out.appendChild(figure('Raw points', money(points, 1)));
+    out.appendChild(figure('Normalized',
+      bar ? money(points / bar * 100, 1) : '--'));
+
+    if (calc.bisection && state.mode === 'game') {
+      out.appendChild(figure(calc.bisection.year_n_label,
+        money(points * calc.bisection.year_n, 1)));
+      out.appendChild(figure(calc.bisection.year_n1_label,
+        money(points * calc.bisection.year_n1, 1)));
+    }
+    if (calc.postseason && state.postseason) {
+      out.appendChild(figure('Postseason bonus',
+        '+' + money(points * calc.postseason.scalar, 1)));
+    }
+
+    var why = document.createElement('p');
+    why.className = 'calcwhy';
+    var lines = [];
+    if (bar) {
+      lines.push(money(points, 1) + ' ÷ ' + money(bar, 1) +
+        ' × 100. The benchmark is an elite season for this group.');
+    } else {
+      lines.push('No frozen benchmark for this group, so there is no scale to '
+        + 'put it on.');
+    }
+    if (calc.kind === 'intl') {
+      var t = intlTotals();
+      lines.push('Ceiling ' + money(t.ceiling, 0) + ' × ' + money(t.units, 1)
+        + ' units ÷ ' + money(t.pathMax, 0) + ' the champion’s path = '
+        + money(t.points, 1) + ', then ×' + money(t.lift, 3) + ' for the '
+        + 'year’s biggest competition.');
+    }
+    var d = doubles();
+    if (d.hit.length) {
+      lines.push('Double figures in ' + d.hit.length + ' categories ('
+        + d.hit.join(', ') + '), so a '
+        + (d.td ? 'triple-double' : 'double-double') + ' is counted.');
+    }
+    if (calc.bisection && state.mode === 'game') {
+      lines.push('MLB drafts mid-season, so what is left of this year is '
+        + 'discounted and next year’s first half is inflated to match.');
+    }
+    if (calc.postseason && state.postseason) lines.push(calc.postseason.note);
+    why.textContent = lines.join(' ');
+    out.appendChild(why);
     host.appendChild(out);
 
-    if (calc.notes.length) {
-      var notes = document.createElement('ul');
-      notes.className = 'rulenotes';
-      calc.notes.forEach(function (note) {
+    var notes = (calc.notes || []).concat(
+      (calc.mode_notes && calc.mode_notes[state.mode]) || []);
+    if (notes.length) {
+      var list2 = document.createElement('ul');
+      list2.className = 'rulenotes';
+      notes.forEach(function (note) {
         var item = document.createElement('li');
         item.textContent = note;
-        notes.appendChild(item);
+        list2.appendChild(item);
       });
-      host.appendChild(notes);
+      host.appendChild(list2);
     }
   }
 
