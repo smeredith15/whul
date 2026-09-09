@@ -18,9 +18,19 @@ name: Publish standings
 
 on:
   schedule:
-    # 09:00 UTC -- after North American games have finished and been posted,
-    # and before anyone in the league is awake to look.
-    - cron: "0 9 * * *"
+    # 07:37 UTC, and the odd minute is the point.
+    #
+    # GitHub runs scheduled workflows at the lowest priority and delays them
+    # under load, which peaks hardest on the hour. At "0 9" this job was late
+    # every single day it ever ran -- 3h27, 3h40, 4h13, 4h22, 5h51 -- so it
+    # landed between 08:30 and 11:00 Eastern rather than overnight, and the
+    # league read yesterday's standings over breakfast.
+    #
+    # An odd minute does not make GitHub punctual; it avoids the worst of the
+    # contention. Nominally 03:37 Eastern, which with the usual slip should
+    # land while nobody is looking, and early enough that a bad night can be
+    # noticed and re-run before anyone is.
+    - cron: "37 7 * * *"
   workflow_dispatch:
     inputs:
       season:
