@@ -252,8 +252,20 @@ def test_coverage_reports_a_league_nobody_computed(store):
 
 # --- the registry --------------------------------------------------------
 
-def test_every_registered_source_is_in_the_run_order():
-    assert set(SOURCES) == set(ORDER)
+def test_every_registered_source_is_in_the_run_order_or_covered_by_one():
+    """A source outside ORDER is never run by a full recompute, so leaving one
+    out by accident is a league that silently stops being benchmarked. The
+    per-league subsets are out of ORDER on purpose -- they exist to recompute
+    one group without walking the others -- so what must hold is that every
+    group they produce is still computed by something a full run does reach."""
+    covered = {group for key in ORDER
+               for group in (SOURCES[key].produces or ()) if key in SOURCES}
+    for key, source in SOURCES.items():
+        if key in ORDER:
+            continue
+        assert source.produces, f"{key} is outside ORDER and declares no groups"
+        missing = sorted(set(source.produces) - covered)
+        assert not missing, f"{key} is the only source for {missing}"
 
 
 def test_every_source_builds_without_touching_the_network():
@@ -992,3 +1004,41 @@ def test_a_league_that_fails_does_not_leave_the_run_looking_successful(
     # correct one is how corrections stop getting made.
     saved = open_store(db).query("SELECT norm_key FROM benchmarks")
     assert not saved.empty
+
+
+# --- recomputing one league without walking the other five ----------------
+
+
+def test_one_league_can_be_recomputed_without_the_others():
+    """Correcting MLS used to mean re-pulling every European league and its
+    cups -- an hour and a half to answer a question about one group, which in
+    practice means the question gets answered by guessing instead."""
+    assert SOURCES["mls-players"].produces == ("MLS",)
+    assert SOURCES["epl-players"].produces == ("Premier League",)
+
+
+def test_a_subset_is_never_part_of_a_full_run():
+    """A full run must compute each group exactly once, through the source that
+    pulls the shared competitions in one pass."""
+    for key in SOURCES:
+        if key.endswith("-players") and key != "soccer-players":
+            assert key not in ORDER, f"{key} would double-compute its group"
+    everything = resolve(None)
+    produced = [group for s in everything for group in s.produces or ()]
+    assert len(produced) == len(set(produced)), "a group computed twice"
+
+
+def test_naming_a_subset_and_its_parent_is_refused():
+    """Both would compute the MLS group and the run would keep whichever
+    finished last -- two numbers for one thing, no error, and nothing in the
+    output saying which was stored."""
+    with pytest.raises(KeyError) as raised:
+        resolve(["soccer-players", "mls-players"])
+    assert "twice" in str(raised.value)
+    assert "MLS" in str(raised.value)
+
+
+def test_a_subset_beside_an_unrelated_source_is_fine():
+    """MLS players and MLS teams are different asset types and different
+    groups, and running them together is the ordinary case."""
+    assert [s.key for s in resolve(["mls-players", "mls"])] == ["mls", "mls-players"]

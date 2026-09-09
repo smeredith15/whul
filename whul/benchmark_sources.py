@@ -436,8 +436,43 @@ def _intl_seasons(as_of: date) -> list[int]:
     return [league_year(SEASON.start)]
 
 
-def _soccer_players():
+@lru_cache(maxsize=None)
+def _players_in(competition: str, seasons: tuple[int, ...]):
+    """One competition's players, pulled at most once a run.
+
+    The Champions League is played by clubs from four of the six leagues here,
+    so computing those leagues separately would ask for it four times. Cached
+    on the competition and the seasons, which is what the request depends on.
+
+    Never raises and never returns None: a competition that cannot be read is
+    one competition missing, said out loud, and the rest of the run continues.
+    A cup that quietly returns nothing is the failure this file is written
+    against, so an empty answer is reported for every competition rather than
+    only for a league's own.
+    """
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    try:
+        frame = espn_soccer.load_players(competition, list(seasons))
+    except Exception as exc:  # noqa: BLE001 -- one request, not all
+        print(f"  {competition}: could not pull "
+              f"({type(exc).__name__}: {exc}); the rest continue", flush=True)
+        return pd.DataFrame()
+    if frame is None or frame.empty:
+        print(f"  {competition}: no players returned across "
+              f"{len(seasons)} season(s)", flush=True)
+        return pd.DataFrame()
+    return frame
+
+
+def _soccer_players(only: tuple[str, ...] = ()):
     """Club soccer players, from ESPN team rosters.
+
+    ``only`` names the categories to compute, for recomputing one league
+    without walking the other five -- an MLS-only run is a few hundred requests
+    where the full six are several thousand. Empty means all of them.
 
     FBref is gone rather than pending: it answers 403 to a datacenter address
     and to a laptop alike, and the nightly pull runs on GitHub Actions anyway.
@@ -455,7 +490,9 @@ def _soccer_players():
     measured against the Premier League rather than a pooled European field.
     """
     from whul.scoring import soccer
-    from whul.sources import espn_soccer
+
+    wanted_leagues = ({c: k for c, k in PLAYER_LEAGUES.items() if c in only}
+                      if only else dict(PLAYER_LEAGUES))
 
     def load(seasons):
         from whul.sources.espn import (
@@ -463,29 +500,7 @@ def _soccer_players():
         )
 
         def pull(competition):
-            """One competition's players, or an empty frame having said why.
-
-            One competition at a time, because they fail one at a time. A 403
-            on the Premier League's club list used to raise straight out of
-            here and take the other five leagues with it -- thirty-two players
-            scoring nothing over one refused request.
-            """
-            try:
-                frame = espn_soccer.load_players(competition, list(seasons))
-            except Exception as exc:  # noqa: BLE001 -- one request, not all
-                print(f"  {competition}: could not pull "
-                      f"({type(exc).__name__}: {exc}); the rest continue",
-                      flush=True)
-                return pd.DataFrame()
-            if frame is None or frame.empty:
-                # Said for every competition, not just a league's own. A cup
-                # that quietly returns nothing is the failure this whole file
-                # is written against: it scores low rather than erroring, and
-                # the run reads as though the competition simply went badly.
-                print(f"  {competition}: no players returned across "
-                      f"{len(list(seasons))} season(s)", flush=True)
-                return pd.DataFrame()
-            return frame
+            return _players_in(competition, tuple(seasons))
 
         def club_key(frame):
             """What identifies a club across two competitions' requests.
@@ -513,7 +528,7 @@ def _soccer_players():
         # Pass one: each league itself. This is the only competition whose
         # entrants are by definition that league's clubs, so it is also where
         # the club -> league map comes from.
-        for category, key in PLAYER_LEAGUES.items():
+        for category, key in wanted_leagues.items():
             frame = pull(key)
             if frame.empty:
                 print(f"  {key}: so {category} scores none", flush=True)
@@ -534,7 +549,7 @@ def _soccer_players():
         # Premier League player holding his European bonus -- a player on
         # nobody's roster, which is where the bonus went.
         others: list[str] = []
-        for key in PLAYER_LEAGUES.values():
+        for key in wanted_leagues.values():
             others += list(DOMESTIC_CUPS.get(key, ())) + list(continental_for(key))
         # Each competition once, however many leagues send clubs to it.
         for competition in dict.fromkeys(others):
@@ -628,7 +643,7 @@ def _report_competition_coverage(rows: pd.DataFrame) -> None:
     print(flush=True)
 
 
-def _soccer_players_live():
+def _soccer_players_live(only: tuple[str, ...] = ()):
     """The same pull, with European competition credited on top.
 
     The benchmark path above leaves the bonus off, so the pool is domestic
@@ -638,7 +653,7 @@ def _soccer_players_live():
     """
     from whul.scoring import soccer
 
-    load, _ = _soccer_players()
+    load, _ = _soccer_players(only=only)
     return load, lambda raw: soccer.score_players(raw, postseason=True)
 
 
@@ -1106,6 +1121,25 @@ SOURCES: dict[str, Source] = _register(
            seasons_for=_espn_seasons("epl", "Premier League"),
            note="ESPN team rosters, 21 requests a league-season; "
                 "six benchmarks, each league against itself"),
+    *(
+        # One league's players without walking the other five. Correcting MLS
+        # alone used to mean re-pulling every European league and its cups --
+        # an hour and a half to answer a question about one group, which in
+        # practice means the question gets answered by guessing instead.
+        #
+        # Each pulls its own league, its own domestic cups and its own
+        # continental competitions, and attributes by its own clubs, so a
+        # subset is not a different calculation from the whole -- it is the
+        # same one over fewer leagues. Shared competitions are cached, so
+        # naming several of these costs no more than soccer-players does.
+        Source(f"{key}-players", category, "Player",
+               (lambda c=category: _soccer_players(only=(c,))),
+               live=(lambda c=category: _soccer_players_live(only=(c,))),
+               produces=(category,),
+               seasons_for=_espn_seasons(key, category),
+               note=f"{category} players alone, for recomputing one group")
+        for category, key in PLAYER_LEAGUES.items()
+    ),
 )
 
 #: Run in this order. Cheap, verified sources first, so a failure late in the
@@ -1128,4 +1162,24 @@ def resolve(names: list[str] | None) -> list[Source]:
             f"no benchmark source for {unknown}; known keys: {', '.join(sorted(SOURCES))}"
         )
     ranked = {key: i for i, key in enumerate(ORDER)}
-    return sorted((SOURCES[n] for n in dict.fromkeys(names)), key=lambda s: ranked.get(s.key, 99))
+    chosen = sorted((SOURCES[n] for n in dict.fromkeys(names)),
+                    key=lambda s: ranked.get(s.key, 99))
+
+    # Naming a subset alongside the source it comes from would compute one
+    # group twice and keep whichever finished last -- two numbers for the same
+    # thing, no error, and no way to tell from the output which one was stored.
+    seen: dict[tuple[str, str], str] = {}
+    clashes = []
+    for source in chosen:
+        for group in source.produces or ():
+            before = seen.get((group, source.asset_type))
+            if before:
+                clashes.append(f"{group} {source.asset_type.lower()}s, from both "
+                               f"{before} and {source.key}")
+            seen[(group, source.asset_type)] = source.key
+    if clashes:
+        raise KeyError(
+            "these would each be computed twice: " + "; ".join(clashes)
+            + ". Name one or the other."
+        )
+    return chosen
