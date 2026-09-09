@@ -363,6 +363,52 @@ td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
   td.fixture .against { white-space: normal; overflow-wrap: break-word; }
 }
 
+/* The calculator. A form, not a chart: the numbers it produces are the point,
+   so they sit apart from the inputs and are the only thing in the panel with
+   any weight to them. */
+.calculator { padding-top: 4px; }
+.calctop { display: flex; flex-wrap: wrap; gap: 12px 18px; margin-bottom: 4px; }
+.calcpick { display: flex; flex-direction: column; gap: 3px; font-size: 12px;
+  color: var(--text-secondary); }
+.calcpick select { font: inherit; font-size: 13px; color: var(--text-primary);
+  background: var(--surface-1); border: 1px solid var(--grid);
+  border-radius: 6px; padding: 5px 8px; max-width: 22em; }
+.calcgrid { display: grid; gap: 6px 22px; margin: 10px 0 14px;
+  grid-template-columns: repeat(auto-fill, minmax(19em, 1fr)); }
+.calcfield { display: grid; grid-template-columns: 1fr auto 5.5em;
+  align-items: baseline; gap: 8px; padding: 3px 0;
+  border-bottom: 1px solid var(--grid); }
+.calclabel { font-size: 13px; }
+/* What one of them is worth, beside the box you type into. The rules page is
+   two clicks away and this is the question being asked. */
+.calcworth { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.calcfield input { font: inherit; font-size: 13px; text-align: right;
+  color: var(--text-primary); background: var(--surface-1);
+  border: 1px solid var(--grid); border-radius: 5px; padding: 3px 6px;
+  width: 100%; }
+.calcfield input:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 1px; }
+.calcevents { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.calcevent { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end;
+  padding-bottom: 8px; border-bottom: 1px solid var(--grid); }
+.calcadd, .calcdrop { font: inherit; font-size: 12px; cursor: pointer;
+  background: var(--surface-1); color: var(--text-secondary);
+  border: 1px solid var(--grid); border-radius: 6px; padding: 5px 10px; }
+.calcadd:hover, .calcdrop:hover { color: var(--text-primary); }
+.calcout { display: flex; flex-wrap: wrap; gap: 10px 32px; align-items: baseline;
+  margin-top: 16px; padding-top: 14px; border-top: 2px solid var(--grid); }
+.calcnum { display: flex; flex-direction: column; gap: 2px; }
+.calckey { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); }
+.calcnum strong { font-size: 1.5rem; font-variant-numeric: tabular-nums;
+  line-height: 1.1; }
+.calcwhy { flex-basis: 100%; margin: 2px 0 0; font-size: 12px;
+  color: var(--muted); }
+@media (max-width: 620px) {
+  .calcfield { grid-template-columns: 1fr auto 4.5em; }
+  .calcgrid { grid-template-columns: 1fr; }
+}
+
 /* One asset type's raw scoring. Eighteen of these open at once is a page
    nobody reads, so each opens on demand and the list inside is deliberately
    plain text -- the sports do not share a shape, and a grid built for all of

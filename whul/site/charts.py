@@ -1019,4 +1019,214 @@ SCRIPT = """\
     if (event.target === dialog) dialog.close();
   });
 })();
+
+
+/* --- the scoring calculator ------------------------------------------------
+   Rules in, arithmetic here. Everything below reads the spec in #calcdata and
+   nothing below knows what a touchdown is worth: the numbers arrive from
+   whul.site.calculator, which reads them off the scorers. If a weight changes
+   in Python, this changes with it and no one has to remember. */
+(function () {
+  var host = document.getElementById('calcpanel');
+  var source = document.getElementById('calcdata');
+  if (!host || !source) return;
+
+  var spec = JSON.parse(source.textContent);
+  var state = { calc: spec.calcs[0], group: 0, scale: 0, values: {}, events: [] };
+
+  function money(value, places) {
+    return value.toLocaleString(undefined, {
+      minimumFractionDigits: places, maximumFractionDigits: places });
+  }
+
+  function benchmark() {
+    var group = state.calc.groups[state.group];
+    return group ? spec.benchmarks[group[1]] : null;
+  }
+
+  function raw() {
+    var calc = state.calc, sum = 0;
+    if (calc.kind === 'linear') {
+      var scale = calc.scales.length ? calc.scales[state.scale].value : 1;
+      calc.fields.forEach(function (f) {
+        var n = parseFloat(state.values[f.key]);
+        if (!isFinite(n)) n = 0;
+        sum += n * f.points * (f.scaled ? scale : 1);
+      });
+      return sum;
+    }
+    state.events.forEach(function (row) {
+      var option = calc.options[row.option];
+      if (!option) return;
+      var extra = calc.multipliers.length ? calc.multipliers[row.multiplier] : null;
+      /* Golf and tennis multiply the result; motorsport adds a point for the
+         fastest lap. Which one it is follows from the value: a multiplier is
+         never zero and an addition never one, so the spec says it without a
+         flag nobody would remember to set. */
+      if (!extra) sum += option.value;
+      else if (extra.value >= 1 && calc.multiplier_label !== 'Fastest lap') {
+        sum += option.value * extra.value;
+      } else sum += option.value + extra.value;
+    });
+    return sum;
+  }
+
+  function field(f) {
+    var calc = state.calc;
+    var scale = (f.scaled && calc.scales.length) ? calc.scales[state.scale].value : 1;
+    /* What one of them is worth *here*. Showing the unscaled 3 beside "Win"
+       with Champions League selected would contradict the total underneath,
+       and the premium is the thing this picker exists to demonstrate. */
+    var each = Math.round(f.points * scale * 1000) / 1000;
+    var wrap = document.createElement('label');
+    wrap.className = 'calcfield';
+    var name = document.createElement('span');
+    name.className = 'calclabel';
+    name.textContent = f.label;
+    var worth = document.createElement('span');
+    worth.className = 'calcworth';
+    worth.textContent = (each > 0 ? '+' : '') + each;
+    var input = document.createElement('input');
+    input.type = 'number';
+    input.step = f.step;
+    input.value = state.values[f.key] === undefined ? '' : state.values[f.key];
+    input.placeholder = '0';
+    input.addEventListener('input', function () {
+      state.values[f.key] = input.value;
+      show();
+    });
+    wrap.appendChild(name);
+    wrap.appendChild(worth);
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  function picker(label, options, selected, onchange) {
+    var wrap = document.createElement('label');
+    wrap.className = 'calcpick';
+    var name = document.createElement('span');
+    name.textContent = label;
+    var select = document.createElement('select');
+    options.forEach(function (option, index) {
+      var element = document.createElement('option');
+      element.value = index;
+      element.textContent = option;
+      if (index === selected) element.selected = true;
+      select.appendChild(element);
+    });
+    select.addEventListener('change', function () {
+      onchange(parseInt(select.value, 10));
+    });
+    wrap.appendChild(name);
+    wrap.appendChild(select);
+    return wrap;
+  }
+
+  function eventRow(row, index) {
+    var calc = state.calc;
+    var line = document.createElement('div');
+    line.className = 'calcevent';
+    line.appendChild(picker(calc.event_label,
+      calc.options.map(function (o) { return o.label; }), row.option,
+      function (value) { row.option = value; show(); }));
+    if (calc.multipliers.length) {
+      line.appendChild(picker(calc.multiplier_label,
+        calc.multipliers.map(function (o) { return o.label; }), row.multiplier,
+        function (value) { row.multiplier = value; show(); }));
+    }
+    var drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'calcdrop';
+    drop.textContent = 'Remove';
+    drop.addEventListener('click', function () {
+      state.events.splice(index, 1);
+      show();
+    });
+    line.appendChild(drop);
+    return line;
+  }
+
+  function show() {
+    var calc = state.calc;
+    host.innerHTML = '';
+
+    var top = document.createElement('div');
+    top.className = 'calctop';
+    top.appendChild(picker('Asset',
+      spec.calcs.map(function (c) { return c.title; }),
+      spec.calcs.indexOf(calc), function (value) {
+        state.calc = spec.calcs[value];
+        state.group = 0; state.scale = 0; state.values = {}; state.events = [];
+        show();
+      }));
+    if (calc.groups.length > 1) {
+      top.appendChild(picker(calc.kind === 'events' ? 'Series' : 'Measured against',
+        calc.groups.map(function (g) { return g[0]; }), state.group,
+        function (value) { state.group = value; show(); }));
+    }
+    if (calc.scales.length) {
+      top.appendChild(picker(calc.scale_label,
+        calc.scales.map(function (s) { return s.label; }), state.scale,
+        function (value) { state.scale = value; show(); }));
+    }
+    host.appendChild(top);
+
+    var intro = document.createElement('p');
+    intro.className = 'sub';
+    intro.textContent = calc.intro;
+    host.appendChild(intro);
+
+    if (calc.kind === 'linear') {
+      var grid = document.createElement('div');
+      grid.className = 'calcgrid';
+      calc.fields.forEach(function (f) { grid.appendChild(field(f)); });
+      host.appendChild(grid);
+    } else {
+      var list = document.createElement('div');
+      list.className = 'calcevents';
+      state.events.forEach(function (row, index) {
+        list.appendChild(eventRow(row, index));
+      });
+      host.appendChild(list);
+      var add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'calcadd';
+      add.textContent = state.events.length ? 'Add another' : 'Add a result';
+      add.addEventListener('click', function () {
+        state.events.push({ option: 0, multiplier: 0 });
+        show();
+      });
+      host.appendChild(add);
+    }
+
+    var points = raw();
+    var bar = benchmark();
+    var out = document.createElement('div');
+    out.className = 'calcout';
+    out.innerHTML =
+      '<div class="calcnum"><span class="calckey">Raw points</span>' +
+      '<strong>' + money(points, 1) + '</strong></div>' +
+      '<div class="calcnum"><span class="calckey">Normalized</span><strong>' +
+      (bar ? money(points / bar * 100, 1) : '--') + '</strong></div>' +
+      '<p class="calcwhy">' + (bar
+        ? money(points, 1) + ' \u00f7 ' + money(bar, 1) +
+          ' \u00d7 100. The benchmark is an elite season for this group.'
+        : 'No frozen benchmark for this group, so there is no scale to put it on.')
+      + '</p>';
+    host.appendChild(out);
+
+    if (calc.notes.length) {
+      var notes = document.createElement('ul');
+      notes.className = 'rulenotes';
+      calc.notes.forEach(function (note) {
+        var item = document.createElement('li');
+        item.textContent = note;
+        notes.appendChild(item);
+      });
+      host.appendChild(notes);
+    }
+  }
+
+  show();
+})();
 """

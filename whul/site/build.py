@@ -1200,7 +1200,7 @@ def build(
         _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     simulated, deep_profiles)
     _write_about(out, managers, stamp, simulated, version,
-                 _uncovered(store, season, version))
+                 _uncovered(store, season, version), store=store)
 
     return {
         "out": str(out),
@@ -1741,7 +1741,33 @@ STEPS = (
 )
 
 
-def _write_about(out, managers, stamp, simulated, version, uncovered=()) -> None:
+def _calculator_panel(store, season, version) -> str:
+    """The rules, as something a reader can try rather than only read.
+
+    The arithmetic runs in the browser off a spec generated from the scorers'
+    own weight tables -- see `whul.site.calculator`. What reaches the page is
+    the same dictionaries the pipeline scores with, so the calculator cannot
+    drift from the thing it explains.
+    """
+    from whul.site import calculator
+
+    benchmarks: dict[str, float] = {}
+    if version is not None:
+        rows = bm.load(store, version.version)
+        if not rows.empty:
+            benchmarks = dict(
+                zip(rows["norm_key"].astype(str),
+                    rows["benchmark"].astype(float))
+            )
+    spec = calculator.payload(benchmarks, version.version if version else "")
+    return (
+        f'<script type="application/json" id="calcdata">{json.dumps(spec)}</script>'
+        '<div class="calculator" id="calcpanel"></div>'
+    )
+
+
+def _write_about(out, managers, stamp, simulated, version, uncovered=(),
+                 store=None) -> None:
     groups = "".join(
         f"<tr><td>{escape(g.asset_type)}</td><td>{escape(g.category)}</td>"
         f"<td class='num'>{g.cap}</td><td class='num'>{g.starters}</td></tr>"
@@ -1757,6 +1783,16 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=()) -> None
   <p class="sub">Twenty-odd competitions, one number, in four steps.</p>
   <table><tbody>{steps}</tbody></table>
 </div>
+
+{_figure(
+    "calculator",
+    "Try a statline",
+    "Type a line and see what it is worth, raw and on the 0-100 scale. The "
+    "arithmetic is the pipeline's own: these are the same weights that score "
+    "the season.",
+    _calculator_panel(store, "", version) if store is not None else "",
+    open_=False,
+) if store is not None else ""}
 
 {_figure(
     "rulebook",

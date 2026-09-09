@@ -1855,3 +1855,48 @@ def test_an_unreadable_fixture_date_is_shown_as_it_came():
 
     cell = _fixture_cell({"date": "week 3", "opponent": "Alpha", "home": True})
     assert "week 3" in cell and "Alpha" in cell
+
+
+# --- the calculator ---------------------------------------------------------
+
+def test_the_scoring_page_carries_the_calculator_and_its_rules(site):
+    out, _ = site
+    html = (out / "about.html").read_text()
+    assert 'id="calcpanel"' in html
+    assert 'id="calcdata"' in html
+    spec = json.loads(
+        re.search(r'id="calcdata">(.*?)</script>', html, re.S).group(1)
+    )
+    assert spec["calcs"], "no calculators reached the page"
+    assert spec["benchmarks"], "nothing to divide by, so nothing normalizes"
+
+
+def test_a_group_with_no_benchmark_is_shipped_anyway_and_says_so(site):
+    """The simulated league benchmarks by roster category, not by the keys a
+    real season uses, so most calculator groups have nothing to divide by
+    there. That is the honest case to build for: the panel still renders and
+    reports no scale, rather than hiding the calculator or inventing one.
+
+    The strict check -- every group has a benchmark in the *real* database --
+    is in tests/test_calculator.py, where the real database is.
+    """
+    out, _ = site
+    html = (out / "about.html").read_text()
+    spec = json.loads(
+        re.search(r'id="calcdata">(.*?)</script>', html, re.S).group(1)
+    )
+    keys = {key for calc in spec["calcs"] for _, key in calc["groups"]}
+    assert keys, "no group names a benchmark at all"
+    # Whatever it can normalize, it normalizes; the rest read as unscaled.
+    assert "No frozen benchmark for this group" in charts.SCRIPT
+
+
+def test_no_two_elements_on_a_page_share_an_id(site):
+    """`getElementById` returns the first, so a duplicate is a script wired to
+    the wrong element -- which is how the calculator first rendered into its
+    own collapsed wrapper and did nothing at all."""
+    out, _ = site
+    for page in out.rglob("*.html"):
+        ids = re.findall(r'\bid="([^"]+)"', page.read_text())
+        duplicates = {i for i in ids if ids.count(i) > 1}
+        assert not duplicates, f"{page.name}: {sorted(duplicates)}"
