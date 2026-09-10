@@ -1129,3 +1129,112 @@ def test_a_league_with_no_coming_season_is_not_fetched_speculatively():
     upcoming: list = []
     ing._harvest_ahead(Source(), date(2026, 9, 8), False, None, upcoming)
     assert called == [] and upcoming == []
+
+
+# --- a failed pull must not erase one that worked ----------------------------
+
+
+class _CarrySource:
+    key = "soccer-players"
+    league = "Club Soccer"
+
+
+def carry_store(tmp_path, days: dict):
+    """``{as_of: bonus_detail}`` already recorded for one asset."""
+    import json
+
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("assets", [
+        {"asset_id": "a1", "asset_type": "Player", "display_name": "Mbappé",
+         "league": "La Liga", "norm_key": "La Liga", "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    for day, detail in days.items():
+        store.upsert("raw_stats", [{
+            "asset_id": "a1", "league": "Club Soccer", "season": "2026-27",
+            "as_of": day, "source": "soccer-players", "phase": "regular",
+            "stats": json.dumps({"regular_points": 24.0, "bonus_detail": detail,
+                                 "total_points": 24.0}),
+            "fetched_at": f"{day}T09:00:00Z",
+        }], ["asset_id", "season", "as_of", "source", "phase"])
+    store.conn.commit()
+    return store
+
+
+def ucl(games=1.0, credited=False):
+    return [{"competition": "UEFA Champions League", "games": games,
+             "points": 6.0, "share": 0.05, "scalar": 1.9, "adds": 11.4,
+             "credited": credited, "finishes": "2027-06-30"}]
+
+
+def failed_pull():
+    """What a run that could not reach Europe hands over: nothing at all."""
+    return pd.DataFrame([{"asset_id": "a1", "regular_points": 24.0,
+                          "bonus_detail": [], "postseason_bonus": 0.0,
+                          "total_points": 24.0}])
+
+
+def carry(store, frame, day="2026-09-10"):
+    from datetime import date
+
+    from whul.ingest import IngestReport, _keep_competitions_the_pull_missed
+
+    report = IngestReport(league="Club Soccer")
+    out = _keep_competitions_the_pull_missed(
+        store, frame, _CarrySource(), "2026-27",
+        date.fromisoformat(day), report)
+    return out, report
+
+
+def test_a_competition_a_pull_could_not_reach_is_not_overwritten(tmp_path):
+    """A nightly run stored 27 Champions League lines, 6 Europa and 1
+    Conference; a manual publish eleven hours later could not reach any of the
+    three and wrote silence over all of them. Nothing was wrong with the data
+    and nothing said it had gone."""
+    store = carry_store(tmp_path, {"2026-09-09": ucl()})
+    out, report = carry(store, failed_pull())
+
+    assert len(out["bonus_detail"].iloc[0]) == 1
+    assert out["bonus_detail"].iloc[0][0]["competition"] == "UEFA Champions League"
+    assert any("carried forward" in p for p in report.problems)
+
+
+def test_a_competition_that_answered_with_zeroes_keeps_its_answer(tmp_path):
+    """Absent is "we did not ask, or were refused". Zero is something the feed
+    said, and it stands -- a player really can be left out of a squad."""
+    store = carry_store(tmp_path, {"2026-09-09": ucl(games=1.0)})
+    frame = pd.DataFrame([{"asset_id": "a1", "regular_points": 24.0,
+                           "bonus_detail": ucl(games=0.0),
+                           "postseason_bonus": 0.0, "total_points": 24.0}])
+    out, report = carry(store, frame)
+
+    assert len(out["bonus_detail"].iloc[0]) == 1
+    assert out["bonus_detail"].iloc[0][0]["games"] == 0.0, "the new answer stands"
+    assert not report.problems
+
+
+def test_it_looks_past_a_day_a_failed_pull_already_damaged(tmp_path):
+    """Otherwise the failure is its own precedent: it finds its own silence,
+    carries nothing, and the loss is permanent from the next run on."""
+    store = carry_store(tmp_path, {"2026-09-08": ucl(), "2026-09-10": []})
+    out, _ = carry(store, failed_pull())
+    assert len(out["bonus_detail"].iloc[0]) == 1
+
+
+def test_nothing_is_invented_where_there_is_no_history(tmp_path):
+    store = carry_store(tmp_path, {})
+    out, report = carry(store, failed_pull())
+    assert out["bonus_detail"].iloc[0] == []
+    assert not report.problems
+
+
+def test_the_totals_are_rebuilt_from_the_merged_breakdown(tmp_path):
+    """The bonus is a pure function of the breakdown, so restoring a
+    competition without recomputing what it feeds would leave the two
+    disagreeing."""
+    store = carry_store(tmp_path, {"2026-09-09": ucl(credited=True)})
+    out, _ = carry(store, failed_pull())
+    row = out.iloc[0]
+    assert row["postseason_bonus"] == pytest.approx(11.4)
+    assert row["total_points"] == pytest.approx(35.4)

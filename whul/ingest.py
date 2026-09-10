@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -125,6 +125,8 @@ def ingest(
         mine = _against_the_league_year(store, mine, source, season, as_of, report)
 
     _report_shrinkage(store, mine, source, season, as_of, report)
+    mine = _keep_competitions_the_pull_missed(
+        store, mine, source, season, as_of, report)
 
     # Raw first, and unconditionally. A benchmark can be computed next week;
     # a rolling feed's earlier weeks cannot be fetched back.
@@ -172,6 +174,103 @@ def ingest(
 #: dip is possible where a scorer's inputs are revised; a large one is a feed
 #: that has stopped reaching as far back as it did.
 SHRINKAGE_TOLERANCE = 0.005
+
+
+#: How far back to look for a competition a pull missed. Long enough to ride
+#: out a feed being unreachable for a couple of days, short enough that a
+#: competition genuinely finished stops being carried within the week.
+CARRY_FORWARD_DAYS = 7
+
+
+def _keep_competitions_the_pull_missed(
+    store: Store, mine: pd.DataFrame, source, season: str, as_of: date,
+    report: IngestReport,
+) -> pd.DataFrame:
+    """Do not let a failed competition pull erase one that succeeded earlier.
+
+    Every run re-reads the whole season and overwrites the day's row, which is
+    what lets a figure published late be picked up without anything being
+    re-run by hand. It also means a run that fetches *less* replaces one that
+    fetched more.
+
+    That happened. A nightly run stored 27 Champions League lines, 6 Europa and
+    1 Conference; a manual publish eleven hours later could not reach any of the
+    three, and wrote silence over all of them. Nothing was wrong with the data
+    and nothing said it had gone.
+
+    A competition missing from the pull entirely is "we did not ask, or were
+    refused" -- not "nobody played in it". One that answers with zeroes has
+    said something, and its zeroes stand. So only the absent ones are carried
+    forward, and the totals they feed are recomputed from the merged breakdown.
+    """
+    from whul.scoring.postseason import (
+        DETAIL_COLUMN, credited_bonus, pending_bonus,
+    )
+
+    if mine.empty or DETAIL_COLUMN not in mine.columns:
+        return mine
+    if "asset_id" not in mine.columns or "regular_points" not in mine.columns:
+        return mine
+
+    # The most recent day that *has* a breakdown, not simply the most recent
+    # day. A failed pull that already overwrote today's row would otherwise be
+    # its own precedent -- it would find its own silence, carry nothing
+    # forward, and the loss would be permanent from the next run on.
+    previous = store.query(
+        "SELECT asset_id, as_of, stats FROM raw_stats WHERE league = ? "
+        "AND source = ? AND season = ? AND as_of >= ? AND as_of <= ? "
+        "ORDER BY as_of DESC",
+        (source.league, source.key, season,
+         (as_of - timedelta(days=CARRY_FORWARD_DAYS)).isoformat(),
+         as_of.isoformat()),
+    )
+    if previous.empty:
+        return mine
+
+    before: dict[str, list] = {}
+    for row in previous.itertuples():
+        asset_id = str(row.asset_id)
+        if asset_id in before:
+            continue  # a newer day already answered for this asset
+        try:
+            figures = json.loads(row.stats)
+        except (TypeError, ValueError):
+            continue
+        detail = figures.get(DETAIL_COLUMN)
+        if isinstance(detail, list) and detail:
+            before[asset_id] = detail
+
+    if not before:
+        return mine
+
+    out = mine.copy()
+    details, kept = [], {}
+    for row in out.itertuples():
+        now = getattr(row, DETAIL_COLUMN, None)
+        now = list(now) if isinstance(now, list) else []
+        was = before.get(str(getattr(row, "asset_id", "")), [])
+        have = {entry.get("competition") for entry in now}
+        missing = [entry for entry in was
+                   if entry.get("competition") not in have]
+        for entry in missing:
+            kept[str(entry.get("competition"))] = kept.get(
+                str(entry.get("competition")), 0) + 1
+        details.append(now + missing)
+
+    if not kept:
+        return mine
+
+    out[DETAIL_COLUMN] = details
+    out["postseason_bonus"] = [credited_bonus(d) for d in details]
+    out["postseason_pending"] = [pending_bonus(d) for d in details]
+    out["total_points"] = out["regular_points"] + out["postseason_bonus"]
+    named = ", ".join(f"{name} ({count})" for name, count in sorted(kept.items()))
+    report.problems.append(
+        f"this pull returned nothing for {named}, which an earlier run did "
+        f"reach. Those figures are carried forward rather than overwritten "
+        f"with silence; a later run that reaches the feed will replace them"
+    )
+    return out
 
 
 def _report_shrinkage(
