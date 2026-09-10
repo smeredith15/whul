@@ -2078,41 +2078,75 @@ def movers_for(store, asset="a1"):
     return next((m for m in day["movers"] if m["asset"] == asset), None)
 
 
-def test_coming_off_the_bench_is_not_a_days_performance(tmp_path):
+def test_a_days_change_is_what_the_asset_did_not_what_it_contributed(tmp_path):
     """Haaland showed +17.0 -- a whole season -- for having been benched on the
-    9th at 9.69 and counted on the 10th at 17.04. The panel asked only for
-    counting rows, found none for him the day before, and read his entire score
-    as the day's gain."""
+    9th at 9.69 and counted on the 10th at 17.04. This panel is read to see how
+    a day went, not to account for the total, so whether a slot was counting
+    makes no difference to the figure against its name."""
     mover = movers_for(bench_store(tmp_path, counts_before=0, counts_now=1))
-    # The contribution really did rise by the whole score: that is what the
-    # manager's total did, and the deltas have to explain it.
-    assert mover["delta"] == 17.0
-    # But what he actually did is carried beside it, and the row says which.
-    assert mover["entered"] is True and mover["left"] is False
-    assert mover["own"] == 7.3
-
-
-def test_dropping_to_the_bench_is_shown_at_all(tmp_path):
-    """Iterating only the day's counting rows left a benched slot with nothing
-    to explain it: the manager's total fell and no row said why."""
-    mover = movers_for(bench_store(tmp_path, counts_before=1, counts_now=0))
-    assert mover is not None, "a slot that left the counting set must appear"
-    assert mover["delta"] == -9.7 and mover["left"] is True
-
-
-def test_an_asset_that_counted_throughout_is_not_marked(tmp_path):
-    """The note has to mean something, so an ordinary scoring day must not
-    carry it."""
-    mover = movers_for(bench_store(tmp_path, counts_before=1, counts_now=1))
     assert mover["delta"] == 7.3
-    assert mover["entered"] is False and mover["left"] is False
+    assert mover["points"] == 17.0
 
 
-def test_the_movers_explain_the_managers_change(tmp_path):
-    """Which is the point of the panel. Before, a swap counted one side only."""
+def test_a_benched_slot_is_shown_rather_than_left_out(tmp_path):
+    """A benched player having a big day is worth seeing. It is marked so, and
+    quieter on the page, because it did not count towards the total above it."""
+    mover = movers_for(bench_store(tmp_path, counts_before=1, counts_now=0))
+    assert mover is not None
+    assert mover["counts"] is False
+    assert mover["delta"] == 7.3, "what it did, bench or not"
+
+
+def test_a_counting_slot_says_so(tmp_path):
+    mover = movers_for(bench_store(tmp_path, counts_before=1, counts_now=1))
+    assert mover["counts"] is True and mover["delta"] == 7.3
+
+
+def test_a_day_only_a_benched_slot_moved_on_is_still_worth_opening(tmp_path):
+    """The counting total does not move, so the cell would not have been
+    clickable -- and the one thing that happened would have been unreachable."""
     from whul.site.build import _day_breakdown
+    from whul.store import open_store
 
-    store = bench_store(tmp_path, counts_before=0, counts_now=1)
-    day = _day_breakdown(store, "2026-27",
-                         ["2026-09-09", "2026-09-10"], ["SM"])["SM|2026-09-10"]
-    assert round(sum(m["delta"] for m in day["movers"]), 1) == day["delta"]
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "SM", "display_name": "SM",
+                               "active": 1}], ["manager_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": "s1", "manager_id": "SM", "season": "2026-27",
+         "category": "Club Soccer", "asset_type": "Player", "slot_index": 1},
+    ], ["slot_id"])
+    store.upsert("assets", [
+        {"asset_id": "a1", "asset_type": "Player", "display_name": "Haaland",
+         "league": "Premier League", "norm_key": "Premier League",
+         "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    store.upsert("slot_scores", [
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-09",
+         "asset_id": "a1", "score": 9.7, "counts": 0},
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-10",
+         "asset_id": "a1", "score": 17.0, "counts": 0},
+    ], ["slot_id", "as_of"])
+    store.conn.commit()
+
+    out = _day_breakdown(store, "2026-27", ["2026-09-09", "2026-09-10"], ["SM"])
+    day = out["SM|2026-09-10"]
+    assert day["delta"] == 0.0, "the counting total did not move"
+    assert [m["asset"] for m in day["movers"]] == ["a1"]
+    assert day["movers"][0]["counts"] is False
+
+
+def test_an_asset_traded_away_is_not_a_loss(tmp_path):
+    """It is no longer this manager's, and differencing it against nothing
+    would show its whole score as a fall."""
+    from whul.site.build import _day_breakdown
+    from whul.store import open_store
+
+    store = bench_store(tmp_path, counts_before=1, counts_now=1)
+    store.conn.execute(
+        "DELETE FROM slot_scores WHERE as_of = '2026-09-10' AND asset_id = 'a1'")
+    store.conn.commit()
+
+    out = _day_breakdown(open_store(str(tmp_path / "whul.sqlite3")), "2026-27",
+                         ["2026-09-09", "2026-09-10"], ["SM"])
+    moved = [m["asset"] for m in out.get("SM|2026-09-10", {"movers": []})["movers"]]
+    assert "a1" not in moved

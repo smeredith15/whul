@@ -528,6 +528,17 @@ dialog.profile .close {
   position: absolute; top: 12px; right: 14px; background: none; border: 0;
   color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; padding: 4px;
 }
+/* A benched slot in the day panel. Present because what it did is worth
+   seeing, quieter because it did not count towards the total above it. */
+dialog.profile tr.benched td,
+dialog.profile tr.benched td button.assetlink { color: var(--text-secondary); }
+dialog.profile .bench {
+  margin-left: 6px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-secondary);
+  border: 1px solid currentColor; border-radius: 3px; padding: 0 3px;
+  vertical-align: 1px;
+}
+
 /* Playoff and European production. Collapsed by default -- empty for most
    players most of the year, and a heading with nothing under it is worse than
    no heading. */
