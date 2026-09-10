@@ -455,7 +455,46 @@ def _played_rows(frame: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     return frame, False
 
 
-def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
+def _eaten_by_the_start_date(raw: pd.DataFrame, kept: pd.DataFrame,
+                             league: str) -> str:
+    """Whether the league's start date is what emptied the frame.
+
+    The one case the report below cannot see, because it describes what
+    survived the cut rather than what the cut removed. The 2026 NFL season
+    opened on a Wednesday; the start date said Thursday; the opener was dropped
+    and the run said "271 fixture(s) scheduled, none played yet" about a game
+    both of whose teams somebody had drafted.
+
+    An off-by-one in a boundary date does not look like an error anywhere --
+    which is why it gets its own sentence, naming the boundary and the date it
+    refused, rather than being left to be inferred from a count.
+    """
+    from whul.config.league import season_start
+
+    if raw is None or raw.empty or len(kept) == len(raw) or not league:
+        return ""
+    played, knowable = _played_rows(raw)
+    if not knowable or played.empty:
+        return ""
+    column = next((c for c in DATE_COLUMNS if c in played.columns), None)
+    if column is None:
+        return ""
+    days = pd.to_datetime(played[column], errors="coerce").dt.date
+    start = season_start(league)
+    before = sorted(d for d in days.dropna() if d < start)
+    if not before:
+        return ""
+    return (
+        f"{len(before):,} played row(s) were dropped for falling before "
+        f"{start}, the day {league} results start counting -- the earliest is "
+        f"{before[0]}. A game that has been played is not a season that has "
+        f"not started: check the start date in `whul.config.league` before "
+        f"looking anywhere else."
+    )
+
+
+def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame,
+                        league: str = "") -> str:
     """What arrived, when a full fetch scored nothing.
 
     Three things look identical from the outside -- a feed with nothing in it,
@@ -467,6 +506,9 @@ def _why_nothing_scored(raw: pd.DataFrame, kept: pd.DataFrame) -> str:
     resolved by assumption. Blaming the scorer for a season that has not started
     sends someone to read arithmetic that is working.
     """
+    eaten = _eaten_by_the_start_date(raw, kept, league)
+    if eaten:
+        return eaten
     if kept.empty:
         return (
             f"the feed returned {len(raw):,} row(s), but all of them fall "
@@ -675,7 +717,7 @@ def _pull(
         kept = raw if source.dated_by_source else _from_season_start(raw, source.league)
         scored = score(kept)
         if (scored is None or scored.empty) and notes is not None:
-            notes.append(_why_nothing_scored(raw, kept))
+            notes.append(_why_nothing_scored(raw, kept, source.league))
         if not getattr(source, "cumulative", False):
             scored = _across_feed_seasons(scored)
         return _carry_identity(scored, kept, source.asset_type)

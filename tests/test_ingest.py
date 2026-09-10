@@ -1324,3 +1324,80 @@ def test_the_asset_id_is_left_alone(store):
     filed_as(store, "player-tennis-taylor-fritz", "Tennis")
     _, held = settle(store, **{"player-tennis-taylor-fritz": "ATP"})
     assert "player-tennis-taylor-fritz" in held
+
+
+# --- a boundary date that ate a played game ---------------------------------
+
+def played_and_unplayed():
+    """A schedule with one result in it and the rest still to come."""
+    return pd.DataFrame([
+        {"gameday": "2026-09-09", "away_team": "NE", "home_team": "SEA",
+         "away_score": 10.0, "home_score": 13.0},
+        {"gameday": "2026-09-13", "away_team": "CHI", "home_team": "CAR",
+         "away_score": None, "home_score": None},
+    ])
+
+
+def test_a_played_game_dropped_by_the_start_date_says_so(monkeypatch):
+    """The 2026 NFL season opened on a Wednesday, the start date said
+    Thursday, and the run reported "271 fixture(s) scheduled, none played yet"
+    about a game both of whose teams somebody had drafted. The report described
+    what survived the cut and could not see what the cut removed."""
+    from whul.config import league as config
+
+    monkeypatch.setitem(config.LEAGUE_START, "NFL", date(2026, 9, 10))
+    raw = played_and_unplayed()
+    kept = ingest._from_season_start(raw, "NFL")
+    assert len(kept) == 1
+
+    said = ingest._why_nothing_scored(raw, kept, "NFL")
+    assert "1 played row(s) were dropped" in said
+    assert "2026-09-10" in said and "2026-09-09" in said
+    assert "config" in said
+
+
+def test_a_season_that_really_has_not_started_still_reads_that_way(monkeypatch):
+    """The message this replaces is the right one whenever it is true, and it
+    is true most of the time -- a schedule published weeks ahead."""
+    from whul.config import league as config
+
+    monkeypatch.setitem(config.LEAGUE_START, "NFL", date(2026, 9, 1))
+    raw = pd.DataFrame([
+        {"gameday": "2026-09-13", "away_team": "CHI", "home_team": "CAR",
+         "away_score": None, "home_score": None},
+    ])
+    kept = ingest._from_season_start(raw, "NFL")
+    said = ingest._why_nothing_scored(raw, kept, "NFL")
+    assert "none played yet" in said
+    assert "dropped" not in said
+
+
+def test_an_unplayed_game_before_the_start_date_is_not_worth_a_word(monkeypatch):
+    """A fixture is not a result. Only a *played* row falling outside the
+    window says the boundary is wrong."""
+    from whul.config import league as config
+
+    monkeypatch.setitem(config.LEAGUE_START, "NFL", date(2026, 9, 10))
+    raw = pd.DataFrame([
+        {"gameday": "2026-09-01", "away_team": "NE", "home_team": "SEA",
+         "away_score": None, "home_score": None},
+        {"gameday": "2026-09-13", "away_team": "CHI", "home_team": "CAR",
+         "away_score": None, "home_score": None},
+    ])
+    kept = ingest._from_season_start(raw, "NFL")
+    assert ingest._eaten_by_the_start_date(raw, kept, "NFL") == ""
+
+
+def test_a_feed_that_cannot_say_whether_a_game_finished_is_not_accused():
+    """Guessing there is what produced a confident wrong answer."""
+    raw = pd.DataFrame([{"gameday": "2026-09-01"}, {"gameday": "2026-09-13"}])
+    kept = raw.iloc[1:]
+    assert ingest._eaten_by_the_start_date(raw, kept, "NFL") == ""
+
+
+def test_the_nfl_starts_on_the_day_its_season_opens():
+    """Pinned because it is not derivable and because being one day out is
+    invisible: it reads as a league that has not kicked off."""
+    from whul.config.league import season_start
+
+    assert season_start("NFL") == date(2026, 9, 9)
