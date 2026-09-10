@@ -34,6 +34,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from whul.scoring import completion
+
 #: Share of a regular season a postseason run is worth, where nothing is known
 #: about the field at draft time.
 DEFAULT_BONUS_SHARE = 0.10
@@ -216,7 +218,8 @@ DETAIL_COLUMN = "bonus_detail"
 
 
 def detail_for(
-    competition: str, games: float, points: float, rule: PostseasonRule | None
+    competition: str, games: float, points: float, rule: PostseasonRule | None,
+    season: int | None = None, as_of=None,
 ) -> dict:
     """One competition's postseason line, for the profile window.
 
@@ -227,18 +230,47 @@ def detail_for(
     page when they split.
     """
     games, points = float(games or 0.0), float(points or 0.0)
+    adds = bonus_for(points, games, rule)
+    # Asked of the *rule*, not of the label. "UEFA Champions League" is what a
+    # reader is shown and "UCL" is what the calendar is keyed by; looking the
+    # first one up finds nothing, and finding nothing means never crediting.
+    named = rule.competition if rule else competition
+    done = (
+        completion.is_complete(named, season, as_of)
+        if season is not None else False
+    )
     return {
         "competition": competition,
         "games": games,
         "points": points,
         "share": rule.bonus_share if rule else 0.0,
         "scalar": rule.scalar if rule else 0.0,
-        "adds": bonus_for(points, games, rule),
+        "adds": adds,
+        # Credited only once the competition is over. Until then the figure is
+        # a rate off a small sample: one Champions League goal in one game
+        # projects to nearly half a league season, and playing a second match
+        # without scoring lowers it. See whul.scoring.completion.
+        "credited": done,
+        "finishes": str(completion.finishes(named, season) or "")
+                    if season is not None else "",
     }
 
 
+def credited_bonus(detail: list) -> float:
+    """The part of a breakdown that counts towards the score today."""
+    return float(sum(entry.get("adds", 0.0) for entry in detail or []
+                     if entry.get("credited")))
+
+
+def pending_bonus(detail: list) -> float:
+    """The part still waiting on a competition to finish."""
+    return float(sum(entry.get("adds", 0.0) for entry in detail or []
+                     if not entry.get("credited")))
+
+
 def apply_bonus(
-    agg: pd.DataFrame, rule: PostseasonRule | None, competition: str = ""
+    agg: pd.DataFrame, rule: PostseasonRule | None, competition: str = "",
+    season: int | None = None, as_of=None,
 ) -> pd.DataFrame:
     """Add ``postseason_bonus`` and ``total_points`` to a phase-split frame.
 
@@ -255,14 +287,24 @@ def apply_bonus(
 
     scalar = rule.scalar if rule else 0.0
     out["postseason_rate"] = po_rate.round(4)
-    out["postseason_bonus"] = po_rate * scalar
     out["games_played"] = (out["regular_games"] + out["postseason_games"]).astype(int)
-    out["total_points"] = out["regular_points"] + out["postseason_bonus"]
     # One competition here -- the league's own playoffs -- where soccer has
     # several. Same shape either way, so the page renders one thing.
     label = competition or (rule.competition if rule else "")
+    seasons = (out["season"] if season is None and "season" in out.columns
+               else [season] * len(out))
     out[DETAIL_COLUMN] = [
-        [detail_for(label, games, points, rule)] if games else []
-        for games, points in zip(out["postseason_games"], out["postseason_points"])
+        [detail_for(label, games, points, rule,
+                    season=int(row_season) if row_season is not None else None,
+                    as_of=as_of)]
+        if games else []
+        for games, points, row_season in zip(
+            out["postseason_games"], out["postseason_points"], seasons)
     ]
+    # Held until the competition is over: a rate off one playoff game projects
+    # a whole share of a season, and a second game without production lowers
+    # it. Scores in these sports otherwise only rise.
+    out["postseason_bonus"] = [credited_bonus(d) for d in out[DETAIL_COLUMN]]
+    out["postseason_pending"] = [pending_bonus(d) for d in out[DETAIL_COLUMN]]
+    out["total_points"] = out["regular_points"] + out["postseason_bonus"]
     return out

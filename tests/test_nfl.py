@@ -11,9 +11,15 @@ import pytest
 from whul.scoring.nfl import score_players, score_teams
 
 
+#: A season whose postseason is long finished, so these tests measure the
+#: arithmetic rather than the calendar: the bonus is held until the Super Bowl
+#: has been played -- see whul.scoring.completion.
+SETTLED_SEASON = 2024
+
+
 def weekly(**over):
     row = {
-        "season": 2026, "season_type": "REG", "player_id": "00-1", "player_display_name": "Test QB",
+        "season": SETTLED_SEASON, "season_type": "REG", "player_id": "00-1", "player_display_name": "Test QB",
         "position": "QB", "recent_team": "BUF", "week": 1,
         "passing_yards": 0, "passing_tds": 0, "interceptions": 0,
         "rushing_yards": 0, "rushing_tds": 0, "receptions": 0,

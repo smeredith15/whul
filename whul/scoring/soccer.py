@@ -29,7 +29,8 @@ from whul.scoring.competition import (
     continental_entry_points,
 )
 from whul.scoring.postseason import (
-    DETAIL_COLUMN, bonus_for, detail_for, rule_for,
+    DETAIL_COLUMN, bonus_for, credited_bonus, detail_for, pending_bonus,
+    rule_for,
 )
 
 # --- teams ----------------------------------------------------------------
@@ -531,7 +532,9 @@ def unmatched_continental_entry(
     return sorted(set(missed))
 
 
-def score_players(players: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
+def score_players(
+    players: pd.DataFrame, postseason: bool = True, as_of=None
+) -> pd.DataFrame:
     """Season totals per player, one row per player rather than per competition.
 
     Appearance points are per game. Where the input carries per-match minutes in
@@ -586,7 +589,7 @@ def score_players(players: pd.DataFrame, postseason: bool = True) -> pd.DataFram
         + work["yellow"] * PTS_YELLOW
         + work["red"] * PTS_RED
     )
-    return _fold_competitions(work, postseason).reset_index(drop=True)
+    return _fold_competitions(work, postseason, as_of).reset_index(drop=True)
 
 
 #: What a player's row keeps its identity by. The competition is deliberately
@@ -594,7 +597,9 @@ def score_players(players: pd.DataFrame, postseason: bool = True) -> pd.DataFram
 PLAYER_KEYS = ["player", "league", "season", "position"]
 
 
-def _fold_competitions(work: pd.DataFrame, postseason: bool) -> pd.DataFrame:
+def _fold_competitions(
+    work: pd.DataFrame, postseason: bool, as_of=None
+) -> pd.DataFrame:
     """One row per player, with European football paid as a bonus.
 
     Domestic football -- the league and its cups -- is counted in full and is
@@ -654,10 +659,11 @@ def _fold_competitions(work: pd.DataFrame, postseason: bool) -> pd.DataFrame:
         # copy of RULES, and the two would drift the first time a share moved.
         detail = (
             extra.assign(_detail=[
-                detail_for(str(name), matches, points, rule)
-                for name, matches, points, rule in zip(
+                detail_for(str(name), matches, points, rule,
+                           season=int(season), as_of=as_of)
+                for name, matches, points, rule, season in zip(
                     extra["competition"], extra["matches"],
-                    extra["points"], extra["_rule"])
+                    extra["points"], extra["_rule"], extra["season"])
             ])
             .groupby(PLAYER_KEYS, as_index=False)
             .agg(**{DETAIL_COLUMN: ("_detail", list)})
@@ -673,9 +679,18 @@ def _fold_competitions(work: pd.DataFrame, postseason: bool) -> pd.DataFrame:
             value if isinstance(value, list) else []
             for value in totals[DETAIL_COLUMN]
         ]
+    else:
+        totals[DETAIL_COLUMN] = [[] for _ in range(len(totals))]
     numeric = [c for c in totals.columns
                if c not in PLAYER_KEYS and c != DETAIL_COLUMN]
     totals[numeric] = totals[numeric].fillna(0.0)
+    # Split the rate into what is settled and what is still moving. Only the
+    # settled half reaches the score; the rest is carried so the page can show
+    # what is waiting on a competition to finish.
+    totals["postseason_bonus"] = [
+        credited_bonus(d) for d in totals[DETAIL_COLUMN]]
+    totals["postseason_pending"] = [
+        pending_bonus(d) for d in totals[DETAIL_COLUMN]]
     totals["total_points"] = totals["regular_points"] + (
         totals["postseason_bonus"] if postseason else 0.0)
     return totals

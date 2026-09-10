@@ -413,13 +413,17 @@ STAT_SKIP = {
     # a row called "Postseason bonus" with no way to tell what it was a share
     # of, which is the question the section exists to answer.
     "bonus_detail", "bonus_matches", "bonus_points", "postseason_bonus",
-    "postseason_points", "postseason_games", "postseason_rate",
-    "regular_points", "regular_games",
+    "postseason_pending", "postseason_points", "postseason_games",
+    "postseason_rate", "regular_games",
 }
 
 #: Raw column names read as debug output. These are what they mean.
 STAT_LABELS = {
     "total_points": "Total points", "role_points": "Points in this role",
+    # Shown rather than skipped, so the column adds up. Mbappe's line read
+    # 8 + 16 = 24 above a total of 35.4, the missing 11.4 being a Champions
+    # League bonus that lived only in the section below it.
+    "regular_points": "Points from league and cups",
     "events": "Events", "matches": "Matches", "matches_played": "Matches played",
     "games_played": "Games played", "wins": "Wins", "reg_wins": "Regular-season wins",
     "big_wins": "Big wins", "reg_big_wins": "Big wins", "conf_wins": "Conference wins",
@@ -492,6 +496,31 @@ def _finish_list(row: dict) -> list[dict]:
         except (TypeError, ValueError):
             return []
     return value if isinstance(value, list) else []
+
+
+def _bonus_moves(row: dict, was: dict) -> tuple[float, list[str]]:
+    """What changed in the held bonus since the previous day, and by how much.
+
+    A Champions League night moves nothing in the score -- the bonus is held
+    until the competition finishes -- so without this the day it was played
+    reads as a day nothing happened. The figures are inside ``bonus_detail``
+    rather than in columns of their own, so they are differenced here by
+    competition.
+    """
+    now = {d["competition"]: d for d in _bonus_list(row)}
+    before = {d["competition"]: d for d in _bonus_list(was)}
+    moved, lines = 0.0, []
+    for name, entry in now.items():
+        prior = before.get(name, {})
+        games = float(entry.get("games") or 0) - float(prior.get("games") or 0)
+        points = float(entry.get("points") or 0) - float(prior.get("points") or 0)
+        adds = float(entry.get("adds") or 0) - float(prior.get("adds") or 0)
+        if abs(games) < 0.05 and abs(points) < 0.05:
+            continue
+        moved += adds
+        count = f"{games:g} game" + ("" if abs(games) == 1 else "s")
+        lines.append(f"{name} {count} \u00b7 {points:,.1f}")
+    return round(moved, 1), lines
 
 
 def _bonus_list(row: dict) -> list[dict]:
@@ -1144,18 +1173,26 @@ def _day_breakdown(
             asset_id = key.split("|", 1)[1]
             was_score = before.get(key, (False, 0.0, ""))[1]
             delta = score - was_score
+            row = stats[day].get(asset_id, {})
+            was = stats.get(listed[index - 1], {}).get(asset_id, {}) if index else {}
+            # A playoff or European match moves the score by nothing, because
+            # the bonus it feeds is held until the competition finishes. The
+            # day it was played would otherwise read as a day off.
+            pending, bonus_lines = _bonus_moves(row, was) if index else (0.0, [])
             # The first listed day has nothing before it, so every asset looks
             # like a mover -- and at the season's opening every score is zero,
             # which filled that panel with twelve rows of "+0.0". A zero is a
             # zero whichever day it is on.
-            if abs(delta) < 0.05:
+            if abs(delta) < 0.05 and not bonus_lines:
                 continue
-            row = stats[day].get(asset_id, {})
-            was = stats.get(listed[index - 1], {}).get(asset_id, {}) if index else {}
             out[f"{manager}|{day}"]["movers"].append({
                 "asset": asset_id,
                 "points": round(score, 1),
                 "delta": round(delta, 1),
+                # What the day added to a bonus nobody has been paid yet, and
+                # the matches behind it.
+                "pending": pending,
+                "pending_line": bonus_lines,
                 # Shown quieter rather than left out: a benched player having a
                 # big day is worth seeing, and is why a day whose counting total
                 # did not move can still be worth opening.

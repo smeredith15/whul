@@ -2150,3 +2150,87 @@ def test_an_asset_traded_away_is_not_a_loss(tmp_path):
                          ["2026-09-09", "2026-09-10"], ["SM"])
     moved = [m["asset"] for m in out.get("SM|2026-09-10", {"movers": []})["movers"]]
     assert "a1" not in moved
+
+
+# --- a match whose points are held -------------------------------------------
+
+
+def held_store(tmp_path):
+    """A player who played a Champions League match on the second day."""
+    import json
+
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "SM", "display_name": "SM",
+                               "active": 1}], ["manager_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": "s1", "manager_id": "SM", "season": "2026-27",
+         "category": "Club Soccer", "asset_type": "Player", "slot_index": 1},
+    ], ["slot_id"])
+    store.upsert("assets", [
+        {"asset_id": "a1", "asset_type": "Player", "display_name": "Mbappé",
+         "league": "La Liga", "norm_key": "La Liga", "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    # The score does not move: the bonus the match feeds is held.
+    store.upsert("slot_scores", [
+        {"slot_id": "s1", "season": "2026-27", "as_of": day,
+         "asset_id": "a1", "score": 11.8, "counts": 1}
+        for day in ("2026-09-09", "2026-09-10")
+    ], ["slot_id", "as_of"])
+    for day, detail in (
+        ("2026-09-09", []),
+        ("2026-09-10", [{"competition": "UEFA Champions League", "games": 1.0,
+                         "points": 6.0, "share": 0.05, "scalar": 1.9,
+                         "adds": 11.4, "credited": False,
+                         "finishes": "2027-06-30"}]),
+    ):
+        store.upsert("raw_stats", [{
+            "asset_id": "a1", "league": "Club Soccer", "season": "2026-27",
+            "as_of": day, "source": "soccer-players", "phase": "regular",
+            "stats": json.dumps({"league": "La Liga", "total_points": 24.0,
+                                 "bonus_detail": detail}),
+            "fetched_at": f"{day}T09:00:00Z",
+        }], ["asset_id", "season", "as_of", "source", "phase"])
+    store.conn.commit()
+    return store
+
+
+def test_a_european_night_shows_even_though_the_score_did_not_move(tmp_path):
+    """The bonus it feeds is held until the competition finishes, so the day it
+    was played would otherwise read as a day off."""
+    from whul.site.build import _day_breakdown
+
+    day = _day_breakdown(held_store(tmp_path), "2026-27",
+                         ["2026-09-09", "2026-09-10"], ["SM"])["SM|2026-09-10"]
+    mover = day["movers"][0]
+    assert mover["delta"] == 0.0, "the score really did not move"
+    assert mover["pending"] == 11.4
+    assert mover["pending_line"] == ["UEFA Champions League 1 game · 6.0"]
+
+
+def test_a_day_with_no_match_at_all_is_still_left_out(tmp_path):
+    """The panel must not fill with rows for competitions nobody played in."""
+    from whul.site.build import _day_breakdown
+
+    store = held_store(tmp_path)
+    store.conn.execute(
+        "UPDATE raw_stats SET stats = ? WHERE as_of = '2026-09-10'",
+        ('{"league": "La Liga", "total_points": 24.0, "bonus_detail": []}',))
+    store.conn.commit()
+    out = _day_breakdown(store, "2026-27", ["2026-09-09", "2026-09-10"], ["SM"])
+    assert "SM|2026-09-10" not in out
+
+
+def test_the_season_totals_add_up_to_the_total(tmp_path):
+    """Mbappe's line read 8 + 16 = 24 above a total of 35.4, the missing 11.4
+    being a bonus that lived only in the section below it."""
+    from whul.site.build import _stat_lines
+
+    lines = dict(_stat_lines({
+        "appearance_points": 8.0, "goal_points": 16.0,
+        "regular_points": 24.0, "postseason_bonus": 11.4,
+        "postseason_pending": 0.0, "total_points": 35.4,
+    }))
+    assert lines["Points from league and cups"] == "24.0"
+    assert "Postseason bonus" not in lines
