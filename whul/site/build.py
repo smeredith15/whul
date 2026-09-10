@@ -1081,15 +1081,12 @@ def _day_breakdown(
         "WHERE season = ? GROUP BY as_of", (season,),
     ).itertuples(index=False, name=None))
 
-    # Both what an asset scored and whether it counted, because the two answer
-    # different halves of this panel. The manager's total is the counting
-    # slots, so the deltas that explain it have to be of the *contribution*;
-    # what the asset itself did is a separate number and reading one as the
-    # other is how Haaland came to show a whole season's 17.0 in a day. He was
-    # benched on the 9th at 9.69 and counted on the 10th at 17.04: the panel
-    # asked only for counting rows, found none for him the day before, and
-    # treated his entire score as the day's gain.
-    scores: dict[str, dict[str, tuple[float, float, str]]] = {}
+    # Every slot, benched or not, with what it scored and whether it counted.
+    # Asking only for counting rows was how Haaland came to show a whole
+    # season's 17.0 in a day: benched on the 9th at 9.69 and counting on the
+    # 10th at 17.04, he had no row the day before to difference against, so his
+    # entire score read as the day's gain.
+    scores: dict[str, dict[str, tuple[bool, float, str]]] = {}
     stats: dict[str, dict[str, dict]] = {}
     for day in listed:
         rows = store.query(
@@ -1100,9 +1097,7 @@ def _day_breakdown(
         )
         scores[day] = {
             f"{row.manager_id}|{row.asset_id}": (
-                float(row.score) if row.counts else 0.0,
-                float(row.score),
-                str(row.manager_id),
+                bool(row.counts), float(row.score), str(row.manager_id),
             )
             for row in rows.itertuples()
         }
@@ -1115,9 +1110,10 @@ def _day_breakdown(
         before = scores.get(listed[index - 1], {}) if index else {}
         totals: dict[str, float] = {}
         was: dict[str, float] = {}
-        for key, (counted, _own, manager) in scores[day].items():
-            totals[manager] = totals.get(manager, 0.0) + counted
-            was[manager] = was.get(manager, 0.0) + before.get(key, (0.0, 0.0, ""))[0]
+        for key, (counts, score, manager) in scores[day].items():
+            totals[manager] = totals.get(manager, 0.0) + (score if counts else 0.0)
+            was_counts, was_score, _ = before.get(key, (False, 0.0, ""))
+            was[manager] = was.get(manager, 0.0) + (was_score if was_counts else 0.0)
         before_scale = scales.get(listed[index - 1]) if index else None
         rescaled = bool(
             index and before_scale and scales.get(day)
@@ -1134,47 +1130,40 @@ def _day_breakdown(
                 "rescaled": rescaled,
                 "movers": [],
             }
-        # Every asset that counted on either day. Iterating only today's left a
-        # slot dropped from the counting set with nothing to explain it: the
-        # manager's total fell and no row said why.
-        for key in sorted(set(scores[day]) | set(before)):
-            counted, own, manager = scores[day].get(key, (0.0, 0.0, ""))
-            was_counted, was_own, was_manager = before.get(key, (0.0, 0.0, ""))
-            manager = manager or was_manager
-            if not manager or f"{manager}|{day}" not in out:
+        # What each asset did, benched or not. This panel is read to see how a
+        # day went, not to account for the total, so the figure against a name
+        # is that asset's own change -- whether it was counting makes no
+        # difference to what it did, and a bench slot moving in or out is not a
+        # performance to report either way.
+        #
+        # Today's roster only. An asset traded away is no longer this manager's
+        # and would otherwise appear as a loss the size of its whole score.
+        for key, (counts, score, manager) in scores[day].items():
+            if f"{manager}|{day}" not in out:
                 continue
             asset_id = key.split("|", 1)[1]
-            delta = counted - was_counted
+            was_score = before.get(key, (False, 0.0, ""))[1]
+            delta = score - was_score
             # The first listed day has nothing before it, so every asset looks
             # like a mover -- and at the season's opening every score is zero,
             # which filled that panel with twelve rows of "+0.0". A zero is a
             # zero whichever day it is on.
             if abs(delta) < 0.05:
                 continue
-            # Whether the row moved between the bench and the counting set,
-            # and what the asset itself did while it was there. The delta above
-            # is the change in what this asset contributed to the total, which
-            # for a swap is its whole score in one direction or the other and
-            # not a performance at all.
-            in_now = key in scores[day] and counted > 0
-            in_before = key in before and was_counted > 0
-            entered = bool(index and in_now and not in_before)
-            left = bool(index and in_before and not in_now)
             row = stats[day].get(asset_id, {})
             was = stats.get(listed[index - 1], {}).get(asset_id, {}) if index else {}
             out[f"{manager}|{day}"]["movers"].append({
                 "asset": asset_id,
-                "points": round(own, 1),
+                "points": round(score, 1),
                 "delta": round(delta, 1),
-                "entered": entered,
-                "left": left,
-                # What the asset itself gained, benched or not. Only meaningful
-                # beside the contribution when the two differ.
-                "own": round(own - was_own, 1) if index and was_own else None,
+                # Shown quieter rather than left out: a benched player having a
+                # big day is worth seeing, and is why a day whose counting total
+                # did not move can still be worth opening.
+                "counts": counts,
                 # Comparable when there is a previous stat row to difference
                 # against, or when the asset had no score at all before -- in
                 # which case everything on it is new and the total is the day.
-                "line": _day_line(row, was, bool(was) or not was_own),
+                "line": _day_line(row, was, bool(was) or not was_score),
                 # Only the finishes that fall in this window. The whole list is
                 # what the profile is for; here it would credit a golfer's
                 # August to a Tuesday in September.
