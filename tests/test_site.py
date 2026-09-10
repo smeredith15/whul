@@ -1955,3 +1955,75 @@ def test_points_columns_are_not_labelled_as_counts():
     assert lines["Goals"] == "2.0"
     assert lines["Points for goals"] == "8.0"
     assert lines["Points for appearances"] == "6.0"
+
+
+# --- a day the scale moved ---------------------------------------------------
+
+
+def rescale_store(tmp_path, versions: dict[str, str]):
+    """Two days of one slot, scored against the versions given."""
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "TG", "display_name": "TG",
+                               "active": 1}], ["manager_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": "s1", "manager_id": "TG", "season": "2026-27",
+         "category": "La Liga", "asset_type": "Player", "slot_index": 1},
+    ], ["slot_id"])
+    store.upsert("assets", [
+        {"asset_id": "a1", "asset_type": "Player", "display_name": "Yamal",
+         "league": "La Liga", "norm_key": "La Liga", "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    # The raw total does not move; only the divisor does.
+    store.upsert("slot_scores", [
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-09",
+         "asset_id": "a1", "score": 14.7, "counts": 1},
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-10",
+         "asset_id": "a1", "score": 13.7, "counts": 1},
+    ], ["slot_id", "as_of"])
+    store.upsert("benchmark_versions", [
+        {"version": v, "season": "2026-27", "quantile": 0.99, "managers": 5,
+         "computed_at": "2026-09-01T00:00:00Z"}
+        for v in sorted(set(versions.values()))
+    ], ["version"])
+    store.upsert("daily_scores", [
+        {"asset_id": "a1", "season": "2026-27", "as_of": day,
+         "league_points": 24.0, "scaled_score": score,
+         "benchmark_version": versions[day], "computed_at": f"{day}T09:00:00Z"}
+        for day, score in (("2026-09-09", 14.7), ("2026-09-10", 13.7))
+    ], ["asset_id", "season", "as_of"])
+    return store
+
+
+def test_a_day_the_scale_was_refrozen_says_so(tmp_path):
+    """Three players were about a point down on the day the September scale was
+    adopted, none of them having kicked a ball: identical raw totals, a bigger
+    divisor. Differenced against the day before, a rescale reads as a bad day."""
+    from whul.site.build import _day_breakdown
+
+    store = rescale_store(tmp_path, {"2026-09-09": "2026-27-20260907-182143",
+                                     "2026-09-10": "2026-27-20260909-224543"})
+    out = _day_breakdown(store, "2026-27", ["2026-09-09", "2026-09-10"], ["TG"])
+    assert out["TG|2026-09-10"]["rescaled"] is True
+
+
+def test_an_ordinary_day_is_not_marked(tmp_path):
+    """The note has to mean something, so it must not appear on a day the scale
+    held and a player simply lost points to a card."""
+    from whul.site.build import _day_breakdown
+
+    store = rescale_store(tmp_path, {"2026-09-09": "2026-27-20260907-182143",
+                                     "2026-09-10": "2026-27-20260907-182143"})
+    out = _day_breakdown(store, "2026-27", ["2026-09-09", "2026-09-10"], ["TG"])
+    assert out["TG|2026-09-10"]["rescaled"] is False
+
+
+def test_the_first_listed_day_is_never_marked(tmp_path):
+    """There is nothing before it to have been scored differently."""
+    from whul.site.build import _day_breakdown
+
+    store = rescale_store(tmp_path, {"2026-09-09": "2026-27-20260907-182143",
+                                     "2026-09-10": "2026-27-20260909-224543"})
+    out = _day_breakdown(store, "2026-27", ["2026-09-09", "2026-09-10"], ["TG"])
+    assert "TG|2026-09-09" not in out or not out["TG|2026-09-09"]["rescaled"]
