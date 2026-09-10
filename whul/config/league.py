@@ -145,7 +145,17 @@ LEAGUE_START: dict[str, date] = {
     "F1": date(2026, 8, 23),
     "Motorsports": date(2026, 8, 23),
     "PGA": date(2026, 8, 20),
-    "NFL": date(2026, 9, 10),
+    # The 9th, not the 10th. The 2026 season opens on a *Wednesday* -- New
+    # England at Seattle -- with the usual Thursday game the night after, and a
+    # start on the 10th dropped the opener. Both teams were rostered, both
+    # played, nflverse had the result, and the run reported "271 fixture(s)
+    # scheduled, none played yet": a played game read as a season that had not
+    # begun, which is exactly the shape of wrong this project is built against.
+    #
+    # An off-by-one in a boundary date does not look like an error anywhere.
+    # See `_why_nothing_scored`, which now says when the cut is what emptied
+    # the frame rather than describing what survived it.
+    "NFL": date(2026, 9, 9),
     "NBA": date(2026, 10, 20),
     "NHL": date(2026, 9, 29),
     "NCAAM": date(2026, 11, 10),
