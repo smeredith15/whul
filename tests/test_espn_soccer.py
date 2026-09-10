@@ -306,7 +306,6 @@ def test_every_competition_a_clubs_players_appear_in_is_asked_for(monkeypatch):
 
     assert {"ucl", "uel", "uecl"} <= set(asked)
     assert {"facup", "efl_cup", "copadelrey", "dfbpokal"} <= set(asked)
-    assert "concacafchampions" in asked, "MLS plays a continental competition"
 
 
 def test_each_row_says_which_competition_it_came_from(monkeypatch):
@@ -324,7 +323,7 @@ def test_each_row_says_which_competition_it_came_from(monkeypatch):
     labels = set(out["competition"])
     assert "UEFA Champions League" in labels
     assert "Premier League" in labels
-    assert "CONCACAF Champions Cup" in labels
+    assert "US Open Cup" in labels
 
 
 def test_a_feed_that_numbers_seasons_differently_is_announced(monkeypatch, capsys):
@@ -669,7 +668,6 @@ def test_a_league_is_not_sent_to_a_continent_its_clubs_never_reach(monkeypatch):
     run, and produced only near-misses for the club matcher to reject."""
     from whul.sources.espn import continental_for
 
-    assert continental_for("mls") == ("concacafchampions",)
     assert continental_for("nwsl") == ()
     for league in ("epl", "laliga", "seriea", "bundesliga", "ligue1"):
         assert continental_for(league) == ("ucl", "uel", "uecl")
@@ -773,3 +771,49 @@ def test_a_competition_that_returns_squads_without_statistics_says_so(
     assert "with an appearance" in printed
     assert "not one appearance among them" in printed
     assert "facup" in printed
+
+
+def test_the_champions_cup_is_not_pulled_and_the_reason_is_kept(monkeypatch):
+    """ESPN answered every Champions Cup roster request with a 404 across five
+    seasons, and its scoreboard returned no matches on any of the 751 dates
+    walked for it. A competition that can only contribute zero is worse than
+    one left out: zero reads as a quiet Champions Cup rather than as no data,
+    and walking it cost about eleven minutes of every benchmark run.
+
+    What is kept is everything needed to restore it in one line -- the path,
+    the tier and the rule -- so this is a feed being switched off rather than
+    a scoring decision being unmade."""
+    from whul.benchmark_sources import SOURCES
+    from whul.scoring.competition import Tier, classify_key
+    from whul.scoring.postseason import rule_for
+    from whul.sources import espn, espn_soccer
+
+    asked = []
+
+    def note(league, seasons, verbose=True, session=None):
+        asked.append(league)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(espn_soccer, "load_players", note)
+    SOURCES["soccer-players"].build()[0]([2025])
+    assert "concacafchampions" not in asked
+    assert espn.continental_for("mls") == ()
+
+    # Still classified, still priced: restoring the pull is the only change
+    # needed if a working path turns up.
+    assert "concacafchampions" in espn.LEAGUE_PATHS
+    tier = classify_key("concacafchampions", "CONCACAF Champions Cup").tier
+    assert tier is Tier.CONTINENTAL_CUP
+    assert rule_for(tier.value).bonus_share == 0.025
+
+
+def test_qualifying_for_the_champions_cup_is_still_paid(monkeypatch):
+    """It comes from the published participant list, not from match data, so
+    switching the feed off does not touch it."""
+    from whul import benchmark_sources as bs
+
+    monkeypatch.setattr(bs, "_concacaf_entrants", lambda season: pd.DataFrame(
+        [{"team": "Inter Miami CF", "season": season,
+          "competition": "CONCACAF Champions Cup", "entry_round": "Round One"}]))
+    got = bs._continental_entrants("mls", [2025])
+    assert set(got["competition"]) == {"CONCACAF Champions Cup"}

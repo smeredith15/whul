@@ -35,7 +35,11 @@ def phase_frame(reg_pts, reg_games, post_pts, post_games):
 #: entrants were decided last season pays least of all.
 EXPECTED_SHARES = {
     "NFL": 0.10, "NBA": 0.10, "NHL": 0.10,
-    "MLB": 0.075, "WNBA": 0.075, "NWSL": 0.075, "MLS": 0.075,
+    "MLB": 0.075, "WNBA": 0.075, "NWSL": 0.075,
+    # MLS is on the mid-season leagues' calendar and not on their draft: its
+    # season opens in February, inside the league year, so a manager drafts an
+    # MLS club before a ball is kicked.
+    "MLS": 0.10,
     "UCL": 0.05, "Europa League": 0.05, "Europa Conference League": 0.05,
     "CONCACAF Champions Cup": 0.025,
 }
@@ -50,7 +54,7 @@ def test_every_competition_pays_the_share_the_admin_set():
 
 def test_a_scalar_is_its_share_of_its_own_season():
     expected = {"NFL": 1.7, "MLB": 12.15, "NBA": 8.2, "NHL": 8.4,
-                "WNBA": 3.3, "NWSL": 1.95, "MLS": 2.55,
+                "WNBA": 3.3, "NWSL": 1.95, "MLS": 3.4,
                 "UCL": 1.9, "Europa League": 1.9,
                 "Europa Conference League": 1.9,
                 "CONCACAF Champions Cup": 0.85}
