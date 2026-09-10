@@ -25,8 +25,8 @@ import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
 from whul.scoring.competition import (
-    Outcome, Tier, bye_credit, classify, classify_key, outcome_points,
-    continental_entry_points,
+    CONTINENTAL_TIERS, Outcome, Tier, bye_credit, classify, classify_key,
+    continental_entry_points, outcome_points,
 )
 from whul.scoring.postseason import (
     DETAIL_COLUMN, bonus_for, credited_bonus, detail_for, pending_bonus,
@@ -286,6 +286,8 @@ def score_teams(
         totals = totals.merge(by_club, on=["league", "team", "season"], how="left")
         totals[column] = totals[column].fillna(0).astype(int)
 
+    totals["continental"] = _continental_played(scored, totals)
+
     if byes is not None and not byes.empty:
         credit = byes.copy()
         credit["legs"] = credit.get("legs", pd.Series(2, index=credit.index)).fillna(2)
@@ -305,6 +307,39 @@ def score_teams(
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)
+
+
+def _continental_played(scored: pd.DataFrame, totals: pd.DataFrame) -> list[str]:
+    """Which continental competition each club is actually in this season.
+
+    Read from a match it has played there rather than declared from a
+    participant list. Nothing has to be fetched, nothing has to be kept in step
+    with a page somebody else edits, and the answer cannot be wrong in the
+    direction that matters -- a club named in a competition it is not in.
+
+    It can be *late*: a club shows nothing until its first European match, and
+    the Conference League's opening week is a fortnight after the Champions
+    League's. That is a blank filling itself in, not a wrong answer, and it is
+    the trade this is making on purpose.
+
+    Where a club has played in two -- a Europa League knockout exit decides a
+    Conference League place -- the one it went furthest in is the one named.
+    """
+    order = {tier.value: index for index, (tier, _) in enumerate(CONTINENTAL_TIERS)}
+    names = {tier.value: name for tier, name in CONTINENTAL_TIERS}
+    best: dict[tuple[str, str, int], str] = {}
+    played = scored[scored["tier"].isin(order)] if "tier" in scored.columns \
+        else scored.iloc[0:0]
+    for row in played.itertuples():
+        key = (str(row.league), str(row.team), int(row.season))
+        held = best.get(key)
+        if held is None or order[str(row.tier)] < order[held]:
+            best[key] = str(row.tier)
+    return [
+        names.get(best.get((str(league), str(team), int(season)), ""), "")
+        for league, team, season in zip(
+            totals["league"], totals["team"], totals["season"])
+    ]
 
 
 #: Wikipedia and the match feed do not always share a word, let alone a

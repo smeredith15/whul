@@ -980,3 +980,49 @@ def test_a_clean_entry_list_reports_no_clashes():
         "competition": "CONCACAF Champions Cup", "entry_round": "Round One",
     }])
     assert soccer.duplicate_continental_entry(totals, entry) == []
+
+
+# --- which continental competition a club is in ----------------------------
+#
+# Read from a match it has played there rather than declared from a
+# participant list: nothing has to be fetched, nothing has to be kept in step
+# with a page somebody else edits, and it cannot be wrong in the direction that
+# matters -- a club named in a competition it is not in.
+
+def test_a_club_is_named_in_the_competition_it_has_played_in():
+    got = score_teams(pd.DataFrame([
+        match("Arsenal", 2, 0),
+        match("Arsenal", 1, 1, comp="UEFA Champions League"),
+    ]))
+    assert list(got["continental"]) == ["Champions League"]
+
+
+def test_a_club_with_no_european_match_is_named_in_none():
+    got = score_teams(pd.DataFrame([match("Everton", 1, 1)]))
+    assert list(got["continental"]) == [""]
+
+
+def test_a_club_in_two_is_named_in_the_one_it_went_furthest_in():
+    """A Europa League knockout exit is what decides a Conference League
+    place, so a club can legitimately appear in both in one season."""
+    got = score_teams(pd.DataFrame([
+        match("Aston Villa", 1, 0, comp="UEFA Europa Conference League"),
+        match("Aston Villa", 0, 1, comp="UEFA Europa League"),
+    ]))
+    assert list(got["continental"]) == ["Europa League"]
+
+
+def test_a_domestic_cup_is_not_a_continental_competition():
+    got = score_teams(pd.DataFrame([
+        match("Arsenal", 3, 0, comp="FA Cup"),
+    ]))
+    assert list(got["continental"]) == [""]
+
+
+def test_two_clubs_do_not_share_one_answer():
+    got = score_teams(pd.DataFrame([
+        match("Arsenal", 1, 0, comp="UEFA Champions League"),
+        match("Everton", 1, 0),
+    ])).set_index("team")
+    assert got.loc["Arsenal", "continental"] == "Champions League"
+    assert got.loc["Everton", "continental"] == ""

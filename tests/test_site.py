@@ -2284,3 +2284,87 @@ def test_typing_in_the_calculator_does_not_rebuild_the_form():
     lighter = js[js.index("function showResult()"):]
     lighter = lighter[:lighter.index("\n  }\n")]
     assert "host.innerHTML" not in lighter
+
+
+# --- the grey line under a name --------------------------------------------
+
+def test_a_clubs_line_is_never_its_own_name_again():
+    """Arsenal plays for Arsenal, so the line that carries a player's position
+    and club carried "Arsenal" under "Arsenal" for ninety team assets."""
+    from whul.site.build import _under_a_team
+
+    assert _under_a_team(
+        "Team", "Premier League", {"continental": "Champions League"},
+        ("", "Arsenal"),
+    ) == ("Premier League", "Champions League")
+
+
+def test_a_soccer_club_out_of_europe_still_names_its_league():
+    """Which the roster's own column does not say: a slot reads "Club Soccer
+    Top 3"."""
+    from whul.site.build import _under_a_team
+
+    assert _under_a_team("Team", "Serie A", {"continental": ""},
+                         ("", "Como")) == ("Serie A", "")
+
+
+def test_every_other_team_gets_no_line_at_all():
+    """They are drafted one league at a time and the category beside them
+    already says which."""
+    from whul.site.build import _under_a_team
+
+    for league in ("NHL", "NFL", "MLB", "Men's Intl Soccer",
+                   "Women's Intl Soccer"):
+        assert _under_a_team("Team", league, {}, ("", "Whoever")) == ("", ""), league
+
+
+def test_a_players_line_is_untouched():
+    """A player's position and club are the two things a roster of sixty names
+    is read with."""
+    from whul.site.build import _under_a_team
+
+    assert _under_a_team("Player", "Premier League", {},
+                         ("F", "Arsenal")) == ("F", "Arsenal")
+
+
+def test_a_line_never_says_the_same_thing_twice():
+    """The results table appends the league, and a club's own line now names
+    it: "Premier League - Champions League - Premier League - Team"."""
+    from whul.site.build import _identity_lines
+
+    got = _identity_lines(
+        {"position": "Premier League", "team": "Champions League"},
+        "Premier League", "Team")
+    assert got.count("Premier League") == 1
+    assert "Champions League" in got and "Team" in got
+
+
+def test_the_corner_badge_still_reads_the_clubs_own_name():
+    """The line stopped carrying it; the crest lookup must not. An
+    international side's shield is found by the country, and a player's crest
+    by the club -- both through the same field."""
+    from whul.site.build import corner_badge
+
+    assert corner_badge("Team", "Intl Soccer", "Women's Intl Soccer",
+                        "England") == ("shield", "uefa")
+    assert corner_badge("Player", "Club Soccer Top 3", "Premier League",
+                        "Arsenal") == ("club", "arsenal")
+
+
+def test_a_figure_the_scorer_had_nothing_for_is_not_a_row():
+    """Not the same as a zero, and reads as neither: "Continental entry"
+    followed by nothing at all."""
+    from whul.site.build import _stat_lines
+
+    got = dict(_stat_lines({"continental_entry": "", "wins": 3.0}))
+    assert "Continental entry" not in got
+    assert got["Wins"] == "3.0"
+
+
+def test_the_continental_competition_is_identity_not_a_statistic():
+    """It is on the club's own line above the figures; a second copy in the
+    column of wins reads as one of them."""
+    from whul.site.build import _stat_lines
+
+    assert "Continental" not in dict(
+        _stat_lines({"continental": "Champions League", "wins": 3.0}))
