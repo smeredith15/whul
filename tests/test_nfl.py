@@ -135,8 +135,12 @@ def game(home, away, hs, as_, game_type="REG", div=0, season=2026,
     }
 
 
+#: BUF first in the AFC East, MIA second. The rank is the league's own, not a
+#: derivation: the NFL settles a tied division head to head, and reading it off
+#: wins and point differential got three of the last twenty-four titles wrong.
 DIVISIONS = pd.DataFrame([
-    {"season": 2026, "team_abbr": t, "team_division": "AFC East"} for t in ("BUF", "MIA")
+    {"season": 2026, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 1},
+    {"season": 2026, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 2},
 ])
 
 
@@ -346,9 +350,12 @@ def test_no_division_title_until_the_season_has_been_played():
          "away_team": "CHI", "home_score": None, "away_score": None,
          "div_game": 0, "gameday": "2126-09-13"},
     ])
+    # Both lead their division *today*, which is the trap: nflverse serves the
+    # standing as it stands, and in week one of 2026 it had Buffalo first in
+    # the AFC East at 0-0.
     divisions = pd.DataFrame([
-        {"season": 2026, "team_abbr": "SEA", "team_division": "NFC West"},
-        {"season": 2026, "team_abbr": "NE", "team_division": "AFC East"},
+        {"season": 2026, "team_abbr": "SEA", "team_division": "NFC West", "div_rank": 1},
+        {"season": 2026, "team_abbr": "NE", "team_division": "AFC East", "div_rank": 1},
     ])
     out = score_teams(sched, divisions).set_index("team")
     assert out["div_champ"].sum() == 0
@@ -390,3 +397,67 @@ def test_a_frame_with_no_dates_settles_nothing():
 
     played = pd.DataFrame([{"season": 2026, "home_score": 20, "away_score": 10}])
     assert settled_seasons(played) == set()
+
+
+def test_the_division_title_comes_from_the_leagues_own_standing():
+    """Wins and point differential got three of the last twenty-four titles
+    wrong -- 2023 New Orleans over Tampa Bay, 2024 Seattle over the Rams, 2025
+    Tampa Bay over Carolina -- every one a division tied on record and settled
+    head to head, which a differential cannot see."""
+    sched = pd.DataFrame([
+        # MIA wins the head-to-head and takes the division; BUF has the better
+        # differential and would have taken it under the old rule.
+        game("MIA", "BUF", 3, 0, gameday="2026-09-13"),
+        game("BUF", "MIA", 40, 0, gameday="2026-09-20"),
+    ])
+    divisions = pd.DataFrame([
+        {"season": 2026, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 2},
+        {"season": 2026, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 1},
+    ])
+    out = score_teams(sched, divisions).set_index("team")
+    assert out.loc["MIA", "div_champ"] == 1
+    assert out.loc["BUF", "div_champ"] == 0
+
+
+def test_a_finished_season_with_no_standing_is_a_loud_failure():
+    """Awarding no title to a completed season lowers every top team's total by
+    fifteen, lowers the benchmark drawn from them, and inflates every live score
+    measured against it. A feed that dropped the column would do that
+    silently."""
+    from whul.scoring.nfl import MissingDivisionStanding
+
+    sched = pd.DataFrame([game("BUF", "MIA", 20, 10, gameday="2026-09-13")])
+    bare = DIVISIONS.drop(columns=["div_rank"])
+    with pytest.raises(MissingDivisionStanding):
+        score_teams(sched, bare)
+
+
+def test_a_season_still_being_played_needs_no_standing():
+    """Nothing is awarded, so nothing is missing."""
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10, gameday="2026-09-13"),
+        {"season": 2026, "game_type": "REG", "home_team": "BUF",
+         "away_team": "MIA", "home_score": None, "away_score": None,
+         "div_game": 0, "gameday": "2126-12-01"},
+    ])
+    out = score_teams(sched, DIVISIONS.drop(columns=["div_rank"]))
+    assert out["div_champ"].sum() == 0
+
+
+def test_a_division_standing_is_read_for_the_right_season():
+    """It is a fact about one year. Joined on the team alone, every season
+    would take the newest one -- and last year's champion is not this year's."""
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10, season=2025, gameday="2025-09-13"),
+        game("MIA", "BUF", 20, 10, season=2026, gameday="2026-09-13"),
+    ])
+    divisions = pd.DataFrame([
+        {"season": 2025, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 1},
+        {"season": 2025, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 2},
+        {"season": 2026, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 2},
+        {"season": 2026, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 1},
+    ])
+    out = score_teams(sched, divisions).set_index(["season", "team"])
+    assert out.loc[(2025, "BUF"), "div_champ"] == 1
+    assert out.loc[(2026, "MIA"), "div_champ"] == 1
+    assert out.loc[(2026, "BUF"), "div_champ"] == 0
