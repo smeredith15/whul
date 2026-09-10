@@ -67,6 +67,40 @@ class SeasonWindow:
 #: there is room for it; the initials are for the places where there is not --
 #: a browser tab, a narrow phone -- which is the rule the managers already
 #: follow, Tyler in the standings and TG on a badge.
+#: A roster category that spans two or more competitions, and which ones.
+#:
+#: The distinction the spreadsheet blurs. A slot's *category* is "Motorsports"
+#: and "Tennis" because that is what a manager drafts into; the *league* is F1
+#: or NASCAR, ATP or WTA, because that is what a player actually competes in
+#: and what their score is measured against. Where the sheet's league column is
+#: blank the category stands in, and six players ended up filed under the
+#: umbrella itself -- scored correctly, since the scorer reads the feed's own
+#: answer, and classified wrongly everywhere a page reads the asset record.
+#:
+#: Declared here rather than inferred from what happens to be rostered: an
+#: umbrella with only ATP players in it is still an umbrella, and a list that
+#: shrinks when a manager drops somebody is not a definition.
+UMBRELLA_LEAGUES: dict[str, tuple[str, ...]] = {
+    "Tennis": ("ATP", "WTA"),
+    "Motorsports": ("F1", "NASCAR"),
+    "Club Soccer": ("Premier League", "La Liga", "Serie A", "Bundesliga",
+                    "Ligue 1", "MLS", "NWSL"),
+}
+
+
+def umbrella_for(league: str) -> str:
+    """The umbrella a league sits under, or "" for one that stands alone."""
+    for parent, members in UMBRELLA_LEAGUES.items():
+        if str(league) in members:
+            return parent
+    return ""
+
+
+def covered_by(umbrella: str) -> tuple[str, ...]:
+    """The leagues an umbrella covers. Empty for anything that is not one."""
+    return UMBRELLA_LEAGUES.get(str(umbrella), ())
+
+
 LEAGUE_NAME = "Wolf Hill Uber League"
 LEAGUE_ABBR = "WHUL"
 

@@ -375,6 +375,11 @@ td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
   td.fixture .against { white-space: normal; overflow-wrap: break-word; }
 }
 
+/* An umbrella chip stands for several leagues rather than one, so it is drawn
+   a shade heavier than the chips it covers -- otherwise "Tennis" sitting
+   between "Serie A" and "WTA" looks like a third league of the same kind. */
+.chip.umbrella { border-color: var(--axis); font-weight: 600; }
+
 /* The totals above the filters. Deliberately small and narrow: it is a
    readout of the table below it, not a second standings, and it sits between
    the heading and the chips where a reader looks before choosing a filter. */

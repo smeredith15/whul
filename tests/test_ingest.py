@@ -1238,3 +1238,89 @@ def test_the_totals_are_rebuilt_from_the_merged_breakdown(tmp_path):
     row = out.iloc[0]
     assert row["postseason_bonus"] == pytest.approx(11.4)
     assert row["total_points"] == pytest.approx(35.4)
+
+
+# --- a roster category is not a league --------------------------------------
+#
+# The spreadsheet's league column stands in with the category when it is blank,
+# so six players arrived filed as "Tennis" and "Motorsports" -- which are what
+# a manager drafts into, not what anybody competes in. Their scores were never
+# wrong: the scorer reads the feed's own league and normalizes ATP against ATP.
+# Everything reading the asset record was.
+
+class Noted:
+    def __init__(self):
+        self.problems = []
+
+
+def filed_as(store, asset_id, league, norm_key=None):
+    store.upsert("assets", [{
+        "asset_id": asset_id, "asset_type": "Player", "display_name": asset_id,
+        "league": league, "role": "", "norm_key": norm_key or league,
+        "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+
+
+def settle(store, **feed):
+    report = Noted()
+    ingest._settle_umbrella_league(
+        store,
+        pd.DataFrame([{"asset_id": a, "league": lg} for a, lg in feed.items()]),
+        report,
+    )
+    return report, {
+        str(r.asset_id): (str(r.league), str(r.norm_key))
+        for r in store.query("SELECT asset_id, league, norm_key FROM assets").itertuples()
+    }
+
+
+def test_an_asset_filed_under_its_category_moves_to_the_league_it_plays_in(store):
+    filed_as(store, "fritz", "Tennis")
+    filed_as(store, "norris", "Motorsports")
+    report, held = settle(store, fritz="ATP", norris="F1")
+    assert held["fritz"] == ("ATP", "ATP")
+    assert held["norris"] == ("F1", "F1")
+    assert "2 asset(s)" in report.problems[0]
+
+
+def test_a_league_that_is_not_an_umbrella_is_left_where_it_is(store):
+    """Only ever from an umbrella onto one of its own members, so a feed naming
+    something unexpected cannot reclassify anybody: a Premier League player is
+    not moved to La Liga by this, whatever the feed says."""
+    filed_as(store, "saka", "Premier League")
+    report, held = settle(store, saka="La Liga")
+    assert held["saka"] == ("Premier League", "Premier League")
+    assert report.problems == []
+
+
+def test_a_feed_naming_something_outside_the_umbrella_moves_nobody(store):
+    filed_as(store, "fritz", "Tennis")
+    report, held = settle(store, fritz="NFL")
+    assert held["fritz"] == ("Tennis", "Tennis")
+    assert report.problems == []
+
+
+def test_an_asset_already_on_its_league_is_not_touched(store):
+    filed_as(store, "sinner", "ATP")
+    report, held = settle(store, sinner="ATP")
+    assert held["sinner"] == ("ATP", "ATP")
+    assert report.problems == []
+
+
+def test_a_positional_norm_key_survives_the_move(store):
+    """The norm_key follows the league only where it *was* the league. NFL and
+    MLB split by position and are spelled "NFL_QB", which is not a league and
+    must not be overwritten with one."""
+    filed_as(store, "someone", "Tennis", norm_key="Tennis_Singles")
+    _, held = settle(store, someone="WTA")
+    assert held["someone"] == ("WTA", "Tennis_Singles")
+
+
+def test_the_asset_id_is_left_alone(store):
+    """It was derived from the league at import and still says
+    `player-tennis-taylor-fritz`, which is ugly and is not worth the cost of
+    changing: every score, every stat row and every photograph is keyed on
+    it."""
+    filed_as(store, "player-tennis-taylor-fritz", "Tennis")
+    _, held = settle(store, **{"player-tennis-taylor-fritz": "ATP"})
+    assert "player-tennis-taylor-fritz" in held

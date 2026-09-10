@@ -2479,3 +2479,94 @@ def test_a_filter_chip_is_not_escaped_twice():
     html = _results_table(frame, profiles, ["SS"])
     assert "&amp;#x27;" not in html
     assert ">Men&#x27;s Intl Soccer</button>" in html
+
+
+# --- an umbrella is not a league --------------------------------------------
+
+def test_an_umbrella_chip_stands_beside_the_leagues_it_covers():
+    """All three buttons stay: Tennis, ATP and WTA. Tennis is the slot a
+    manager drafts into and the other two are what people play in."""
+    from whul.site.build import _results_table
+
+    frame = pd.DataFrame([
+        {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
+        {"asset_id": "a2", "manager_id": "SS", "score": 1.0, "counts": 1},
+    ])
+    profiles = {"a1": {"name": "a1", "league": "ATP", "kind": "Player"},
+                "a2": {"name": "a2", "league": "WTA", "kind": "Player"}}
+    html = _results_table(frame, profiles, ["SS"])
+    for label in ("ATP", "WTA", "Tennis"):
+        assert f'data-value="{label}"' in html, label
+    assert 'class="chip umbrella" data-filter="league" data-value="Tennis"' in html
+
+
+def test_a_row_carries_the_umbrella_it_sits_under():
+    """What lets one chip match several leagues without the page holding a
+    second copy of the membership."""
+    from whul.site.build import _results_table
+
+    frame = pd.DataFrame([
+        {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
+    ])
+    profiles = {"a1": {"name": "a1", "league": "ATP", "kind": "Player"}}
+    html = _results_table(frame, profiles, ["SS"])
+    assert 'data-group="Tennis"' in html
+
+
+def test_an_umbrella_nobody_is_in_gets_no_chip():
+    """A filter that can only empty the table."""
+    from whul.site.build import _results_table
+
+    frame = pd.DataFrame([
+        {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
+    ])
+    profiles = {"a1": {"name": "a1", "league": "NFL", "kind": "Player"}}
+    html = _results_table(frame, profiles, ["SS"])
+    assert 'data-value="Tennis"' not in html
+    assert 'data-value="Motorsports"' not in html
+
+
+def test_a_league_chip_still_means_that_league_alone():
+    from whul.site import charts
+
+    assert "picked.league[row.dataset.league]" in charts.SCRIPT
+    assert "picked.league[row.dataset.group]" in charts.SCRIPT
+
+
+def test_a_drivers_corner_is_his_flag_and_not_his_car_number():
+    """`_identity` puts the car number where a footballer's club goes, which is
+    right on the line and wrong for the badge: `_slug("#1")` was looked up in
+    the flag directory, so every driver lost his flag to a file called "-1"."""
+    from whul.site.build import asset_profiles
+
+    store = open_store(":memory:")
+    store.upsert("managers", [{"manager_id": "SS", "display_name": "Scott"}],
+                 ["manager_id"])
+    store.upsert("assets", [{
+        "asset_id": "player-motorsports-lando-norris", "asset_type": "Player",
+        "display_name": "Lando Norris", "league": "F1", "role": "Driver",
+        "norm_key": "F1", "affiliation": "Great Britain", "active": 1,
+        "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    store.upsert("roster_slots", [{
+        "slot_id": "s1", "season": "2026-27", "manager_id": "SS",
+        "category": "Motorsports", "asset_type": "Player", "slot_index": 1,
+    }], ["slot_id"])
+    store.upsert("slot_occupancy", [{
+        "slot_id": "s1", "asset_id": "player-motorsports-lando-norris",
+        "start_date": "2026-08-21", "end_date": None,
+    }], ["slot_id", "start_date"])
+    store.record_stats(
+        [{"player": "Lando Norris", "league": "F1", "role": "Driver",
+          "car_number": "1", "total_points": 31.0,
+          "asset_id": "player-motorsports-lando-norris"}],
+        source="motorsports", season="2026-27", as_of=date(2026, 9, 10),
+        league="Motorsports",
+    )
+    got = asset_profiles(store, "2026-27", date(2026, 9, 10),
+                         {"player-motorsports-lando-norris"})
+    profile = got["player-motorsports-lando-norris"]
+    # The car number is on the line, where it is the useful thing.
+    assert profile["team"] == "#1"
+    # The flag is in the corner, where the car number never was one.
+    assert profile["corner"] == ["flag", "great-britain"]

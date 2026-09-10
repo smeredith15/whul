@@ -27,7 +27,8 @@ from pathlib import Path
 import pandas as pd
 
 from whul.config.league import (
-    ALL_SLOTS, LEAGUE_ABBR, LEAGUE_NAME, SEASON, active_slots, manager_name,
+    ALL_SLOTS, LEAGUE_ABBR, LEAGUE_NAME, SEASON, active_slots, covered_by,
+    manager_name, umbrella_for,
 )
 from whul import fixtures, pipeline
 from whul.site import charts, images, rulebook, theme
@@ -391,9 +392,20 @@ def asset_profiles(
             raw_rows.get(asset_id, {}), league, str(info["norm_key"] or ""),
             str(info["affiliation"] or ""),
         )
+        # The feed's spelling of the club, which is what a crest is filed
+        # under -- except for an individual athlete, whose corner is a flag and
+        # whose identity line is not a country at all: a driver's carries his
+        # car number, and `_slug("#1")` was being looked up in the flag
+        # directory, so every driver lost his flag to a file called "-1".
+        badge_by = (
+            str(info["affiliation"] or "")
+            if categories.get(asset_id, "") in INDIVIDUAL_CATEGORIES
+            and str(info["asset_type"]) != "Team"
+            else who["team"]
+        )
         corner = corner_badge(
             str(info["asset_type"]), categories.get(asset_id, ""), league,
-            who["team"],
+            badge_by,
         )
         # After the corner, which reads the club's own name and must go on
         # doing so -- the crest is looked up by it.
@@ -797,6 +809,9 @@ def _results_table(
     rows = []
     leagues: set[str] = set()
     kinds: set[str] = set()
+    #: The umbrellas whose members are actually on somebody's roster. A chip
+    #: for one nobody holds is a filter that can only empty the table.
+    groups: set[str] = set()
     # `contributions` always carries it; a frame assembled by hand may not, and
     # a missing column should leave every row counting rather than none.
     has_counts = "counts" in bars.columns
@@ -809,8 +824,11 @@ def _results_table(
         leagues.add(league)
         kinds.add(kind)
         slot = theme.series_index(managers, row.manager_id) + 1
+        group = umbrella_for(league)
+        groups.add(group)
         rows.append(
             f'<tr data-league="{league}" data-kind="{kind}" '
+            f'data-group="{group}" '
             f'data-manager="{escape(str(row.manager_id))}" '
             f'data-counts="{1 if (not has_counts or row.counts) else 0}">'
             f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
@@ -825,16 +843,19 @@ def _results_table(
     if not rows:
         return '<p class="sub">Nothing scored yet.</p>'
 
-    def chips(name: str, values: set[str]) -> str:
+    def chips(name: str, values: set[str], umbrellas: set[str] = frozenset()) -> str:
         # Already escaped: these come off the profiles, which hold HTML because
         # every other place they are used is HTML. Escaping again turned "Men's
         # Intl Soccer" into a chip reading "Men&#x27;s Intl Soccer" -- and the
         # filter went on working, because the row's own attribute was wrong in
         # exactly the same way.
         buttons = "".join(
-            f'<button class="chip" data-filter="{name}" data-value="{v}" '
-            f'aria-pressed="false">{v}</button>'
-            for v in sorted(values) if v
+            f'<button class="chip{" umbrella" if v in umbrellas else ""}" '
+            f'data-filter="{name}" data-value="{v}" aria-pressed="false"'
+            + (f' title="Everything in {v}: '
+               f'{escape(", ".join(covered_by(v)))}"' if v in umbrellas else "")
+            + f'>{v}</button>'
+            for v in sorted(values | umbrellas) if v
         )
         return f'<div class="chips" role="group" aria-label="Filter by {name}">{buttons}</div>'
 
@@ -866,7 +887,8 @@ def _results_table(
         '<thead><tr><th>Manager</th><th class="num">Counting</th>'
         '<th class="num">Bench</th></tr></thead>'
         f'<tbody>{totals}</tbody></table>'
-        f'{chips("kind", kinds)}{chips("league", leagues)}{scoring_only}'
+        f'{chips("kind", kinds)}{chips("league", leagues, groups - {""})}'
+        f'{scoring_only}'
         '<p class="sub filtercount" data-count>Showing every scored asset.</p>'
         '<table class="results" id="resultstable">'
         '<thead><tr><th>Asset</th><th>Owner</th>'
