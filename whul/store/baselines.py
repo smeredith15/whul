@@ -129,11 +129,18 @@ def combine_seasons(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     if not present:
         return frame
 
-    numeric, carried = [], []
+    numeric, carried, listed = [], [], []
     for column in frame.columns:
         if column in present:
             continue
-        if column in NOT_CUMULATIVE or pd.to_numeric(
+        if _holds_lists(frame[column]):
+            # A list of detail rows -- each competition's postseason line, or a
+            # golfer's finishes. Taking the first half's would keep one half of
+            # a league year's competitions while the numeric total beside it
+            # summed both, and the table would quietly disagree with its own
+            # figure. They are joined instead.
+            listed.append(column)
+        elif column in NOT_CUMULATIVE or pd.to_numeric(
             frame[column], errors="coerce"
         ).isna().all():
             carried.append(column)
@@ -152,7 +159,19 @@ def combine_seasons(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
         # year's share of this asset started.
         first = frame.groupby(present, as_index=False, dropna=False)[carried].first()
         summed = summed.merge(first, on=present, how="left")
+    for column in listed:
+        joined = (
+            frame.groupby(present, as_index=False, dropna=False)[column]
+            .agg(lambda values: [entry for value in values
+                                 if isinstance(value, list) for entry in value])
+        )
+        summed = summed.merge(joined, on=present, how="left")
     return summed.reset_index(drop=True)
+
+
+def _holds_lists(values: pd.Series) -> bool:
+    """True where any value is a list, so the column cannot be summed."""
+    return any(isinstance(value, list) for value in values)
 
 
 def usable(

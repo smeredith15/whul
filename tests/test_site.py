@@ -1900,3 +1900,58 @@ def test_no_two_elements_on_a_page_share_an_id(site):
         ids = re.findall(r'\bid="([^"]+)"', page.read_text())
         duplicates = {i for i in ids if ids.count(i) > 1}
         assert not duplicates, f"{page.name}: {sorted(duplicates)}"
+
+
+# --- the playoffs and Europe section -----------------------------------------
+
+
+def test_the_profile_carries_each_competition_paying_a_bonus():
+    from whul.site.build import _bonus_list
+
+    detail = [
+        {"competition": "UEFA Champions League", "games": 6.0, "points": 33.0,
+         "share": 0.05, "scalar": 1.9, "adds": 10.45},
+        {"competition": "MLS Cup Playoffs", "games": 0.0, "points": 0.0,
+         "share": 0.10, "scalar": 3.4, "adds": 0.0},
+    ]
+    kept = _bonus_list({"bonus_detail": detail})
+    assert [d["competition"] for d in kept] == ["UEFA Champions League"], \
+        "a competition nobody played in is not a row"
+
+
+def test_the_profile_reads_the_breakdown_back_out_of_json():
+    """raw_stats keeps every column as JSON, so it arrives as a string."""
+    import json
+
+    from whul.site.build import _bonus_list
+
+    detail = [{"competition": "Europa League", "games": 4.0, "points": 20.0,
+               "share": 0.05, "scalar": 1.9, "adds": 9.5}]
+    assert _bonus_list({"bonus_detail": json.dumps(detail)}) == detail
+    assert _bonus_list({"bonus_detail": "not json"}) == []
+    assert _bonus_list({}) == []
+
+
+def test_the_postseason_figures_stay_out_of_the_season_totals():
+    """A row reading "Postseason bonus 11.2" says nothing about what it was
+    11.2 *of*, and the shares are no longer one number."""
+    from whul.site.build import _stat_lines
+
+    lines = dict(_stat_lines({
+        "goals": 4.0, "regular_points": 155.0, "postseason_bonus": 11.2,
+        "bonus_matches": 8.0, "bonus_points": 47.0,
+    }))
+    assert "Goals" in lines
+    assert not [name for name in lines if "ostseason" in name or "onus" in name]
+
+
+def test_points_columns_are_not_labelled_as_counts():
+    """"Goals 2.0" directly above "Goals 8.0" invites the reader to decide
+    which of the two is wrong."""
+    from whul.site.build import _stat_lines
+
+    lines = dict(_stat_lines({"goals": 2.0, "goal_points": 8.0,
+                              "appearance_points": 6.0}))
+    assert lines["Goals"] == "2.0"
+    assert lines["Points for goals"] == "8.0"
+    assert lines["Points for appearances"] == "6.0"

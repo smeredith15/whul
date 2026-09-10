@@ -190,3 +190,83 @@ def test_a_player_who_did_not_appear_earns_nothing_from_a_deep_run():
     """Being rostered on a finalist is not itself worth anything."""
     out = apply_bonus(phase_frame(170.0, 17, 0.0, 0), RULES["NFL"]).iloc[0]
     assert out["postseason_bonus"] == 0.0
+
+
+# --- what the profile window is handed --------------------------------------
+
+
+def test_the_share_travels_with_the_figures():
+    """A page that mapped a competition back to its percentage would be a
+    second copy of RULES, and the two would drift the first time a share moved
+    -- which is exactly what happened to the Scoring page when they split."""
+    from whul.scoring.postseason import RULES, detail_for
+
+    entry = detail_for("UEFA Champions League", 8, 40, RULES["UCL"])
+    assert entry["share"] == 0.05
+    assert entry["games"] == 8 and entry["points"] == 40
+    assert entry["adds"] == pytest.approx(40 / 8 * RULES["UCL"].scalar)
+
+
+def test_a_league_playoff_run_is_one_detail_row():
+    import pandas as pd
+
+    from whul.scoring.postseason import RULES, apply_bonus
+
+    agg = pd.DataFrame([
+        {"player": "A", "regular_points": 300.0, "regular_games": 17.0,
+         "postseason_points": 60.0, "postseason_games": 3.0},
+        {"player": "B", "regular_points": 250.0, "regular_games": 17.0,
+         "postseason_points": 0.0, "postseason_games": 0.0},
+    ])
+    out = apply_bonus(agg, RULES["NFL"], competition="NFL playoffs").set_index("player")
+    assert len(out.loc["A", "bonus_detail"]) == 1
+    assert out.loc["A", "bonus_detail"][0]["share"] == 0.10
+    assert out.loc["B", "bonus_detail"] == [], "nobody who did not play"
+
+
+def test_a_player_in_two_competitions_gets_a_row_for_each():
+    """A Europa League run and the MLS Cup playoffs pay different shares, and a
+    single postseason figure cannot say which of them it came from."""
+    import pandas as pd
+
+    from whul.scoring import soccer
+
+    def row(**kw):
+        return dict(player="A", league="MLS", season=2027, position="F",
+                    team="C", team_id="1", yellow=0, red=0, **kw)
+
+    scored = soccer.score_players(pd.DataFrame([
+        row(competition_key="mls", competition="MLS", matches=30, starts=30,
+            goals=10, assists=5),
+        row(competition_key="", competition="MLS Cup Playoffs", matches=3,
+            starts=3, goals=2, assists=1),
+        row(competition_key="concacafchampions",
+            competition="CONCACAF Champions Cup", matches=4, starts=4,
+            goals=1, assists=1),
+    ]), postseason=True).iloc[0]
+
+    shares = {d["competition"]: d["share"] for d in scored["bonus_detail"]}
+    assert shares == {"MLS Cup Playoffs": 0.10, "CONCACAF Champions Cup": 0.025}
+    assert sum(d["adds"] for d in scored["bonus_detail"]) == \
+        pytest.approx(scored["postseason_bonus"])
+
+
+def test_a_domestic_cup_is_not_in_the_breakdown():
+    """It counts in full, like a league match, so it is not a bonus at all."""
+    import pandas as pd
+
+    from whul.scoring import soccer
+
+    def row(**kw):
+        return dict(player="A", league="Premier League", season=2027,
+                    position="F", team="C", team_id="1", yellow=0, red=0, **kw)
+
+    scored = soccer.score_players(pd.DataFrame([
+        row(competition_key="epl", competition="Premier League", matches=30,
+            starts=30, goals=10, assists=5),
+        row(competition_key="facup", competition="FA Cup", matches=4, starts=4,
+            goals=3, assists=1),
+    ]), postseason=True).iloc[0]
+
+    assert scored["bonus_detail"] == []
+    assert scored["postseason_bonus"] == 0.0

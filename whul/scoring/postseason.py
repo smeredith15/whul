@@ -209,7 +209,37 @@ def bonus_for(points: float, games: float, rule: PostseasonRule | None) -> float
     return float(points) / float(games) * rule.scalar
 
 
-def apply_bonus(agg: pd.DataFrame, rule: PostseasonRule | None) -> pd.DataFrame:
+#: The column carrying the per-competition breakdown, as a list of dicts. A
+#: list survives into ``raw_stats`` as JSON and is skipped by the season-totals
+#: table, the same way ``finishes`` already is.
+DETAIL_COLUMN = "bonus_detail"
+
+
+def detail_for(
+    competition: str, games: float, points: float, rule: PostseasonRule | None
+) -> dict:
+    """One competition's postseason line, for the profile window.
+
+    The share is carried alongside the figures rather than looked up again by
+    whatever renders them: a page that had to map a competition back to its
+    percentage would be a second copy of ``RULES``, and the two would drift the
+    first time a share moved -- which is exactly what happened to the Scoring
+    page when they split.
+    """
+    games, points = float(games or 0.0), float(points or 0.0)
+    return {
+        "competition": competition,
+        "games": games,
+        "points": points,
+        "share": rule.bonus_share if rule else 0.0,
+        "scalar": rule.scalar if rule else 0.0,
+        "adds": bonus_for(points, games, rule),
+    }
+
+
+def apply_bonus(
+    agg: pd.DataFrame, rule: PostseasonRule | None, competition: str = ""
+) -> pd.DataFrame:
     """Add ``postseason_bonus`` and ``total_points`` to a phase-split frame.
 
     With no rule, or where a player made no postseason appearance, the bonus is
@@ -228,4 +258,11 @@ def apply_bonus(agg: pd.DataFrame, rule: PostseasonRule | None) -> pd.DataFrame:
     out["postseason_bonus"] = po_rate * scalar
     out["games_played"] = (out["regular_games"] + out["postseason_games"]).astype(int)
     out["total_points"] = out["regular_points"] + out["postseason_bonus"]
+    # One competition here -- the league's own playoffs -- where soccer has
+    # several. Same shape either way, so the page renders one thing.
+    label = competition or (rule.competition if rule else "")
+    out[DETAIL_COLUMN] = [
+        [detail_for(label, games, points, rule)] if games else []
+        for games, points in zip(out["postseason_games"], out["postseason_points"])
+    ]
     return out

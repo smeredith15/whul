@@ -283,3 +283,22 @@ def test_a_payload_naming_a_table_column_does_not_duplicate_it(store):
     # The table's own value wins, and nothing is silently omitted.
     assert frame.loc[0, "league"] == "NFL"
     assert frame.to_dict("records")[0]["passing_yards"] == 4172.0
+
+
+def test_a_league_year_spanning_two_seasons_keeps_both_breakdowns():
+    """The numeric total sums both halves. Taking the first half's detail list
+    beside it would leave the table disagreeing with its own figure."""
+    import pandas as pd
+
+    from whul.store.baselines import combine_seasons
+
+    frame = pd.DataFrame([
+        {"player": "A", "season": 2026, "total_points": 100.0,
+         "bonus_detail": [{"competition": "MLS Cup Playoffs", "adds": 20.0}]},
+        {"player": "A", "season": 2027, "total_points": 50.0,
+         "bonus_detail": [{"competition": "CONCACAF Champions Cup", "adds": 5.0}]},
+    ])
+    out = combine_seasons(frame, ["player"]).iloc[0]
+    assert out["total_points"] == 150.0
+    assert [d["competition"] for d in out["bonus_detail"]] == [
+        "MLS Cup Playoffs", "CONCACAF Champions Cup"]
