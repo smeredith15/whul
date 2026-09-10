@@ -764,8 +764,16 @@ def test_a_feed_that_stopped_supplying_goals_fails_loudly():
 
 # --- European football is paid, not counted --------------------------------
 
+#: A season whose European campaigns are long finished, so these tests measure
+#: the arithmetic rather than the calendar. The bonus is held until the
+#: competition is over -- see whul.scoring.completion -- and a test written
+#: against a season still being played would be asserting the hold.
+SETTLED_SEASON = 2024
+
+
 def player_row(competition, matches=10, goals=2, assists=1, **over):
-    row = {"player": "A Winger", "league": "Premier League", "season": 2027,
+    row = {"player": "A Winger", "league": "Premier League",
+           "season": SETTLED_SEASON,
            "position": "FW", "competition": competition, "matches": matches,
            "starts": matches, "minutes": matches * 90, "goals": goals,
            "assists": assists, "yellow": 0, "red": 0}

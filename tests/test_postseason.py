@@ -21,8 +21,16 @@ from whul.scoring.postseason import (
 )
 
 
-def phase_frame(reg_pts, reg_games, post_pts, post_games):
+#: A season whose postseason is long finished, so these tests measure the
+#: arithmetic rather than the calendar. The bonus is held until the competition
+#: is over -- see whul.scoring.completion -- and a test written against a
+#: season still in progress would be asserting the hold, not the rate.
+SETTLED_SEASON = 2024
+
+
+def phase_frame(reg_pts, reg_games, post_pts, post_games, season=SETTLED_SEASON):
     return pd.DataFrame([{
+        "season": season,
         "regular_points": reg_pts, "regular_games": reg_games,
         "postseason_points": post_pts, "postseason_games": post_games,
     }])
@@ -247,8 +255,11 @@ def test_a_player_in_two_competitions_gets_a_row_for_each():
 
     shares = {d["competition"]: d["share"] for d in scored["bonus_detail"]}
     assert shares == {"MLS Cup Playoffs": 0.10, "CONCACAF Champions Cup": 0.025}
-    assert sum(d["adds"] for d in scored["bonus_detail"]) == \
-        pytest.approx(scored["postseason_bonus"])
+    # 2027 is still being played, so the rate is carried as pending rather than
+    # credited. The breakdown accounts for all of it either way.
+    assert sum(d["adds"] for d in scored["bonus_detail"]) == pytest.approx(
+        scored["postseason_bonus"] + scored["postseason_pending"])
+    assert scored["postseason_bonus"] == 0.0
 
 
 def test_a_domestic_cup_is_not_in_the_breakdown():
@@ -270,3 +281,88 @@ def test_a_domestic_cup_is_not_in_the_breakdown():
 
     assert scored["bonus_detail"] == []
     assert scored["postseason_bonus"] == 0.0
+
+
+# --- the bonus is held until the competition is over -------------------------
+
+
+def test_a_bonus_is_not_credited_while_the_competition_is_being_played():
+    """Mbappe's one Champions League goal projected to 11.4 points -- nearly
+    half his league season -- off a sample of one, and a second match without
+    scoring would have taken 1.9 of it back. A score cannot fall because a
+    player took the pitch."""
+    from datetime import date
+
+    import pandas as pd
+
+    from whul.scoring.postseason import apply_bonus
+
+    agg = pd.DataFrame([{"player": "A", "season": 2026, "regular_points": 300.0,
+                         "regular_games": 17.0, "postseason_points": 60.0,
+                         "postseason_games": 3.0}])
+    mid = apply_bonus(agg, RULES["NFL"], competition="NFL",
+                      as_of=date(2027, 1, 20)).iloc[0]
+    assert mid["postseason_bonus"] == 0.0
+    assert mid["postseason_pending"] == pytest.approx(34.0)
+    assert mid["total_points"] == pytest.approx(300.0), "the score only rises"
+
+
+def test_a_bonus_is_credited_once_the_competition_is_over():
+    from datetime import date
+
+    import pandas as pd
+
+    from whul.scoring.postseason import apply_bonus
+
+    agg = pd.DataFrame([{"player": "A", "season": 2026, "regular_points": 300.0,
+                         "regular_games": 17.0, "postseason_points": 60.0,
+                         "postseason_games": 3.0}])
+    after = apply_bonus(agg, RULES["NFL"], competition="NFL",
+                        as_of=date(2027, 3, 1)).iloc[0]
+    assert after["postseason_bonus"] == pytest.approx(34.0)
+    assert after["postseason_pending"] == 0.0
+    assert after["total_points"] == pytest.approx(334.0)
+
+
+def test_the_calendar_is_asked_of_the_rule_not_the_label():
+    """"UEFA Champions League" is what a reader is shown and "UCL" is what the
+    calendar is keyed by. Looking up the label finds nothing, and finding
+    nothing means never crediting -- silently."""
+    from datetime import date
+
+    from whul.scoring.postseason import detail_for
+
+    entry = detail_for("UEFA Champions League", 1, 6, RULES["UCL"],
+                       season=2027, as_of=date(2027, 7, 1))
+    assert entry["credited"] is True
+    assert entry["finishes"] == "2027-06-30"
+
+
+def test_playing_another_game_can_no_longer_lower_a_score():
+    """The whole reason for the hold, stated as the thing it prevents."""
+    from datetime import date
+
+    import pandas as pd
+
+    from whul.scoring import soccer
+
+    def frame(ucl_games, ucl_goals):
+        rows = [dict(player="M", league="La Liga", season=2027, position="F",
+                     team="RM", team_id="86", yellow=0, red=0,
+                     competition_key="laliga", competition="La Liga",
+                     matches=4, starts=4, goals=4, assists=0)]
+        if ucl_games:
+            rows.append(dict(player="M", league="La Liga", season=2027,
+                             position="F", team="RM", team_id="86", yellow=0,
+                             red=0, competition_key="ucl",
+                             competition="UEFA Champions League",
+                             matches=ucl_games, starts=ucl_games,
+                             goals=ucl_goals, assists=0))
+        return soccer.score_players(pd.DataFrame(rows), postseason=True,
+                                    as_of=date(2026, 9, 10)).iloc[0]
+
+    one = frame(1, 1)
+    two = frame(2, 1)          # played again, did not score
+    assert two["postseason_pending"] < one["postseason_pending"], \
+        "the rate itself really does fall"
+    assert one["total_points"] == two["total_points"], "the score does not"

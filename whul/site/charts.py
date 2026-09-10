@@ -889,13 +889,21 @@ SCRIPT = """\
   // than no heading.
   function renderBonus(rows) {
     if (!rows.length) return '';
-    var total = 0, shares = [];
+    var total = 0, waiting = 0, shares = [], when = [];
     var body = rows.map(function (r) {
       total += r.adds;
+      // Held until the competition is over. A rate off one game projects a
+      // whole share of a season, and a second game without production lowers
+      // it -- a score falling because a player took the pitch.
+      if (!r.credited) {
+        waiting += r.adds;
+        if (r.finishes && when.indexOf(r.finishes) < 0) when.push(r.finishes);
+      }
       var share = Math.round(r.share * 1000) / 10;
       var named = share + '% for the ' + r.competition.replace(/^UEFA /, '');
       if (shares.indexOf(named) < 0) shares.push(named);
-      return '<tr><td>' + r.competition + '</td>' +
+      return '<tr' + (r.credited ? '' : ' class="benched"') + '><td>' +
+             r.competition + '</td>' +
              '<td class="when">' + count(r.games) +
              (r.games === 1 ? ' game' : ' games') + '</td>' +
              '<td class="num">' + pts(r.points) + '</td>' +
@@ -909,8 +917,17 @@ SCRIPT = """\
       'share of a regular season — ' + shares.join(', ') + ' — so a run at ' +
       'your league form adds that share of your league total, however few ' +
       'games it took.';
+    if (waiting > 0.05) {
+      how += ' None of it is in the score yet: a rate off one or two games ' +
+             'moves a long way on the next one, and it can fall — so it is ' +
+             'held until the competition finishes' +
+             (when.length ? ' (' + when.join(', ') + ')' : '') + '.';
+    }
+    var head = waiting > 0.05
+      ? '+' + pts(waiting) + ' waiting'
+      : '+' + pts(total) + ' in the score';
     return '<details class="body bonus"><summary>Playoffs &amp; Europe ' +
-           '<span class="adds">+' + pts(total) + ' as it stands</span></summary>' +
+           '<span class="adds">' + head + '</span></summary>' +
            '<table class="finishes"><tbody>' + body + '</tbody></table>' +
            '<p class="note">' + how + '</p></details>';
   }
@@ -1020,12 +1037,25 @@ SCRIPT = """\
     // still be worth opening. `counts` is false only where the row is on the
     // bench, so an older payload without the field reads as counting.
     var benched = mover.counts === false;
-    return '<tr' + (benched ? ' class="benched"' : '') + '>' +
+    // A playoff or European match moves the score by nothing: the bonus it
+    // feeds is held until the competition finishes. The row is shown anyway,
+    // quiet and tagged, because the match happened and is worth seeing.
+    var held = (mover.pending_line || []).length > 0;
+    var quiet = benched || (held && Math.abs(mover.delta) < 0.05);
+    if (held) {
+      var lines = mover.pending_line.join(' \u00b7 ');
+      detail = detail ? detail + ' \u00b7 ' + lines : lines;
+    }
+    var change = (held && Math.abs(mover.delta) < 0.05)
+      ? (mover.pending > 0 ? '+' : '') + mover.pending.toFixed(1) + ' held'
+      : sign + mover.delta.toFixed(1);
+    return '<tr' + (quiet ? ' class="benched"' : '') + '>' +
       '<td><button class="assetlink" data-asset="' + mover.asset + '">' +
         (a.name || mover.asset) + '</button>' +
         (benched ? '<span class="bench">bench</span>' : '') +
+        (quiet && held && !benched ? '<span class="bench">held</span>' : '') +
         (detail ? '<div class="micro">' + detail + '</div>' : '') + '</td>' +
-      '<td class="num gain">' + sign + mover.delta.toFixed(1) + '</td>' +
+      '<td class="num gain">' + change + '</td>' +
       '<td class="num">' + mover.points.toFixed(1) + '</td></tr>';
   }
 
