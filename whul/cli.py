@@ -681,6 +681,194 @@ def cmd_admin(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rescore(args: argparse.Namespace) -> int:
+    """Restate every stored day against one benchmark version.
+
+    Adopting a new scale changes what 100 means, and only the days scored after
+    it was frozen know that. The days before keep the old divisor, so the ledger
+    -- which differences consecutive days -- shows every asset in a group
+    dropping on the changeover, by the group's percentage, having done nothing.
+    Three club soccer players went down about a point on the day the September
+    scale was adopted, with identical raw totals on both days.
+
+    No feed is touched. The raw figures are already in ``raw_stats``; this
+    re-runs the normalization over them, which is the only step the new scale
+    changes. That is also why it can be trusted: rescoring the most recent day
+    must reproduce what is already stored for it, and the command checks that
+    before writing anything.
+    """
+    from whul import pipeline
+    from whul.normalize import apply_benchmarks
+    from whul.store import benchmarks as store_benchmarks
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    version = args.version
+    if version in (None, "", "frozen"):
+        active = store_benchmarks.active_version(store, args.season)
+        if active is None:
+            print(f"\nNo frozen benchmark for {args.season}, so there is nothing "
+                  f"to restate against.\n", file=sys.stderr)
+            return 1
+        version = active.version
+    bench = store_benchmarks.load(store, version)
+    if bench.empty:
+        print(f"\n{version} holds no benchmarks.\n", file=sys.stderr)
+        return 1
+
+    days = [str(d) for d in store.query(
+        "SELECT DISTINCT as_of FROM daily_scores WHERE season = ? ORDER BY as_of",
+        (args.season,),
+    )["as_of"]]
+    if not days:
+        print(f"\nNo scored days for {args.season}.\n", file=sys.stderr)
+        return 1
+
+    assets = store.query("SELECT asset_id, asset_type, league FROM assets")
+    kinds = (
+        dict(zip(assets["asset_id"], assets["asset_type"])),
+        dict(zip(assets["asset_id"], assets["league"])),
+    )
+    print(f"\nRestating {len(days)} day(s) of {args.season} against {version}.\n")
+
+    changed, moved, written, wrong = 0, 0.0, 0, []
+    plan = []
+    for day in days:
+        rows_for_day = store.query(
+            "SELECT asset_id, scaled_score, benchmark_version FROM daily_scores "
+            "WHERE season = ? AND as_of = ?", (args.season, day),
+        )
+        already = set(rows_for_day["benchmark_version"]) == {version}
+        stored = rows_for_day.set_index("asset_id")["scaled_score"].to_dict()
+
+        rows = _rescore_day(store, args.season, day, bench, kinds, apply_benchmarks)
+        if rows is None or rows.empty:
+            print(f"  {day}: no raw figures stored, so it is left as it is")
+            continue
+
+        day_changed, day_moved = 0, 0.0
+        for row in rows.itertuples():
+            was = stored.get(row.asset_id)
+            if was is None:
+                continue
+            gap = abs(float(row.scaled_score) - float(was))
+            if gap > 0.05:
+                day_changed += 1
+                day_moved = max(day_moved, gap)
+        changed += day_changed
+        moved = max(moved, day_moved)
+        # A day already scored against this version must come back unchanged.
+        # It is the only check available that the restatement reproduces what
+        # the scorer itself does, and it costs nothing to print.
+        if already and day_changed:
+            # This day was already scored against this very scale, so restating
+            # it must reproduce what is there. That it does not means the
+            # restatement is not doing what the scorer does, and every earlier
+            # day it rewrites would be wrong in the same way and silently.
+            wrong.append((day, day_changed, day_moved))
+        note = ("unchanged, as it should be -- already scored against this scale"
+                if already and not day_changed else
+                f"{day_changed} asset(s) move, largest {day_moved:.1f}"
+                if day_changed else "nothing moves")
+        print(f"  {day}: {len(rows):>3} asset(s) restated; {note}")
+        plan.append((day, rows))
+
+    if wrong:
+        print(f"\n  REFUSED. {len(wrong)} day(s) already scored against {version} "
+              f"do not come back the same:", file=sys.stderr)
+        for day, count, gap in wrong:
+            print(f"    {day}: {count} asset(s) differ, largest {gap:.1f}",
+                  file=sys.stderr)
+        print("\n  Restating the other days would rewrite them the same wrong "
+              "way, and\n  nothing afterwards would say so. Nothing was "
+              "written.\n", file=sys.stderr)
+        return 1
+
+    for day, rows in plan:
+        if args.dry_run:
+            continue
+        written += pipeline.write_daily_scores(
+            store, rows.assign(total_points=rows["league_points"]),
+            args.season, day, version,
+        )
+
+    print(f"\n  {changed} asset-day(s) move by more than a tenth; "
+          f"largest move {moved:.1f}")
+    if args.dry_run:
+        print("\n  --dry-run, so nothing was written.\n")
+        return 0
+    store.conn.commit()
+    print(f"  {written} row(s) restated.")
+    print(f"\n  Now run `rollup --backfill` to rebuild the standings from "
+          f"them.\n")
+    return 0
+
+
+def _rescore_day(store, season: str, day: str, bench, kinds, apply_benchmarks):
+    """One day's stored figures, scaled against the given benchmarks.
+
+    Grouped by asset type, because a normalization group is a property of one:
+    a Player's is his position within his league and a Team's is the league
+    itself, and scaling them together would look up the wrong row.
+    """
+    import json
+
+    import pandas as pd
+
+    # Read the payload rather than going through `read_stats`, which drops any
+    # payload column the table already has -- and `league` is one of them.
+    # The two are different things. The table records the league the *source*
+    # answers for and the payload the group the row is scored in: "Club Soccer"
+    # against "La Liga", "Motorsports" against "F1". Neither is redundant and
+    # neither is right for both. The scorer normalizes on the payload's, so
+    # this does too. Taking the table's dropped sixty-one of a hundred and
+    # forty-five rows for having no benchmark -- among them every row that was
+    # going to move, so the restatement called the days already correct.
+    stored = store.query(
+        "SELECT asset_id, source, league AS feed_league, stats FROM raw_stats "
+        "WHERE season = ? AND as_of = ?", (season, day),
+    )
+    if stored.empty:
+        return None
+    payload = pd.json_normalize(stored["stats"].map(json.loads))
+    payload.index = stored.index
+    frame = payload.assign(
+        asset_id=stored["asset_id"], source=stored["source"],
+        asset_type=stored["asset_id"].map(kinds[0]),
+    )
+    if "league" not in frame.columns:
+        frame["league"] = stored["feed_league"]
+    else:
+        frame["league"] = frame["league"].fillna(stored["feed_league"])
+    if "total_points" not in frame.columns:
+        return None
+
+    out = []
+    for asset_type, rows in frame.groupby("asset_type"):
+        if not isinstance(asset_type, str) or not asset_type:
+            continue
+        placed = apply_benchmarks(rows, bench, asset_type, strict=False)
+        placed = placed[placed["scaled_score"].notna()]
+        if placed.empty:
+            continue
+        # The one fold that happens after scaling: a two-way player's batting
+        # and pitching are not comparable until both are on the 0-100 scale.
+        # It is keyed on the source rather than the league so that a row from
+        # any other MLB feed is left alone.
+        if (placed["source"] == "mlb").any():
+            from whul.scoring import mlb as mlb_scoring
+
+            mine = placed[placed["source"] == "mlb"]
+            rest = placed[placed["source"] != "mlb"]
+            placed = pd.concat([mlb_scoring.combine_two_way(mine), rest],
+                               ignore_index=True)
+        out.append(placed)
+    if not out:
+        return None
+    joined = pd.concat(out, ignore_index=True)
+    return joined.assign(league_points=joined["total_points"])
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     """Score every slot and write the standings snapshot -- the nightly job."""
     from datetime import date as _date
@@ -1987,6 +2175,22 @@ def main(argv: list[str] | None = None) -> int:
         help="rebuild every day from the season start, after a formula change",
     )
     rollup.set_defaults(func=cmd_rollup)
+
+    rescore = sub.add_parser(
+        "rescore",
+        help="restate every stored day against the frozen benchmark",
+    )
+    rescore.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    rescore.add_argument("--season", default="2026-27-SIM")
+    rescore.add_argument(
+        "--version", default="frozen",
+        help="benchmark version to restate against (default: the frozen one)",
+    )
+    rescore.add_argument(
+        "--dry-run", action="store_true",
+        help="say what would move without writing anything",
+    )
+    rescore.set_defaults(func=cmd_rescore)
 
     site = sub.add_parser("site", help="generate the static site")
     site.add_argument("--db", default="data/whul.sqlite3", help="database path")

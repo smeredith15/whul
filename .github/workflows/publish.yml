@@ -52,6 +52,17 @@ on:
         description: "Rebuild every day from the season start"
         type: boolean
         default: false
+      rescore:
+        description: >-
+          Restate every stored day against the frozen benchmark, before the
+          rollup. Tick this after freezing a new scale. Without it the days
+          scored before the freeze keep the old divisor, and the ledger --
+          which differences consecutive days -- shows every asset in a group
+          dropping on the changeover by that group's percentage, having done
+          nothing. Implies backfill: restating the scores without rebuilding
+          the standings from them would leave the two disagreeing.
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # to push the database back to the data branch
@@ -145,9 +156,18 @@ jobs:
         continue-on-error: true
         run: python -m whul.cli fixtures --season "$SEASON" --fetch
 
+      - name: Restate the stored days against the frozen scale
+        if: ${{ inputs.rescore }}
+        # No feed is touched: the raw figures are already stored and only the
+        # normalization is redone. It refuses if a day already scored against
+        # the frozen version does not come back the same, which is the only
+        # available check that the restatement does what the scorer does.
+        run: python -m whul.cli rescore --season "$SEASON"
+
       - name: Roll up the standings
         run: |
-          if [ "${{ inputs.backfill }}" = "true" ]; then
+          if [ "${{ inputs.backfill }}" = "true" ] \
+             || [ "${{ inputs.rescore }}" = "true" ]; then
             python -m whul.cli rollup --season "$SEASON" --backfill
           else
             python -m whul.cli rollup --season "$SEASON"

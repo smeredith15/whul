@@ -349,3 +349,122 @@ def test_a_clean_roster_reports_nothing():
     rosters.add_manager(store, "LS")
     rosters.create_slots(store, "LS", "2026-27")
     assert pipeline._double_rostered_warnings(store, "2026-27") == []
+
+
+# --- restating stored days against a new scale -------------------------------
+
+
+def rescore_store(tmp_path, versions, benchmarks):
+    """One asset, three days, scored against the versions given."""
+    import json
+
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("benchmark_versions", [
+        {"version": v, "season": "2026-27", "quantile": 0.99, "managers": 5,
+         "computed_at": "2026-09-01T00:00:00Z",
+         "frozen_at": "2026-09-01T00:00:00Z" if v == "new" else None}
+        for v in ("old", "new")
+    ], ["version"])
+    store.upsert("benchmarks", [
+        {"version": v, "asset_type": "Player", "norm_key": "La Liga",
+         "benchmark": bench, "pool_size": 675, "seasons": "2021,2022"}
+        for v, bench in benchmarks.items()
+    ], ["version", "asset_type", "norm_key"])
+    store.upsert("assets", [
+        {"asset_id": "a1", "asset_type": "Player", "display_name": "Yamal",
+         # The asset's league is the category. The payload below carries the
+         # scoring group, and for club soccer they differ.
+         "league": "La Liga", "norm_key": "La Liga", "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    for day, version in versions.items():
+        store.upsert("raw_stats", [{
+            "asset_id": "a1", "league": "Club Soccer", "season": "2026-27",
+            "as_of": day, "source": "soccer-players", "phase": "regular",
+            "stats": json.dumps({"league": "La Liga", "role": "",
+                                 "total_points": 24.0}),
+            "fetched_at": f"{day}T09:00:00Z",
+        }], ["asset_id", "season", "as_of", "source", "phase"])
+        store.upsert("daily_scores", [{
+            "asset_id": "a1", "season": "2026-27", "as_of": day,
+            "league_points": 24.0,
+            "scaled_score": round(24.0 / benchmarks[version] * 100, 2),
+            "benchmark_version": version, "computed_at": f"{day}T09:00:00Z",
+        }], ["asset_id", "season", "as_of"])
+    store.conn.commit()
+    return store
+
+
+def run_rescore(tmp_path, **kw):
+    from whul.cli import main
+
+    args = ["rescore", "--season", "2026-27",
+            "--db", str(tmp_path / "whul.sqlite3"), "--version", "new"]
+    return main(args + list(kw.get("extra", [])))
+
+
+def test_a_day_on_the_old_scale_is_restated(tmp_path, capsys):
+    """Adopting a new scale changes what 100 means, and only the days scored
+    after it know. Differenced against the day before, that reads as every
+    asset in a group having a bad day."""
+    from whul.store import open_store
+
+    rescore_store(tmp_path, {"2026-09-09": "old", "2026-09-10": "new"},
+                  {"old": 163.26, "new": 175.52})
+    assert run_rescore(tmp_path) == 0
+
+    scores = open_store(str(tmp_path / "whul.sqlite3")).query(
+        "SELECT as_of, scaled_score, benchmark_version FROM daily_scores "
+        "ORDER BY as_of")
+    assert list(scores["benchmark_version"]) == ["new", "new"]
+    # Both days now sit on the same divisor, so the ledger shows no move.
+    assert scores["scaled_score"].nunique() == 1
+    assert round(float(scores["scaled_score"].iloc[0]), 2) == 13.67
+
+
+def test_the_league_comes_from_the_payload_not_the_table(tmp_path, capsys):
+    """`read_stats` drops any payload column the table already has, and league
+    is one. The table records the league the *source* answers for -- "Club
+    Soccer" -- and the payload the group the row is scored in. Reading the
+    table's, every club soccer row found no benchmark and was dropped, which
+    made the restatement report the days as already correct."""
+    rescore_store(tmp_path, {"2026-09-09": "old", "2026-09-10": "new"},
+                  {"old": 163.26, "new": 175.52})
+    run_rescore(tmp_path)
+    said = capsys.readouterr().out
+    assert "1 asset(s) restated" in said, "the row was found and scaled"
+
+
+def test_it_refuses_when_a_day_on_the_new_scale_does_not_reproduce(
+    tmp_path, capsys
+):
+    """A day already scored against the target version must come back the same.
+    That it does not means the restatement is not doing what the scorer does,
+    and every earlier day it rewrote would be wrong the same way and silently."""
+    from whul.store import open_store
+
+    store = rescore_store(tmp_path, {"2026-09-09": "old", "2026-09-10": "new"},
+                          {"old": 163.26, "new": 175.52})
+    # A day claiming the new version while holding a figure from the old one.
+    store.conn.execute(
+        "UPDATE daily_scores SET scaled_score = 99.0 WHERE as_of = '2026-09-10'")
+    store.conn.commit()
+
+    assert run_rescore(tmp_path) == 1
+    assert "REFUSED" in capsys.readouterr().err
+    after = open_store(str(tmp_path / "whul.sqlite3")).query(
+        "SELECT scaled_score FROM daily_scores WHERE as_of = '2026-09-09'")
+    assert round(float(after["scaled_score"].iloc[0]), 2) == 14.70, \
+        "the earlier day was left alone"
+
+
+def test_a_dry_run_writes_nothing(tmp_path, capsys):
+    from whul.store import open_store
+
+    rescore_store(tmp_path, {"2026-09-09": "old", "2026-09-10": "new"},
+                  {"old": 163.26, "new": 175.52})
+    assert run_rescore(tmp_path, extra=["--dry-run"]) == 0
+    after = open_store(str(tmp_path / "whul.sqlite3")).query(
+        "SELECT scaled_score FROM daily_scores WHERE as_of = '2026-09-09'")
+    assert round(float(after["scaled_score"].iloc[0]), 2) == 14.70
