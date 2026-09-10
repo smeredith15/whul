@@ -29,7 +29,7 @@ import pandas as pd
 from whul.config.league import (
     ALL_SLOTS, LEAGUE_ABBR, LEAGUE_NAME, SEASON, active_slots, manager_name,
 )
-from whul import fixtures
+from whul import fixtures, pipeline
 from whul.site import charts, images, rulebook, theme
 from whul.store import benchmarks as bm
 from whul.store.db import Store
@@ -797,6 +797,9 @@ def _results_table(
     rows = []
     leagues: set[str] = set()
     kinds: set[str] = set()
+    # `contributions` always carries it; a frame assembled by hand may not, and
+    # a missing column should leave every row counting rather than none.
+    has_counts = "counts" in bars.columns
     for row in bars.sort_values("score", ascending=False).itertuples():
         profile = profiles.get(row.asset_id)
         if not profile:
@@ -807,7 +810,9 @@ def _results_table(
         kinds.add(kind)
         slot = theme.series_index(managers, row.manager_id) + 1
         rows.append(
-            f'<tr data-league="{league}" data-kind="{kind}">'
+            f'<tr data-league="{league}" data-kind="{kind}" '
+            f'data-manager="{escape(str(row.manager_id))}" '
+            f'data-counts="{1 if (not has_counts or row.counts) else 0}">'
             f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
             f'{profile["name"]}</button>'
             f'<span class="rowmeta">{_identity_lines(profile, league, kind)}</span>'
@@ -821,9 +826,14 @@ def _results_table(
         return '<p class="sub">Nothing scored yet.</p>'
 
     def chips(name: str, values: set[str]) -> str:
+        # Already escaped: these come off the profiles, which hold HTML because
+        # every other place they are used is HTML. Escaping again turned "Men's
+        # Intl Soccer" into a chip reading "Men&#x27;s Intl Soccer" -- and the
+        # filter went on working, because the row's own attribute was wrong in
+        # exactly the same way.
         buttons = "".join(
-            f'<button class="chip" data-filter="{name}" data-value="{escape(v)}" '
-            f'aria-pressed="false">{escape(v)}</button>'
+            f'<button class="chip" data-filter="{name}" data-value="{v}" '
+            f'aria-pressed="false">{v}</button>'
             for v in sorted(values) if v
         )
         return f'<div class="chips" role="group" aria-label="Filter by {name}">{buttons}</div>'
@@ -837,7 +847,25 @@ def _results_table(
         '<button class="chip" data-filter="scoring" data-value="yes" '
         'aria-pressed="false">Scoring only</button></div>'
     )
+    # The same two figures the standings carry, over whatever the filter has
+    # left showing. Unfiltered it *is* the standings, which is what makes it
+    # readable: filter to one league and the same table answers "who is winning
+    # that league", which is a question the season generates weekly and nothing
+    # here could answer.
+    totals = "".join(
+        f'<tr data-manager="{escape(m)}">'
+        f'<td><span class="who"><i class="swatch" '
+        f'style="background: var(--series-{theme.series_index(managers, m) + 1})">'
+        f'</i>{escape(manager_name(m))}</span></td>'
+        f'<td class="num" data-total>0.0</td>'
+        f'<td class="num benched" data-bench>0.0</td></tr>'
+        for m in managers
+    )
     return (
+        '<table class="filtertotals" id="filtertotals">'
+        '<thead><tr><th>Manager</th><th class="num">Counting</th>'
+        '<th class="num">Bench</th></tr></thead>'
+        f'<tbody>{totals}</tbody></table>'
         f'{chips("kind", kinds)}{chips("league", leagues)}{scoring_only}'
         '<p class="sub filtercount" data-count>Showing every scored asset.</p>'
         '<table class="results" id="resultstable">'
@@ -1005,7 +1033,21 @@ def _day_payload(breakdown: dict) -> str:
     )
 
 
-def _standings_table(table: pd.DataFrame, mvps: dict[str, str], managers: list[str]) -> str:
+def _standings_table(table: pd.DataFrame, mvps: dict[str, str],
+                     managers: list[str], bench: dict[str, float] | None = None,
+                     held: dict[str, float] | None = None) -> str:
+    """The standings, with the two figures that are not in the total.
+
+    Held points ride on the total as a superscript rather than as a column of
+    their own: they are the same score, on the same scale, waiting on a
+    competition to finish. The order is still by what has been awarded -- a
+    table sorted by a number nobody has yet is a table about the future.
+
+    The bench is a column, greyed and italic, because it is a different thing
+    entirely: points a manager holds that best ball is not counting and will
+    not count. It is there to say how deep a squad is, not to be added up.
+    """
+    bench, held = bench or {}, held or {}
     rows = []
     for row in table.itertuples():
         slot = theme.series_index(managers, row.manager_id) + 1
@@ -1013,17 +1055,27 @@ def _standings_table(table: pd.DataFrame, mvps: dict[str, str], managers: list[s
             "manager", row.manager_id, row.manager_id,
             size=28, slot=slot, initials=row.manager_id,
         )
+        waiting = float(held.get(row.manager_id, 0.0))
+        mark = (
+            f'<sup class="held" title="{waiting:,.1f} more once every playoff '
+            f'and European competition this roster is in has finished. Held '
+            f'until then, because a rate off one or two games moves a long way '
+            f'on the next one and can fall.">+{waiting:,.1f}</sup>'
+        ) if waiting >= 0.05 else ""
+        sat = float(bench.get(row.manager_id, 0.0))
         rows.append(
             f"<tr><td class='num'>{row.rank}</td>"
             f"<td><span class='who'>{badge}"
             f"<a href='team/{_slug(row.manager_id)}.html'>"
             f"{escape(manager_name(row.manager_id))}</a></span></td>"
-            f"<td class='num'>{row.total:,.1f}</td>"
+            f"<td class='num'>{row.total:,.1f}{mark}</td>"
+            f"<td class='num benched'>{sat:,.1f}</td>"
             f"<td>{mvps.get(row.manager_id, '—')}</td></tr>"
         )
     return (
         "<table><thead><tr><th class='num'>#</th><th>Manager</th>"
-        "<th class='num'>Total</th><th>Best performer</th></tr></thead>"
+        "<th class='num'>Total</th><th class='num'>Bench</th>"
+        "<th>Best performer</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -1329,8 +1381,6 @@ def build(
     as_of: date | None = None,
 ) -> dict:
     """Write the whole site. Returns what it wrote, for the CLI to report."""
-    from whul import pipeline
-
     out = Path(out or DEFAULT_OUT)
 
     progression = pipeline.progression(store, season)
@@ -1744,8 +1794,13 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 <div class="card">
   <h2>Standings</h2>
   <p class="sub">Season-to-date, best ball: each manager's counting slots only.
-    Click a name to see how a score was arrived at.</p>
-  {_standings_table(today, mvps, managers)}
+    A superscript is what a playoff or European run has earned that is not in
+    the score yet, held until that competition finishes. The bench is what best
+    ball is not counting, and never will. Click a name to see how a score was
+    arrived at.</p>
+  {_standings_table(today, mvps, managers,
+                    pipeline.bench_by_manager(store, season, latest),
+                    pipeline.held_by_manager(store, season, latest))}
 </div>
 
 <div class="card">
@@ -1798,8 +1853,9 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
     table_figure = _figure(
         "everyone", "Every scored asset",
         "Best first, on the normalized scale -- the only figure comparable "
-        "across leagues. Filter by kind or league; the filters combine. Click "
-        "a name for the stats behind the score.",
+        "across leagues. Filter by kind or league; the filters combine, and "
+        "the table at the top re-totals as you go, so filtering to one league "
+        "says who is winning it. Click a name for the stats behind the score.",
         _results_table(bars, profiles, managers),
     )
     feeds_figure = _figure(

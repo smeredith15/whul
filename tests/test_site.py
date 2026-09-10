@@ -2368,3 +2368,114 @@ def test_the_continental_competition_is_identity_not_a_statistic():
 
     assert "Continental" not in dict(
         _stat_lines({"continental": "Champions League", "wins": 3.0}))
+
+
+# --- the two figures that are not the total ---------------------------------
+
+def _standings_frame():
+    return pd.DataFrame([
+        {"manager_id": "SS", "rank": 1, "total": 219.3},
+        {"manager_id": "TG", "rank": 2, "total": 181.2},
+    ])
+
+
+def test_held_points_ride_on_the_total_as_a_superscript():
+    """Not a column: they are the same score, on the same scale, waiting on a
+    competition to finish. The order is still by what has been awarded."""
+    from whul.site.build import _standings_table
+
+    html = _standings_table(_standings_frame(), {}, ["SS", "TG"],
+                            bench={"SS": 30.0}, held={"SS": 13.6})
+    assert "219.3<sup" in html
+    assert "+13.6" in html
+    # And nothing where nothing is held, rather than a "+0.0".
+    assert "+0.0" not in html
+
+
+def test_the_bench_is_its_own_column_and_reads_as_one():
+    """Grey and italic because it is not a smaller total -- it is a different
+    thing: points best ball is not counting and will not count."""
+    from whul.site import theme
+    from whul.site.build import _standings_table
+
+    html = _standings_table(_standings_frame(), {}, ["SS", "TG"],
+                            bench={"SS": 30.0, "TG": 16.2}, held={})
+    assert "<td class='num benched'>30.0</td>" in html
+    assert "td.benched { color: var(--muted); font-style: italic; }" in theme.STYLESHEET
+
+
+def test_a_standings_table_with_neither_figure_still_renders():
+    from whul.site.build import _standings_table
+
+    html = _standings_table(_standings_frame(), {}, ["SS", "TG"])
+    assert "219.3" in html and "<sup" not in html
+
+
+# --- the totals above the filters -------------------------------------------
+
+def _results_frame():
+    return pd.DataFrame([
+        {"asset_id": "a1", "manager_id": "SS", "score": 20.0, "counts": 1},
+        {"asset_id": "a2", "manager_id": "SS", "score": 5.0, "counts": 0},
+        {"asset_id": "a3", "manager_id": "TG", "score": 12.0, "counts": 1},
+    ])
+
+
+def _results_profiles():
+    return {a: {"name": a, "league": "MLB", "kind": "Player"}
+            for a in ("a1", "a2", "a3")}
+
+
+def test_every_results_row_says_who_holds_it_and_whether_it_counts():
+    """What the totals above the table are summed from. Without these the
+    small table can only add up everything, which is not the standings."""
+    from whul.site.build import _results_table
+
+    html = _results_table(_results_frame(), _results_profiles(), ["SS", "TG"])
+    assert 'data-manager="SS" data-counts="1"' in html
+    assert 'data-manager="SS" data-counts="0"' in html
+
+
+def test_a_row_counts_where_the_frame_does_not_say():
+    """`contributions` always carries it; a frame assembled by hand may not,
+    and a missing column should leave every row counting rather than none."""
+    from whul.site.build import _results_table
+
+    frame = _results_frame().drop(columns=["counts"])
+    html = _results_table(frame, _results_profiles(), ["SS", "TG"])
+    assert 'data-counts="0"' not in html
+
+
+def test_the_totals_table_has_a_row_per_manager():
+    from whul.site.build import _results_table
+
+    html = _results_table(_results_frame(), _results_profiles(), ["SS", "TG"])
+    assert 'id="filtertotals"' in html
+    for manager in ("SS", "TG"):
+        assert f'<tr data-manager="{manager}">' in html
+
+
+def test_the_totals_round_the_way_the_standings_do():
+    """Straight to one place disagrees with them by a tenth on an exact half --
+    Scott's 207.5499999 is 207.6 there and would be 207.5 here -- and two
+    tables on one site differing by a tenth is a reason to trust neither."""
+    from whul.site import charts
+
+    assert "Math.round((value || 0) * 100) / 100" in charts.SCRIPT
+
+
+def test_a_filter_chip_is_not_escaped_twice():
+    """The league names come off the profiles, which hold HTML because every
+    other place they are used is HTML. Escaping again turned "Men's Intl
+    Soccer" into a chip reading "Men&#x27;s Intl Soccer" -- and the filter went
+    on working, because the row's own attribute was wrong the same way."""
+    from whul.site.build import _results_table
+
+    frame = pd.DataFrame([
+        {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
+    ])
+    profiles = {"a1": {"name": "a1", "league": "Men&#x27;s Intl Soccer",
+                       "kind": "Team"}}
+    html = _results_table(frame, profiles, ["SS"])
+    assert "&amp;#x27;" not in html
+    assert ">Men&#x27;s Intl Soccer</button>" in html

@@ -46,6 +46,11 @@ LATEST_DRAFT = "\0latest"
 PROBE_ONLY_COMPETITIONS = (
     "ucl", "uel", "uecl", "facup", "efl_cup",
     "copadelrey", "dfbpokal", "coppaitalia", "coupedefrance",
+    # Neither is pulled: the US Open Cup path is unverified and the CONCACAF
+    # Champions Cup one has never answered, which is why MLS clubs are paid for
+    # qualifying for it and not for playing in it. Probeable so that "has never
+    # answered" stays a fact somebody checked rather than one this repeats.
+    "usopencup", "concacafchampions",
 )
 
 #: Club soccer competitions the app scores directly.

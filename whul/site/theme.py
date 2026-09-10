@@ -375,6 +375,31 @@ td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
   td.fixture .against { white-space: normal; overflow-wrap: break-word; }
 }
 
+/* The totals above the filters. Deliberately small and narrow: it is a
+   readout of the table below it, not a second standings, and it sits between
+   the heading and the chips where a reader looks before choosing a filter. */
+table.filtertotals { width: auto; min-width: 260px; margin: 0 0 12px; }
+table.filtertotals th, table.filtertotals td { padding: 3px 14px 3px 0;
+  font-size: 12px; }
+table.filtertotals td.num[data-total] { font-weight: 600;
+  color: var(--text-primary); font-variant-numeric: tabular-nums; }
+table.filtertotals td.num[data-bench] { font-variant-numeric: tabular-nums; }
+
+/* The two figures on the standings that are not the total.
+
+   Held points ride on the total as a superscript: same score, same scale,
+   waiting on a competition to finish. Quieter than the number they sit on,
+   because the table is still ordered by what has been awarded.
+
+   The bench is greyed and italic on purpose -- it is not a smaller total, it
+   is a different thing: points best ball is not counting and will not count.
+   Italic because grey alone reads as "less important", and this is "not the
+   same kind of number". */
+sup.held { font-size: 9.5px; font-weight: 600; color: var(--muted);
+  margin-left: 2px; vertical-align: super; line-height: 0; cursor: help; }
+td.benched { color: var(--muted); font-style: italic; }
+th + th.num + th.num { font-weight: 600; }
+
 /* --- who plays whom ------------------------------------------------------
    Every upcoming fixture with a drafted asset in it. Two columns because a
    fixture has two sides; a tour event has one and takes the width, because a
