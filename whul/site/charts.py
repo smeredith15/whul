@@ -1242,7 +1242,7 @@ SCRIPT = """\
     input.placeholder = '0';
     input.addEventListener('input', function () {
       state.values[f.key] = input.value;
-      show();
+      showResult();
     });
     wrap.appendChild(name); wrap.appendChild(worth); wrap.appendChild(input);
     return wrap;
@@ -1392,7 +1392,7 @@ SCRIPT = """\
       calc.fields.forEach(function (f) { if (shown(f)) grid.appendChild(field(f)); });
       (calc.ladder.format || []).forEach(function (f) {
         grid.appendChild(plain(f.label, state.format[f.key], function (value) {
-          state.format[f.key] = value; show();
+          state.format[f.key] = value; showResult();
         }));
       });
       host.appendChild(grid);
@@ -1412,6 +1412,21 @@ SCRIPT = """\
     }
     if (switches.children.length) host.appendChild(switches);
 
+    var panel = document.createElement('div');
+    panel.className = 'calcresult';
+    host.appendChild(panel);
+    showResult();
+  }
+
+  // The figures alone. Typing a digit used to call show(), which empties the
+  // host and rebuilds every control -- so the input being typed into was
+  // destroyed mid-keystroke and the focus landed on whatever came next. One
+  // digit a box, and multi-digit stats effectively untypeable.
+  function showResult() {
+    var panel = host.querySelector('.calcresult');
+    if (!panel) return;
+    panel.innerHTML = '';
+    var calc = state.calc;
     var points = raw();
     var bar = benchmark();
     var out = document.createElement('div');
@@ -1461,7 +1476,7 @@ SCRIPT = """\
     if (calc.postseason && state.postseason) lines.push(calc.postseason.note);
     why.textContent = lines.join(' ');
     out.appendChild(why);
-    host.appendChild(out);
+    panel.appendChild(out);
 
     var notes = (calc.notes || []).concat(
       (calc.mode_notes && calc.mode_notes[state.mode]) || []);
@@ -1473,7 +1488,7 @@ SCRIPT = """\
         item.textContent = note;
         list2.appendChild(item);
       });
-      host.appendChild(list2);
+      panel.appendChild(list2);
     }
   }
 

@@ -294,3 +294,33 @@ def test_standings_reaching_a_season_the_name_table_has_not(monkeypatch):
 
     teams = nflverse.load_teams([2026])
     assert sorted(teams["team_name"]) == ["San Francisco 49ers", "Seattle Seahawks"]
+
+
+def test_a_players_counting_stats_survive_the_phase_split():
+    """`split_phases` reduces a season to points and games, which is all the
+    bonus arithmetic needs -- and is why the yards and touchdowns were never
+    carried past it. On the page that left a profile reading "Total points
+    22.2, Games played 1.0" and nothing a manager could check."""
+    stats = pd.DataFrame([
+        weekly(week=1, passing_yards=300, passing_tds=3, interceptions=1,
+               rushing_yards=10),
+        weekly(week=2, passing_yards=250, passing_tds=1, interceptions=1),
+    ])
+    out = score_players(stats).iloc[0]
+    assert out["passing_yards"] == 550
+    assert out["passing_tds"] == 4
+    assert out["interceptions"] == 2
+    assert out["rushing_yards"] == 10
+    assert out["fumbles_lost"] == 0
+
+
+def test_the_counting_stats_are_the_regular_season_only():
+    """So they line up with `regular_points` beside them. What happened in the
+    postseason is carried by the rule that prices it, not mixed in here."""
+    stats = pd.DataFrame([
+        weekly(week=1, passing_yards=300),
+        weekly(week=20, season_type="POST", passing_yards=5000),
+    ])
+    out = score_players(stats).iloc[0]
+    assert out["passing_yards"] == 300, "the playoff game is not in the total"
+    assert out["postseason_games"] == 1

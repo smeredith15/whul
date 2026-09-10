@@ -2234,3 +2234,34 @@ def test_the_season_totals_add_up_to_the_total(tmp_path):
     }))
     assert lines["Points from league and cups"] == "24.0"
     assert "Postseason bonus" not in lines
+
+
+def test_a_feed_identifier_is_not_shown_as_a_statistic():
+    """"Player id 00-0038543" sat in a column of yards and touchdowns as though
+    it were one of them."""
+    from whul.site.build import _stat_lines
+
+    lines = dict(_stat_lines({
+        "player_id": "00-0038543", "athlete_id": "4361741", "team_id": "2",
+        "passing_yards": 550.0,
+    }))
+    assert lines == {"Passing yards": "550.0"}
+
+
+def test_typing_in_the_calculator_does_not_rebuild_the_form():
+    """Every keystroke used to call show(), which empties the host and rebuilds
+    every control -- so the input being typed into was destroyed mid-keystroke
+    and focus landed on whatever came next. One digit a box, and a multi-digit
+    stat effectively untypeable."""
+    from whul.site import charts
+
+    js = charts.SCRIPT
+    handler = js[js.index("input.addEventListener('input'"):]
+    handler = handler[:handler.index("});")]
+    assert "showResult()" in handler
+    assert "show()" not in handler.replace("showResult()", "")
+
+    # And the lighter redraw must not be the heavy one under another name.
+    lighter = js[js.index("function showResult()"):]
+    lighter = lighter[:lighter.index("\n  }\n")]
+    assert "host.innerHTML" not in lighter

@@ -19,6 +19,7 @@ from whul.scoring.postseason import (
     REGULAR,
     RULES,
     apply_bonus,
+    regular_totals,
     split_phases,
 )
 
@@ -128,7 +129,10 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
 
     keys = ["season", "athlete_id", "player", "position"]
     phases = split_phases(work, keys, "game_points", "game_count", work["phase"])
-    agg = apply_bonus(phases, RULES["NBA"] if postseason else None)
+    counting = regular_totals(
+        work, keys, list(BOX_WEIGHTS) + ["plus_minus"], work["phase"])
+    agg = apply_bonus(phases.merge(counting, on=keys, how="left"),
+                      RULES["NBA"] if postseason else None)
     agg["league"] = "NBA"
     agg["role"] = agg["position"]
     keep = (agg["games_played"] >= MIN_GAMES) & (agg["total_points"] > MIN_SCORE)

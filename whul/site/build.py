@@ -398,6 +398,9 @@ def asset_profiles(
 STAT_SKIP = {
     "asset_id", "league", "season", "as_of", "source", "phase", "fetched_at",
     "player", "team", "team_name", "display_name", "athlete", "driver",
+    # Feed identifiers. "Player id 00-0038543" sat in a column of yards and
+    # touchdowns as though it were one of them.
+    "player_id", "playerid", "athlete_id", "team_id", "driver_id", "id",
     "finishes", "norm_key", "asset_type", "role_count", "contract_year",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
     # Shown as identity, above the figures. Left here as well they read as a
