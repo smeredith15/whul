@@ -120,15 +120,27 @@ def test_missing_required_column_raises():
 
 # --- teams -----------------------------------------------------------------
 
-def game(home, away, hs, as_, game_type="REG", div=0, season=2026):
+def game(home, away, hs, as_, game_type="REG", div=0, season=2026,
+         gameday="2026-09-13"):
+    """One played game.
+
+    The date is not decoration. A division title is only awarded once the
+    season's last game has been played, and a frame with no dates on it cannot
+    say whether that has happened -- so these carry one, in the past, which is
+    what a hand calculation of a finished season means.
+    """
     return {
         "season": season, "game_type": game_type, "home_team": home, "away_team": away,
-        "home_score": hs, "away_score": as_, "div_game": div,
+        "home_score": hs, "away_score": as_, "div_game": div, "gameday": gameday,
     }
 
 
+#: BUF first in the AFC East, MIA second. The rank is the league's own, not a
+#: derivation: the NFL settles a tied division head to head, and reading it off
+#: wins and point differential got three of the last twenty-four titles wrong.
 DIVISIONS = pd.DataFrame([
-    {"season": 2026, "team_abbr": t, "team_division": "AFC East"} for t in ("BUF", "MIA")
+    {"season": 2026, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 1},
+    {"season": 2026, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 2},
 ])
 
 
@@ -324,3 +336,128 @@ def test_the_counting_stats_are_the_regular_season_only():
     out = score_players(stats).iloc[0]
     assert out["passing_yards"] == 300, "the playoff game is not in the total"
     assert out["postseason_games"] == 1
+
+
+# --- a title is a season outcome, not a running one -------------------------
+
+def test_no_division_title_until_the_season_has_been_played():
+    """New England lost its opener and was awarded a division title. In week
+    one a division holds one team that has played at all, so that team leads it
+    whether it won or lost -- and the fifteen points were its entire score."""
+    sched = pd.DataFrame([
+        game("SEA", "NE", 13, 10, gameday="2026-09-09"),
+        {"season": 2026, "game_type": "REG", "home_team": "CAR",
+         "away_team": "CHI", "home_score": None, "away_score": None,
+         "div_game": 0, "gameday": "2126-09-13"},
+    ])
+    # Both lead their division *today*, which is the trap: nflverse serves the
+    # standing as it stands, and in week one of 2026 it had Buffalo first in
+    # the AFC East at 0-0.
+    divisions = pd.DataFrame([
+        {"season": 2026, "team_abbr": "SEA", "team_division": "NFC West", "div_rank": 1},
+        {"season": 2026, "team_abbr": "NE", "team_division": "AFC East", "div_rank": 1},
+    ])
+    out = score_teams(sched, divisions).set_index("team")
+    assert out["div_champ"].sum() == 0
+    # A win and a three-point margin, and nothing else.
+    assert out.loc["SEA", "total_points"] == pytest.approx(10.3)
+    # A three-point loss, which is what it was.
+    assert out.loc["NE", "total_points"] == pytest.approx(-0.3)
+
+
+def test_the_title_lands_once_the_last_game_is_played():
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10, gameday="2026-09-13"),
+        game("MIA", "BUF", 3, 0, gameday="2026-09-20"),
+    ])
+    out = score_teams(sched, DIVISIONS)
+    assert out["div_champ"].sum() == 1
+
+
+def test_a_game_nobody_ever_played_does_not_hold_a_season_open():
+    """A result the feed is never going to supply -- a cancellation, a
+    postponement nobody rescheduled. Treating one as an open question would
+    leave a finished season unsettled for ever, and quietly change every
+    benchmark drawn from it."""
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10, gameday="2020-09-13"),
+        {"season": 2026, "game_type": "REG", "home_team": "BUF",
+         "away_team": "MIA", "home_score": None, "away_score": None,
+         "div_game": 0, "gameday": "2020-12-01"},
+    ])
+    out = score_teams(sched, DIVISIONS)
+    assert out["div_champ"].sum() == 1
+
+
+def test_a_frame_with_no_dates_settles_nothing():
+    """The safe direction. Withholding a title that was won is a visible
+    undercount; awarding one that was not is the invisible kind -- and a
+    results-only feed makes "every row has a result" true in September."""
+    from whul.scoring.base import settled_seasons
+
+    played = pd.DataFrame([{"season": 2026, "home_score": 20, "away_score": 10}])
+    assert settled_seasons(played) == set()
+
+
+def test_the_division_title_comes_from_the_leagues_own_standing():
+    """Wins and point differential got three of the last twenty-four titles
+    wrong -- 2023 New Orleans over Tampa Bay, 2024 Seattle over the Rams, 2025
+    Tampa Bay over Carolina -- every one a division tied on record and settled
+    head to head, which a differential cannot see."""
+    sched = pd.DataFrame([
+        # MIA wins the head-to-head and takes the division; BUF has the better
+        # differential and would have taken it under the old rule.
+        game("MIA", "BUF", 3, 0, gameday="2026-09-13"),
+        game("BUF", "MIA", 40, 0, gameday="2026-09-20"),
+    ])
+    divisions = pd.DataFrame([
+        {"season": 2026, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 2},
+        {"season": 2026, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 1},
+    ])
+    out = score_teams(sched, divisions).set_index("team")
+    assert out.loc["MIA", "div_champ"] == 1
+    assert out.loc["BUF", "div_champ"] == 0
+
+
+def test_a_finished_season_with_no_standing_is_a_loud_failure():
+    """Awarding no title to a completed season lowers every top team's total by
+    fifteen, lowers the benchmark drawn from them, and inflates every live score
+    measured against it. A feed that dropped the column would do that
+    silently."""
+    from whul.scoring.nfl import MissingDivisionStanding
+
+    sched = pd.DataFrame([game("BUF", "MIA", 20, 10, gameday="2026-09-13")])
+    bare = DIVISIONS.drop(columns=["div_rank"])
+    with pytest.raises(MissingDivisionStanding):
+        score_teams(sched, bare)
+
+
+def test_a_season_still_being_played_needs_no_standing():
+    """Nothing is awarded, so nothing is missing."""
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10, gameday="2026-09-13"),
+        {"season": 2026, "game_type": "REG", "home_team": "BUF",
+         "away_team": "MIA", "home_score": None, "away_score": None,
+         "div_game": 0, "gameday": "2126-12-01"},
+    ])
+    out = score_teams(sched, DIVISIONS.drop(columns=["div_rank"]))
+    assert out["div_champ"].sum() == 0
+
+
+def test_a_division_standing_is_read_for_the_right_season():
+    """It is a fact about one year. Joined on the team alone, every season
+    would take the newest one -- and last year's champion is not this year's."""
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10, season=2025, gameday="2025-09-13"),
+        game("MIA", "BUF", 20, 10, season=2026, gameday="2026-09-13"),
+    ])
+    divisions = pd.DataFrame([
+        {"season": 2025, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 1},
+        {"season": 2025, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 2},
+        {"season": 2026, "team_abbr": "BUF", "team_division": "AFC East", "div_rank": 2},
+        {"season": 2026, "team_abbr": "MIA", "team_division": "AFC East", "div_rank": 1},
+    ])
+    out = score_teams(sched, divisions).set_index(["season", "team"])
+    assert out.loc[(2025, "BUF"), "div_champ"] == 1
+    assert out.loc[(2026, "MIA"), "div_champ"] == 1
+    assert out.loc[(2026, "BUF"), "div_champ"] == 0

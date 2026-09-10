@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from whul.scoring.base import resolve_num, resolve_str
+from whul.scoring.base import resolve_num, resolve_str, settled_seasons
 from whul.scoring.bisection import MLB as _MLB_RULE
 
 # --- contract engine ------------------------------------------------------
@@ -486,7 +486,22 @@ def _break_the_tie(
     return tied.index[tied["team"].isin(contenders)]
 
 
-def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
+def _settled_division_titles(summary: pd.DataFrame,
+                             schedule: pd.DataFrame | None) -> pd.Series:
+    """Division-title points, for seasons that have finished and no others."""
+    zero = pd.Series(0.0, index=summary.index)
+    if schedule is None or "is_division_champ" not in summary.columns:
+        return zero
+    settled = settled_seasons(schedule)
+    if not settled:
+        return zero
+    done = pd.to_numeric(summary["season"], errors="coerce").isin(settled)
+    won = pd.to_numeric(summary["is_division_champ"], errors="coerce").fillna(0)
+    return (won * PTS_DIV_CHAMP).where(done, 0.0)
+
+
+def _window_points(summary: pd.DataFrame,
+                   schedule: pd.DataFrame | None = None) -> pd.DataFrame:
     """Points for the games in front of us, as components a prorater can scale.
 
     The historical path splits a whole season into its post- and pre-break
@@ -501,9 +516,13 @@ def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
     run happens once however long the window is. ``whul.scoring.proration``
     lifts the first four to a full season and leaves the rest where they are.
 
-    A division title is never awarded here. It is not a rate that a longer
-    window would produce more of; it is an outcome, and it does not exist until
-    the season it belongs to has finished.
+    A division title is not a rate either -- it is an outcome, and it does not
+    exist until the season it belongs to has finished. So it is not prorated
+    and not awarded early; it is awarded in full, once, on the season the
+    standings have settled. Withholding it for ever was the other half of that
+    thought and was wrong: the benchmark pool *does* pay five points a title
+    (see ``year_n_points``), so a club measured against that scale and never
+    able to earn one was scored against a bar it could not reach.
     """
     out = pd.DataFrame({
         "season": summary["season"],
@@ -513,11 +532,11 @@ def _window_points(summary: pd.DataFrame) -> pd.DataFrame:
         "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN,
         "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT,
         "pts_run_diff": summary["run_diff"] * PTS_RUN_DIFF,
-        # No division title mid-season. Nobody has won one while the games are
-        # still being played, and the previous rule paid four clubs for titles
-        # in the first three weeks of a league year. It is added when the
-        # season ends and the standings say who won.
-        "pts_div_champ": pd.Series(0.0, index=summary.index),
+        # Nobody has won a division while the games are still being played --
+        # an earlier rule paid four clubs for titles in the first three weeks
+        # of a league year. The title lands when the season it belongs to has
+        # been played out, and not before.
+        "pts_div_champ": _settled_division_titles(summary, schedule),
         "pts_playoff": (
             summary["playoff_game_wins"] * BASE_PLAYOFF_WIN + _series_points(summary)
         ),
@@ -605,7 +624,7 @@ def score_teams(
     })
 
     if partial:
-        return _window_points(summary)
+        return _window_points(summary, schedule)
 
     out = year_n.merge(year_n1, on=["contract_year", "team"], how="inner")
     out["year_n1_points"] = out["year_n1_points"].fillna(0.0)

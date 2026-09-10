@@ -1026,3 +1026,76 @@ def test_two_clubs_do_not_share_one_answer():
     ])).set_index("team")
     assert got.loc["Arsenal", "continental"] == "Champions League"
     assert got.loc["Everton", "continental"] == ""
+
+
+# --- winning the league -----------------------------------------------------
+
+from datetime import date as _date
+
+OVER = _date(2027, 7, 1)
+DURING = _date(2027, 3, 1)
+
+
+def league_match(team, gf, ga, season=2027, comp="Premier League", key="epl"):
+    return {"team": team, "league": "Premier League", "date": "2027-05-20",
+            "competition": comp, "competition_key": key,
+            "goals_for": gf, "goals_against": ga, "season": season}
+
+
+def test_the_champion_is_paid_for_the_title_itself():
+    """A champion is already paid for the season that won it and for the
+    European place that comes with it. The prize itself was worth nothing."""
+    got = score_teams(pd.DataFrame([
+        league_match("Arsenal", 3, 0), league_match("Everton", 0, 3),
+    ]), as_of=OVER).set_index("team")
+    assert got.loc["Arsenal", "pts_league_title"] == pytest.approx(10.0)
+    assert got.loc["Everton", "pts_league_title"] == 0.0
+
+
+def test_nobody_wins_a_league_in_October():
+    """The club top of the table in October has not won anything."""
+    got = score_teams(pd.DataFrame([
+        league_match("Arsenal", 3, 0), league_match("Everton", 0, 3),
+    ]), as_of=DURING).set_index("team")
+    assert got["pts_league_title"].sum() == 0.0
+
+
+def test_the_table_is_league_matches_and_nothing_else():
+    """A cup run and a European night count for nothing in a league table."""
+    got = score_teams(pd.DataFrame([
+        league_match("Arsenal", 1, 0),
+        league_match("Everton", 0, 1),
+        league_match("Everton", 5, 0, comp="FA Cup", key="facup"),
+        league_match("Arsenal", 0, 5, comp="FA Cup", key="facup"),
+    ]), as_of=OVER).set_index("team")
+    assert got.loc["Arsenal", "pts_league_title"] == pytest.approx(10.0)
+
+
+def test_goal_difference_separates_two_clubs_level_on_points():
+    got = score_teams(pd.DataFrame([
+        league_match("Arsenal", 5, 0), league_match("Everton", 0, 5),
+        league_match("Chelsea", 1, 0), league_match("Fulham", 0, 1),
+    ]), as_of=OVER).set_index("team")
+    assert got.loc["Arsenal", "pts_league_title"] == pytest.approx(10.0)
+    assert got.loc["Chelsea", "pts_league_title"] == 0.0
+
+
+def test_a_title_nothing_can_separate_is_shared():
+    """Sharing costs the real champion half the prize; picking the wrong club
+    pays it in full to somebody who won nothing."""
+    got = score_teams(pd.DataFrame([
+        league_match("Arsenal", 1, 0), league_match("Everton", 0, 1),
+        league_match("Chelsea", 1, 0), league_match("Fulham", 0, 1),
+    ]), as_of=OVER).set_index("team")
+    assert got.loc["Arsenal", "league_champion"] == 1
+    assert got.loc["Chelsea", "league_champion"] == 1
+
+
+def test_a_league_with_no_finishing_date_wins_nothing():
+    """`is_complete` says no for a competition it does not know, deliberately.
+    A title awarded on a date nobody wrote down is a title awarded on a
+    guess."""
+    rows = [dict(league_match("Somebody", 3, 0), league="Eredivisie",
+                 competition="Eredivisie", competition_key="eredivisie")]
+    got = score_teams(pd.DataFrame(rows), as_of=OVER)
+    assert got["pts_league_title"].sum() == 0.0

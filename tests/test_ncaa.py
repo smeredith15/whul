@@ -7,15 +7,27 @@ scoring with no box scores anywhere. Expected values come from the R scripts.
 import pandas as pd
 import pytest
 
-from whul.scoring.ncaa import score_basketball, score_diamond, score_football
+from whul.scoring.ncaa import (
+    FB_REG_CHAMP_POOL, _split_conference_title, score_basketball,
+    score_diamond, score_football,
+)
 
 
-def game(home, away, hs, as_, *, hc="ACC", ac="ACC", season_type=2, notes="", season=2025):
+def game(home, away, hs, as_, *, hc="ACC", ac="ACC", season_type=2, notes="",
+         season=2025, game_date="2025-11-15"):
+    """One played game.
+
+    The date is not decoration. A conference title is only awarded once the
+    season's last game has been played, and a frame with no dates on it cannot
+    say whether that has happened -- so these carry one, in the past, which is
+    what a hand calculation of a finished season means.
+    """
     return {
         "season": season, "season_type": season_type, "notes": notes,
         "home_team": home, "away_team": away,
         "home_conference": hc, "away_conference": ac,
         "home_score": hs, "away_score": as_, "completed": True,
+        "game_date": game_date,
     }
 
 
@@ -356,3 +368,68 @@ def test_a_team_with_no_exemplar_in_the_frame_is_left_alone():
     ]))
     nd = games[games["team"] == "Notre Dame Fighting Irish"].iloc[0]
     assert nd["conference"] == "18", "unchanged, since no ACC team was present"
+
+
+# --- a title is a season outcome, not a running one -------------------------
+
+def test_no_conference_title_until_the_season_has_been_played():
+    """Miami was carrying six points for an ACC title on a 1-0 conference
+    record in week two: whoever won the first conference game of the year took
+    the whole pool."""
+    rows = pad([game("MIA", "FSU", 30, 10, game_date="2025-09-06")], 10,
+               game_date="2025-09-06")
+    rows.append({
+        "season": 2025, "season_type": 2, "notes": "",
+        "home_team": "MIA", "away_team": "FSU",
+        "home_conference": "ACC", "away_conference": "ACC",
+        "home_score": None, "away_score": None, "completed": False,
+        "game_date": "2125-11-29",
+    })
+    out = score_football(pd.DataFrame(rows)).set_index("team")
+    assert out.loc["MIA", "conf_wins"] == 1
+    assert out.loc["MIA", "pts_reg_champ"] == 0.0
+
+
+def test_the_conference_title_lands_once_the_season_is_played_out():
+    rows = pad([game("MIA", "FSU", 30, 10)], 10)
+    out = score_football(pd.DataFrame(rows)).set_index("team")
+    assert out.loc["MIA", "pts_reg_champ"] > 0
+
+
+# --- a conference title is a record, not a win count ------------------------
+
+def conf_summary(*teams, season=2025):
+    """(team, conference wins, conference games) rows."""
+    return pd.DataFrame([
+        {"season": season, "conference": "ACC", "team": t,
+         "conf_wins": w, "conf_games": g} for t, w, g in teams
+    ])
+
+
+def test_eight_and_oh_beats_eight_and_one():
+    """A conference schedule is not balanced, so both had eight conference
+    wins and both were being crowned and splitting the pool."""
+    got = _split_conference_title(
+        conf_summary(("A", 8, 8), ("B", 8, 9)), FB_REG_CHAMP_POOL, {2025})
+    assert list(got) == [FB_REG_CHAMP_POOL, 0.0]
+
+
+def test_a_short_schedule_cannot_tie_a_champion():
+    """Most wins then fewest losses, not a win rate: a rate rewards a short
+    schedule, and a team misfiled into a conference with one game in it would
+    go 1-0 and tie a champion at 8-0 for the top of the table."""
+    got = _split_conference_title(
+        conf_summary(("A", 8, 8), ("Z", 1, 1)), FB_REG_CHAMP_POOL, {2025})
+    assert list(got) == [FB_REG_CHAMP_POOL, 0.0]
+
+
+def test_a_genuine_tie_is_still_shared():
+    got = _split_conference_title(
+        conf_summary(("A", 8, 9), ("B", 8, 9)), FB_REG_CHAMP_POOL, {2025})
+    assert list(got) == [FB_REG_CHAMP_POOL / 2, FB_REG_CHAMP_POOL / 2]
+
+
+def test_an_unsettled_season_wins_nothing():
+    got = _split_conference_title(
+        conf_summary(("A", 8, 8), ("B", 8, 9)), FB_REG_CHAMP_POOL, set())
+    assert list(got) == [0.0, 0.0]

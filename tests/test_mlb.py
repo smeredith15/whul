@@ -6,6 +6,7 @@ Expected values are computed by hand from MLB_Players_Teams.R.
 import pandas as pd
 import pytest
 
+from whul.scoring import mlb
 from whul.normalize import apply_benchmarks, compute_benchmarks
 from whul.scoring.mlb import (
     MULT_YEAR_N,
@@ -478,3 +479,51 @@ def test_a_season_in_progress_awards_no_division_title():
     live = score_teams(sched, partial=True,
                        divisions=divisions_of("NYY", "BOS", season=2026))
     assert set(live["pts_div_champ"]) == {0.0}
+
+
+# --- the division title the live window never paid --------------------------
+
+def dated(season, home, away, hs, as_, day, game_type="R"):
+    return {"season": season, "game_type": game_type, "home_team": home,
+            "away_team": away, "home_score": hs, "away_score": as_,
+            "game_date": day}
+
+
+AL_EAST = pd.DataFrame([
+    {"season": 2026, "team": "NYY", "division": "AL East"},
+    {"season": 2026, "team": "BOS", "division": "AL East"},
+])
+
+PLAYED_OUT = [
+    dated(2026, "NYY", "BOS", 5, 1, "2026-04-05"),
+    dated(2026, "BOS", "NYY", 2, 1, "2026-04-06"),
+    dated(2026, "NYY", "BOS", 7, 0, "2026-09-28"),
+]
+
+
+def test_the_live_window_pays_a_division_title_once_the_season_is_over():
+    """The benchmark pool pays five points a title, so a club measured against
+    that scale and never able to earn one was scored against a bar it could not
+    reach."""
+    out = mlb.score_teams(pd.DataFrame(PLAYED_OUT), partial=True,
+                          divisions=AL_EAST).set_index("team")
+    assert out.loc["NYY", "pts_div_champ"] == pytest.approx(mlb.PTS_DIV_CHAMP)
+    assert out.loc["BOS", "pts_div_champ"] == 0.0
+
+
+def test_no_division_title_while_the_season_is_still_being_played():
+    """An earlier rule paid four clubs for titles in the first three weeks of a
+    league year."""
+    running = PLAYED_OUT + [
+        dated(2026, "NYY", "BOS", None, None, "2126-09-29"),
+    ]
+    out = mlb.score_teams(pd.DataFrame(running), partial=True,
+                          divisions=AL_EAST).set_index("team")
+    assert out["pts_div_champ"].sum() == 0.0
+
+
+def test_a_live_window_with_no_divisions_awards_no_title():
+    """Omitted, no title is awarded to anyone -- which is what the benchmark
+    source checks for rather than letting it default quietly."""
+    out = mlb.score_teams(pd.DataFrame(PLAYED_OUT), partial=True).set_index("team")
+    assert out["pts_div_champ"].sum() == 0.0

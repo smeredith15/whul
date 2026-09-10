@@ -21,13 +21,16 @@ in 2027, at which point it joins the European convention.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
 from whul.scoring.competition import (
-    CONTINENTAL_TIERS, Outcome, Tier, bye_credit, classify, classify_key,
-    continental_entry_points, outcome_points,
+    CONTINENTAL_TIERS, LEAGUE_TITLE_POINTS, Outcome, Tier, bye_credit, classify,
+    classify_key, continental_entry_points, outcome_points,
 )
+from whul.scoring.completion import is_complete
 from whul.scoring.postseason import (
     DETAIL_COLUMN, bonus_for, credited_bonus, detail_for, pending_bonus,
     rule_for,
@@ -220,6 +223,7 @@ def score_teams(
     matches: pd.DataFrame,
     byes: pd.DataFrame | None = None,
     continental_entry: pd.DataFrame | None = None,
+    as_of: date | None = None,
 ) -> pd.DataFrame:
     """Season totals per club.
 
@@ -287,6 +291,9 @@ def score_teams(
         totals[column] = totals[column].fillna(0).astype(int)
 
     totals["continental"] = _continental_played(scored, totals)
+    totals["league_champion"] = _league_champions(scored, totals, as_of)
+    totals["pts_league_title"] = totals["league_champion"] * LEAGUE_TITLE_POINTS
+    totals["total_points"] = totals["total_points"] + totals["pts_league_title"]
 
     if byes is not None and not byes.empty:
         credit = byes.copy()
@@ -307,6 +314,68 @@ def score_teams(
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)
+
+
+#: League-table points. Not the WHUL scoring value of a win -- that is five in
+#: the Champions League and three at home -- but the three-one-nil every table
+#: in world football is built on. A match decided on penalties does not happen
+#: in a league, so a shootout outcome is scored as the draw it followed.
+TABLE_POINTS = {
+    Outcome.WIN.value: 3, Outcome.SHOOTOUT_WIN.value: 1,
+    Outcome.DRAW.value: 1, Outcome.SHOOTOUT_LOSS.value: 1,
+    Outcome.LOSS.value: 0,
+}
+
+
+def _league_champions(scored: pd.DataFrame, totals: pd.DataFrame,
+                      as_of: date | None = None) -> pd.Series:
+    """Who won each domestic league, from its own table.
+
+    Points, then goal difference, then goals scored -- over league matches
+    alone, so a cup run and a European night count for nothing here, which is
+    what a league table is.
+
+    Where that cannot separate two clubs the title is shared rather than
+    guessed. La Liga and Serie A break a tie on head to head and would not
+    share it; sharing costs the real champion half the prize, and picking the
+    wrong club pays it in full to somebody who won nothing.
+
+    Held until the season is over, for the reason every other title on this
+    site is: the club top of the table in October has not won anything. The
+    league's own feed is results-only -- it cannot say what is still to be
+    played -- so this asks the calendar instead, through the same completion
+    table the postseason bonuses use.
+    """
+    zero = pd.Series(0, index=totals.index, dtype=int)
+    if scored.empty or "tier" not in scored.columns:
+        return zero
+    table = scored[scored["tier"] == Tier.LEAGUE.value].copy()
+    if table.empty:
+        return zero
+    table["table_points"] = table["outcome"].map(TABLE_POINTS).fillna(0)
+    table["goal_diff"] = table["goals_for"] - table["goals_against"]
+    standing = table.groupby(["league", "team", "season"], as_index=False).agg(
+        table_points=("table_points", "sum"),
+        goal_diff=("goal_diff", "sum"),
+        goals_for=("goals_for", "sum"),
+    )
+
+    champ = zero.copy()
+    where = {(str(l), str(t), int(s)): i for i, (l, t, s) in enumerate(
+        zip(totals["league"], totals["team"], totals["season"]))}
+    for (league, season), block in standing.groupby(["league", "season"]):
+        if not is_complete(str(league), int(season), as_of):
+            continue
+        best = block
+        for column in ("table_points", "goal_diff", "goals_for"):
+            best = best[best[column] == best[column].max()]
+            if len(best) == 1:
+                break
+        for row in best.itertuples():
+            found = where.get((str(league), str(row.team), int(season)))
+            if found is not None:
+                champ.iloc[found] = 1
+    return champ
 
 
 def _continental_played(scored: pd.DataFrame, totals: pd.DataFrame) -> list[str]:

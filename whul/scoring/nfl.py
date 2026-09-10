@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from whul.scoring.base import resolve_num, resolve_str
+from whul.scoring.base import resolve_num, resolve_str, settled_seasons
 from whul.scoring.postseason import (
     POSTSEASON, REGULAR, RULES, apply_bonus, regular_totals, split_phases,
 )
@@ -137,6 +137,58 @@ def _team_games(schedules: pd.DataFrame) -> pd.DataFrame:
     return games
 
 
+class MissingDivisionStanding(ValueError):
+    """A finished season arrived with no division standing on it.
+
+    Loud rather than quiet, and for the same reason ``whul.scoring.ncaa`` is
+    loud about a missing conference: awarding no division title to a completed
+    season lowers every top team's total by fifteen, lowers the benchmark drawn
+    from them, and inflates every live score measured against it. A feed that
+    stopped carrying the column would do that silently.
+    """
+
+
+def _division_champions(summary: pd.DataFrame,
+                        schedules: pd.DataFrame) -> pd.Series:
+    """Who won each division, from the NFL's own standing rather than a guess.
+
+    ``div_rank`` is the division order as the league itself computes it: head
+    to head, then division record, then common games, then conference record,
+    and four more steps after that. Deriving it here from wins and point
+    differential looked reasonable and got three of the last twenty-four titles
+    wrong -- 2023 New Orleans over Tampa Bay, 2024 Seattle over the Rams, 2025
+    Tampa Bay over Carolina -- every one a division tied on record and settled
+    head to head, which a differential cannot see.
+
+    Gated on the season being over, because the file carries the standing as it
+    is *now*: in week one of 2026 it had Buffalo first in the AFC East at 0-0.
+    A running standing is not a title, which is the other half of the same bug
+    -- New England lost its opener and was awarded one.
+    """
+    settled = settled_seasons(schedules)
+    zero = pd.Series(0, index=summary.index, dtype=int)
+    if not settled:
+        return zero
+    done = summary["season"].astype(int).isin(settled)
+    if "div_rank" not in summary.columns:
+        raise MissingDivisionStanding(
+            f"{int(done.sum())} team-season(s) have finished their schedule but "
+            f"arrived with no `div_rank`, so no division title can be awarded. "
+            f"nflverse serves it in standings.csv; if the column has been "
+            f"renamed, `whul.sources.nflverse.load_teams` is where it is read."
+        )
+    rank = pd.to_numeric(summary["div_rank"], errors="coerce")
+    missing = done & rank.isna()
+    if missing.any():
+        teams = ", ".join(sorted(summary.loc[missing, "team"].astype(str))[:8])
+        raise MissingDivisionStanding(
+            f"{int(missing.sum())} team-season(s) have finished their schedule "
+            f"and carry no division standing ({teams}), so their division title "
+            f"cannot be awarded."
+        )
+    return (done & (rank == 1)).astype(int)
+
+
 def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFrame:
     """Season fantasy totals per NFL team.
 
@@ -167,16 +219,19 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
     )
 
     meta = teams_meta.rename(columns={"team_abbr": "team"})
-    columns = ["team", "team_division"] + (
-        ["team_name"] if "team_name" in meta.columns else []
+    columns = ["team", "team_division"] + [
+        c for c in ("team_name", "div_rank") if c in meta.columns
+    ]
+    # Per season as well as per team: a division standing is a fact about one
+    # year, and joining on the team alone would give every season the newest
+    # one. The name and the division are per season too, and were being taken
+    # from whichever row `drop_duplicates` happened to keep.
+    on = ["season", "team"] if "season" in meta.columns else ["team"]
+    summary = summary.merge(
+        meta[list(dict.fromkeys(on + columns))].drop_duplicates(on),
+        on=on, how="left",
     )
-    summary = summary.merge(meta[columns].drop_duplicates("team"), on="team", how="left")
-    summary = summary.sort_values(
-        ["reg_wins", "point_diff"], ascending=False, kind="mergesort"
-    )
-    summary["div_champ"] = (
-        summary.groupby(["season", "team_division"]).cumcount() == 0
-    ).astype(int)
+    summary["div_champ"] = _division_champions(summary, schedules)
 
     summary["total_points"] = sum(summary[c] * w for c, w in TEAM_WEIGHTS.items())
     summary["league"] = "NFL"
