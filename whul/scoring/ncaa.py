@@ -228,8 +228,29 @@ def _split_conference_title(summary: pd.DataFrame, pool: float,
     title that was won is a visible undercount and awarding one that was not is
     the invisible kind.
     """
-    best = summary.groupby(["season", "conference"])["conf_wins"].transform("max")
-    is_champ = (summary["conf_wins"] == best) & (summary["conf_wins"] > 0)
+    # Conference *record*, not conference wins alone. A conference schedule is
+    # not balanced -- teams play different numbers of conference games -- so a
+    # team at 8-0 and a team at 8-1 both have eight conference wins, and both
+    # were being crowned and splitting the pool.
+    #
+    # Most wins, then fewest losses among those tied, which is how a standings
+    # table reads. Not a win *rate*: a rate rewards a short schedule, and a
+    # team misfiled into a conference with one game in it would go 1-0 and tie
+    # a champion at 8-0 for the top of the table.
+    #
+    # Not the official standing either: a conference breaks a genuine tie by
+    # its own rules, and this shares the title instead. Sharing a title that
+    # was won outright costs the winner half a pool; picking the wrong team
+    # costs it the lot and pays somebody who won nothing.
+    wins = pd.to_numeric(summary["conf_wins"], errors="coerce").fillna(0)
+    played = pd.to_numeric(
+        summary["conf_games"], errors="coerce"
+    ).fillna(wins) if "conf_games" in summary.columns else wins
+    losses = (played - wins).clip(lower=0)
+    by = [summary["season"], summary["conference"]]
+    most = wins.groupby(by).transform("max")
+    fewest = losses.where(wins == most).groupby(by).transform("min")
+    is_champ = (wins == most) & (losses == fewest) & (wins > 0)
     is_champ &= summary["season"].astype(int).isin(settled or set())
     # An independent scored as a conference member could top that conference's
     # table on a technicality and take a title it is not eligible for. Excluded
@@ -286,6 +307,7 @@ def score_football(
                 "wins": int(g["is_win"].sum()),
                 "big_wins": int(g["is_big_win"].sum()),
                 "conf_wins": int((g["is_win"] & g["is_conf_game"]).sum()),
+                "conf_games": int(g["is_conf_game"].sum()),
                 "point_diff": float(g["margin"].sum()),
                 "conf_title_win": int((g["is_win"] & g["is_conf_title"]).sum()),
                 "playoff_app": int(g["is_playoff"].any()),
@@ -342,6 +364,7 @@ def score_basketball(
                 "reg_wins": int((g["is_win"] & g["is_reg"]).sum()),
                 "big_wins": int(g["is_big_win"].sum()),
                 "conf_wins": int((g["is_win"] & g["is_reg"] & g["is_conf_game"]).sum()),
+                "conf_games": int((g["is_reg"] & g["is_conf_game"]).sum()),
                 "point_diff": float(g.loc[g["is_reg"], "margin"].sum()),
                 "conf_tourney_wins": int((g["is_win"] & g["is_conf_tourney"]).sum()),
                 "conf_tourney_champ": int((g["is_win"] & g["is_ct_title"]).any()),

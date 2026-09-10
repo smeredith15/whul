@@ -294,6 +294,21 @@ CONTINENTAL_ENTRY_POINTS: dict[str, float] = {
     "CONCACAF Champions Cup": 8.0,
 }
 
+#: Winning the domestic league, on top of whatever European place it earns.
+#:
+#: A champion is already paid for the season that won it -- three points a win
+#: across thirty-eight matches -- and for the Champions League place that comes
+#: with it. This is the prize itself, which nothing else in the ladder pays
+#: for: the comment above calls a European place "the biggest outcome of the
+#: season short of the title" and the title was worth nothing at all.
+#:
+#: Ten, so a champion of a top league takes 22 for its finish -- the 12 for the
+#: Champions League place plus this -- which is about 10% of a club benchmark
+#: year, above every other terminal achievement in the league and below what a
+#: season of wins is worth. It is one constant and moving it is a re-freeze of
+#: the club benchmarks and nothing else.
+LEAGUE_TITLE_POINTS = 10.0
+
 #: Entering before the league phase, which is a place in a draw rather than in
 #: the competition. Discounted for the two senior competitions, where the tie is
 #: a real contest and losing it drops the club a tier -- a Ligue 1 fourth-placed

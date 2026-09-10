@@ -47,6 +47,14 @@ FINISHED_BY: dict[str, tuple[int, int]] = {
     "WNBA": (10, 31),
     "NWSL": (12, 15),
     "MLS": (12, 31),
+    # The European domestic seasons, which end in May. Named for the year they
+    # finish in throughout this project -- 2026-27 is season 2027 -- so no
+    # entry in NAMED_FOR_ITS_START.
+    "Premier League": (6, 15),
+    "La Liga": (6, 15),
+    "Serie A": (6, 15),
+    "Bundesliga": (6, 15),
+    "Ligue 1": (6, 15),
     "UCL": (6, 30),
     "Europa League": (6, 30),
     "Europa Conference League": (6, 30),
