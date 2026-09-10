@@ -21,45 +21,51 @@
 
 name: Benchmarks
 
+# The dispatch form is a narrow dropdown and GitHub prints each description
+# above its field, so the descriptions here are one line each. The reasoning
+# behind them lives below, where there is room for it.
+#
+# `leagues`  Keys from `benchmarks list`, space separated, or `all`. Only these
+#            are recomputed; every other group is inherited from the frozen
+#            scale. There is deliberately no default: a default here once sent
+#            a run at the league it was last used for and returned numbers
+#            identical to the frozen ones, which reads exactly like a change
+#            that did nothing. To correct one league without walking the rest,
+#            name its own key -- `mls-players` pulls MLS and its two cups where
+#            `soccer-players` pulls six leagues and eleven competitions. Never
+#            name both: the group would be computed twice and the run would
+#            keep whichever finished last.
+#
+# `seasons`  Leave empty, which is right: each league carries its own depth
+#            (five for most, eight for international soccer, two full four-year
+#            cycles, because five holds one World Cup and either one
+#            continental championship or two depending on where it starts).
+#            Set a number only to override every league at once.
+#
+# `freeze`   Leave unticked on the first run, read the comparison, and tick it
+#            on a second run only if the numbers are right. Freezing refuses
+#            while any rostered asset lacks a benchmark.
+#
+# `version`  Names an existing draft to freeze instead of computing a new one.
+#            A second compute run derives from the *frozen* scale again, so it
+#            cannot add to a draft -- one compute run has to name every league
+#            that is changing.
+
 on:
   workflow_dispatch:
     inputs:
       leagues:
-        description: >-
-          Keys from `benchmarks list`, space separated. Only these are
-          recomputed; every other group is inherited from the frozen scale.
-          Required -- there is deliberately no default, because a default here
-          once sent a run at the league it was last used for and returned
-          numbers identical to the frozen ones, which reads exactly like a
-          change that did nothing. Type `all` to recompute every league.
-          Leave empty only on a freeze-only run, where Version names the draft.
-          To correct one league without walking the rest, name its own key:
-          `mls-players` pulls MLS and its two cups where `soccer-players`
-          pulls six leagues and eleven competitions. Never name both -- the
-          group would be computed twice and the run would keep whichever
-          finished last.
+        description: "Keys from `benchmarks list`, space separated, or `all`"
         default: ""
       seasons:
-        description: >-
-          How many seasons to draw the pool from. Leave empty, which is right:
-          each league carries its own depth (five for most, eight for
-          international soccer, two full four-year cycles, because five holds
-          one World Cup and either one continental championship or two
-          depending on where it starts). Set a number only to override every
-          league at once.
+        description: "Seasons in the pool. Leave empty -- each league has its own"
         default: ""
       freeze:
-        description: >-
-          Adopt the draft as the scale. Leave this unticked on the first run,
-          read the comparison, and tick it on a second run only if the numbers
-          are right. Freezing refuses while any rostered asset lacks a
-          benchmark.
+        description: "Adopt the draft as the scale (read the comparison first)"
         type: boolean
         default: false
       version:
-        description: >-
-          Freeze this existing draft instead of computing a new one. Leave
-          empty to compute.
+        description: "Freeze this existing draft instead of computing"
         default: ""
 
 permissions:
@@ -82,10 +88,23 @@ jobs:
         # A compute run with no leagues named would silently mean "all of
         # them" -- twenty leagues, some of which walk dates for an hour. The
         # box is empty on purpose so that the operator has to say.
+        #
+        # It reports what it actually received. The first version said only
+        # what was wanted, which is no help at all when the box looked filled
+        # in: an empty `leagues` and a `leagues` that did not reach the run
+        # produce the same message, and they have different fixes.
         if: ${{ !inputs.version && !inputs.leagues }}
         run: |
-          echo "::error::Name the leagues to recompute (keys from" \
-               "\`benchmarks list\`, space separated), or type 'all'."
+          echo "::error::No leagues named, so there is nothing to compute."
+          echo "This run received:"
+          echo "  leagues  '${{ inputs.leagues }}'"
+          echo "  seasons  '${{ inputs.seasons }}'"
+          echo "  freeze   '${{ inputs.freeze }}'"
+          echo "  version  '${{ inputs.version }}'"
+          echo
+          echo "Name the leagues to recompute -- keys from \`benchmarks list\`,"
+          echo "space separated -- or type 'all'. To freeze a draft that already"
+          echo "exists, put its version in Version and leave this empty."
           exit 1
 
       - uses: actions/setup-python@v5
