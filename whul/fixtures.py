@@ -356,6 +356,146 @@ def next_by_team(store, season: str, as_of: date | str) -> dict[str, list[dict]]
     return out
 
 
+def _owned(store, season: str) -> tuple[dict, dict, dict]:
+    """Everything the board needs to know about who owns what.
+
+    ``by_name``   normalized side -> [(asset_id, league)], every rostered asset
+                  that plays for that side. A club and the four players who
+                  play for it all hang off one name, which is what puts them
+                  under the same heading.
+    ``owner``     asset_id -> manager_id.
+    ``spelling``  normalized side -> the roster's spelling of it, for a side
+                  whose own row is all this has: ``team_key`` is normalized and
+                  the display name only survives on the *other* row of the tie,
+                  which for a one-sided fixture does not exist.
+    """
+    rows = store.query(
+        "SELECT DISTINCT a.asset_id, a.asset_type, a.display_name, "
+        "       a.affiliation, a.league, r.manager_id "
+        "FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ?",
+        (season,),
+    )
+    by_name: dict[str, list[tuple[str, str]]] = {}
+    owner: dict[str, str] = {}
+    spelling: dict[str, str] = {}
+    for row in rows.itertuples():
+        league = str(row.league or "")
+        name = (str(row.display_name) if row.asset_type == "Team"
+                or league in INDIVIDUAL else str(row.affiliation or ""))
+        if not name.strip():
+            continue
+        key = normalize_team(name)
+        by_name.setdefault(key, []).append((str(row.asset_id), league))
+        owner[str(row.asset_id)] = str(row.manager_id or "")
+        # A team's own name wins over a player's affiliation: both spell the
+        # club, and the one somebody drafted is the one the league calls it.
+        if row.asset_type == "Team" or key not in spelling:
+            spelling[key] = name
+    return by_name, owner, spelling
+
+
+def owners(store, season: str) -> dict[str, str]:
+    """``asset_id -> manager_id`` for everything currently rostered."""
+    return _owned(store, season)[1]
+
+
+def board(store, season: str, as_of: date | str) -> list[dict]:
+    """Every upcoming fixture an owned asset is in, with both sides named.
+
+    The roster pages answer "what does this asset play next"; this answers the
+    other half of the same question -- who is playing whom, and which of the
+    league's assets are on each side of it. A tie between two drafted clubs is
+    invisible on a roster page and is the most interesting row here.
+
+    One entry per match rather than the two rows the table holds. The table is
+    keyed by side because that is what a lookup wants; a fixture list wants the
+    fixture, and the two rows of a tie are folded back together on the pair of
+    names -- which works whether the table holds both (a harvested league keeps
+    every side) or only one (Flashscore keeps the sides somebody owns).
+
+    A tour event has one side and no opponent: a field is not a fixture, and
+    everyone in the series shares the heading.
+    """
+    rows = store.query(
+        "SELECT league, team_key, fixture_date, opponent, home, competition "
+        "FROM fixtures WHERE season = ? AND fixture_date >= ? "
+        "ORDER BY fixture_date",
+        (season, str(as_of)),
+    )
+    if rows.empty:
+        return []
+    by_name, owner, spelling = _owned(store, season)
+
+    matches: dict[tuple, dict] = {}
+    for row in rows.itertuples():
+        when = str(row.fixture_date or "").strip()
+        if not when:
+            # A fixture with no date cannot be placed on a list ordered by
+            # date, and a blank at the top reads as "today".
+            continue
+        feed = str(row.league)
+        mine = normalize_team(str(row.team_key))
+        against = normalize_team(str(row.opponent or ""))
+        competition = str(row.competition or "")
+        if not against:
+            # A tour event. Everyone in the series is under one heading, so the
+            # event itself is the key -- not the athlete, who would otherwise
+            # get an entry of his own with a field of one.
+            key = (when, feed, competition, "")
+            entry = matches.setdefault(key, {
+                "date": when, "feed": feed, "competition": competition,
+                "event": True, "sides": [{"name": competition, "keys": []}],
+            })
+            if mine not in entry["sides"][0]["keys"]:
+                entry["sides"][0]["keys"].append(mine)
+            continue
+        pair = tuple(sorted((mine, against)))
+        key = (when, feed, competition, pair)
+        home = mine if row.home else against
+        away = against if row.home else mine
+        entry = matches.setdefault(key, {
+            "date": when, "feed": feed, "competition": competition,
+            "event": False,
+            "sides": [{"name": home, "keys": [home]},
+                      {"name": away, "keys": [away]}],
+        })
+        # The display spelling, which only the *other* row of a tie carries:
+        # `team_key` is normalized and `opponent` is not.
+        spelling.setdefault(against, str(row.opponent))
+
+    out = []
+    for entry in matches.values():
+        sides = []
+        for side in entry["sides"]:
+            assets = [
+                asset for key in side["keys"]
+                for asset, league in by_name.get(key, ())
+                if entry["feed"] in feeds_for(league)
+            ]
+            sides.append({
+                "name": side["name"] if entry["event"]
+                        else spelling.get(side["name"], _titled(side["name"])),
+                "assets": assets,
+                "owners": sorted({owner.get(a, "") for a in assets} - {""}),
+            })
+        if not any(side["assets"] for side in sides):
+            # Every row here reached the table because somebody owns a side,
+            # but the feed guard can still rule all of them out -- and a
+            # fixture with nobody in it is a fixture this page is not about.
+            continue
+        out.append({**entry, "sides": sides,
+                    "owners": sorted({o for s in sides for o in s["owners"]})})
+    return sorted(out, key=lambda e: (e["date"], e["competition"],
+                                      e["sides"][0]["name"]))
+
+
+def _titled(key: str) -> str:
+    """A normalized name with nothing better to show. Never blank."""
+    return " ".join(word.capitalize() for word in str(key).split()) or "—"
+
+
 def coverage(store, season: str) -> pd.DataFrame:
     """Which leagues have fixtures in hand, and how many teams they cover."""
     return store.query(

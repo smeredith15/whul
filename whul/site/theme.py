@@ -115,6 +115,11 @@ STYLESHEET = """\
 }
 
 * { box-sizing: border-box; }
+/* An element the script hides stays hidden. The browser's own `[hidden]` rule
+   has the same weight as any class selector, so `display: grid` on a class
+   beats it -- which is how a filtered-out fixture went on being drawn while
+   the count above it correctly said it was gone. */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--page);
@@ -368,6 +373,67 @@ td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
      leaving a lone "z" on the next line. The column can afford the width
      because the card scrolls rather than the page. */
   td.fixture .against { white-space: normal; overflow-wrap: break-word; }
+}
+
+/* --- who plays whom ------------------------------------------------------
+   Every upcoming fixture with a drafted asset in it. Two columns because a
+   fixture has two sides; a tour event has one and takes the width, because a
+   field is not a fixture and a "v" against nobody is a sentence with a hole
+   in it. */
+.board { margin-top: 10px; }
+details.boardday { border-top: 1px solid var(--grid); }
+details.boardday > summary { cursor: pointer; list-style: none; padding: 7px 0;
+  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  color: var(--text-secondary); display: flex; align-items: center; gap: 8px; }
+details.boardday > summary::-webkit-details-marker { display: none; }
+/* The disclosure arrow, drawn rather than borrowed, so it points the way the
+   box is. \u25b8 written as an escape because a literal one in this file has
+   to survive being read as Python before it is read as CSS. */
+details.boardday > summary::before { content: "\u25b8"; color: var(--axis);
+  transition: transform .12s ease; display: inline-block; }
+details.boardday[open] > summary::before { transform: rotate(90deg); }
+details.boardday > summary .count { color: var(--muted); font-weight: 400;
+  font-size: 11px; }
+
+.tie { display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: start; gap: 8px; padding: 5px 0 5px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--grid) 45%, transparent); }
+.tie:first-of-type { border-top: 0; }
+/* A tour event has one heading and no opponent, so it takes the row. */
+.tie.event { grid-template-columns: 1fr; }
+.tie .v { color: var(--muted); font-size: 11px; padding-top: 2px; }
+.tie .sidename { font-size: 12.5px; font-weight: 600; color: var(--text-primary);
+  overflow-wrap: break-word; }
+/* The away side reads right-to-left, so the two names sit either side of the
+   "v" rather than both hugging the left and leaving a gap in the middle. Not
+   an event, which has one side and would otherwise push its own heading off
+   the right edge. */
+.tie:not(.event) > .side:last-of-type { text-align: right; }
+.tie:not(.event) > .side:last-of-type .holders { justify-content: flex-end; }
+.tie .comp { grid-column: 1 / -1; font-size: 10.5px; color: var(--muted);
+  letter-spacing: .02em; }
+.tie .holders { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+
+/* One drafted asset: a face and its owner's initials in an oval tinted to that
+   owner's series colour. Colour is never the only carrier -- the initials are
+   right there, which is what makes this readable in print and to a reader who
+   cannot tell two hues apart. */
+.holder { display: inline-flex; align-items: center; gap: 3px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--own) 60%, transparent);
+  background: color-mix(in srgb, var(--own) 16%, transparent);
+  border-radius: 999px; padding: 1px 6px 1px 1px; font: inherit; }
+.holder:hover { background: color-mix(in srgb, var(--own) 30%, transparent); }
+.holder b { font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+  color: var(--text-primary); }
+.holder .avatar, .holder .badged { flex: 0 0 auto; }
+
+/* A phone gets one column, which is the only honest way to fit two sides and
+   six faces into 390px. The "v" becomes a rule between them. */
+@media (max-width: 620px) {
+  .tie, .tie.event { grid-template-columns: 1fr; gap: 4px; padding-left: 8px; }
+  .tie > .side:last-of-type { text-align: left; }
+  .tie > .side:last-of-type .holders { justify-content: flex-start; }
+  .tie .v { padding: 0; }
 }
 
 /* The calculator. A form, not a chart: the numbers it produces are the point,

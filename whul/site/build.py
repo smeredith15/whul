@@ -1494,6 +1494,163 @@ def _slot_rows(bars: pd.DataFrame, managers: list[str]) -> tuple[list, dict, dic
     return rows, values, depth
 
 
+#: How far ahead the board opens by default. Everything is here -- a whole NFL
+#: season, and an NHL one once its schedule loads -- which is a hundred-odd
+#: headings and several thousand ties, and a page that opens with all of that
+#: expanded is a page nobody scrolls to the bottom of. The next few days are
+#: what somebody checking fixtures wants; the rest is one click away and its
+#: heading says how much is behind it.
+#:
+#: Counted from the first day that has a fixture rather than from today, so a
+#: board opening on a quiet week is not three empty headings.
+BOARD_OPEN_DAYS = 3
+
+
+#: What a harvested schedule calls the part of the season a game is in. These
+#: are the feed's own codes and they are not competitions: "REG" under a
+#: fixture says nothing a reader wants, and the two that do say something are
+#: worth spelling out.
+SEASON_TYPES = {"REG": "", "REG1": "", "1": "", "2": "",
+                "POST": "Playoffs", "3": "Playoffs", "PRE": "Preseason"}
+
+
+def _board_label(entry: dict) -> str:
+    """What competition a fixture is in, or nothing where that adds nothing.
+
+    A club plays in five competitions and which one it is changes what the
+    fixture means. Everywhere else the competition is the league, and the feed
+    fills the field with a season-type code instead -- so the league's own name
+    stands in, and a code that says only "this is the regular season" is
+    dropped.
+    """
+    label = str(entry.get("competition") or "").strip()
+    label = SEASON_TYPES.get(label.upper(), label)
+    feed = str(entry.get("feed") or "")
+    if label:
+        return label
+    # A feed named for a league can speak for itself; "Flashscore/1" cannot.
+    return "" if feed.startswith("Flashscore/") else feed
+
+
+def _holder(asset_id: str, profile: dict | None, manager: str, slot: int) -> str:
+    """One drafted asset under the side it plays for: a face and an owner.
+
+    A picture and two letters rather than a name, because a side can have six
+    of them and a column of full names is a column, not a line. The name is on
+    the tooltip and the click opens the profile, which is where a reader who
+    wants more goes anyway.
+    """
+    name = profile["name"] if profile else asset_id
+    corner = (profile or {}).get("corner")
+    corner = tuple(corner) if corner else None
+    face = images.avatar(
+        "asset", asset_id, name, size=22, badge=corner,
+        logo=bool((profile or {}).get("logo")),
+    )
+    return (
+        f'<button class="assetlink holder" data-asset="{escape(asset_id)}" '
+        f'type="button" style="--own: var(--series-{slot})" '
+        f'title="{escape(f"{name} — {manager_name(manager)}")}">'
+        f'{face}<b>{escape(manager)}</b></button>'
+    )
+
+
+def _board_side(side: dict, profiles: dict, owners: dict, slots: dict) -> str:
+    holders = "".join(
+        _holder(asset, profiles.get(asset), owners.get(asset, ""),
+                slots.get(owners.get(asset, ""), 1))
+        for asset in side["assets"]
+    )
+    # No empty div where a side has nobody in it: it is a margin and a line of
+    # height under a name, and half the ties on the board have one.
+    return (
+        f'<div class="side">'
+        f'<div class="sidename">{escape(side["name"])}</div>'
+        + (f'<div class="holders">{holders}</div>' if holders else "")
+        + '</div>'
+    )
+
+
+def _fixture_board(store, season, latest, profiles, managers) -> str:
+    """Every upcoming fixture with a drafted asset in it, both sides named.
+
+    The roster pages say what one asset plays next. This says who is playing
+    whom -- and a tie with assets on both sides, which no roster page can show,
+    is the row this exists for.
+    """
+    entries = fixtures.board(store, season, latest)
+    if not entries:
+        return ""
+    owners = fixtures.owners(store, season)
+    slots = {m: theme.series_index(managers, m) + 1 for m in managers}
+
+    chips = "".join(
+        f'<button class="chip ownerchip" data-filter="owner" '
+        f'data-value="{escape(m)}" aria-pressed="false">'
+        f'<i class="swatch" style="background: var(--series-{slots[m]})"></i>'
+        f'{escape(manager_name(m))}</button>'
+        for m in managers
+    )
+
+    days: dict[str, list[str]] = {}
+    day_owners: dict[str, set[str]] = {}
+    for entry in entries:
+        blocks_here = [
+            _board_side(side, profiles, owners, slots) for side in entry["sides"]
+        ]
+        # The "v" between them, in the DOM order the two columns are read in.
+        # Appended after both, it lands in the third grid cell and the row
+        # reads "Bayern Munich  Bodo/Glimt v", which is a sentence about
+        # nothing.
+        sides = ('<div class="v">v</div>'.join(blocks_here)
+                 if len(blocks_here) > 1 else blocks_here[0])
+        middle = ""
+        label = "" if entry["event"] else _board_label(entry)
+        held = " ".join(entry["owners"])
+        kind = " event" if entry["event"] else ""
+        # Padded with spaces so a filter can test for " SS " and not match
+        # a manager whose id is a substring of another's.
+        comp = f'<div class="comp">{escape(label)}</div>' if label else ""
+        days.setdefault(entry["date"], []).append(
+            f'<div class="tie{kind}" data-owners=" {escape(held)} ">'
+            f'{sides}{middle}{comp}</div>'
+        )
+        day_owners.setdefault(entry["date"], set()).update(entry["owners"])
+
+    blocks = []
+    first = min(days) if days else ""
+    for day, ties in days.items():
+        soon = False
+        try:
+            when = date.fromisoformat(day)
+            heading = f"{when:%A} {when.day} {when:%B}"
+            soon = (when - date.fromisoformat(first)).days < BOARD_OPEN_DAYS
+        except ValueError:
+            heading = day
+        wide = " open" if soon else ""
+        held = escape(" ".join(sorted(day_owners[day])))
+        blocks.append(
+            f'<details class="boardday"{wide} data-owners=" {held} ">'
+            f'<summary>{escape(heading)}'
+            f'<span class="count">{len(ties)}</span></summary>'
+            f'{"".join(ties)}</details>'
+        )
+
+    return f"""
+<div class="card" id="fixtures">
+  <h2>Who plays whom</h2>
+  <p class="sub">Every upcoming fixture with a drafted asset in it, both sides
+    named. The faces under each side are the assets somebody holds, badged with
+    their owner; click one for its profile. Pick an owner to see only the
+    fixtures they have somebody in.</p>
+  <div class="chips" role="group" aria-label="Filter by owner">{chips}</div>
+  <div class="board">{"".join(blocks)}</div>
+  <p class="sub board-empty" hidden>No upcoming fixture has one of theirs in
+    it.</p>
+</div>
+"""
+
+
 def _write_index(out, season, today, progression, bars, managers, slotted,
                  latest, stamp, simulated, profiles, store) -> None:
     leader = today.iloc[0]
@@ -1613,6 +1770,8 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
                breakdown=progression_keys)}
   <p class="sub">Click any figure in the table for the day it came from.</p>
 </div>
+
+{_fixture_board(store, season, latest, profiles, managers)}
 
 {_profile_payload(profiles)}
 {_day_payload(breakdown)}
