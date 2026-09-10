@@ -780,7 +780,52 @@ SCRIPT = """\
         ? 'Showing every scored asset.'
         : 'Showing ' + shown + ' of ' + total + '.';
     }
+    retotal(table);
   }
+
+  // The same two figures the standings carry, over whatever the filter has
+  // left showing. Unfiltered it *is* the standings; filtered to one league it
+  // answers who is winning that league, which is a question the season
+  // generates weekly and nothing here could answer.
+  //
+  // Re-sorted as well as re-totalled. A leaderboard that keeps last week's
+  // order while its numbers change is a leaderboard nobody trusts.
+  function retotal(table) {
+    var box = document.getElementById('filtertotals');
+    if (!box) return;
+    var counting = {}, bench = {};
+    table.querySelectorAll('tbody tr').forEach(function (row) {
+      if (row.hidden) return;
+      var cell = row.querySelector('[data-score]');
+      if (!cell) return;
+      var value = Number(cell.dataset.score) || 0;
+      var who = row.dataset.manager;
+      var into = row.dataset.counts === '1' ? counting : bench;
+      into[who] = (into[who] || 0) + value;
+    });
+    // Rounded to two places and then to one, which is what the standings do
+    // on the way to the page. Straight to one place disagrees with them by a
+    // tenth on an exact half -- Scott's 207.5499999 is 207.6 there and would
+    // be 207.5 here -- and two tables on one site differing by a tenth is a
+    // reason to trust neither.
+    function shown(value) {
+      return (Math.round((value || 0) * 100) / 100).toFixed(1);
+    }
+    var body = box.querySelector('tbody');
+    var rows = Array.prototype.slice.call(body.querySelectorAll('tr'));
+    rows.forEach(function (row) {
+      var who = row.dataset.manager;
+      row.querySelector('[data-total]').textContent = shown(counting[who]);
+      row.querySelector('[data-bench]').textContent = shown(bench[who]);
+    });
+    rows.sort(function (a, b) {
+      return (counting[b.dataset.manager] || 0) - (counting[a.dataset.manager] || 0);
+    });
+    rows.forEach(function (row) { body.appendChild(row); });
+  }
+  // Once on load, so the table is the standings before anything is clicked
+  // rather than a row of zeroes.
+  retotal(document.getElementById('resultstable') || document.createElement('table'));
   document.querySelectorAll('.chip').forEach(function (chip) {
     // A chip belonging to another set -- the fixture board's owners -- has its
     // own handler below. Without this guard it would index `picked` with a
@@ -829,14 +874,46 @@ SCRIPT = """\
     var empty = document.querySelector('#fixtures .board-empty');
     if (empty) empty.hidden = shown > 0;
   }
+  // The chosen owners live in the address bar, so a filtered board is a link
+  // somebody can send. `replaceState` rather than assigning to `location`,
+  // which would reload the page and lose the scroll position -- and wrapped,
+  // because a page opened from a file:// URL is not allowed to rewrite its own
+  // and throwing there would take every listener after this one down with it.
+  function remember() {
+    var chosen = Object.keys(byOwner).filter(function (k) { return byOwner[k]; });
+    try {
+      var query = chosen.length ? '?owners=' + chosen.join(',') : location.pathname;
+      history.replaceState(null, '', query + location.hash);
+    } catch (e) { /* file://, or a browser that will not have it */ }
+  }
   document.querySelectorAll('.chip.ownerchip').forEach(function (chip) {
     chip.addEventListener('click', function () {
       var who = chip.dataset.value;
       byOwner[who] = !byOwner[who];
       chip.setAttribute('aria-pressed', byOwner[who] ? 'true' : 'false');
       ownerFilter();
+      remember();
     });
   });
+  // And read back, so the link opens on what it was sent showing.
+  (function () {
+    var asked = (location.search.match(/[?&]owners=([^&]*)/) || [])[1];
+    if (!asked) return;
+    var wanted = {};
+    decodeURIComponent(asked).split(',').forEach(function (who) {
+      if (who) wanted[who] = true;
+    });
+    var any = false;
+    document.querySelectorAll('.chip.ownerchip').forEach(function (chip) {
+      if (!wanted[chip.dataset.value]) return;
+      byOwner[chip.dataset.value] = true;
+      chip.setAttribute('aria-pressed', 'true');
+      any = true;
+    });
+    // Only if something matched. A stale link naming a manager who is no
+    // longer in the league should show the board, not an empty one.
+    if (any) ownerFilter();
+  })();
 
   // Which figures a reader left closed, alongside the league boxes below. A
   // page of three figures is long, and someone who wants only the table should

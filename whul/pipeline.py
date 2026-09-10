@@ -78,6 +78,7 @@ def write_daily_scores(
         "as_of": _as_text(as_of),
         "league_points": resolve_num(scored, ["total_points", "league_points"]),
         "postseason_bonus": resolve_num(scored, ["postseason_bonus"]),
+        "held_score": resolve_num(scored, ["held_score"]),
         "scaled_score": resolve_num(scored, ["scaled_score"], required=True),
         "benchmark_version": benchmark_version,
         "computed_at": _now(),
@@ -343,6 +344,75 @@ def progression(store: Store, season: str) -> pd.DataFrame:
     if not frame.empty:
         frame["as_of"] = pd.to_datetime(frame["as_of"]).dt.date
     return frame
+
+
+def held_by_manager(store: Store, season: str,
+                    as_of: date | str) -> dict[str, float]:
+    """What each manager's total would gain if every held bonus settled today.
+
+    Not the sum of held points over the counting slots, which is the obvious
+    thing and the wrong one. Best ball chooses the counting set by score, so a
+    benched asset sitting on a large European run is one that *would* count
+    once the run is credited -- and summing over today's counting set would
+    report nothing for it and then let it land as a surprise in June, which is
+    the whole thing this figure exists to prevent.
+
+    So the selection is run twice, by the same function the standings use: once
+    on the scores as they stand, once with each asset's held points added, and
+    the answer is the difference between the two totals.
+    """
+    slots = rosters.load_slots(store, season)
+    if not slots:
+        return {}
+    day = _as_text(as_of)
+    scores = store.query(
+        "SELECT d.asset_id, d.as_of AS date, d.scaled_score AS score, "
+        "       d.held_score, a.league "
+        "FROM daily_scores d LEFT JOIN assets a ON a.asset_id = d.asset_id "
+        "WHERE d.season = ? AND d.as_of <= ? "
+        "ORDER BY d.asset_id, d.as_of",
+        (season, day),
+    )
+    if scores.empty or "held_score" not in scores.columns:
+        return {}
+    scores["date"] = pd.to_datetime(scores["date"]).dt.date
+    scores = _from_league_start(scores)
+    held = pd.to_numeric(scores["held_score"], errors="coerce").fillna(0.0)
+    if not held.any():
+        return {}
+
+    stamp = date.fromisoformat(day) if isinstance(day, str) else day
+    # Added to the last day alone. The series is cumulative and is differenced
+    # to split a slot between its occupants, so adding a held total to every
+    # date would credit it to whoever held the asset first.
+    settled = scores.assign(
+        score=scores["score"] + held.where(scores["date"] == stamp, 0.0)
+    )
+
+    now = standings(slots, scores, stamp).set_index("manager")["total"]
+    after = standings(slots, settled, stamp).set_index("manager")["total"]
+    return {
+        str(manager): round(float(after.get(manager, 0.0) - value), 1)
+        for manager, value in now.items()
+    }
+
+
+def bench_by_manager(store: Store, season: str,
+                     as_of: date | str) -> dict[str, float]:
+    """What each manager is carrying that is not in their total.
+
+    Best ball counts a fixed number of slots per category and the rest sit out.
+    This is the sum of the rest -- not points lost, since nobody chose to bench
+    them, but the size of the squad behind the eleven.
+    """
+    frame = contributions(store, season, as_of)
+    if frame.empty:
+        return {}
+    bench = frame[frame["counts"] == 0]
+    if bench.empty:
+        return {}
+    return {str(k): round(float(v), 1)
+            for k, v in bench.groupby("manager_id")["score"].sum().items()}
 
 
 def contributions(store: Store, season: str, as_of: date | str) -> pd.DataFrame:

@@ -161,6 +161,13 @@ CREATE TABLE IF NOT EXISTS daily_scores (
     as_of             TEXT NOT NULL,
     league_points     REAL NOT NULL,
     postseason_bonus  REAL NOT NULL DEFAULT 0,
+    -- What a postseason or European run has earned that is not in the score
+    -- yet, on the same 0-100 scale. Held until the competition it came from is
+    -- over, because a rate off one game moves a long way on the next one and
+    -- can fall. Recorded here rather than derived on a page: it is the same
+    -- division by the same benchmark the score itself is, and doing it twice
+    -- is how the two come to disagree.
+    held_score        REAL NOT NULL DEFAULT 0,
     scaled_score      REAL NOT NULL,
     benchmark_version TEXT NOT NULL REFERENCES benchmark_versions (version),
     computed_at       TEXT NOT NULL,

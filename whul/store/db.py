@@ -91,6 +91,7 @@ ADDED_COLUMNS = (
     ("slot_occupancy", "cost", "REAL"),
     ("assets", "affiliation", "TEXT NOT NULL DEFAULT ''"),
     ("fixtures", "round_name", "TEXT NOT NULL DEFAULT ''"),
+    ("daily_scores", "held_score", "REAL NOT NULL DEFAULT 0"),
 )
 
 

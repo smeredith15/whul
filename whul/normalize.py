@@ -232,4 +232,14 @@ def apply_benchmarks(
             "manager count or widen the pool."
         )
     out["scaled_score"] = scale(out["total_points"], out["benchmark"])
+    # A held bonus is scaled by the same benchmark as the score it will join,
+    # here rather than on a page. Two divisions of the same figure by the same
+    # number, written in two places, is how the two come to disagree.
+    if "postseason_pending" in out.columns:
+        out["held_score"] = scale(
+            pd.to_numeric(out["postseason_pending"], errors="coerce").fillna(0.0),
+            out["benchmark"],
+        ).fillna(0.0)
+    else:
+        out["held_score"] = 0.0
     return out

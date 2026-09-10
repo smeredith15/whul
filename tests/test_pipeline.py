@@ -468,3 +468,97 @@ def test_a_dry_run_writes_nothing(tmp_path, capsys):
     after = open_store(str(tmp_path / "whul.sqlite3")).query(
         "SELECT scaled_score FROM daily_scores WHERE as_of = '2026-09-09'")
     assert round(float(after["scaled_score"].iloc[0]), 2) == 14.70
+
+
+# --- what is not in the total yet -------------------------------------------
+
+def test_held_points_are_what_the_total_would_gain(league):
+    """Not the sum over the counting slots. Best ball picks the counting set by
+    score, so the honest figure is the difference between the standings as they
+    stand and the standings with every held bonus credited."""
+    store, _, version = league
+    store.conn.execute(
+        "UPDATE daily_scores SET held_score = 10.0 "
+        "WHERE asset_id = 'qb1' AND as_of = ?", (str(LAST),))
+    store.conn.commit()
+    assert pipeline.held_by_manager(store, SEASON, LAST) == {"alice": 10.0, "bob": 0.0}
+
+
+def spare_qbs(store, version, scores: dict[str, float]) -> None:
+    """Fill alice's other NFL player slots. The category caps at four and
+    starts two, so a third occupant is what puts somebody on the bench."""
+    store.upsert("assets", [{
+        "asset_id": a, "asset_type": "Player", "display_name": a,
+        "league": "NFL", "role": "QB", "norm_key": "NFL_QB", "active": 1,
+        "created_at": "2026-08-21",
+    } for a in scores], keys=("asset_id",))
+    slots = [s.slot_id for s in rosters.load_slots(store, SEASON, "alice")
+             if s.category == "NFL" and s.asset_type == "Player"]
+    for slot, asset in zip(slots[1:], scores):
+        rosters.assign(store, slot, asset, date(2026, 8, 21))
+    for day in DAYS:
+        pipeline.write_daily_scores(store, pd.DataFrame({
+            "asset_id": list(scores),
+            "total_points": list(scores.values()),
+            "scaled_score": list(scores.values()),
+        }), SEASON, day, version)
+
+
+def test_a_benched_asset_holding_points_is_still_counted(league):
+    """The case the recompute exists for. Summing over today's counting set
+    would report nothing for it and then let it land as a surprise in June,
+    which is the whole thing this figure is meant to prevent."""
+    store, _, version = league
+    # alice counts qb1 (75) and qb4 (2); qb3 (1) is benched and is the one
+    # sitting on a run.
+    spare_qbs(store, version, {"qb3": 1.0, "qb4": 2.0})
+    store.conn.execute(
+        "UPDATE daily_scores SET held_score = 500.0 "
+        "WHERE asset_id = 'qb3' AND as_of = ?", (str(LAST),))
+    store.conn.commit()
+
+    held = pipeline.held_by_manager(store, SEASON, LAST)
+    # 75 + 2 now; 501 + 75 once it settles, because qb3 displaces qb4.
+    assert held["alice"] == pytest.approx(499.0)
+
+
+def test_nothing_held_is_no_figure_at_all(league):
+    store, _, _ = league
+    assert pipeline.held_by_manager(store, SEASON, LAST) == {}
+
+
+def test_the_bench_is_what_best_ball_is_not_counting(league):
+    store, _, version = league
+    spare_qbs(store, version, {"qb3": 4.0, "qb4": 1.0})
+    run(store)
+    # qb1 and qb3 count; qb4 does not.
+    assert pipeline.bench_by_manager(store, SEASON, LAST)["alice"] == pytest.approx(1.0)
+
+
+def test_a_held_bonus_is_scaled_by_the_same_benchmark_as_the_score():
+    """Two divisions of the same figure by the same number, written in two
+    places, is how the two come to disagree."""
+    from whul.normalize import apply_benchmarks
+
+    benchmarks = pd.DataFrame({
+        "asset_type": ["Player"], "norm_key": ["NFL_QB"], "benchmark": [400.0],
+    })
+    got = apply_benchmarks(pd.DataFrame({
+        "asset_id": ["qb1"], "league": ["NFL"], "role": ["QB"],
+        "total_points": [200.0], "postseason_pending": [40.0],
+    }), benchmarks, "Player")
+    assert got["scaled_score"].iloc[0] == pytest.approx(50.0)
+    assert got["held_score"].iloc[0] == pytest.approx(10.0)
+
+
+def test_a_league_that_holds_nothing_still_scores():
+    from whul.normalize import apply_benchmarks
+
+    benchmarks = pd.DataFrame({
+        "asset_type": ["Player"], "norm_key": ["NFL_QB"], "benchmark": [400.0],
+    })
+    got = apply_benchmarks(pd.DataFrame({
+        "asset_id": ["qb1"], "league": ["NFL"], "role": ["QB"],
+        "total_points": [200.0],
+    }), benchmarks, "Player")
+    assert got["held_score"].iloc[0] == 0.0

@@ -237,3 +237,24 @@ def test_a_caller_can_still_ask_for_everything():
          fixture("Flashscore/1", "arsenal", "Brentford", 1, when="2026-11-15"))
     assert fixtures.board(store, "2026-27", SOON) == []
     assert len(fixtures.board(store, "2026-27", SOON, days=None)) == 1
+
+
+# --- the filter, in the address bar -----------------------------------------
+
+def test_the_chosen_owners_are_read_back_from_the_url():
+    """So a filtered board is a link somebody can send."""
+    from whul.site import charts
+
+    assert "[?&]owners=" in charts.SCRIPT
+    # `replaceState`, not an assignment to `location`, which would reload the
+    # page and lose the reader's place.
+    assert "history.replaceState" in charts.SCRIPT
+
+
+def test_rewriting_the_url_cannot_take_the_page_down():
+    """A page opened from a file:// URL is not allowed to rewrite its own, and
+    throwing there would take every listener registered after it with it."""
+    from whul.site import charts
+
+    body = charts.SCRIPT[charts.SCRIPT.index("function remember()"):]
+    assert "try {" in body[:400] and "catch" in body[:600]
