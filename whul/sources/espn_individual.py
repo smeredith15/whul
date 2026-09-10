@@ -323,6 +323,61 @@ def _event_name(event: dict) -> str:
     return ""
 
 
+def _event_end(event: dict) -> str:
+    """The last day of an event, or its only day.
+
+    A golf tournament runs Thursday to Sunday and ESPN carries both ends; a
+    race meeting is usually one entry with one date. Read on its own rather
+    than assumed, because "next event" has to keep showing the tournament that
+    is currently being played -- dropping it on the Friday would make the
+    column say a player's next start is a week away while he is on the course.
+    """
+    for key in ("endDate", "end_date"):
+        raw = event.get(key)
+        if raw:
+            return str(raw)[:10]
+    return _event_date(event)
+
+
+def events_ahead(league: str, seasons: list[int],
+                 after: date | None = None) -> list[dict]:
+    """The season's events that have not finished, soonest first.
+
+    Read from the season scoreboard the results path already fetches, so this
+    costs nothing beyond what a pull does anyway.
+
+    Judged by the calendar rather than by the status, which is deliberate. The
+    season list is cached to disk on first fetch and served from there
+    afterwards, so its statuses are frozen at whatever they said the first time
+    the year was asked for -- fine for reading which events exist, useless for
+    reading which one is next. The dates do not go stale.
+    """
+    today = after or date.today()
+    ahead: list[dict] = []
+    for season in seasons:
+        try:
+            events = season_events(league, season)
+        except Exception:  # noqa: BLE001 -- a fixture is never worth a pull
+            continue
+        for event in events:
+            starts, ends = _event_date(event), _event_end(event)
+            if not starts:
+                continue
+            try:
+                over = date.fromisoformat(ends or starts)
+            except ValueError:
+                continue
+            if over < today:
+                continue
+            ahead.append({
+                "name": _event_name(event),
+                "date": starts,
+                "end": ends or starts,
+                "id": str(event.get("id") or ""),
+            })
+    return sorted(ahead, key=lambda e: (e["date"], e["name"]))
+
+
 def load_results(league: str, seasons: list[int], verbose: bool = True) -> pd.DataFrame:
     """One row per athlete per event, across the requested seasons.
 

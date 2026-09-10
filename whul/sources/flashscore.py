@@ -42,6 +42,13 @@ SPORT_TENNIS = 2
 SPORT_SOCCER = 1
 SPORT_BASKETBALL = 3
 SPORT_BASEBALL = 6
+#: UNVERIFIED. Taken from the sport ordering in `CANDIDATE_SPORTS`, which is
+#: the same ordering the four above sit in and which `fixtures --discover`
+#: exists to confirm. Hockey is the one team sport this project rosters whose
+#: own feed reports season totals rather than games, so it is the one league
+#: with no schedule of its own to harvest -- which is why it is worth a sport
+#: id here rather than a note saying it cannot be done.
+SPORT_HOCKEY = 4
 
 API_URL = FEED_URL.format(sport=SPORT_TENNIS, day="{day}")
 #: The feed's own window. Fetching wider gains nothing -- days outside it come

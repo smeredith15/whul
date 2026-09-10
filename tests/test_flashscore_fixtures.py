@@ -441,3 +441,153 @@ def test_the_candidate_sports_are_distinct_ids():
     report the second answer as the first sport's."""
     ids = [sport for sport, _ in feed.CANDIDATE_SPORTS]
     assert len(ids) == len(set(ids))
+
+
+# --- the men's game and the women's, in one payload -------------------------
+#
+# The only place in this project where two rostered assets share a display
+# name: England, France and Spain are held in both international categories.
+# Nothing in the name separates them, so the feed's marker does -- and getting
+# it wrong is not a blank cell but a real opponent on a real date, on the
+# wrong card.
+
+@pytest.mark.parametrize("name,womens,bare", [
+    ("England W", True, "England"),
+    ("England (W)", True, "England"),
+    ("England", False, "England"),
+    ("Barcelona W", True, "Barcelona"),
+    ("Bayern Munich", False, "Bayern Munich"),
+    # A name that is only the marker would strip to nothing, and "the empty
+    # club" would then be offered to every lookup in the women's bucket.
+    ("W", False, ""),
+])
+def test_the_womens_marker_is_read_off_the_team_name(name, womens, bare):
+    assert feed.is_womens(name) is womens
+    assert feed.strip_womens(name) == bare
+
+
+def intl_store():
+    store = open_store(":memory:")
+    rostered(store, "team-england-men", "Team", "England", index=1,
+             league="Men's Intl Soccer")
+    rostered(store, "team-england-women", "Team", "England", index=2,
+             league="Women's Intl Soccer")
+    return store
+
+
+def pull_soccer(store, monkeypatch, raw, leagues, sport=None):
+    """Serve ``raw`` for one sport id and nothing for the others.
+
+    Sport-aware on purpose. Answering every id with the same payload would
+    hand a soccer match to the hockey reader, which is the exact confusion the
+    per-sport narrowing exists to prevent -- a fake feed that cannot tell the
+    sports apart cannot test that it does.
+    """
+    only = feed.SPORTS[leagues[0]] if sport is None else sport
+    monkeypatch.setattr(
+        feed, "load_upcoming",
+        lambda s, days=None, verbose=True:
+            pd.DataFrame(list(feed.iter_fixtures(raw))) if s == only
+            else pd.DataFrame(),
+    )
+    return fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                                    leagues=leagues, verbose=False)
+
+
+def test_a_womens_international_never_lands_on_the_mens_card(monkeypatch):
+    store = intl_store()
+    raw = payload(header("EUROPE: Euro Qualification Women"),
+                  match("w1", "England W", "Norway W", SOON))
+    pull_soccer(store, monkeypatch, raw,
+                ["Men's Intl Soccer", "Women's Intl Soccer"])
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert "team-england-men" not in got
+    assert got["team-england-women"]["opponent"] == "Norway"
+
+
+def test_a_mens_international_never_lands_on_the_womens_card(monkeypatch):
+    store = intl_store()
+    raw = payload(header("WORLD: World Cup Qualification UEFA"),
+                  match("m1", "England", "Serbia", SOON))
+    pull_soccer(store, monkeypatch, raw,
+                ["Men's Intl Soccer", "Women's Intl Soccer"])
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert "team-england-women" not in got
+    assert got["team-england-men"]["opponent"] == "Serbia"
+
+
+def test_a_womens_club_match_does_not_reach_the_mens_club(monkeypatch):
+    """The marker is stripped before the name is matched, so the women's
+    bucket fills with names the men's roster also uses. `FEEDS` is what keeps
+    the two apart, and this is the case that proves it."""
+    store = open_store(":memory:")
+    rostered(store, "team-barcelona", "Team", "Barcelona", index=1,
+             league="La Liga")
+    raw = payload(header("SPAIN: Liga F"),
+                  match("b1", "Barcelona W", "Real Madrid W", SOON))
+    pull_soccer(store, monkeypatch, raw, ["La Liga"])
+    assert fixtures.by_asset(store, "2026-27", date(2026, 9, 8)) == {}
+
+
+def test_a_side_against_a_womens_side_is_not_a_fixture_either_way(monkeypatch):
+    """Not a match in any competition this reads. Dropped rather than
+    assigned, because either bucket would be a guess."""
+    store = intl_store()
+    raw = payload(header("WORLD: Friendly"),
+                  match("x1", "England", "Norway W", SOON))
+    pull_soccer(store, monkeypatch, raw,
+                ["Men's Intl Soccer", "Women's Intl Soccer"])
+    assert fixtures.by_asset(store, "2026-27", date(2026, 9, 8)) == {}
+
+
+def test_an_international_is_refused_under_its_own_countrys_heading():
+    """A national side plays under a confederation or WORLD. Its own country's
+    heading is where its clubs are, and "England" there is a club."""
+    wanted = {"england": ("England", "Men's Intl Soccer")}
+    assert fixtures.match_team("England", wanted, "WORLD") == "England"
+    assert fixtures.match_team("England", wanted, "EUROPE") == "England"
+    assert fixtures.match_team("England", wanted, "ENGLAND") is None
+
+
+# --- hockey -----------------------------------------------------------------
+
+def test_an_nhl_fixture_reaches_a_club_and_its_players(monkeypatch):
+    """The NHL reports season totals and no schedule, so unlike the NFL there
+    is nothing to harvest on the way past. This feed is the only place its
+    fixtures can come from."""
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    rostered(store, "player-mcdavid", "Player", "Connor McDavid",
+             affiliation="Edmonton Oilers", index=2, league="NHL")
+    raw = payload(header("USA: NHL"),
+                  match("h1", "Edmonton Oilers", "Calgary Flames", SOON))
+    pull_soccer(store, monkeypatch, raw, ["NHL"])
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["team-oilers"]["opponent"] == "Calgary Flames"
+    assert got["player-mcdavid"]["opponent"] == "Calgary Flames"
+    assert got["team-oilers"]["league"] == "Flashscore/4"
+
+
+def test_an_nhl_club_is_never_offered_to_the_soccer_payload(monkeypatch):
+    """The country guard cannot settle this one: an NHL club and an MLS club
+    can both legitimately be playing in the USA, and "New York" abbreviates
+    into either. The payload is narrowed to the leagues its sport serves
+    before a single name is read."""
+    store = open_store(":memory:")
+    rostered(store, "team-rangers", "Team", "New York Rangers", index=1,
+             league="NHL")
+    raw = payload(header("USA: MLS"),
+                  match("s1", "New York", "Chicago Fire", SOON))
+    pull_soccer(store, monkeypatch, raw, ["MLS", "NHL"],
+                sport=feed.SPORTS["MLS"])
+    assert fixtures.by_asset(store, "2026-27", date(2026, 9, 8)) == {}
+
+
+def test_the_hockey_sport_id_is_not_one_of_the_others():
+    from whul.sources import flashscore
+
+    ids = {flashscore.SPORT_SOCCER, flashscore.SPORT_TENNIS,
+           flashscore.SPORT_BASKETBALL, flashscore.SPORT_BASEBALL}
+    assert flashscore.SPORT_HOCKEY not in ids
+    assert feed.SPORTS["NHL"] == flashscore.SPORT_HOCKEY

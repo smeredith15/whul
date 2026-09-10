@@ -1619,13 +1619,15 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 
 
 def _fixture_cell(fixture: dict | None) -> str:
-    """A team's next game, small, between its name and its score.
+    """What this asset plays next, small, between its name and its score.
 
-    Empty where nothing is known, and empty deliberately: a golfer's next
-    event is a tournament and no fixture describes one, a league whose feed
-    reports season totals rather than games has no schedule to read, and
-    filling any of those with a guess would make the column untrustworthy for
-    the leagues where it is right.
+    Two shapes. A fixture is a date and an opponent; a tour event is a date and
+    a name, because a golfer and a driver turn up to a field rather than to
+    somebody. The second is why the cell does not simply always say "vs".
+
+    Empty where nothing is known, and empty deliberately: a league between
+    seasons has nothing to play next, and filling that with a guess would make
+    the column untrustworthy for the leagues where it is right.
     """
     if not fixture:
         return "<td class='fixture'></td>"
@@ -1635,10 +1637,20 @@ def _fixture_cell(fixture: dict | None) -> str:
     except (TypeError, ValueError):
         day = str(fixture.get("date", ""))
     against = str(fixture.get("opponent", ""))
+    competition = str(fixture.get("competition", ""))
+    if not against and competition:
+        # A tour event: a field rather than an opponent. "vs" would be a
+        # sentence about nobody, so the event's own name takes the slot the
+        # opponent has everywhere else.
+        full = f"{day} \u00b7 {competition}"
+        return (
+            f"<td class='fixture event' title=\"{escape(full)}\">"
+            f"<span class='when'>{escape(day)}</span>"
+            f"<span class='against'>{escape(competition)}</span></td>"
+        )
     versus = "vs" if fixture.get("home") else "at"
     badge = str(fixture.get("badge", ""))
-    full = f"{day} {versus} {against}" + (f" ({fixture.get('competition','')})"
-                                          if badge else "")
+    full = f"{day} {versus} {against}" + (f" ({competition})" if badge else "")
     # The opponent is its own element so a narrow screen can break the line
     # there rather than truncating -- a fixture cut to "Sep 20 vs New Or..."
     # has lost the only part anybody reads it for.

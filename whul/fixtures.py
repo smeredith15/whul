@@ -7,11 +7,15 @@ season whatever the date -- and the scorers drop those rows because a game with
 no score cannot be scored. This reads the same frames on the way past and keeps
 the half that was being thrown away, so the column costs no requests at all.
 
-That is also the limit of it. A league whose live feed walks a scoreboard one
-past date at a time has no fixtures in hand and gets none here; a league that
-reports season totals rather than games (the NHL) has no schedule at all.
-``coverage`` says which is which rather than leaving a reader to infer it from
-a column of blanks.
+That is not the whole of it. A league whose live feed walks a scoreboard one
+past date at a time has no fixtures in hand, and a league that reports season
+totals rather than games (the NHL) has no schedule at all -- those take theirs
+from the Flashscore feed instead, which carries a week of every sport at once.
+A third shape has no fixture in any feed: a golfer's next start and a driver's
+are an event with a field rather than a game against somebody, and those are
+answered with the tour's own calendar. ``coverage`` says which league is on
+which footing rather than leaving a reader to infer it from a column of
+blanks.
 
 Fixtures are keyed by team, not by asset. A club and the players who play for
 it share one row, because a player's next fixture is their club's -- joined
@@ -124,6 +128,49 @@ def harvest(league: str, season: str, frame: pd.DataFrame,
     ).reset_index(drop=True)
 
 
+def tour_rows(league: str, season: str, entrants: dict[str, str],
+              ahead: dict[str, list[dict]], fetched_at: str) -> pd.DataFrame:
+    """One row per athlete naming their series' next event.
+
+    ``entrants`` is ``{athlete: series}`` -- read off the results the pull just
+    scored, not off the roster's league label, because the spreadsheet files
+    the same F1 driver under "F1" and under "Motorsports" and only the results
+    say which car anyone is in. ``ahead`` is ``{series: events}``, soonest
+    first.
+
+    The row carries no opponent, which is the honest shape: a tournament has a
+    field, not a fixture, and everyone in the series shares the answer. That
+    also means this says what the tour plays next and not that this athlete has
+    entered it -- a distinction worth keeping, because no season schedule
+    anywhere carries a field before the event.
+    """
+    empty = pd.DataFrame({c: pd.Series(dtype="object") for c in FIXTURE_COLUMNS})
+    rows = []
+    for athlete, series in entrants.items():
+        events = ahead.get(str(series)) or []
+        if not events or not str(athlete).strip():
+            continue
+        event = events[0]
+        if not str(event.get("name") or "").strip():
+            continue
+        rows.append({
+            "season": season,
+            "league": league,
+            "team_key": normalize_team(str(athlete)),
+            "fixture_date": str(event["date"]),
+            "opponent": "",
+            "home": 1,
+            "competition": str(event["name"]),
+            "round_name": "",
+            "fetched_at": fetched_at,
+        })
+    if not rows:
+        return empty
+    return pd.DataFrame(rows, columns=list(FIXTURE_COLUMNS)).drop_duplicates(
+        subset=["season", "league", "team_key", "fixture_date", "opponent"]
+    ).reset_index(drop=True)
+
+
 def replace(store, season: str, league: str, rows: pd.DataFrame) -> int:
     """Swap in a league's fixtures, dropping whatever it had before.
 
@@ -163,6 +210,7 @@ def replace(store, season: str, league: str, rows: pd.DataFrame) -> int:
 FEEDS: dict[str, set[str]] = {
     "MLB": {"Flashscore/6"},
     "NBA": {"Flashscore/3"},
+    "NHL": {"Flashscore/4"},
     "ATP": {"Flashscore/2"},
     "WTA": {"Flashscore/2"},
     "Tennis": {"Flashscore/2"},
@@ -172,8 +220,36 @@ FEEDS: dict[str, set[str]] = {
     "Bundesliga": {"Flashscore/1"},
     "Ligue 1": {"Flashscore/1"},
     "MLS": {"Flashscore/1"},
-    "NWSL": {"Flashscore/1"},
+    # Both, because the feed's women's marker is what sorts a match into one
+    # bucket or the other and an NWSL club could be written either way.
+    "NWSL": {"Flashscore/1", "Flashscore/1W"},
+    # The one place in this project where two rostered assets share a display
+    # name: England, France and Spain are held in both categories. Nothing in
+    # the name can tell them apart, so the *bucket* does -- the soccer feed is
+    # split in two on the way in, and this is the half each may read.
+    "Men's Intl Soccer": {"Flashscore/1"},
+    "Women's Intl Soccer": {"Flashscore/1W"},
+    # A tour's next event, recorded under the source that pulled it. The
+    # roster files F1 drivers under two different league labels, so both --
+    # and NASCAR -- point at the one source that fetches them.
+    "PGA": {"PGA"},
+    "Motorsports": {"Motorsports"},
+    "F1": {"Motorsports"},
+    "NASCAR": {"Motorsports"},
 }
+
+
+#: Leagues whose "next" is an event with a field rather than a fixture with an
+#: opponent. A golfer's is the tour's next tournament and a driver's is the
+#: next race: the same answer for everyone in the series, which is why the row
+#: carries an event name and no opponent, and why the cell reads
+#: "Sep 17 - Procore Championship" rather than "vs" anybody.
+#:
+#: This is not the same claim as an entry list. It says what the tour plays
+#: next, not that this athlete is in the field -- which is the honest limit of
+#: what a season schedule can support, and is what the column meant for every
+#: other league anyway.
+TOUR: frozenset[str] = frozenset({"PGA", "NASCAR", "F1", "Motorsports"})
 
 
 #: Leagues whose fixtures ride along with their own scoring pull, because
@@ -192,7 +268,9 @@ HARVESTED: frozenset[str] = frozenset({
 #: Leagues whose assets are matched on their own name rather than on a club.
 #: A tennis player has no affiliation to join through -- their next fixture is
 #: their own match.
-INDIVIDUAL: frozenset[str] = frozenset({"ATP", "WTA", "Tennis"})
+INDIVIDUAL: frozenset[str] = frozenset({
+    "ATP", "WTA", "Tennis", "PGA", "NASCAR", "F1", "Motorsports",
+})
 
 SOCCER: frozenset[str] = frozenset({
     "Premier League", "La Liga", "Serie A", "Bundesliga", "Ligue 1",
@@ -391,6 +469,14 @@ WORD_ALIASES = {
 #: country because a club's next game is often one of those. Anything not
 #: listed is refused rather than guessed, and the run says which clubs found
 #: nothing -- a missing fixture surfaces, a wrong one would not.
+#: Where an international match is filed. The feed heads these with the
+#: confederation or with WORLD rather than with a country, since neither side
+#: is at home in the sense a club is.
+_CONTINENTS: set[str] = {
+    "WORLD", "EUROPE", "AFRICA", "ASIA", "OCEANIA", "SOUTH AMERICA",
+    "NORTH & CENTRAL AMERICA", "NORTH AMERICA",
+}
+
 COUNTRIES: dict[str, set[str]] = {
     "Premier League": {"ENGLAND", "EUROPE", "WORLD"},
     "La Liga": {"SPAIN", "EUROPE", "WORLD"},
@@ -401,6 +487,18 @@ COUNTRIES: dict[str, set[str]] = {
     "NWSL": {"USA", "NORTH & CENTRAL AMERICA", "NORTH AMERICA", "WORLD"},
     "MLB": {"USA"},
     "NBA": {"USA"},
+    # Half the league is Canadian and the feed files the competition under one
+    # country, not two -- which one is not knowable from here, so both are
+    # allowed. This is a second guard rather than the only one: the payload is
+    # narrowed to the sport that serves the league before a name is read at
+    # all, so an NHL club is never offered to the soccer feed.
+    "NHL": {"USA", "CANADA"},
+    # A national side plays under a continental or world header, never under
+    # its own country's -- that heading is where its clubs are. Listing the
+    # confederations is what keeps "England" the national team rather than a
+    # club somebody spells the same way.
+    "Men's Intl Soccer": _CONTINENTS,
+    "Women's Intl Soccer": _CONTINENTS,
 }
 
 #: A league with no entry above may play anywhere. Used for the leagues whose
@@ -451,6 +549,36 @@ def wanted_teams(store, season: str,
         )
         if name.strip():
             out.setdefault(normalize_team(name), (name, league))
+    return out
+
+
+def rostered_leagues(store, season: str,
+                     leagues: set[str] | None = None) -> dict[str, set[str]]:
+    """``{normalized name: every league that name is rostered in}``.
+
+    ``wanted_teams`` keeps one league per name, which is all a lookup needs and
+    is not enough to say whether a name was covered: England is held in both
+    international categories, and reporting against whichever of them was
+    inserted first would call a covered club missing -- or, worse, call a
+    missing one covered.
+    """
+    out: dict[str, set[str]] = {}
+    for key, (_, league) in wanted_teams(store, season, leagues).items():
+        out.setdefault(key, set()).add(league)
+    for row in store.query(
+        "SELECT DISTINCT a.asset_type, a.display_name, a.affiliation, a.league "
+        "FROM roster_slots r "
+        "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
+        "JOIN assets a ON a.asset_id = o.asset_id WHERE r.season = ?",
+        (season,),
+    ).itertuples():
+        league = str(row.league or "")
+        if leagues is not None and league not in leagues:
+            continue
+        name = (str(row.display_name) if row.asset_type == "Team"
+                or league in INDIVIDUAL else str(row.affiliation or ""))
+        if name.strip():
+            out.setdefault(normalize_team(name), set()).add(league)
     return out
 
 
@@ -553,13 +681,22 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
 
     sports = sorted({feed.SPORTS[l] for l in leagues if l in feed.SPORTS})
     recorded: dict[str, int] = {}
-    seen: set[str] = set()
+    #: Which bucket each rostered club was found in, so the summary below can
+    #: say a club has a fixture only where the fixture is one it may read.
+    seen: dict[str, set[str]] = {}
 
     for sport in sports:
+        # Narrowed to the leagues this sport actually serves before a single
+        # name is read. The country guard is the second line and not the first:
+        # an NHL club and an MLS club can both be legitimately playing in the
+        # USA, and "New York" abbreviates into either. Offering only the
+        # leagues the payload could contain removes the question.
+        here = {k: v for k, v in wanted.items()
+                if feed.SPORTS.get(v[1]) == sport}
+        if not here:
+            continue
         try:
             upcoming = feed.load_upcoming(sport, verbose=verbose)
-            if sport == feed.SPORT_TENNIS and upcoming.empty:
-                pass
         except Exception as exc:  # noqa: BLE001 -- one sport must not lose the rest
             print(f"  flashscore sport {sport}: {type(exc).__name__}: {exc}",
                   flush=True)
@@ -571,46 +708,72 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
         # decides. "Athletic Club" is Bilbao under SPAIN and a Serie B side
         # under BRAZIL; a name-keyed filter would keep the Brazilian fixture
         # on the strength of the Spanish match.
-        rename: dict[str, str] = {}
-        keep: list = []
-        held: set[str] = set()
+        #
+        # One bucket per feed league rather than one per sport. The soccer
+        # payload carries the men's game and the women's in the same request
+        # and this roster holds England in both, so the marker on the team
+        # name sorts each match into its own bucket and `FEEDS` decides which
+        # bucket an asset may read. Without that, a women's qualifier lands on
+        # the men's card looking entirely ordinary.
+        buckets: dict[str, dict] = {}
         for row in upcoming.itertuples():
             country = str(getattr(row, "country", "") or "")
+            home, away = str(row.home_team), str(row.away_team)
+            womens = feed.is_womens(home), feed.is_womens(away)
+            if womens[0] != womens[1]:
+                # Not a fixture in any competition this reads. Dropped rather
+                # than assigned, because either bucket would be a guess.
+                continue
+            league_key = f"Flashscore/{sport}" + ("W" if womens[0] else "")
             sides = [
-                (str(row.home_team), match_team(str(row.home_team), wanted, country)),
-                (str(row.away_team), match_team(str(row.away_team), wanted, country)),
+                (home, match_team(feed.strip_womens(home) if womens[0] else home,
+                                  here, country)),
+                (away, match_team(feed.strip_womens(away) if womens[1] else away,
+                                  here, country)),
             ]
             if not any(found for _, found in sides):
                 continue
+            bucket = buckets.setdefault(
+                league_key, {"rename": {}, "held": set(), "keep": []})
             for spelling, found in sides:
                 if found:
-                    rename[spelling] = found
-                    held.add(normalize_team(found))
-            keep.append(row.Index)
-        if not keep:
-            continue
-        mine = upcoming.loc[keep]
+                    bucket["rename"][spelling] = found
+                    bucket["held"].add(normalize_team(found))
+                elif womens[0]:
+                    # The other side of a women's tie, which nobody rosters and
+                    # so keeps the feed's spelling. The marker comes off it
+                    # anyway: the bucket already says whose game this is, and
+                    # "vs Norway W" on a women's card is the feed showing
+                    # through.
+                    bucket["rename"][spelling] = feed.strip_womens(spelling)
+            bucket["keep"].append(row.Index)
 
-        rows = harvest(
-            f"flashscore-{sport}", season, mine, as_of, _timestamp(), rename=rename
-        )
-        # Only the clubs somebody holds. The other side of the tie was
-        # translated for display and must not become a row of its own.
-        rows = rows[rows["team_key"].isin(held)]
-        if rows.empty:
-            continue
-        rows = rows.copy()
-        rows["league"] = f"Flashscore/{sport}"
-        recorded[f"Flashscore/{sport}"] = replace(
-            store, season, f"Flashscore/{sport}", rows
-        )
-        seen |= set(rows["team_key"])
+        for league_key, bucket in buckets.items():
+            rows = harvest(
+                f"flashscore-{sport}", season, upcoming.loc[bucket["keep"]],
+                as_of, _timestamp(), rename=bucket["rename"],
+            )
+            # Only the clubs somebody holds. The other side of the tie was
+            # translated for display and must not become a row of its own.
+            rows = rows[rows["team_key"].isin(bucket["held"])]
+            if rows.empty:
+                continue
+            rows = rows.copy()
+            rows["league"] = league_key
+            recorded[league_key] = replace(store, season, league_key, rows)
+            seen.setdefault(league_key, set()).update(rows["team_key"])
 
     if verbose:
-        missing = sorted(
-            value[0] for key, value in wanted.items() if key not in seen
-        )
-        print(f"  {len(seen)} of {len(wanted)} rostered club(s) have a fixture "
+        held_in = rostered_leagues(store, season, set(leagues))
+
+        def found(key: str) -> bool:
+            return any(key in seen.get(bucket, ())
+                       for league in held_in.get(key, ())
+                       for bucket in feeds_for(league))
+
+        matched = [k for k in wanted if found(k)]
+        missing = sorted(v[0] for k, v in wanted.items() if not found(k))
+        print(f"  {len(matched)} of {len(wanted)} rostered club(s) have a fixture "
               f"in the next week.", flush=True)
         if missing:
             print("  No fixture found for: " + ", ".join(missing[:20]), flush=True)

@@ -41,8 +41,8 @@ import pandas as pd
 import requests
 
 from whul.sources.flashscore import (
-    REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_SOCCER, SPORT_TENNIS,
-    _field, _get, parse_tournament_header, slug_to_name,
+    REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_HOCKEY, SPORT_SOCCER,
+    SPORT_TENNIS, _field, _get, parse_tournament_header, slug_to_name,
 )
 
 #: Which sport id serves each league's fixtures.
@@ -57,6 +57,18 @@ SPORTS: dict[str, int] = {
     "MLS": SPORT_SOCCER,
     "NWSL": SPORT_SOCCER,
     "Club Soccer": SPORT_SOCCER,
+    # National sides come off the same soccer feed as the clubs, in the same
+    # request. What they need beyond that is a way to tell the men's game from
+    # the women's: this roster holds England, France and Spain in *both*, under
+    # the same display name, and a fixture that lands on the wrong one of those
+    # is exactly the kind of plausible-looking wrong answer the country guard
+    # was written to stop. See `is_womens`.
+    "Men's Intl Soccer": SPORT_SOCCER,
+    "Women's Intl Soccer": SPORT_SOCCER,
+    # The NHL reports season totals and no schedule, so unlike the NFL there is
+    # nothing to harvest on the way past -- this feed is the only place its
+    # fixtures can come from.
+    "NHL": SPORT_HOCKEY,
     # Tennis is the one individual sport this reader covers, because it is the
     # one whose next event is a *match*: a named opponent in a named round,
     # which is the same shape as everything above. Golf and motorsport are an
@@ -116,6 +128,37 @@ RESERVE_PATTERN = re.compile(
     r"\bII\b|\sB)$",
     re.IGNORECASE,
 )
+
+
+#: How this feed marks the women's side of a sport whose men's side shares the
+#: name. Flashscore writes the women's team with a trailing "W" -- "England W",
+#: "Barcelona W" -- and that suffix is the only thing separating them, because
+#: the competition header does not always say.
+#:
+#: UNVERIFIED as to the exact spelling; the parenthesised form is accepted too
+#: so a feed that writes "England (W)" is read rather than silently dropped
+#: into the men's bucket. Getting this wrong is not a blank cell: this roster
+#: holds England, France and Spain in both the men's and the women's category,
+#: so a women's fixture read as men's lands on a real card, on a plausible
+#: date, against a real opponent. `python -m whul.cli fixtures --probe
+#: --sport soccer` prints the team names as the feed spells them.
+WOMENS_SUFFIX = re.compile(r"\s*\(?W\)?$")
+
+
+def is_womens(name: str) -> bool:
+    """Whether the feed is naming a women's side.
+
+    A name that is *only* the marker is not one: stripping it would leave
+    nothing to match on, and "the empty club" would then be offered to every
+    lookup in the women's bucket.
+    """
+    text = str(name or "").strip()
+    return bool(WOMENS_SUFFIX.search(text)) and bool(strip_womens(text))
+
+
+def strip_womens(name: str) -> str:
+    """The name without the marker, which is how the roster spells it."""
+    return WOMENS_SUFFIX.sub("", str(name or "").strip()).strip()
 
 
 def _when(segment: str) -> date | None:
@@ -263,6 +306,36 @@ def probe(sport: int = SPORT_SOCCER, days: range = range(0, 3)) -> dict:
         for p in parsed[:8]
     ]
     out["countries"] = sorted({p["country"] for p in parsed if p["country"]})[:25]
+
+    # The two guesses this reader cannot check for itself, reported separately
+    # because they fail separately.
+    #
+    # The women's marker decides which of two rostered assets a match belongs
+    # to -- England is held in both international categories -- so a wrong
+    # guess here is a real opponent on a real date on the wrong card, not a
+    # blank cell. If `womens_marked` is zero on a day with women's football in
+    # it, the suffix is not what `WOMENS_SUFFIX` expects.
+    marked = [p for p in parsed
+              if is_womens(p["home_team"]) or is_womens(p["away_team"])]
+    out["womens_marked"] = len(marked)
+    out["sample_womens"] = [
+        f"{p['home_team']} v {p['away_team']}  ({p['country']}: {p['competition']})"
+        for p in marked[:8]
+    ]
+    # And where a national side is filed. `COUNTRIES` refuses anything not on
+    # its list, so a confederation spelled differently here is a category that
+    # silently matches nothing.
+    international = [
+        p for p in parsed
+        if p["country"] in {"WORLD", "EUROPE", "AFRICA", "ASIA", "OCEANIA",
+                            "SOUTH AMERICA", "NORTH & CENTRAL AMERICA",
+                            "NORTH AMERICA"}
+    ]
+    out["international"] = len(international)
+    out["sample_international"] = [
+        f"{p['home_team']} v {p['away_team']}  ({p['country']}: {p['competition']})"
+        for p in international[:8]
+    ]
     return out
 
 
