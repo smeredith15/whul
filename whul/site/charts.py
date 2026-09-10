@@ -782,12 +782,59 @@ SCRIPT = """\
     }
   }
   document.querySelectorAll('.chip').forEach(function (chip) {
+    // A chip belonging to another set -- the fixture board's owners -- has its
+    // own handler below. Without this guard it would index `picked` with a
+    // name that is not there and throw on the first click, taking every
+    // listener registered after it down with it.
+    if (!picked[chip.dataset.filter]) return;
     chip.addEventListener('click', function () {
       var set = picked[chip.dataset.filter];
       var value = chip.dataset.value;
       set[value] = !set[value];
       chip.setAttribute('aria-pressed', set[value] ? 'true' : 'false');
       applyResultsFilter();
+    });
+  });
+
+  // --- who plays whom, filtered by owner --------------------------------
+  // Chosen owners are OR-ed: Scott alone is every fixture with one of his in
+  // it, Scott and Shelby is every fixture with one of either's. Nothing chosen
+  // is no filter at all, which is what makes the section useful before
+  // anything is clicked.
+  //
+  // Matched on a space-padded attribute rather than a split, because this runs
+  // over every tie on the page each time a chip is pressed and a season's
+  // schedule is thousands of them.
+  var byOwner = {};
+  function ownerFilter() {
+    var chosen = Object.keys(byOwner).filter(function (k) { return byOwner[k]; });
+    var board = document.querySelector('#fixtures .board');
+    if (!board) return;
+    var shown = 0;
+    board.querySelectorAll('details.boardday').forEach(function (day) {
+      var here = 0;
+      day.querySelectorAll('.tie').forEach(function (tie) {
+        var ok = !chosen.length || chosen.some(function (who) {
+          return tie.dataset.owners.indexOf(' ' + who + ' ') >= 0;
+        });
+        tie.hidden = !ok;
+        if (ok) here++;
+      });
+      // A day with nothing left in it is a heading over nothing.
+      day.hidden = !here;
+      var count = day.querySelector('.count');
+      if (count) count.textContent = here;
+      shown += here;
+    });
+    var empty = document.querySelector('#fixtures .board-empty');
+    if (empty) empty.hidden = shown > 0;
+  }
+  document.querySelectorAll('.chip.ownerchip').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      var who = chip.dataset.value;
+      byOwner[who] = !byOwner[who];
+      chip.setAttribute('aria-pressed', byOwner[who] ? 'true' : 'false');
+      ownerFilter();
     });
   });
 
