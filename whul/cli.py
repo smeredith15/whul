@@ -951,6 +951,7 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
         for name, sport in (("soccer", feed.SPORT_SOCCER),
                             ("basketball", feed.SPORT_BASKETBALL),
                             ("baseball", feed.SPORT_BASEBALL),
+                            ("hockey", feed.SPORT_HOCKEY),
                             ("tennis", feed.SPORT_TENNIS)):
             if args.sport and args.sport != name:
                 continue
@@ -996,12 +997,19 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
             (args.season,),
         )["league"].astype(str) if lg
     }
+    # A league's fixtures are recorded under whichever feed supplies them, so
+    # "has this league got any" is asked of the feeds it may read rather than
+    # of its own name: an F1 driver's next race is filed under Motorsports.
+    def covered(lg: str) -> bool:
+        return bool(fixtures.feeds_for(lg) & held)
+
+    rides_along = set(fixtures.HARVESTED) | set(fixtures.TOUR)
     waiting = sorted(
-        lg for lg in rostered_leagues & set(fixtures.HARVESTED) if lg not in held
+        lg for lg in rostered_leagues & rides_along if not covered(lg)
     )
     uncovered = sorted(
         lg for lg in rostered_leagues
-        if lg not in fixtures.HARVESTED and lg not in _feed.SPORTS
+        if lg not in rides_along and lg not in _feed.SPORTS
     )
     if waiting:
         print(f"\n  Fixtures ride along with these leagues' own results pull, "
@@ -1030,8 +1038,9 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
         print("\n  No fixture, by category:\n")
         for category, count in by_category.items():
             print(f"    {category:<24}{count:>4}")
-        print("\n    A blank is not always a gap: an individual athlete's next "
-              "event is a\n    tournament, which no fixture describes.")
+        print("\n    A blank is not always a gap: a league between seasons has "
+              "nothing to\n    play next, and a tour names its field only once "
+              "the event opens.")
     return 0
 
 
@@ -2211,7 +2220,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="report what the Flashscore feed returns, without "
                            "touching the database")
     fixt.add_argument("--sport",
-                      choices=("soccer", "basketball", "baseball", "tennis"),
+                      choices=("soccer", "basketball", "baseball", "hockey",
+                               "tennis"),
                       help="probe one sport rather than all of them")
     fixt.add_argument("--discover", action="store_true",
                       help="ask every Flashscore sport id what it serves -- how "

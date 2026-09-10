@@ -687,6 +687,10 @@ def _pull(
     events = _carry_identity(score(fetched), fetched, source.asset_type)
     if events is None or events.empty:
         return pd.DataFrame()
+    # Read off the scored events, because that frame is the only place that
+    # says which series an athlete actually runs in. Before the window totals,
+    # so a driver whose league year has produced nothing yet still gets one.
+    _harvest_tour(source, events, as_of, years, names, upcoming, verbose)
 
     frames = []
     for name in source.produces or (source.league,):
@@ -760,6 +764,78 @@ def _harvest_ahead(source, as_of: date, verbose: bool, names, upcoming) -> None:
     if verbose and upcoming:
         print(f"  {source.league}: season not started; kept "
               f"{len(upcoming[-1])} upcoming fixture row(s)", flush=True)
+
+
+#: Which feed serves each series' calendar. F1 comes from the same place its
+#: results do -- ESPN's racing scoreboard has never been exercised for that
+#: series here, and a schedule is not the place to start.
+def _tour_calendar(series: str, seasons: list[int], as_of: date) -> list[dict]:
+    """The named series' events that have not finished, soonest first."""
+    if series == "F1":
+        from whul.sources import jolpica
+
+        return jolpica.races_ahead(seasons, as_of)
+    from whul.sources import espn_individual
+
+    key = {"PGA": "pga", "NASCAR": "nascar"}.get(series)
+    if not key:
+        return []
+    return espn_individual.events_ahead(key, seasons, as_of)
+
+
+def _harvest_tour(source, events: pd.DataFrame, as_of: date, seasons,
+                  names, upcoming, verbose: bool = True) -> None:
+    """What the tour plays next, for the leagues that have no fixture at all.
+
+    A golfer and a driver were the two categories this column could never
+    speak for: their next start is an event with a field rather than a game
+    against somebody, and `by_asset` correctly matched them to nothing. The
+    answer it can give is the tour's -- the next tournament or race on the
+    calendar -- which is the same for everyone in the series and is what a
+    manager checking the page actually wants to know.
+
+    Never fatal, and never at the cost of the pull: a series whose calendar
+    cannot be read contributes no rows and says so.
+    """
+    if upcoming is None or source.league not in fixtures.TOUR:
+        return
+    if events is None or events.empty or "player" not in events.columns:
+        return
+    series_of = (
+        events["league"].astype(str) if "league" in events.columns
+        else pd.Series(source.league, index=events.index)
+    )
+    wanted = {_normalized(n): n for n in (names or [])}
+    entrants: dict[str, str] = {}
+    for athlete, series in zip(events["player"].astype(str), series_of):
+        drafted = wanted.get(_normalized(athlete))
+        if drafted and drafted not in entrants:
+            # The roster's spelling, since that is the key `by_asset` looks up.
+            entrants[drafted] = series
+    if not entrants:
+        return
+
+    ahead: dict[str, list[dict]] = {}
+    for series in sorted(set(entrants.values())):
+        try:
+            ahead[series] = _tour_calendar(series, list(seasons), as_of)
+        except Exception as exc:  # noqa: BLE001 -- a fixture is never worth a pull
+            print(f"  {source.league}: no {series} calendar "
+                  f"({type(exc).__name__}: {exc})", flush=True)
+            ahead[series] = []
+        if verbose and not ahead[series]:
+            print(f"  {source.league}: {series} has no event left on the "
+                  f"calendar, so those cells stay blank", flush=True)
+
+    rows = fixtures.tour_rows(source.league, "", entrants, ahead, "")
+    if not rows.empty:
+        upcoming.append(rows)
+
+
+def _normalized(name: str) -> str:
+    from whul.resolve import normalize_team
+
+    return normalize_team(str(name))
 
 
 def _harvest(source, raw: pd.DataFrame, as_of: date, seasons, upcoming) -> None:

@@ -75,6 +75,44 @@ def fetch_season(season: int, kind: str = "results") -> list[dict]:
     return races
 
 
+def races_ahead(seasons: list[int], after=None) -> list[dict]:
+    """The races on the calendar that have not been run, soonest first.
+
+    ``{season}/races/`` is the schedule rather than the results, so it carries
+    the rest of the year as well as the part of it that has happened. One
+    request a season, and deliberately uncached: a calendar is the one thing
+    here that can change after it is first read -- a race is moved or added --
+    and a frozen copy would go on naming a date that no longer exists.
+    """
+    from datetime import date as _date
+
+    today = after or _date.today()
+    ahead: list[dict] = []
+    for season in seasons:
+        try:
+            payload = _get(f"{season}/races/", {"limit": PAGE_SIZE},
+                           cache_key=None)
+        except Exception:  # noqa: BLE001 -- a fixture is never worth a pull
+            continue
+        for race in _races(payload):
+            when = str(race.get("date") or "")[:10]
+            if not when:
+                continue
+            try:
+                day = _date.fromisoformat(when)
+            except ValueError:
+                continue
+            if day < today:
+                continue
+            ahead.append({
+                "name": str(race.get("raceName") or ""),
+                "date": when,
+                "end": when,
+                "id": str(race.get("round") or ""),
+            })
+    return sorted(ahead, key=lambda r: (r["date"], r["name"]))
+
+
 def _result_rows(races: list[dict], season: int, kind: str) -> list[dict]:
     key = "SprintResults" if kind == "sprint" else "Results"
     rows: list[dict] = []

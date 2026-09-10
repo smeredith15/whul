@@ -334,6 +334,13 @@ td.fixture .when { color: var(--text-secondary); white-space: nowrap; }
 td.fixture .against { white-space: nowrap; }
 td.fixture .when + .against { margin-left: 0.35em; }
 td.fixture .versus { opacity: 0.7; }
+/* A tour event fills the cell on its own -- no opponent, no competition pill --
+   and its name is longer than any club's: "World Wide Technology Championship"
+   against "Chelsea". So it wraps where a fixture truncates. The row can afford
+   the second line; every one of them is already two lines tall for the asset's
+   name and affiliation, and a tournament cut to "World Wide Tech..." has lost
+   the part that identifies it. */
+td.fixture.event .against { white-space: normal; overflow-wrap: break-word; }
 /* The competition, for a club that plays in five of them. Smaller and quieter
    than the fixture it qualifies: it says which competition, not what happened.
    A pill rather than plain text so "UCL" does not read as part of the

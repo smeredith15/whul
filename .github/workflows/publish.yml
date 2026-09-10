@@ -147,9 +147,11 @@ jobs:
       - name: Pull upcoming fixtures
         # MLB, the NBA and club soccer reach this project through a scoreboard
         # walk, which asks only for dates that have already happened and so
-        # carries no fixtures. Theirs come from Flashscore instead -- seven
-        # requests per sport, and the soccer feed serves every competition at
-        # once, so nine club-soccer categories cost one pass.
+        # carries no fixtures. The NHL is worse off still: its feed reports
+        # season totals and no schedule at all. Theirs come from Flashscore
+        # instead -- seven requests per sport, and the soccer feed serves every
+        # competition at once, so nine club-soccer categories and both
+        # international ones cost one pass.
         #
         # Never fatal, for the same reason the pull above is not: the next
         # fixture is a convenience on a page and the standings are the record.
