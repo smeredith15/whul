@@ -528,6 +528,25 @@ dialog.profile .close {
   position: absolute; top: 12px; right: 14px; background: none; border: 0;
   color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; padding: 4px;
 }
+/* Playoff and European production. Collapsed by default -- empty for most
+   players most of the year, and a heading with nothing under it is worse than
+   no heading. */
+dialog.profile details.bonus > summary {
+  cursor: pointer; font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-secondary);
+  display: flex; align-items: baseline; gap: 8px; padding: 4px 0;
+}
+dialog.profile details.bonus > summary::-webkit-details-marker { display: none; }
+dialog.profile details.bonus > summary::before {
+  content: "\u25b8"; transition: transform .12s ease; display: inline-block;
+}
+dialog.profile details.bonus[open] > summary::before { transform: rotate(90deg); }
+dialog.profile details.bonus .adds {
+  margin-left: auto; text-transform: none; letter-spacing: 0;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+dialog.profile details.bonus .note { margin-top: 6px; }
+
 dialog.profile .scoreline {
   display: flex; gap: 20px; padding: 12px 18px; border-top: 1px solid var(--grid);
 }

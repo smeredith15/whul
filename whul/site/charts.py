@@ -871,6 +871,50 @@ SCRIPT = """\
   var dialog = document.getElementById('profile');
   if (!dialog) return;
 
+  function pts(value) {
+    return (Math.round(value * 10) / 10).toLocaleString(
+      undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+
+  // Games are whole. "2.0 played" reads as a figure that could have been 2.4.
+  function count(value) {
+    return (Math.round(value * 10) / 10).toLocaleString(
+      undefined, { maximumFractionDigits: 1 });
+  }
+
+  // Playoff and European production, which is paid as a *rate* rather than
+  // counted, and is therefore the one part of a score a manager cannot check
+  // by adding up a box score. Collapsed by default: it is empty for most
+  // players most of the year, and a heading with nothing under it is worse
+  // than no heading.
+  function renderBonus(rows) {
+    if (!rows.length) return '';
+    var total = 0, shares = [];
+    var body = rows.map(function (r) {
+      total += r.adds;
+      var share = Math.round(r.share * 1000) / 10;
+      var named = share + '% for the ' + r.competition.replace(/^UEFA /, '');
+      if (shares.indexOf(named) < 0) shares.push(named);
+      return '<tr><td>' + r.competition + '</td>' +
+             '<td class="when">' + count(r.games) +
+             (r.games === 1 ? ' game' : ' games') + '</td>' +
+             '<td class="num">' + pts(r.points) + '</td>' +
+             '<td class="num">+' + pts(r.adds) + '</td></tr>';
+    }).join('');
+    // The one line the tab exists for. Says what happens *next*, because what
+    // is on screen is a snapshot of a competition still being played.
+    var how =
+      'These are counting stats, not points yet. When the competition is over, ' +
+      'the rate per game above is credited as though it were played over a ' +
+      'share of a regular season — ' + shares.join(', ') + ' — so a run at ' +
+      'your league form adds that share of your league total, however few ' +
+      'games it took.';
+    return '<details class="body bonus"><summary>Playoffs &amp; Europe ' +
+           '<span class="adds">+' + pts(total) + ' as it stands</span></summary>' +
+           '<table class="finishes"><tbody>' + body + '</tbody></table>' +
+           '<p class="note">' + how + '</p></details>';
+  }
+
   function open(id) {
     var a = profiles[id];
     if (!a) return;
@@ -890,6 +934,7 @@ SCRIPT = """\
     var notes = (a.notes || []).map(function (n) {
       return '<p class="note">' + n + '</p>';
     }).join('');
+    var bonus = renderBonus(a.bonus || []);
     // Everything the tables have room for and everything they do not. The
     // tables show a position and a club; this is where the rest of it is, which
     // is what a click on a name is for.
@@ -909,6 +954,7 @@ SCRIPT = """\
                '<table><tbody>' + stats + '</tbody></table></div>'
              : '<div class="body"><p class="sub">No stat lines recorded for this ' +
                'day yet.</p></div>') +
+      bonus +
       (notes ? '<div class="body">' + notes + '</div>' : '') +
       '<div class="scoreline">' +
         '<div><div class="label">Raw score</div><div class="value">' + a.raw + '</div></div>' +

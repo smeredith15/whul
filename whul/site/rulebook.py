@@ -20,7 +20,7 @@ from whul.scoring.competition import (
     WIN_POINTS, Outcome, Tier,
 )
 from whul.scoring.intl_soccer import BEYOND_BEST_SHARE, MATCH_MAX, RUNG, STAGE
-from whul.scoring.postseason import DEFAULT_BONUS_SHARE
+from whul.scoring.postseason import DEFAULT_BONUS_SHARE, RULES
 
 MINUS = "−"
 
@@ -612,24 +612,68 @@ def _motorsports_players() -> Rules:
 
 # --- the postseason bonus, which is shared ---------------------------------
 
+#: How a competition is named on the Scoring page, where its rule's key is not
+#: what a manager would call it.
+BONUS_NAMES = {
+    "UCL": "the Champions League",
+    "Europa League": "the Europa League",
+    "Europa Conference League": "the Conference League",
+    "MLS": "the MLS Cup playoffs",
+    "NWSL": "the NWSL playoffs",
+}
+
+#: Priced but not paid, because no feed reachable from here carries a player
+#: line for it. Listed so the page does not promise a bonus that is always zero.
+BONUS_UNPAID = {"CONCACAF Champions Cup"}
+
+
+def _bonus_shares() -> tuple[list[str], list[float]]:
+    """One line a share, naming every competition that pays it."""
+    by_share: dict[float, list[str]] = {}
+    for key, rule in RULES.items():
+        if key in BONUS_UNPAID:
+            continue
+        by_share.setdefault(rule.bonus_share, []).append(
+            BONUS_NAMES.get(key, key))
+    lines = []
+    for share in sorted(by_share, reverse=True):
+        where = ", ".join(sorted(by_share[share]))
+        lines.append(f"{where[:1].upper()}{where[1:]} — {num(share * 100)}% of a "
+                     f"regular season, for a postseason played exactly as well "
+                     f"as the regular one")
+    return lines, sorted(by_share, reverse=True)
+
+
 def _postseason() -> Rules:
+    lines, shares = _bonus_shares()
+    top, bottom = num(max(shares) * 100), num(min(shares) * 100)
     return Rules(
         "postseason-bonus", "What a cup run is worth (all players)",
-        "Playoff production is credited as a bonus rather than as extra games, "
-        "and the bonus is the same size in every sport.",
-        [
-            "A postseason played exactly as well as the regular season — "
-            f"{num(DEFAULT_BONUS_SHARE * 100)}% of a regular season, on top of it",
-            f"A postseason played twice as well — "
-            f"{num(DEFAULT_BONUS_SHARE * 200)}% of a regular season, and so on",
+        "Playoff production is credited as a bonus rather than as extra games. "
+        "The size of the bonus depends on how much was still unknown when you "
+        "drafted: a competition whose field nobody could predict pays more than "
+        "one whose field was already settled.",
+        lines + [
+            f"A postseason played twice as well as the regular season — double "
+            f"its share, so {num(max(shares) * 200)}% at the top of the list "
+            f"and {num(min(shares) * 200)}% at the bottom",
             "A team that missed the postseason — 0",
         ],
         [
             "The bonus is a rate, not a tally, so one brilliant playoff game is "
             "worth as much per game as a long run of them. What it cannot do is "
             "let a short postseason outweigh a whole season.",
+            f"Why the spread. At {top}% the field is genuinely unknown at the "
+            "draft. The mid-season leagues are drafted in July, when a manager "
+            "can already see who is heading for the playoffs, so a run there is "
+            "less of a discovery. European places are settled before the "
+            "previous season ends, so there is nothing left to find out at all.",
+            "MLS is on the mid-season leagues' calendar but not on their draft: "
+            "its season opens in February, inside the league year, so an MLS "
+            f"club is drafted before a ball is kicked and pays the full {top}%.",
             "For club soccer, European competition plays the part the playoffs "
-            "play elsewhere.",
+            "play elsewhere. Domestic cups are different — the FA Cup, the Copa "
+            "del Rey and the US Open Cup count in full, like league matches.",
             "This is for players only. Teams are paid for the postseason "
             "directly — appearances, wins and series, listed above.",
             "The NBA Play-In and European qualifying rounds count as neither a "

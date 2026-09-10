@@ -28,7 +28,9 @@ from whul.scoring.competition import (
     Outcome, Tier, bye_credit, classify, classify_key, outcome_points,
     continental_entry_points,
 )
-from whul.scoring.postseason import bonus_for, rule_for
+from whul.scoring.postseason import (
+    DETAIL_COLUMN, bonus_for, detail_for, rule_for,
+)
 
 # --- teams ----------------------------------------------------------------
 BIG_MARGIN = 2
@@ -634,6 +636,7 @@ def _fold_competitions(work: pd.DataFrame, postseason: bool) -> pd.DataFrame:
         totals["bonus_matches"] = 0.0
         totals["bonus_points"] = 0.0
         totals["postseason_bonus"] = 0.0
+        totals[DETAIL_COLUMN] = [[] for _ in range(len(totals))]
     else:
         extra = extra.assign(_credit=[
             bonus_for(points, matches, rule)
@@ -644,12 +647,34 @@ def _fold_competitions(work: pd.DataFrame, postseason: bool) -> pd.DataFrame:
             bonus_matches=("matches", "sum"), bonus_points=("points", "sum"),
             postseason_bonus=("_credit", "sum"),
         )
+        # A player can be in two of these at once -- a Europa League run and
+        # the MLS Cup playoffs pay different shares -- so the breakdown is per
+        # competition rather than one figure. The share travels with it: a page
+        # that mapped a competition back to its percentage would be a second
+        # copy of RULES, and the two would drift the first time a share moved.
+        detail = (
+            extra.assign(_detail=[
+                detail_for(str(name), matches, points, rule)
+                for name, matches, points, rule in zip(
+                    extra["competition"], extra["matches"],
+                    extra["points"], extra["_rule"])
+            ])
+            .groupby(PLAYER_KEYS, as_index=False)
+            .agg(**{DETAIL_COLUMN: ("_detail", list)})
+        )
+        by_player = by_player.merge(detail, on=PLAYER_KEYS, how="left")
         # An outer merge, because a player can appear in a European tie having
         # played no domestic football at all -- a January signing, or a squad
         # rotated for a cup. Dropping them would score the run at nothing.
         totals = totals.merge(by_player, on=PLAYER_KEYS, how="outer")
 
-    numeric = [c for c in totals.columns if c not in PLAYER_KEYS]
+    if DETAIL_COLUMN in totals.columns:
+        totals[DETAIL_COLUMN] = [
+            value if isinstance(value, list) else []
+            for value in totals[DETAIL_COLUMN]
+        ]
+    numeric = [c for c in totals.columns
+               if c not in PLAYER_KEYS and c != DETAIL_COLUMN]
     totals[numeric] = totals[numeric].fillna(0.0)
     totals["total_points"] = totals["regular_points"] + (
         totals["postseason_bonus"] if postseason else 0.0)

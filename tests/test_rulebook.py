@@ -96,3 +96,33 @@ def test_ordinals():
     assert [rulebook.ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 30, 36)] == [
         "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "30th", "36th"
     ]
+
+
+def test_the_scoring_page_names_every_share_that_can_be_paid():
+    """It used to say the bonus was "the same size in every sport", which was
+    true until the shares split and then quietly was not. Driven from the rules
+    so it cannot drift again."""
+    from whul.scoring.postseason import RULES
+    from whul.site.rulebook import BONUS_UNPAID, _postseason
+
+    said = " ".join(_postseason().lines)
+    for key, rule in RULES.items():
+        if key in BONUS_UNPAID:
+            continue
+        assert f"{rule.bonus_share * 100:g}%" in said, key
+
+
+def test_the_scoring_page_does_not_promise_a_bonus_that_never_pays():
+    """The Champions Cup is priced but no feed carries a player line for it, so
+    naming it on the page would promise a bonus that is always zero."""
+    from whul.site.rulebook import _postseason
+
+    said = " ".join(_postseason().lines)
+    assert "Champions Cup" not in said
+
+
+def test_the_scoring_page_says_why_mls_pays_the_full_share():
+    from whul.site.rulebook import _postseason
+
+    notes = " ".join(_postseason().notes)
+    assert "February" in notes and "10%" in notes

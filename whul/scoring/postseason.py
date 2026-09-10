@@ -51,6 +51,13 @@ SETTLED_BONUS_SHARE = 0.05
 #: For the CONCACAF Champions Cup, which is both settled *and* a small part of
 #: an MLS club's year -- a handful of ties against a field of very uneven
 #: strength.
+#:
+#: Unused for players: ESPN has no roster for the competition in any of the
+#: five seasons tried, so no player line can be read from it, and a share that
+#: can only ever pay zero is worse than no share at all -- it reads as though
+#: every MLS player had a quiet Champions Cup. Qualifying for it is still paid
+#: on the team side, where it is read from the participant list rather than
+#: from match data. See CONTINENTAL_CUPS in whul.sources.espn.
 CONTINENTAL_CUP_BONUS_SHARE = 0.025
 
 REGULAR = "regular"
@@ -94,7 +101,12 @@ RULES: dict[str, PostseasonRule] = {
     "MLB": PostseasonRule("MLB", 162, MID_SEASON_BONUS_SHARE),
     "WNBA": PostseasonRule("WNBA", 44, MID_SEASON_BONUS_SHARE),
     "NWSL": PostseasonRule("NWSL", 26, MID_SEASON_BONUS_SHARE),
-    "MLS": PostseasonRule("MLS", 34, MID_SEASON_BONUS_SHARE),
+    # MLS is on the mid-season leagues' calendar and not on their draft. Its
+    # season opens in February, inside the league year, so a manager drafts an
+    # MLS club before a ball is kicked and knows no more about who will reach
+    # the playoffs than they do for the NFL. The full share is what that is
+    # worth; 7.5% was this rule reading its calendar rather than its draft.
+    "MLS": PostseasonRule("MLS", 34),
 
     # European competition, refereced to a 38-game domestic league. The field
     # is settled before the draft: qualification is decided by the season that
@@ -197,7 +209,37 @@ def bonus_for(points: float, games: float, rule: PostseasonRule | None) -> float
     return float(points) / float(games) * rule.scalar
 
 
-def apply_bonus(agg: pd.DataFrame, rule: PostseasonRule | None) -> pd.DataFrame:
+#: The column carrying the per-competition breakdown, as a list of dicts. A
+#: list survives into ``raw_stats`` as JSON and is skipped by the season-totals
+#: table, the same way ``finishes`` already is.
+DETAIL_COLUMN = "bonus_detail"
+
+
+def detail_for(
+    competition: str, games: float, points: float, rule: PostseasonRule | None
+) -> dict:
+    """One competition's postseason line, for the profile window.
+
+    The share is carried alongside the figures rather than looked up again by
+    whatever renders them: a page that had to map a competition back to its
+    percentage would be a second copy of ``RULES``, and the two would drift the
+    first time a share moved -- which is exactly what happened to the Scoring
+    page when they split.
+    """
+    games, points = float(games or 0.0), float(points or 0.0)
+    return {
+        "competition": competition,
+        "games": games,
+        "points": points,
+        "share": rule.bonus_share if rule else 0.0,
+        "scalar": rule.scalar if rule else 0.0,
+        "adds": bonus_for(points, games, rule),
+    }
+
+
+def apply_bonus(
+    agg: pd.DataFrame, rule: PostseasonRule | None, competition: str = ""
+) -> pd.DataFrame:
     """Add ``postseason_bonus`` and ``total_points`` to a phase-split frame.
 
     With no rule, or where a player made no postseason appearance, the bonus is
@@ -216,4 +258,11 @@ def apply_bonus(agg: pd.DataFrame, rule: PostseasonRule | None) -> pd.DataFrame:
     out["postseason_bonus"] = po_rate * scalar
     out["games_played"] = (out["regular_games"] + out["postseason_games"]).astype(int)
     out["total_points"] = out["regular_points"] + out["postseason_bonus"]
+    # One competition here -- the league's own playoffs -- where soccer has
+    # several. Same shape either way, so the page renders one thing.
+    label = competition or (rule.competition if rule else "")
+    out[DETAIL_COLUMN] = [
+        [detail_for(label, games, points, rule)] if games else []
+        for games, points in zip(out["postseason_games"], out["postseason_points"])
+    ]
     return out

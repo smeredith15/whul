@@ -324,12 +324,14 @@ def asset_profiles(
 
     lines: dict[str, list[tuple[str, str]]] = {}
     finishes: dict[str, list[dict]] = {}
+    bonuses: dict[str, list[dict]] = {}
     notes: dict[str, list[str]] = {}
     raw_rows: dict[str, dict] = {}
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
             finishes[asset_id] = _finish_list(row)
+            bonuses[asset_id] = _bonus_list(row)
             notes[asset_id] = _scaling_notes(row)
             lines[asset_id] = _stat_lines(row)
             raw_rows[asset_id] = row
@@ -385,6 +387,7 @@ def asset_profiles(
                       if asset_id in scores.index else "—",
             "stats": lines.get(asset_id, []),
             "finishes": finishes.get(asset_id, []),
+            "bonus": bonuses.get(asset_id, []),
             "notes": notes.get(asset_id, []),
         }
     return out
@@ -405,6 +408,13 @@ STAT_SKIP = {
     # differential, which is neither a figure anyone can check nor one that
     # went into the score.
     "conference", "opp_conference",
+    # The postseason figures have a section of their own, where the share that
+    # prices them can be shown beside them. Loose in the season totals they are
+    # a row called "Postseason bonus" with no way to tell what it was a share
+    # of, which is the question the section exists to answer.
+    "bonus_detail", "bonus_matches", "bonus_points", "postseason_bonus",
+    "postseason_points", "postseason_games", "postseason_rate",
+    "regular_points", "regular_games",
 }
 
 #: Raw column names read as debug output. These are what they mean.
@@ -422,8 +432,11 @@ STAT_LABELS = {
     "mm_appearance": "NCAA tournament", "mm_wins": "NCAA tournament wins",
     "conf_tourney_wins": "Conference tournament wins",
     "conf_tourney_champ": "Conference tournament title",
-    "bye_points": "Bye credit", "appearance_points": "Appearances",
-    "goal_points": "Goals", "assists": "Assists", "goals": "Goals",
+    # Both are points, and both sat directly under the counts they are derived
+    # from: "Goals 2.0" above "Goals 8.0" invites the reader to decide which of
+    # the two is wrong.
+    "bye_points": "Bye credit", "appearance_points": "Points for appearances",
+    "goal_points": "Points for goals", "assists": "Assists", "goals": "Goals",
     "yellow": "Yellow cards", "red": "Red cards", "minutes": "Minutes",
     "starts": "Starts", "races_started": "Races started", "top_tens": "Top tens",
     "made_cut": "Cuts made", "primary_score": "Primary role",
@@ -479,6 +492,26 @@ def _finish_list(row: dict) -> list[dict]:
         except (TypeError, ValueError):
             return []
     return value if isinstance(value, list) else []
+
+
+def _bonus_list(row: dict) -> list[dict]:
+    """Each competition paying a rate bonus, with the share that prices it.
+
+    Kept out of the season totals deliberately. A row reading "Postseason bonus
+    11.2" says nothing about what it was 11.2 *of*, and the shares are no longer
+    one number: a Champions League run pays 5% of a season and the MLS Cup
+    playoffs pay 10%, and a player can be in both.
+    """
+    value = row.get("bonus_detail")
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value
+            if isinstance(entry, dict) and float(entry.get("games") or 0) > 0]
 
 
 def _scaling_notes(row: dict) -> list[str]:

@@ -130,9 +130,22 @@ DOMESTIC_CUPS = {
 #: A league's continental competition, where it is not UEFA's. Kept apart from
 #: DOMESTIC_CUPS because these are not domestic and not scored as one: they are
 #: paid as a bonus rather than counted, like the European competitions.
-CONTINENTAL_CUPS = {
-    "mls": ("concacafchampions",),
-}
+#: Empty, and deliberately: ESPN answered every CONCACAF Champions Cup roster
+#: request with a 404 across five seasons, and its scoreboard returned no
+#: matches on any of the 751 dates walked for it. A competition that can only
+#: ever contribute zero is worse than one left out, because zero reads as a
+#: quiet Champions Cup rather than as no data -- and walking it cost about
+#: eleven minutes of every benchmark run to learn nothing.
+#:
+#: Qualifying for it is still paid, on the team side, and is unaffected by
+#: this: the entrants are read from the published participant list rather than
+#: from match data. See whul.benchmark_sources._concacaf_entrants.
+#:
+#: To restore it once a working path is found: put ``"mls":
+#: ("concacafchampions",)`` back here and re-run `discover concacafchampions`
+#: to confirm the path first. The tier, the rule and the 2.5% share are all
+#: still in place and will start paying the moment rows arrive.
+CONTINENTAL_CUPS: dict[str, tuple[str, ...]] = {}
 
 
 def continental_for(league: str) -> tuple[str, ...]:
