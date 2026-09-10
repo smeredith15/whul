@@ -109,6 +109,49 @@ def _page(title: str, body: str, active: str, managers: list[str],
 INDIVIDUAL_CATEGORIES = {"Tennis", "PGA", "Motorsports", "Olympics"}
 
 
+#: A letter after the name, for the two categories that hold the same countries
+#: under the same names. England is rostered in both, and so are France and
+#: Spain: two rows reading "England", one above the other, with nothing to say
+#: which is which. The league is in the profile window, but a roster is read
+#: without clicking anything.
+#:
+#: Plain text rather than markup, because this name travels into a chart label,
+#: a tooltip and a `data-` attribute as well as into a table cell, and a name
+#: that is HTML in one of those places is a name that is escaped twice in
+#: another.
+NAME_MARKS = {"Men's Intl Soccer": "M", "Women's Intl Soccer": "W"}
+
+
+def marked_name(name: str, league: str) -> str:
+    """The display name, told apart from its opposite number where it has one."""
+    mark = NAME_MARKS.get(str(league))
+    return f"{name} ({mark})" if mark else str(name)
+
+
+def _under_a_team(asset_type: str, league: str, stats: dict,
+                  otherwise: tuple[str, str]) -> tuple[str, str]:
+    """The grey line under a club's name, which is never the name again.
+
+    A team's affiliation *is* its own name -- Arsenal plays for Arsenal -- so
+    the line that carries a player's position and club carried "Arsenal" under
+    "Arsenal" for every one of ninety team assets.
+
+    A soccer club gets something worth the space instead: its domestic league,
+    which the roster's own column does not say (a slot reads "Club Soccer Top
+    3"), and the continental competition it is in this season, which is the
+    difference between a Tuesday in Europe and a season of Saturdays.
+
+    Every other team gets nothing. They are drafted one league at a time and
+    the category beside them already says which, so the line would only repeat
+    it.
+    """
+    if asset_type != "Team":
+        return otherwise
+    if league not in fixtures.SOCCER:
+        return "", ""
+    return league, str(stats.get("continental") or "").strip()
+
+
 #: Leagues whose "role" is the same word for everyone in them, and whose tour
 #: is the thing worth saying instead. Every tennis player's role is "Singles".
 TOUR_AS_POSITION = ("ATP", "WTA")
@@ -352,15 +395,21 @@ def asset_profiles(
             str(info["asset_type"]), categories.get(asset_id, ""), league,
             who["team"],
         )
+        # After the corner, which reads the club's own name and must go on
+        # doing so -- the crest is looked up by it.
+        first, second = _under_a_team(
+            str(info["asset_type"]), league, raw_rows.get(asset_id, {}),
+            (who["position"], who["team"]),
+        )
         out[asset_id] = {
-            "name": escape(name),
+            "name": escape(marked_name(name, league)),
             "meta": escape(f"{league} · {info['asset_type']}"),
             # Each on its own, as well as in the line the window prints. A
             # table cell shows the position and the club and not the rest, and
             # splitting a formatted string back up to get at them is how the
             # two drift apart.
-            "position": escape(who["position"]),
-            "team": escape(who["team"]),
+            "position": escape(first),
+            "team": escape(second),
             "group": escape(who["group"]),
             # Carried so the tables can badge a name without working out again
             # what this already knows. Two derivations of one rule drift.
@@ -404,8 +453,9 @@ STAT_SKIP = {
     "finishes", "norm_key", "asset_type", "role_count", "contract_year",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
     # Shown as identity, above the figures. Left here as well they read as a
-    # statistic -- "Position  F" in a column of goals and assists.
-    "position", "role",
+    # statistic -- "Position  F" in a column of goals and assists, and
+    # "Continental  Champions League" under the club's own line saying so.
+    "position", "role", "continental",
     # An identifier, not a statistic. ESPN's conference is a number, so a
     # college team's line read "Conference 5" beside its wins and point
     # differential, which is neither a figure anyone can check nor one that
@@ -477,6 +527,11 @@ def _stat_lines(row: dict) -> list[tuple[str, str]]:
     out = []
     for column, value in row.items():
         if column in STAT_SKIP or value is None or value != value:
+            continue
+        # An empty string is a figure the scorer had nothing to put in, which
+        # is not the same as a zero and reads as neither: "Continental entry"
+        # followed by nothing at all.
+        if isinstance(value, str) and not value.strip():
             continue
         if isinstance(value, (list, dict)):
             continue
@@ -594,8 +649,13 @@ def _identity_lines(profile: dict | None, *tail: str) -> str:
     """
     if not profile:
         return ""
-    parts = [p for p in (profile.get("position", ""), profile.get("team", ""),
-                         *tail) if p]
+    # Deduplicated, because a club's own line now names its league and the
+    # results table appends the league too: "Premier League · Champions League
+    # · Premier League · Team" says one of those twice.
+    parts: list[str] = []
+    for part in (profile.get("position", ""), profile.get("team", ""), *tail):
+        if part and part not in parts:
+            parts.append(part)
     out = f'<span class="idl">{" · ".join(parts)}</span>' if parts else ""
     group = profile.get("group", "")
     return out + (f'<em class="grp">{group}</em>' if group else "")

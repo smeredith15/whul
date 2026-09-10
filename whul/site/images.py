@@ -24,6 +24,7 @@ deliberate rather than half-finished.
 
 from __future__ import annotations
 
+import re
 import shutil
 import unicodedata
 from html import escape
@@ -157,7 +158,11 @@ def copy_all(out: Path, source: Path | None = None) -> dict[str, int]:
 
 
 def _initials(name: str) -> str:
-    parts = [p for p in str(name).replace(".", " ").split() if p]
+    # A parenthesised marker is a disambiguator, not part of the name: an
+    # international side carries "(M)" or "(W)" to tell it from its opposite
+    # number, and a monogram reading "E(" is worse than no marker at all.
+    bare = re.sub(r"\s*\([^)]*\)", "", str(name))
+    parts = [p for p in bare.replace(".", " ").split() if p]
     if not parts:
         return "?"
     if len(parts) == 1:

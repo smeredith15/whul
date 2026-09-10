@@ -668,7 +668,12 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
 
     Returns ``{league: rows recorded}``. One request per day of the window per
     *sport*, not per league: the soccer feed carries every competition at once,
-    so seven requests cover all nine club-soccer categories.
+    so seven requests cover all nine club-soccer categories and both
+    international ones.
+
+    That window is a week, which is the right shape for a league in season and
+    the wrong one for a league that is not. A league with a season page of its
+    own is also asked for that, and the two are merged.
     """
     from whul.sources import flashscore_fixtures as feed
 
@@ -700,9 +705,27 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
         except Exception as exc:  # noqa: BLE001 -- one sport must not lose the rest
             print(f"  flashscore sport {sport}: {type(exc).__name__}: {exc}",
                   flush=True)
-            continue
+            upcoming = pd.DataFrame()
+        # The day feed is a week wide, which is no window at all for a league
+        # that opens in six weeks: the NHL and the NBA were blank through
+        # September while the feed worked perfectly. Their own season pages
+        # carry the schedule rather than the week, and the two are merged --
+        # the same match has the same id in both, so the overlap collapses.
+        seasonal = [lg for lg in leagues
+                    if feed.SEASON_PAGES.get(lg, (None,))[0] == sport]
+        for league in seasonal:
+            try:
+                found = feed.load_season(league, verbose=verbose)
+            except Exception as exc:  # noqa: BLE001 -- one page, not the run
+                print(f"  {league}: season page not read "
+                      f"({type(exc).__name__}: {exc})", flush=True)
+                continue
+            if not found.empty:
+                upcoming = pd.concat([upcoming, found], ignore_index=True)
         if upcoming.empty:
             continue
+        upcoming = upcoming.drop_duplicates(
+            subset=["match_uid"]).reset_index(drop=True)
 
         # Matched row by row, not name by name, because the country is what
         # decides. "Athletic Club" is Bilbao under SPAIN and a Serie B side

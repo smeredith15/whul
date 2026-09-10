@@ -37,6 +37,27 @@ class Tier(str, Enum):
     QUALIFYING = "qualifying"
 
 
+#: The continental competitions, best first, with the name a reader knows them
+#: by. Ordered because a club can appear in two in one season -- a Conference
+#: League place is decided by a Europa League knockout exit -- and the one worth
+#: naming is the one it went furthest in.
+CONTINENTAL_TIERS: tuple[tuple["Tier", str], ...] = (
+    (Tier.CHAMPIONS_LEAGUE, "Champions League"),
+    (Tier.EUROPA, "Europa League"),
+    (Tier.CONFERENCE, "Conference League"),
+    (Tier.CONTINENTAL_CUP, "CONCACAF Champions Cup"),
+)
+
+
+def continental_name(tier: "Tier | str") -> str:
+    """What to call a continental tier, or "" for one that is not."""
+    value = tier.value if isinstance(tier, Tier) else str(tier)
+    for candidate, name in CONTINENTAL_TIERS:
+        if candidate.value == value:
+            return name
+    return ""
+
+
 #: Win value by tier. Champions League is the premium; Europa, Conference and
 #: domestic cups sit together a rung below; the league is the baseline.
 WIN_POINTS: dict[Tier, int] = {

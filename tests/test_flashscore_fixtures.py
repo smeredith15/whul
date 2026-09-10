@@ -490,6 +490,11 @@ def pull_soccer(store, monkeypatch, raw, leagues, sport=None):
             pd.DataFrame(list(feed.iter_fixtures(raw))) if s == only
             else pd.DataFrame(),
     )
+    # The season pages are a separate fetch and a separate test; stubbed here
+    # so a unit test never reaches the network.
+    monkeypatch.setattr(
+        feed, "load_season",
+        lambda league, session=None, verbose=True: pd.DataFrame())
     return fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
                                     leagues=leagues, verbose=False)
 
@@ -591,3 +596,120 @@ def test_the_hockey_sport_id_is_not_one_of_the_others():
            flashscore.SPORT_BASKETBALL, flashscore.SPORT_BASEBALL}
     assert flashscore.SPORT_HOCKEY not in ids
     assert feed.SPORTS["NHL"] == flashscore.SPORT_HOCKEY
+
+
+# --- a league's own season page --------------------------------------------
+#
+# The day feed is a week wide, which is the right window for a league in
+# season and no window at all for one that is not. The NHL and the NBA open in
+# October: through September their next game is real, published and six weeks
+# away, and every cell was blank while the feed worked perfectly.
+
+def page_record(uid, home, away, when, status="1"):
+    """A match as a league page carries it: no ZA header above it, because the
+    page is one competition."""
+    code = f"AC÷{status}¬" if status is not None else ""
+    return f"AA÷{uid}¬AD÷{stamp(when)}¬{code}AE÷{home}¬AF÷{away}¬"
+
+
+def test_a_season_page_is_read_without_a_competition_header():
+    raw = payload(page_record("h1", "Edmonton Oilers", "Calgary Flames",
+                              date(2026, 10, 8)))
+    got = list(feed.iter_page_fixtures(raw, "NHL", "USA"))
+    assert len(got) == 1
+    assert got[0]["competition"] == "NHL"
+    assert got[0]["country"] == "USA"
+    assert got[0]["game_date"] == "2026-10-08"
+
+
+def test_a_page_record_with_no_status_is_still_a_fixture():
+    """A fixtures page carries fixtures. Dropping every record because the
+    status field moved would be a blank column reported as a working one."""
+    raw = payload(page_record("h1", "Edmonton Oilers", "Calgary Flames",
+                              date(2026, 10, 8), status=None))
+    assert len(list(feed.iter_page_fixtures(raw, "NHL", "USA"))) == 1
+
+
+def test_a_page_record_that_says_it_was_played_is_still_refused():
+    raw = payload(page_record("h1", "Edmonton Oilers", "Calgary Flames",
+                              date(2026, 10, 8), status="3"))
+    assert list(feed.iter_page_fixtures(raw, "NHL", "USA")) == []
+
+
+def test_the_season_page_fills_a_league_the_week_cannot_reach(monkeypatch):
+    """The case this exists for: nothing inside the day feed's window, and a
+    published schedule six weeks out."""
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    raw = payload(page_record("h1", "Edmonton Oilers", "Calgary Flames",
+                              date(2026, 10, 8)))
+    monkeypatch.setattr(feed, "load_upcoming",
+                        lambda s, days=None, verbose=True: pd.DataFrame())
+    monkeypatch.setattr(
+        feed, "load_season",
+        lambda league, session=None, verbose=True:
+            pd.DataFrame(list(feed.iter_page_fixtures(raw, "NHL", "USA")))
+            if league == "NHL" else pd.DataFrame(),
+    )
+    fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                             leagues=["NHL"], verbose=False)
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["team-oilers"]["opponent"] == "Calgary Flames"
+    assert got["team-oilers"]["date"] == "2026-10-08"
+
+
+def test_the_week_and_the_season_page_do_not_double_a_match(monkeypatch):
+    """Both carry the same match with the same id when the windows overlap."""
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    both = payload(match("h1", "Edmonton Oilers", "Calgary Flames", SOON))
+    monkeypatch.setattr(
+        feed, "load_upcoming",
+        lambda s, days=None, verbose=True:
+            pd.DataFrame(list(feed.iter_fixtures(
+                payload(header("USA: NHL"),
+                        match("h1", "Edmonton Oilers", "Calgary Flames", SOON)))))
+            if s == feed.SPORTS["NHL"] else pd.DataFrame(),
+    )
+    monkeypatch.setattr(
+        feed, "load_season",
+        lambda league, session=None, verbose=True:
+            pd.DataFrame(list(feed.iter_page_fixtures(both, "NHL", "USA"))),
+    )
+    fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                             leagues=["NHL"], verbose=False)
+    held = store.query("SELECT * FROM fixtures WHERE team_key = 'edmonton oilers'")
+    assert len(held) == 1
+
+
+def test_a_season_page_that_will_not_load_loses_nothing_else(monkeypatch):
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+
+    def boom(league, session=None, verbose=True):
+        raise RuntimeError("403")
+
+    monkeypatch.setattr(
+        feed, "load_upcoming",
+        lambda s, days=None, verbose=True:
+            pd.DataFrame(list(feed.iter_fixtures(
+                payload(header("USA: NHL"),
+                        match("h1", "Edmonton Oilers", "Calgary Flames", SOON)))))
+            if s == feed.SPORTS["NHL"] else pd.DataFrame(),
+    )
+    monkeypatch.setattr(feed, "load_season", boom)
+    fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                             leagues=["NHL"], verbose=False)
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["team-oilers"]["opponent"] == "Calgary Flames"
+
+
+def test_each_season_page_is_filed_under_the_sport_that_serves_it():
+    """The page is fetched inside the sport loop, so a league whose entry names
+    a different sport than `SPORTS` does would be fetched under neither."""
+    for league, (sport, path, _, _) in feed.SEASON_PAGES.items():
+        assert feed.SPORTS[league] == sport, league
+        assert path.endswith("/fixtures/"), league
