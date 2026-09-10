@@ -25,7 +25,7 @@ through the club the spreadsheet records against them.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -401,7 +401,21 @@ def owners(store, season: str) -> dict[str, str]:
     return _owned(store, season)[1]
 
 
-def board(store, season: str, as_of: date | str) -> list[dict]:
+#: How far ahead the board looks. A horizon rather than a default: everything
+#: past it is left out of the page entirely, not folded away.
+#:
+#: The first version had no horizon and put the whole stored schedule on the
+#: standings page -- six hundred ties across a hundred and thirteen days, and
+#: several thousand once the NHL and NBA season pages load. Collapsing the far
+#: days hid them without making them cheap: the markup was still parsed, the
+#: nodes were still built, and the page took a second to open. A week is what a
+#: manager checking fixtures is actually looking at, and the roster pages still
+#: answer "what does this one play next" for anything further out.
+BOARD_DAYS = 7
+
+
+def board(store, season: str, as_of: date | str,
+          days: int | None = BOARD_DAYS) -> list[dict]:
     """Every upcoming fixture an owned asset is in, with both sides named.
 
     The roster pages answer "what does this asset play next"; this answers the
@@ -417,12 +431,25 @@ def board(store, season: str, as_of: date | str) -> list[dict]:
 
     A tour event has one side and no opponent: a field is not a fixture, and
     everyone in the series shares the heading.
+
+    ``days`` is the horizon, counted from ``as_of`` inclusive. ``None`` is
+    every fixture held, which is what a caller reporting on the table wants and
+    is not what a page wants.
     """
+    where = "season = ? AND fixture_date >= ?"
+    params: list = [season, str(as_of)]
+    if days is not None:
+        try:
+            start = as_of if isinstance(as_of, date) else date.fromisoformat(str(as_of))
+        except ValueError:
+            start = None
+        if start is not None:
+            where += " AND fixture_date <= ?"
+            params.append(str(start + timedelta(days=days - 1)))
     rows = store.query(
         "SELECT league, team_key, fixture_date, opponent, home, competition "
-        "FROM fixtures WHERE season = ? AND fixture_date >= ? "
-        "ORDER BY fixture_date",
-        (season, str(as_of)),
+        f"FROM fixtures WHERE {where} ORDER BY fixture_date",
+        tuple(params),
     )
     if rows.empty:
         return []

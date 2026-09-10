@@ -1494,18 +1494,6 @@ def _slot_rows(bars: pd.DataFrame, managers: list[str]) -> tuple[list, dict, dic
     return rows, values, depth
 
 
-#: How far ahead the board opens by default. Everything is here -- a whole NFL
-#: season, and an NHL one once its schedule loads -- which is a hundred-odd
-#: headings and several thousand ties, and a page that opens with all of that
-#: expanded is a page nobody scrolls to the bottom of. The next few days are
-#: what somebody checking fixtures wants; the rest is one click away and its
-#: heading says how much is behind it.
-#:
-#: Counted from the first day that has a fixture rather than from today, so a
-#: board opening on a quiet week is not three empty headings.
-BOARD_OPEN_DAYS = 3
-
-
 #: What a harvested schedule calls the part of the season a game is in. These
 #: are the feed's own codes and they are not competitions: "REG" under a
 #: fixture says nothing a reader wants, and the two that do say something are
@@ -1618,19 +1606,18 @@ def _fixture_board(store, season, latest, profiles, managers) -> str:
         day_owners.setdefault(entry["date"], set()).update(entry["owners"])
 
     blocks = []
-    first = min(days) if days else ""
     for day, ties in days.items():
-        soon = False
         try:
             when = date.fromisoformat(day)
             heading = f"{when:%A} {when.day} {when:%B}"
-            soon = (when - date.fromisoformat(first)).days < BOARD_OPEN_DAYS
         except ValueError:
             heading = day
-        wide = " open" if soon else ""
+        # Open, all of them. A week is small enough to read down, and the
+        # `details` is here so a reader can shut a day rather than so the page
+        # can start out hiding six of them.
         held = escape(" ".join(sorted(day_owners[day])))
         blocks.append(
-            f'<details class="boardday"{wide} data-owners=" {held} ">'
+            f'<details class="boardday" open data-owners=" {held} ">'
             f'<summary>{escape(heading)}'
             f'<span class="count">{len(ties)}</span></summary>'
             f'{"".join(ties)}</details>'
@@ -1639,10 +1626,11 @@ def _fixture_board(store, season, latest, profiles, managers) -> str:
     return f"""
 <div class="card" id="fixtures">
   <h2>Who plays whom</h2>
-  <p class="sub">Every upcoming fixture with a drafted asset in it, both sides
-    named. The faces under each side are the assets somebody holds, badged with
-    their owner; click one for its profile. Pick an owner to see only the
-    fixtures they have somebody in.</p>
+  <p class="sub">The next {fixtures.BOARD_DAYS} days, every fixture with a
+    drafted asset in it, both sides named. The faces under each side are the
+    assets somebody holds, badged with their owner; click one for its profile.
+    Pick an owner to see only the fixtures they have somebody in. Anything
+    further out is on the roster pages, in each asset's own Next column.</p>
   <div class="chips" role="group" aria-label="Filter by owner">{chips}</div>
   <div class="board">{"".join(blocks)}</div>
   <p class="sub board-empty" hidden>No upcoming fixture has one of theirs in

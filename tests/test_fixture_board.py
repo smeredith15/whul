@@ -37,7 +37,7 @@ def rostered(store, asset_id, asset_type, name, league, manager="SS",
     }], ["slot_id", "start_date"])
 
 
-def fixture(league, team_key, opponent, home, when="2026-09-20",
+def fixture(league, team_key, opponent, home, when="2026-09-12",
             competition="Premier League"):
     return {"season": "2026-27", "league": league, "team_key": team_key,
             "fixture_date": when, "opponent": opponent, "home": home,
@@ -164,10 +164,10 @@ def test_the_board_is_ordered_by_date():
     store = open_store(":memory:")
     rostered(store, "team-arsenal", "Team", "Arsenal", "Premier League")
     held(store, "Flashscore/1",
-         fixture("Flashscore/1", "arsenal", "Everton", 1, when="2026-09-25"),
-         fixture("Flashscore/1", "arsenal", "Fulham", 1, when="2026-09-14"))
+         fixture("Flashscore/1", "arsenal", "Everton", 1, when="2026-09-13"),
+         fixture("Flashscore/1", "arsenal", "Fulham", 1, when="2026-09-10"))
     assert [e["date"] for e in fixtures.board(store, "2026-27", SOON)] == [
-        "2026-09-14", "2026-09-25"]
+        "2026-09-10", "2026-09-13"]
 
 
 # --- how it renders ---------------------------------------------------------
@@ -208,3 +208,32 @@ def test_a_hidden_row_is_actually_hidden():
     from whul.site import theme
 
     assert "[hidden] { display: none !important; }" in theme.STYLESHEET
+
+
+# --- the horizon ------------------------------------------------------------
+
+def test_only_the_next_week_is_on_the_board():
+    """A horizon rather than a default. The first version put the whole stored
+    schedule on the standings page -- a hundred and thirteen days of it -- and
+    collapsing the far ones hid them without making them cheap: the markup was
+    still parsed and the page took a second to open."""
+    store = open_store(":memory:")
+    rostered(store, "team-arsenal", "Team", "Arsenal", "Premier League")
+    held(store, "Flashscore/1",
+         # The day itself, the last day inside the week, and the first outside.
+         fixture("Flashscore/1", "arsenal", "Everton", 1, when="2026-09-08"),
+         fixture("Flashscore/1", "arsenal", "Fulham", 1, when="2026-09-14"),
+         fixture("Flashscore/1", "arsenal", "Brentford", 1, when="2026-09-15"))
+    assert [e["date"] for e in fixtures.board(store, "2026-27", SOON)] == [
+        "2026-09-08", "2026-09-14"]
+
+
+def test_a_caller_can_still_ask_for_everything():
+    """`coverage` and the fixtures command report on the table, not on a page,
+    and a horizon would understate what is held."""
+    store = open_store(":memory:")
+    rostered(store, "team-arsenal", "Team", "Arsenal", "Premier League")
+    held(store, "Flashscore/1",
+         fixture("Flashscore/1", "arsenal", "Brentford", 1, when="2026-11-15"))
+    assert fixtures.board(store, "2026-27", SOON) == []
+    assert len(fixtures.board(store, "2026-27", SOON, days=None)) == 1
