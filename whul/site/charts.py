@@ -1035,6 +1035,18 @@ SCRIPT = """\
         '<div class="nm">' + parts[0] + '</div>' +
         '<div class="meta">' + parts[1] + (moved ? ' \u00b7 ' + moved : '') +
         '</div></div></div>' +
+      // A benchmark is what every score in its group is divided by, so adopting
+      // a new one moves every score in that group at once. Differenced against
+      // the day before, that reads as a day's performance -- players were shown
+      // a point down having not kicked a ball.
+      (day.rescaled
+        ? '<div class="body"><p class="note">The 0-100 scale was re-frozen on ' +
+          'this day, so part of every change below is the new benchmark rather ' +
+          'than anything that happened on the pitch: raising a benchmark lowers ' +
+          'every score measured against it, by the same percentage across the ' +
+          'group. Raw points are unaffected — an asset that did nothing can ' +
+          'still move here.</p></div>'
+        : '') +
       '<div class="body"><table class="daylist"><thead><tr>' +
         '<th>What moved</th><th class="num">Change</th><th class="num">Score</th>' +
         '</tr></thead><tbody>' +

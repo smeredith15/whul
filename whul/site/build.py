@@ -1070,6 +1070,17 @@ def _day_breakdown(
     reader can see.
     """
     listed = [str(d) for d in days]
+    # Which scale each day was scored against. A benchmark is what every score
+    # in its group is divided by, so adopting a new one moves every score in
+    # that group at once -- and the panel differences consecutive days, which
+    # presents that as a day's performance. Three players were down about a
+    # point on the day the September scale was frozen, none of them having
+    # kicked a ball; the raw totals were identical and only the divisor moved.
+    scales = dict(store.query(
+        "SELECT as_of, MAX(benchmark_version) AS version FROM daily_scores "
+        "WHERE season = ? GROUP BY as_of", (season,),
+    ).itertuples(index=False, name=None))
+
     scores: dict[str, dict[str, tuple[float, str]]] = {}
     stats: dict[str, dict[str, dict]] = {}
     for day in listed:
@@ -1095,11 +1106,20 @@ def _day_breakdown(
         for key, (score, manager) in scores[day].items():
             totals[manager] = totals.get(manager, 0.0) + score
             was[manager] = was.get(manager, 0.0) + before.get(key, (0.0, ""))[0]
+        before_scale = scales.get(listed[index - 1]) if index else None
+        rescaled = bool(
+            index and before_scale and scales.get(day)
+            and scales.get(day) != before_scale
+        )
         for manager, total in totals.items():
             out[f"{manager}|{day}"] = {
                 "total": round(total, 1),
                 "delta": round(total - was[manager], 1) if index else None,
                 "since": listed[index - 1] if index else None,
+                # Set only where the two days were scored against different
+                # scales, which is the one case where a move here is not a
+                # performance at all.
+                "rescaled": rescaled,
                 "movers": [],
             }
         for key, (score, manager) in scores[day].items():
