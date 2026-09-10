@@ -2027,3 +2027,92 @@ def test_the_first_listed_day_is_never_marked(tmp_path):
                                      "2026-09-10": "2026-27-20260909-224543"})
     out = _day_breakdown(store, "2026-27", ["2026-09-09", "2026-09-10"], ["TG"])
     assert "TG|2026-09-09" not in out or not out["TG|2026-09-09"]["rescaled"]
+
+
+# --- a slot moving between the bench and the counting set --------------------
+
+
+def bench_store(tmp_path, counts_before: int, counts_now: int):
+    """One asset, benched or counting on each of two days."""
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("managers", [{"manager_id": "SM", "display_name": "SM",
+                               "active": 1}], ["manager_id"])
+    store.upsert("roster_slots", [
+        {"slot_id": "s1", "manager_id": "SM", "season": "2026-27",
+         "category": "Club Soccer", "asset_type": "Player", "slot_index": 1},
+        # A second slot that counts on both days, so the panel has an entry to
+        # attach movers to even when the first is benched throughout.
+        {"slot_id": "s2", "manager_id": "SM", "season": "2026-27",
+         "category": "Club Soccer", "asset_type": "Player", "slot_index": 2},
+    ], ["slot_id"])
+    store.upsert("assets", [
+        {"asset_id": "a1", "asset_type": "Player", "display_name": "Haaland",
+         "league": "Premier League", "norm_key": "Premier League",
+         "created_at": "2026-08-21"},
+        {"asset_id": "a2", "asset_type": "Player", "display_name": "Someone",
+         "league": "Premier League", "norm_key": "Premier League",
+         "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    store.upsert("slot_scores", [
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-09",
+         "asset_id": "a1", "score": 9.7, "counts": counts_before},
+        {"slot_id": "s1", "season": "2026-27", "as_of": "2026-09-10",
+         "asset_id": "a1", "score": 17.0, "counts": counts_now},
+        {"slot_id": "s2", "season": "2026-27", "as_of": "2026-09-09",
+         "asset_id": "a2", "score": 5.0, "counts": 1},
+        {"slot_id": "s2", "season": "2026-27", "as_of": "2026-09-10",
+         "asset_id": "a2", "score": 6.0, "counts": 1},
+    ], ["slot_id", "as_of"])
+    store.conn.commit()
+    return store
+
+
+def movers_for(store, asset="a1"):
+    from whul.site.build import _day_breakdown
+
+    out = _day_breakdown(store, "2026-27",
+                         ["2026-09-09", "2026-09-10"], ["SM"])
+    day = out.get("SM|2026-09-10", {"movers": []})
+    return next((m for m in day["movers"] if m["asset"] == asset), None)
+
+
+def test_coming_off_the_bench_is_not_a_days_performance(tmp_path):
+    """Haaland showed +17.0 -- a whole season -- for having been benched on the
+    9th at 9.69 and counted on the 10th at 17.04. The panel asked only for
+    counting rows, found none for him the day before, and read his entire score
+    as the day's gain."""
+    mover = movers_for(bench_store(tmp_path, counts_before=0, counts_now=1))
+    # The contribution really did rise by the whole score: that is what the
+    # manager's total did, and the deltas have to explain it.
+    assert mover["delta"] == 17.0
+    # But what he actually did is carried beside it, and the row says which.
+    assert mover["entered"] is True and mover["left"] is False
+    assert mover["own"] == 7.3
+
+
+def test_dropping_to_the_bench_is_shown_at_all(tmp_path):
+    """Iterating only the day's counting rows left a benched slot with nothing
+    to explain it: the manager's total fell and no row said why."""
+    mover = movers_for(bench_store(tmp_path, counts_before=1, counts_now=0))
+    assert mover is not None, "a slot that left the counting set must appear"
+    assert mover["delta"] == -9.7 and mover["left"] is True
+
+
+def test_an_asset_that_counted_throughout_is_not_marked(tmp_path):
+    """The note has to mean something, so an ordinary scoring day must not
+    carry it."""
+    mover = movers_for(bench_store(tmp_path, counts_before=1, counts_now=1))
+    assert mover["delta"] == 7.3
+    assert mover["entered"] is False and mover["left"] is False
+
+
+def test_the_movers_explain_the_managers_change(tmp_path):
+    """Which is the point of the panel. Before, a swap counted one side only."""
+    from whul.site.build import _day_breakdown
+
+    store = bench_store(tmp_path, counts_before=0, counts_now=1)
+    day = _day_breakdown(store, "2026-27",
+                         ["2026-09-09", "2026-09-10"], ["SM"])["SM|2026-09-10"]
+    assert round(sum(m["delta"] for m in day["movers"]), 1) == day["delta"]

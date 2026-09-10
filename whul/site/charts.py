@@ -1015,10 +1015,26 @@ SCRIPT = """\
       detail = (mover.line || []).join(' \u00b7 ');
     }
     var sign = mover.delta > 0 ? '+' : '';
+    // A slot moving between the bench and the counting set changes what this
+    // asset contributes by its whole score, in one direction or the other, and
+    // that is not a performance. Haaland showed a season's 17.0 in a day for
+    // having come off the bench with 9.7 already on him.
+    var swap = '';
+    if (mover.entered || mover.left) {
+      // No pronoun: half these rows are clubs, and for the players the feed
+      // does not say. A figure of 0.0 is left off entirely -- "0.0 earned on
+      // the day" is a sentence about nothing.
+      var own = (mover.own === null || mover.own === undefined ||
+                 Math.abs(mover.own) < 0.05) ? null :
+        (mover.own > 0 ? '+' : '') + mover.own.toFixed(1) + ' earned on the day';
+      swap = (mover.entered ? 'came into the counting slots' : 'dropped to the bench') +
+             (own ? ' \u00b7 ' + own : '');
+    }
+    var note = [detail, swap].filter(Boolean).join(' \u00b7 ');
     return '<tr>' +
       '<td><button class="assetlink" data-asset="' + mover.asset + '">' +
         (a.name || mover.asset) + '</button>' +
-        (detail ? '<div class="micro">' + detail + '</div>' : '') + '</td>' +
+        (note ? '<div class="micro">' + note + '</div>' : '') + '</td>' +
       '<td class="num gain">' + sign + mover.delta.toFixed(1) + '</td>' +
       '<td class="num">' + mover.points.toFixed(1) + '</td></tr>';
   }
