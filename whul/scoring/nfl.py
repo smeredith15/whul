@@ -12,7 +12,9 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
-from whul.scoring.postseason import POSTSEASON, REGULAR, RULES, apply_bonus, split_phases
+from whul.scoring.postseason import (
+    POSTSEASON, REGULAR, RULES, apply_bonus, regular_totals, split_phases,
+)
 
 SCORING_POSITIONS = ("QB", "RB", "WR", "TE")
 
@@ -92,7 +94,11 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
         work.groupby(keys, as_index=False)["team"]
         .agg(lambda s: "/".join(sorted(set(x for x in s if x))))
     )
-    agg = apply_bonus(phases.merge(teams, on=keys, how="left"), RULES["NFL"] if postseason else None)
+    counting = regular_totals(work, keys, PLAYER_WEIGHTS, work["phase"])
+    agg = apply_bonus(
+        phases.merge(teams, on=keys, how="left").merge(counting, on=keys, how="left"),
+        RULES["NFL"] if postseason else None,
+    )
     agg["league"] = "NFL"
     agg["role"] = agg["position"]
     return agg[agg["total_points"] > 0].reset_index(drop=True)

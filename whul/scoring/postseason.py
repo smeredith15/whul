@@ -167,6 +167,33 @@ def split_phases(
     return out
 
 
+def regular_totals(
+    rows: pd.DataFrame, keys: list[str], columns, phase: pd.Series
+) -> pd.DataFrame:
+    """The counting stats behind a player's regular season, summed.
+
+    ``split_phases`` reduces a season to points and games, which is all the
+    bonus arithmetic needs and is why the raw figures were never carried past
+    it. On the page that left an NFL profile reading "Total points 22.2, Games
+    played 1.0" and nothing else -- no yards, no touchdowns, nothing a manager
+    could check against a box score.
+
+    Regular-phase rows only, so the totals line up with ``regular_points``
+    beside them. What happened in the postseason is carried separately, by the
+    rule that prices it.
+    """
+    work = rows.copy()
+    work["_phase"] = phase.to_numpy()
+    wanted = [c for c in columns if c in work.columns]
+    if not wanted:
+        return work[keys].drop_duplicates()
+    return (
+        work[work["_phase"] == REGULAR]
+        .groupby(keys, as_index=False)[wanted]
+        .sum()
+    )
+
+
 #: Which rule pays for a club soccer competition that is *not* part of the
 #: benchmark. A tier absent here is ordinary football: it counts in the season
 #: total and in the pool the benchmark is drawn from.
