@@ -30,6 +30,7 @@ import pandas as pd
 
 from whul import fixtures
 from whul import resolve as resolver
+from whul.config.league import covered_by
 from whul.normalize import apply_benchmarks
 from whul.pipeline import write_daily_scores
 from whul.store import benchmarks as store_benchmarks
@@ -124,6 +125,7 @@ def ingest(
     if getattr(source, "cumulative", False):
         mine = _against_the_league_year(store, mine, source, season, as_of, report)
 
+    _settle_umbrella_league(store, mine, report)
     _report_shrinkage(store, mine, source, season, as_of, report)
     mine = _keep_competitions_the_pull_missed(
         store, mine, source, season, as_of, report)
@@ -836,6 +838,74 @@ def _normalized(name: str) -> str:
     from whul.resolve import normalize_team
 
     return normalize_team(str(name))
+
+
+def _settle_umbrella_league(store: Store, mine: pd.DataFrame, report) -> None:
+    """Move an asset filed under a roster category onto the league it plays in.
+
+    The spreadsheet's league column stands in with the category when it is
+    blank, so six players arrived filed as "Tennis" and "Motorsports" -- which
+    are what a manager drafts into, not what anybody competes in. Their scores
+    were never wrong: the scorer reads the feed's own league and normalizes ATP
+    against ATP. Everything that reads the asset record was: the wrong badge,
+    the wrong line under the name, and a filter chip for a league nobody is in.
+
+    Corrected from the feed, which is the same precedence the profile line
+    already uses -- the feed is the thing that knows, the sheet is the thing
+    somebody typed. Only ever from an umbrella onto one of its own members, so
+    a feed naming something unexpected cannot reclassify anybody: a Premier
+    League player is not moved to La Liga by this, whatever the feed says.
+
+    The asset id is left alone. It was derived from the league at import and so
+    still says `player-tennis-taylor-fritz`, which is ugly and is not worth the
+    cost of changing: every score, every stat row and every photograph is
+    keyed on it.
+    """
+    if mine is None or mine.empty or "league" not in mine.columns:
+        return
+    if "asset_id" not in mine.columns:
+        return
+    named = {
+        str(row.asset_id): str(row.league)
+        for row in mine.itertuples()
+        if str(getattr(row, "asset_id", "")) and str(getattr(row, "league", ""))
+    }
+    if not named:
+        return
+    held = store.query(
+        "SELECT asset_id, league, norm_key FROM assets WHERE asset_id IN "
+        f"({','.join('?' * len(named))})",
+        tuple(named),
+    )
+    moves = []
+    for row in held.itertuples():
+        was, now = str(row.league), named.get(str(row.asset_id), "")
+        if was == now or now not in covered_by(was):
+            continue
+        moves.append({
+            "asset_id": str(row.asset_id), "league": now,
+            # The norm_key follows unless somebody has set it to something
+            # else: it is the league for every group that is not split by
+            # position, and those are spelled "NFL_QB" rather than "NFL".
+            "norm_key": now if str(row.norm_key) == was else str(row.norm_key),
+        })
+    if not moves:
+        return
+    # An UPDATE, not an upsert: an upsert is an INSERT with a conflict clause
+    # and would have to supply every NOT NULL column of a row that already
+    # exists and is otherwise correct.
+    with store.transaction():
+        store.conn.executemany(
+            "UPDATE assets SET league = :league, norm_key = :norm_key "
+            "WHERE asset_id = :asset_id",
+            moves,
+        )
+    named_moves = ", ".join(f"{m['asset_id']} -> {m['league']}" for m in moves[:6])
+    report.problems.append(
+        f"{len(moves)} asset(s) were filed under a roster category rather than "
+        f"the league they play in, and have been moved: {named_moves}"
+        + (" ..." if len(moves) > 6 else "")
+    )
 
 
 def _harvest(source, raw: pd.DataFrame, as_of: date, seasons, upcoming) -> None:

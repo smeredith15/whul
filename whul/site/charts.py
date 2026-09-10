@@ -763,9 +763,14 @@ SCRIPT = """\
     var shown = 0;
     table.querySelectorAll('tbody tr').forEach(function (row) {
       var ok = true;
-      ['kind', 'league'].forEach(function (name) {
-        if (anyPicked(picked[name]) && !picked[name][row.dataset[name]]) ok = false;
-      });
+      if (anyPicked(picked.kind) && !picked.kind[row.dataset.kind]) ok = false;
+      // A league chip matches its own rows; an umbrella chip matches every
+      // league under it. "Tennis" is not a league anybody plays in -- it is
+      // the slot a manager drafts into -- so picking it means ATP and WTA,
+      // and picking ATP still means ATP.
+      if (anyPicked(picked.league)
+          && !picked.league[row.dataset.league]
+          && !(row.dataset.group && picked.league[row.dataset.group])) ok = false;
       if (picked.scoring.yes) {
         var cell = row.querySelector('[data-score]');
         if (!cell || Number(cell.dataset.score) <= 0) ok = false;
