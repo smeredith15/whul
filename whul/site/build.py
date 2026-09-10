@@ -109,6 +109,25 @@ def _page(title: str, body: str, active: str, managers: list[str],
 INDIVIDUAL_CATEGORIES = {"Tennis", "PGA", "Motorsports", "Olympics"}
 
 
+#: A letter after the name, for the two categories that hold the same countries
+#: under the same names. England is rostered in both, and so are France and
+#: Spain: two rows reading "England", one above the other, with nothing to say
+#: which is which. The league is in the profile window, but a roster is read
+#: without clicking anything.
+#:
+#: Plain text rather than markup, because this name travels into a chart label,
+#: a tooltip and a `data-` attribute as well as into a table cell, and a name
+#: that is HTML in one of those places is a name that is escaped twice in
+#: another.
+NAME_MARKS = {"Men's Intl Soccer": "M", "Women's Intl Soccer": "W"}
+
+
+def marked_name(name: str, league: str) -> str:
+    """The display name, told apart from its opposite number where it has one."""
+    mark = NAME_MARKS.get(str(league))
+    return f"{name} ({mark})" if mark else str(name)
+
+
 #: Leagues whose "role" is the same word for everyone in them, and whose tour
 #: is the thing worth saying instead. Every tennis player's role is "Singles".
 TOUR_AS_POSITION = ("ATP", "WTA")
@@ -353,7 +372,7 @@ def asset_profiles(
             who["team"],
         )
         out[asset_id] = {
-            "name": escape(name),
+            "name": escape(marked_name(name, league)),
             "meta": escape(f"{league} · {info['asset_type']}"),
             # Each on its own, as well as in the line the window prints. A
             # table cell shows the position and the club and not the rest, and

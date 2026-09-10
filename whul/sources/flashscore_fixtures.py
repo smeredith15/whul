@@ -41,8 +41,9 @@ import pandas as pd
 import requests
 
 from whul.sources.flashscore import (
-    REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_HOCKEY, SPORT_SOCCER,
-    SPORT_TENNIS, _field, _get, parse_tournament_header, slug_to_name,
+    PAGE_HEADERS, REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_HOCKEY,
+    SPORT_SOCCER, SPORT_TENNIS, TIMEOUT, _field, _get,
+    parse_tournament_header, slug_to_name,
 )
 
 #: Which sport id serves each league's fixtures.
@@ -251,6 +252,187 @@ def load_upcoming(sport: int, days: range = AHEAD, verbose: bool = True) -> pd.D
         return pd.DataFrame()
     frame = pd.DataFrame(rows)
     return frame.drop_duplicates(subset=["match_uid"]).reset_index(drop=True)
+
+
+# --- a league's own season page --------------------------------------------
+#
+# The day feed above is a week wide, which is the right window for a league in
+# season and no window at all for one that is not. The NHL and the NBA open in
+# October: through September their next game is real, published and six weeks
+# away, and every cell was blank while the feed was working perfectly.
+#
+# Their own fixtures page carries the schedule instead of the week. It is the
+# same record format -- `whul.sources.flashscore` already reads `AA÷` blocks
+# off a tournament page for the tennis rounds -- with one difference that
+# matters: a league page is one competition, so it has no `ZA÷` header and the
+# competition and country have to be supplied rather than read.
+
+#: League -> (sport, path, competition, country). The path is what follows the
+#: host; both hosts below are tried, because the page a reader is given is on
+#: the regional one and the feed this module otherwise talks to is not.
+SEASON_PAGES: dict[str, tuple[int, str, str, str]] = {
+    "NHL": (SPORT_HOCKEY, "/hockey/usa/nhl/fixtures/", "NHL", "USA"),
+    "NBA": (SPORT_BASKETBALL, "/basketball/usa/nba/fixtures/", "NBA", "USA"),
+}
+
+#: Tried in order. The regional host is first because it is the one the pages
+#: are published on; the international host is the fallback and is the one the
+#: rest of this module uses.
+PAGE_HOSTS = ("https://www.flashscoreusa.com", "https://www.flashscore.com")
+
+
+def iter_page_fixtures(raw: str, competition: str = "", country: str = ""):
+    """One dict per match on a league's own fixtures page.
+
+    Two differences from the day feed, both because a league page is a single
+    competition rather than the whole world:
+
+    The competition and country are given rather than read from a header, so a
+    page that renders its title differently still produces rows the country
+    guard can judge.
+
+    A record with no status is kept. The day feed carries every state at once
+    and the status is the only thing separating a fixture from a result; a
+    fixtures page carries fixtures, and dropping every record because the
+    status field moved would be a blank column reported as a working one. A
+    status that *is* present and says the match has been played is still
+    refused, and `harvest` drops anything before the day it is asked about.
+    """
+    for segment in (s for s in str(raw).split("~") if s):
+        if not segment.startswith("AA÷"):
+            continue
+        status = _field(segment, "AC")
+        if status and status not in STATUS_UPCOMING:
+            continue
+        home = (_field(segment, "AE") or "").strip()
+        away = (_field(segment, "AF") or "").strip()
+        when = _when(segment)
+        if not home or not away or when is None:
+            continue
+        if RESERVE_PATTERN.search(home) or RESERVE_PATTERN.search(away):
+            continue
+        yield {
+            "match_uid": _field(segment, "AA") or "",
+            "game_date": when.isoformat(),
+            "home_team": home,
+            "away_team": away,
+            "competition": competition,
+            "country": country,
+            "home_score": None,
+            "away_score": None,
+        }
+
+
+def fetch_page(path: str, session=None, verbose: bool = True) -> str:
+    """One league page's HTML, from whichever host answers."""
+    client = session or requests
+    for host in PAGE_HOSTS:
+        try:
+            response = client.get(f"{host}{path}", headers=PAGE_HEADERS,
+                                  timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            if verbose:
+                print(f"  {host}{path}: {type(exc).__name__}", flush=True)
+            continue
+        if response.status_code != 200:
+            if verbose:
+                print(f"  {host}{path}: HTTP {response.status_code}", flush=True)
+            continue
+        time.sleep(REQUEST_PAUSE)
+        return response.text
+    return ""
+
+
+def load_season(league: str, session=None, verbose: bool = True) -> pd.DataFrame:
+    """A league's published schedule, as far ahead as its page renders.
+
+    Deliberately not paginated. The page loads a chunk and offers a button for
+    the rest, and a scraper that drives that button is a scraper that breaks
+    when the button changes. What the first render carries is weeks of
+    fixtures, which is more than enough to fill a column that currently says
+    nothing -- and the range it covers is printed, so a short answer is visible
+    rather than assumed.
+    """
+    if league not in SEASON_PAGES:
+        return pd.DataFrame()
+    _, path, competition, country = SEASON_PAGES[league]
+    raw = fetch_page(path, session, verbose=verbose)
+    if not raw:
+        if verbose:
+            print(f"  {league}: no season page answered, so no fixtures beyond "
+                  f"the week the day feed covers", flush=True)
+        return pd.DataFrame()
+    rows = list(iter_page_fixtures(raw, competition, country))
+    if verbose:
+        # Loudly, because the failure this cannot see is a page that answered
+        # with a shape this does not read: 200 OK, plenty of bytes, no rows.
+        seen = raw.count("AA\u00f7")
+        if not rows:
+            print(f"  {league}: the season page answered with {len(raw):,} "
+                  f"byte(s) and {seen} match record(s), none of which parsed. "
+                  f"The record format has moved; run `fixtures --probe`.",
+                  flush=True)
+        else:
+            days = sorted({r["game_date"] for r in rows})
+            print(f"  {league}: {len(rows)} fixture(s) on the season page, "
+                  f"{days[0]} to {days[-1]}", flush=True)
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    return frame.drop_duplicates(subset=["match_uid"]).reset_index(drop=True)
+
+
+def probe_season(league: str) -> dict:
+    """What a league's own fixtures page returns, and how far it reaches.
+
+    Separate from the day-feed probe because it fails separately: a different
+    host, a different response shape, and a page that renders its schedule in
+    chunks. The three things worth seeing are whether the page answered at all,
+    whether its records parsed, and what date the last one is -- the third
+    because a page that renders one chunk is the expected case and a page that
+    renders one *day* is a fault dressed as an answer.
+    """
+    out: dict[str, object] = {"league": league}
+    if league not in SEASON_PAGES:
+        out["result"] = "no season page is configured for this league"
+        return out
+    sport, path, competition, country = SEASON_PAGES[league]
+    out["sport"], out["path"] = sport, path
+    raw = ""
+    for host in PAGE_HOSTS:
+        try:
+            response = requests.get(f"{host}{path}", headers=PAGE_HEADERS,
+                                    timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            out[host] = f"FAILED: {type(exc).__name__}"
+            continue
+        out[host] = f"HTTP {response.status_code}, {len(response.text):,} bytes"
+        if response.status_code == 200 and not raw:
+            raw = response.text
+    if not raw:
+        out["result"] = "no host answered"
+        return out
+
+    out["match_records"] = raw.count("AA\u00f7")
+    out["records_with_AE"] = raw.count("AE\u00f7")
+    out["status_codes"] = sorted({
+        _field(s, "AC") for s in raw.split("~") if s.startswith("AA\u00f7")
+        and _field(s, "AC")
+    })[:10]
+    rows = list(iter_page_fixtures(raw, competition, country))
+    out["parsed"] = len(rows)
+    if rows:
+        days = sorted({r["game_date"] for r in rows})
+        out["first"], out["last"] = days[0], days[-1]
+        out["days_covered"] = len(days)
+        out["sample"] = [
+            f"{r['game_date']}  {r['home_team']} v {r['away_team']}"
+            for r in rows[:6]
+        ]
+    else:
+        out["result"] = ("the page answered but nothing parsed -- the record "
+                         "format has moved")
+    return out
 
 
 def probe(sport: int = SPORT_SOCCER, days: range = range(0, 3)) -> dict:

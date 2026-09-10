@@ -948,6 +948,15 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
     if args.probe:
         from whul.sources import flashscore_fixtures as feed
 
+        def report(found: dict) -> None:
+            for key, value in found.items():
+                if isinstance(value, list):
+                    print(f"  {key}:")
+                    for item in value:
+                        print(f"      {item}")
+                else:
+                    print(f"  {key:<22} {value}")
+
         for name, sport in (("soccer", feed.SPORT_SOCCER),
                             ("basketball", feed.SPORT_BASKETBALL),
                             ("baseball", feed.SPORT_BASEBALL),
@@ -956,13 +965,21 @@ def cmd_fixtures(args: argparse.Namespace) -> int:
             if args.sport and args.sport != name:
                 continue
             print(f"\nFlashscore fixtures probe -- {name}\n")
-            for key, value in feed.probe(sport).items():
-                if isinstance(value, list):
-                    print(f"  {key}:")
-                    for item in value:
-                        print(f"      {item}")
-                else:
-                    print(f"  {key:<22} {value}")
+            report(feed.probe(sport))
+
+        # And the season pages, which fail separately: a different host, a
+        # different response shape, and a schedule rendered in chunks. This is
+        # where a league that opens in six weeks gets its fixtures, so a day
+        # feed working perfectly says nothing about whether these do.
+        for league, (sport, *_) in sorted(feed.SEASON_PAGES.items()):
+            if args.sport and feed.SPORTS.get(league) != {
+                "soccer": feed.SPORT_SOCCER, "basketball": feed.SPORT_BASKETBALL,
+                "baseball": feed.SPORT_BASEBALL, "hockey": feed.SPORT_HOCKEY,
+                "tennis": feed.SPORT_TENNIS,
+            }.get(args.sport):
+                continue
+            print(f"\nFlashscore season page -- {league}\n")
+            report(feed.probe_season(league))
         return 0
 
     if args.fetch:
@@ -2214,8 +2231,9 @@ def main(argv: list[str] | None = None) -> int:
     fixt.add_argument("--season", default="2026-27", help="season to report on")
     fixt.add_argument("--date", help="YYYY-MM-DD to count from (default: today)")
     fixt.add_argument("--fetch", action="store_true",
-                      help="pull upcoming MLB, NBA and club soccer matches from "
-                           "Flashscore before reporting")
+                      help="pull upcoming matches from Flashscore before "
+                           "reporting -- the next week of every sport, plus "
+                           "the NHL's and NBA's own season pages")
     fixt.add_argument("--probe", action="store_true",
                       help="report what the Flashscore feed returns, without "
                            "touching the database")

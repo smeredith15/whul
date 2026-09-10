@@ -316,6 +316,25 @@ def test_a_monogram_uses_initials():
     assert images._initials("") == "?"
 
 
+def test_a_disambiguating_marker_is_not_part_of_the_monogram():
+    """An international side carries "(M)" or "(W)" to tell it from its
+    opposite number. A monogram reading "E(" is worse than no marker."""
+    assert images._initials("England (W)") == "EN"
+    assert images._initials("Oakhurst Rovers (M)") == "OR"
+
+
+def test_the_two_international_categories_are_told_apart_by_name():
+    """England is rostered in both, under the same name. Two rows reading
+    "England", one above the other, with nothing to say which is which."""
+    from whul.site.build import marked_name
+
+    assert marked_name("England", "Men's Intl Soccer") == "England (M)"
+    assert marked_name("England", "Women's Intl Soccer") == "England (W)"
+    # Everywhere else the league is already the row's own column.
+    assert marked_name("Arsenal", "Premier League") == "Arsenal"
+    assert marked_name("Rory McIlroy", "PGA") == "Rory McIlroy"
+
+
 def test_a_supplied_photo_is_used_and_published(tmp_path):
     source = tmp_path / "img"
     (source / "asset").mkdir(parents=True)
