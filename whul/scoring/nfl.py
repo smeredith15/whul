@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from whul.scoring.base import resolve_num, resolve_str
+from whul.scoring.base import resolve_num, resolve_str, settled_seasons
 from whul.scoring.postseason import (
     POSTSEASON, REGULAR, RULES, apply_bonus, regular_totals, split_phases,
 )
@@ -174,8 +174,20 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
     summary = summary.sort_values(
         ["reg_wins", "point_diff"], ascending=False, kind="mergesort"
     )
+    # Nobody has won a division until the regular season has been played. Left
+    # ungated, the leader of whatever has been played so far took the title and
+    # its fifteen points -- and in week one, when a division holds one team that
+    # has played at all, that team is the leader whether it won or lost. New
+    # England lost its opener and was awarded a division title; the fifteen
+    # points were its entire score.
+    #
+    # A completed season is unaffected, which is what keeps the benchmarks
+    # valid: every regular-season game in it has been played, so the gate is
+    # open and the title is awarded exactly as before.
+    settled = settled_seasons(schedules)
     summary["div_champ"] = (
-        summary.groupby(["season", "team_division"]).cumcount() == 0
+        (summary.groupby(["season", "team_division"]).cumcount() == 0)
+        & summary["season"].astype(int).isin(settled)
     ).astype(int)
 
     summary["total_points"] = sum(summary[c] * w for c, w in TEAM_WEIGHTS.items())

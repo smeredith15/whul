@@ -10,12 +10,21 @@ import pytest
 from whul.scoring.ncaa import score_basketball, score_diamond, score_football
 
 
-def game(home, away, hs, as_, *, hc="ACC", ac="ACC", season_type=2, notes="", season=2025):
+def game(home, away, hs, as_, *, hc="ACC", ac="ACC", season_type=2, notes="",
+         season=2025, game_date="2025-11-15"):
+    """One played game.
+
+    The date is not decoration. A conference title is only awarded once the
+    season's last game has been played, and a frame with no dates on it cannot
+    say whether that has happened -- so these carry one, in the past, which is
+    what a hand calculation of a finished season means.
+    """
     return {
         "season": season, "season_type": season_type, "notes": notes,
         "home_team": home, "away_team": away,
         "home_conference": hc, "away_conference": ac,
         "home_score": hs, "away_score": as_, "completed": True,
+        "game_date": game_date,
     }
 
 
@@ -356,3 +365,29 @@ def test_a_team_with_no_exemplar_in_the_frame_is_left_alone():
     ]))
     nd = games[games["team"] == "Notre Dame Fighting Irish"].iloc[0]
     assert nd["conference"] == "18", "unchanged, since no ACC team was present"
+
+
+# --- a title is a season outcome, not a running one -------------------------
+
+def test_no_conference_title_until_the_season_has_been_played():
+    """Miami was carrying six points for an ACC title on a 1-0 conference
+    record in week two: whoever won the first conference game of the year took
+    the whole pool."""
+    rows = pad([game("MIA", "FSU", 30, 10, game_date="2025-09-06")], 10,
+               game_date="2025-09-06")
+    rows.append({
+        "season": 2025, "season_type": 2, "notes": "",
+        "home_team": "MIA", "away_team": "FSU",
+        "home_conference": "ACC", "away_conference": "ACC",
+        "home_score": None, "away_score": None, "completed": False,
+        "game_date": "2125-11-29",
+    })
+    out = score_football(pd.DataFrame(rows)).set_index("team")
+    assert out.loc["MIA", "conf_wins"] == 1
+    assert out.loc["MIA", "pts_reg_champ"] == 0.0
+
+
+def test_the_conference_title_lands_once_the_season_is_played_out():
+    rows = pad([game("MIA", "FSU", 30, 10)], 10)
+    out = score_football(pd.DataFrame(rows)).set_index("team")
+    assert out.loc["MIA", "pts_reg_champ"] > 0
