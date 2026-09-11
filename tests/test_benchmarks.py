@@ -1063,3 +1063,53 @@ def test_a_run_with_no_season_counts_says_nothing_about_them():
     run = benchmarks.BenchmarkRun(league="NFL", asset_type="Player")
     assert "rows a season" not in str(run)
     assert "left out of the pool" not in str(run)
+
+
+def _pool_rows(points: list[tuple[str, int, float]]) -> pd.DataFrame:
+    return pd.DataFrame([
+        {"team": team, "season": season, "total_points": pts,
+         "league": "Premier League"}
+        for team, season, pts in points
+    ])
+
+
+def test_a_benchmark_names_the_rows_it_rests_on():
+    """A benchmark is a number with no provenance attached, and the review has
+    had to guess at what moved it. La Liga 2022-23 came back five fixtures
+    short with Real Madrid among the clubs affected, and whether that could
+    reach the 99th percentile of ninety-nine rows depended entirely on whether
+    Real Madrid's season was one of the two it is interpolated between."""
+    from whul import benchmarks
+
+    rows = _pool_rows([("Alpha", 2024, 300.0), ("Beta", 2024, 280.0),
+                       ("Gamma", 2024, 260.0), ("Delta", 2024, 100.0)])
+    leaders = benchmarks.pool_leaders(rows, "Team", managers=5)
+    assert [name for name, _, _ in leaders["Premier League"]] == [
+        "Alpha", "Beta", "Gamma"], "best first, and only the best"
+    assert leaders["Premier League"][0] == ("Alpha", "2024", 300.0)
+
+
+def test_the_leaders_are_printed_under_their_own_group(capsys):
+    """Under the number, so the two are read together."""
+    from whul.benchmarks import BenchmarkRun
+
+    run = BenchmarkRun(league="La Liga", asset_type="Team")
+    run.rows = 99
+    run.used = [2023]
+    run.benchmarks = pd.DataFrame([
+        {"norm_key": "La Liga", "benchmark": 220.4, "pool_size": 99}])
+    run.leaders = {"La Liga": [("Barcelona", "2023", 231.4),
+                               ("Real Madrid", "2023", 228.0)]}
+    printed = str(run)
+    assert "La Liga" in printed and "220.4" in printed
+    assert "Barcelona 2023" in printed and "231.4" in printed
+    assert printed.index("220.4") < printed.index("Barcelona")
+
+
+def test_a_pool_that_cannot_be_built_costs_the_names_not_the_benchmark():
+    """A diagnostic must not lose a benchmark. An unmapped league raises out of
+    the pool, and the run still has its number."""
+    from whul import benchmarks
+
+    rows = _pool_rows([("Alpha", 2024, 300.0)]).assign(league="Nowhere League")
+    assert benchmarks.pool_leaders(rows, "Team", managers=5) == {}

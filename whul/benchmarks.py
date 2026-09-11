@@ -78,6 +78,9 @@ class BenchmarkRun:
     #: ``(group, season, rows, median)`` for each season left out of the pool
     #: because the feed barely answered it.
     undelivered: list = field(default_factory=list)
+    #: ``{group: [(asset, season, points), ...]}`` -- the best rows of the
+    #: truncated pool, which is where the benchmark actually comes from.
+    leaders: dict = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
@@ -100,6 +103,9 @@ class BenchmarkRun:
                     f"  {row.norm_key:<22}{row.benchmark:>12,.1f}"
                     f"{row.pool_size:>8}{flag}"
                 )
+                for asset, season, points in self.leaders.get(row.norm_key, []):
+                    label = f"{asset} {season}".strip()
+                    lines.append(f"      {label:<26}{points:>10,.1f}")
         if self.rows_by_season:
             counts = "  ".join(f"{season} {n:,}"
                                for season, n in sorted(self.rows_by_season.items()))
@@ -245,6 +251,54 @@ def _window_years(windows) -> list[int]:
     return sorted({y for w in windows for y in (w.start.year, w.end.year)})
 
 
+#: How many of the pool's best rows to name under each benchmark. The 99th
+#: percentile of a hundred-row pool is interpolated between its top two, so
+#: three names the number's whole support and the first row it does not rest on.
+LEADERS = 3
+
+#: Where an asset's name lives, whichever scorer produced the rows.
+NAME_COLUMNS = ("team", "player", "athlete", "name", "asset")
+
+
+def pool_leaders(
+    scored: pd.DataFrame, asset_type: str, managers: int, season_col: str = "season"
+) -> dict:
+    """The best rows of the truncated pool, per group.
+
+    A benchmark is a number with no provenance attached, and the review has had
+    to guess at what moved it. La Liga 2022-23 came back five fixtures short
+    with Real Madrid among the clubs affected, and whether that could reach the
+    99th percentile of ninety-nine rows depended entirely on whether Real
+    Madrid's season was one of the two the percentile is interpolated between.
+    Nothing printed could say. Now the rows are named under the number they
+    make, so a gap can be ruled in or out by looking.
+
+    Drawn from the same truncated pool the percentile is taken over, not from
+    the scored rows: a season that truncation dropped is not what set anything.
+    """
+    from whul import normalize
+
+    try:
+        pool = normalize.buffer_pool(
+            scored, asset_type, managers,
+            season_col=season_col if season_col in scored.columns else None)
+    except Exception:  # noqa: BLE001 -- a diagnostic must not lose a benchmark
+        return {}
+    if pool.empty or "norm_key" not in pool.columns:
+        return {}
+    named = next((c for c in NAME_COLUMNS if c in pool.columns), None)
+    out: dict = {}
+    for group, block in pool.groupby("norm_key"):
+        best = block.nlargest(LEADERS, "total_points")
+        out[str(group)] = [
+            (str(row[named]) if named else "?",
+             str(row[season_col]) if season_col in pool.columns else "",
+             float(row["total_points"]))
+            for _, row in best.iterrows()
+        ]
+    return out
+
+
 def compute_windowed(
     league: str,
     load,
@@ -358,6 +412,9 @@ def compute_windowed(
         dropped=undelivered,
     )
     run.undelivered = undelivered
+    # The windowed pool is the window totals, not the events they were built
+    # from: a benchmark is only ever set by a row it was computed over.
+    run.leaders = pool_leaders(totals, "Player", managers)
     run.benchmarks = bench.sort_values("norm_key").reset_index(drop=True)
 
     thin = run.benchmarks[run.benchmarks["pool_size"] < THIN_POOL]
@@ -434,6 +491,7 @@ def compute(
         dropped=undelivered,
     )
     run.undelivered = undelivered
+    run.leaders = pool_leaders(scored, asset_type, managers)
     if scale_for and scale_for in SCHEDULE_CHANGES:
         # ``scale_benchmarks`` records the factor it used in an extra column;
         # the stored table has no room for it, and the version's notes already
