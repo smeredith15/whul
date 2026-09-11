@@ -20,6 +20,7 @@ caches per-date responses under ``data/cache`` so a re-run costs nothing.
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -922,7 +923,9 @@ def load_soccer_matches(
             if verbose:
                 print(f"  {competition} {season}: {len(days)} dates ...", flush=True)
             failed = 0
-            for index, day in enumerate(days):
+            gathered, walk = _by_range(competition, days, verbose=verbose)
+            rows.extend(gathered)
+            for index, day in enumerate(walk):
                 board = _scoreboard_or_none(competition, day)
                 if board is None:
                     # A date that cannot be read is a day of matches missing
@@ -934,7 +937,7 @@ def load_soccer_matches(
                 for event in board.get("events", []):
                     rows.extend(_soccer_rows(event, competition, day, name))
                 if verbose and index and index % 60 == 0:
-                    print(f"    {index}/{len(days)} dates, {len(rows):,} rows", flush=True)
+                    print(f"    {index}/{len(walk)} dates, {len(rows):,} rows", flush=True)
             if failed:
                 lost[competition] = lost.get(competition, 0) + failed
                 print(f"    {competition} {season}: {failed} of {len(days)} date(s) "
@@ -975,6 +978,166 @@ def load_soccer_matches(
                   f"the benchmark and raises every score measured against it. "
                   f"Re-run before freezing.\n", flush=True)
     return pd.DataFrame(rows)
+
+
+#: Dates asked for in one range request. The probe settled that the soccer
+#: scoreboard answers a range with exactly what walking the same dates returns:
+#: on `epl` across 2025-08-15..08-31, both range shapes gave 30 events, 60 rows,
+#: 7 big wins and 16 clean sheets, with none missing, none extra and no score
+#: differing from the walk. That is what makes this safe to rely on, and the
+#: saving is the difference between a recompute that finishes and one that does
+#: not: the six-league, five-season walk asks 42,160 dates, which is 4.7 hours
+#: of politeness pause before a single byte moves. In thirty-date spans it is
+#: 1,405 requests and about nine minutes.
+#: Set WHUL_ESPN_RANGE_DAYS=0 to walk dates the old way. The range is new and
+#: the walk is the thing it was measured against, so there is a way back that
+#: does not need a release.
+RANGE_DAYS = int(os.environ.get("WHUL_ESPN_RANGE_DAYS") or 30)
+
+#: A span shorter than this is walked date by date. A range buys little on a
+#: handful of dates, and the walk accounts for what it loses one date at a time,
+#: which is the finer report when there is little to report on.
+RANGE_MINIMUM = 7
+
+
+def _date_chunks(days: list[date], size: int) -> list[list[date]]:
+    """A contiguous run of dates cut into spans of at most ``size``."""
+    return [days[i:i + size] for i in range(0, len(days), size)]
+
+
+def scoreboard_range(competition: str, start: date, end: date) -> dict:
+    """A span of dates in one request, trying shapes until one returns events.
+
+    The same suspicion `scoreboard` applies to a single date applies here: a
+    200 carrying no events is not proof of a quiet month, so a shape that
+    returns nothing is kept only if every other shape also returns nothing.
+    """
+    sport, path = LEAGUE_PATHS[competition]
+    url = f"{BASE}/{sport}/{path}/scoreboard"
+    cached = CACHE / f"{competition}/range/{start.isoformat()}_{end.isoformat()}.json"
+    settled = _has_settled(end)
+    if settled and cached.exists():
+        return json.loads(cached.read_text())
+
+    best: dict | None = None
+    last: Exception | None = None
+    for params in range_variants(start, end):
+        try:
+            payload = _get(url, params)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status not in (400, 404):
+                raise
+            last = exc
+            continue
+        if payload.get("events"):
+            best = payload
+            break
+        if best is None:
+            best = payload
+
+    if best is None:
+        raise last if last else RuntimeError(
+            f"no range variant succeeded for {competition}")
+
+    if settled:
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_text(json.dumps(best))
+    return best
+
+
+def _range_or_none(competition: str, start: date, end: date) -> dict | None:
+    """One span's board, or None having tried twice."""
+    for attempt in range(2):
+        try:
+            return scoreboard_range(competition, start, end)
+        except Exception:  # noqa: BLE001 -- one span, not the season
+            if attempt == 0:
+                time.sleep(RETRY_PAUSE)
+    return None
+
+
+def _event_ids(board: dict) -> set[str]:
+    return {str(event.get("id") or "") for event in board.get("events", []) or []}
+
+
+def _range_holds_its_halves(
+    competition: str, start: date, end: date, board: dict
+) -> set[str]:
+    """Matches the two halves of a span return that the whole span did not.
+
+    A feed that caps how many events it will return does not say so. It returns
+    a valid response holding fewer matches than were played, which is not an
+    error anywhere -- it is a smaller pool, a lower benchmark, and every score
+    measured against it larger. The cap cannot be found by reading one response,
+    because a short answer and a quiet month look alike; it can be found by
+    asking the same question in two pieces, because a capped whole is missing
+    what its halves are not. Two requests per competition-season buys that.
+    """
+    middle = start + timedelta(days=(end - start).days // 2)
+    found: set[str] = set()
+    for lower, upper in ((start, middle), (middle + timedelta(days=1), end)):
+        half = _range_or_none(competition, lower, upper)
+        if half is None:
+            return set()  # An unread half proves nothing either way.
+        found |= _event_ids(half)
+    return found - _event_ids(board)
+
+
+def _by_range(
+    competition: str, days: list[date], verbose: bool = True
+) -> tuple[list[dict], list[date]]:
+    """A season's matches in a handful of requests, and the dates still to walk.
+
+    Returns the rows gathered and the dates the range path did not account for
+    -- none when it accounted for all of them, every date when it is not to be
+    trusted. Degrading to the walk costs time; trusting a range that drops
+    matches costs a benchmark nobody can tell is wrong.
+
+    Rows are stamped with the event's own date rather than the date that was
+    asked for, since one response spans weeks. For a league whose matches kick
+    off late in local time that date can read a day later than the walk's
+    bucket; the probe measures exactly this, and reported no disagreement at
+    all across the seventeen days it compared.
+    """
+    if len(days) < RANGE_MINIMUM or RANGE_DAYS < RANGE_MINIMUM:
+        return [], days
+
+    chunks = _date_chunks(days, RANGE_DAYS)
+    boards: list[tuple[list[date], dict]] = []
+    for chunk in chunks:
+        board = _range_or_none(competition, chunk[0], chunk[-1])
+        if board is None:
+            # One unread span is the whole season's worth of trust: walk it all
+            # rather than report a pool short by a month with nothing to show.
+            return [], days
+        boards.append((chunk, board))
+
+    if not any(_event_ids(board) for _, board in boards):
+        # Every span quiet is what a capped or refused feed looks like as well
+        # as a season that has not started. The walk tells them apart, and it
+        # only costs anything in the case that was going to cost anyway.
+        return [], days
+
+    fullest, board = max(boards, key=lambda pair: len(_event_ids(pair[1])))
+    hidden = _range_holds_its_halves(competition, fullest[0], fullest[-1], board)
+    if hidden:
+        print(f"  {competition}: a range of {len(fullest)} dates returned "
+              f"{len(_event_ids(board))} match(es) but its two halves found "
+              f"{len(hidden)} more, so the feed is capping what it returns. "
+              f"Walking {len(days)} dates instead.", flush=True)
+        return [], days
+
+    rows: list[dict] = []
+    for chunk, board in boards:
+        name = scoreboard_league_name(board)
+        for event in board.get("events", []) or []:
+            rows.extend(_soccer_rows(
+                event, competition, _event_day(event, chunk[0]), name))
+    if verbose:
+        print(f"    {len(days)} dates in {len(chunks) + 2} requests, "
+              f"{len(rows):,} rows", flush=True)
+    return rows, []
 
 
 #: A second attempt costs one request and saves a day of matches. The pause is

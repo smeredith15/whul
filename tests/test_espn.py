@@ -9,7 +9,7 @@ These prove the parsing and the stat mapping. Only `python -m whul.cli probe nba
 proves the endpoint itself.
 """
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import pytest
@@ -1099,3 +1099,207 @@ def test_a_date_that_reads_on_the_second_try_is_not_reported(monkeypatch, capsys
     monkeypatch.setattr(espn, "scoreboard", flaky)
     espn.load_soccer_matches("mls", [2025], include_cups=False)
     assert "could not be read" not in capsys.readouterr().out
+
+
+def _dated_match(event_id: str, day: str, home: str = "Inter Miami CF") -> dict:
+    match = _finished_match()
+    match["id"] = event_id
+    match["date"] = f"{day}T23:30Z"
+    match["competitions"][0]["competitors"][0]["team"]["displayName"] = home
+    return match
+
+
+def _calendar(first: date, count: int, every: int = 3) -> list[tuple[date, str]]:
+    """A fixed run of matches to answer range requests out of."""
+    return [(first + timedelta(days=n * every), f"m{n}") for n in range(count)]
+
+
+def _feed(calendar, cap: int | None = None):
+    """A range feed over a fixed calendar, optionally capping what it returns.
+
+    A real scoreboard answers a span with the matches inside it. A stub that
+    answers with something else would make the halves check fire on every test
+    and prove nothing about the code under it.
+    """
+    def ranged(competition, start, end):
+        inside = [_dated_match(match, day.isoformat())
+                  for day, match in calendar if start <= day <= end]
+        return {"events": inside[:cap] if cap else inside}
+    return ranged
+
+
+def test_a_season_is_read_in_spans_rather_than_one_date_at_a_time(monkeypatch):
+    """The six-league, five-season walk asks 42,160 dates -- 4.7 hours of
+    politeness pause before a single byte moves, which is why the recompute
+    timed out twice at six hours. The probe established the range returns
+    exactly what the walk does, so the walk is no longer the way in."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2025, 3, 1) + timedelta(days=n) for n in range(90)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    spans, walked = [], []
+    monkeypatch.setattr(espn, "scoreboard",
+                        lambda competition, day: walked.append(day) or {"events": []})
+
+    calendar = _calendar(date(2025, 3, 2), 20)
+    feed = _feed(calendar)
+    monkeypatch.setattr(espn, "scoreboard_range",
+                        lambda competition, start, end:
+                        spans.append((start, end)) or feed(competition, start, end))
+    out = espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
+
+    assert walked == [], "no date was asked for on its own"
+    # Three thirty-date spans, plus the two halves that check the fullest one.
+    assert len(spans) == 5
+    assert len(out) == 2 * len(calendar), "every match, two rows each"
+
+
+def test_a_range_row_carries_the_matchs_own_date_not_the_span_it_came_in(monkeypatch):
+    """A single-date request can stamp every row with the date it asked for. A
+    range cannot: one response spans weeks, and a row carrying the wrong day
+    would be filtered by the wrong season start."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2025, 3, 1) + timedelta(days=n) for n in range(30)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+    monkeypatch.setattr(
+        espn, "scoreboard_range",
+        lambda competition, start, end: {
+            "events": [_dated_match("1", "2025-03-19")]})
+
+    out = espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
+    assert set(out["date"]) == {"2025-03-19"}, "not the span's first date"
+
+
+def test_a_feed_that_caps_what_it_returns_is_caught_by_its_own_halves(
+    monkeypatch, capsys
+):
+    """A cap is not an error anywhere. It is a valid response holding fewer
+    matches than were played -- a smaller pool, a lower benchmark, and every
+    score measured against it larger. A short answer and a quiet month look
+    alike in one response; they do not look alike in two."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2025, 3, 1) + timedelta(days=n) for n in range(30)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    walked = []
+    monkeypatch.setattr(espn, "scoreboard",
+                        lambda competition, day: walked.append(day) or {"events": []})
+
+    # Ten matches were played; the feed will name two of them whatever is asked.
+    monkeypatch.setattr(espn, "scoreboard_range",
+                        _feed(_calendar(date(2025, 3, 2), 10), cap=2))
+    espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
+
+    assert walked == days, "the season fell back to the walk"
+    assert "capping what it returns" in capsys.readouterr().out
+
+
+def test_a_span_that_cannot_be_read_sends_the_season_back_to_the_walk(monkeypatch):
+    """One unread span is a month of matches. Reporting a pool short by a month
+    with nothing to show for it is the failure this file is written against."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2025, 3, 1) + timedelta(days=n) for n in range(60)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    walked = []
+    monkeypatch.setattr(espn, "scoreboard",
+                        lambda competition, day: walked.append(day) or {"events": []})
+
+    feed = _feed(_calendar(date(2025, 3, 2), 15))
+
+    def refuses_the_second_span(competition, start, end):
+        if start == date(2025, 3, 31):
+            raise RuntimeError("403")
+        return feed(competition, start, end)
+
+    monkeypatch.setattr(espn, "scoreboard_range", refuses_the_second_span)
+    out = espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
+
+    assert walked == days
+    assert out.empty, "the rows come from the walk, not the half-read ranges"
+
+
+def test_every_span_empty_is_checked_by_walking_rather_than_believed(monkeypatch):
+    """A refused or capped feed and a season that has not started both answer
+    with nothing. The walk tells them apart, and it only costs anything in the
+    case that was going to cost anyway."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2025, 3, 1) + timedelta(days=n) for n in range(45)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    walked = []
+    monkeypatch.setattr(espn, "scoreboard",
+                        lambda competition, day: walked.append(day) or {"events": []})
+    monkeypatch.setattr(espn, "scoreboard_range",
+                        lambda competition, start, end: {"events": []})
+
+    espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
+    assert walked == days
+
+
+def test_a_handful_of_dates_is_walked_rather_than_ranged(monkeypatch):
+    """A range buys little on a few dates, and the walk accounts for what it
+    loses one date at a time -- the finer report when there is little to
+    report on."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2025, 3, 1) + timedelta(days=n) for n in range(3)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    ranged = []
+    monkeypatch.setattr(espn, "scoreboard_range",
+                        lambda competition, start, end: ranged.append(1) or {"events": []})
+    monkeypatch.setattr(espn, "scoreboard", lambda competition, day: {"events": []})
+
+    espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
+    assert ranged == [], "three dates are three requests either way"
+
+
+def test_a_settled_span_is_cached_and_a_live_one_is_not(tmp_path, monkeypatch):
+    """The same rule a single date lives under: a span whose last day is still
+    in play would freeze a half-finished result, and every run after would read
+    that copy."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "CACHE", tmp_path)
+    monkeypatch.setattr(espn, "REQUEST_PAUSE", 0)
+    monkeypatch.setattr(espn, "_get",
+                        lambda url, params, cache_key=None: {"events": [{"id": "1"}]})
+
+    old = date.today() - timedelta(days=40)
+    espn.scoreboard_range("mls", old, old + timedelta(days=29))
+    assert list(tmp_path.glob("mls/range/*.json")), "a settled span is kept"
+
+    espn.scoreboard_range("mls", date.today() - timedelta(days=1), date.today())
+    assert len(list(tmp_path.glob("mls/range/*.json"))) == 1, "a live span is not"
+
+
+def test_the_range_can_be_turned_off_without_a_release(monkeypatch):
+    """The walk is what the range was measured against. If a season ever looks
+    wrong mid-recompute, the way back should not need a merge."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    monkeypatch.setattr(espn, "RANGE_DAYS", 0)
+    days = [date(2025, 3, 1) + timedelta(days=n) for n in range(45)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    walked = []
+    monkeypatch.setattr(espn, "scoreboard",
+                        lambda competition, day: walked.append(day) or {"events": []})
+    monkeypatch.setattr(espn, "scoreboard_range",
+                        _feed(_calendar(date(2025, 3, 2), 10)))
+
+    espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
+    assert walked == days
