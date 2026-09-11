@@ -417,6 +417,39 @@ def load_eligible_teams(league: str) -> set[str]:
     return names
 
 
+def load_eligible_team_ids(league: str) -> set[str]:
+    """The same teams, by the feed's own id for them.
+
+    A display name is the feed's opinion and it is not the same opinion in
+    every competition: Bayern's Champions League matches came back naming a
+    club the Bundesliga's own team list does not contain, so the filter that
+    keeps a league to its own clubs dropped them and Bayern finished a European
+    week with nothing. An id is the feed agreeing with itself.
+
+    UNVERIFIED that ESPN uses one id per club across competitions -- it is not
+    reachable from where this was written -- so this is used to *keep* rows the
+    name filter would drop and never to drop rows it would keep. If the ids do
+    not line up across competitions, nothing is lost that is not already lost.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    params: dict = {"limit": 1000}
+    if league in DIVISION_I_GROUPS:
+        params["groups"] = DIVISION_I_GROUPS[league]
+    try:
+        payload = _get(f"{BASE}/{sport}/{path}/teams", params, cache_key=f"{league}/teams")
+    except Exception:  # noqa: BLE001 -- a filter that cannot load must not stop a pull
+        return set()
+
+    ids: set[str] = set()
+    for sport_block in payload.get("sports", []):
+        for league_block in sport_block.get("leagues", []):
+            for entry in league_block.get("teams", []):
+                team = entry.get("team") or {}
+                if team.get("id") not in (None, ""):
+                    ids.add(str(team["id"]))
+    return ids
+
+
 def _competitor(competition: dict, home_away: str) -> dict:
     for entry in competition.get("competitors", []):
         if entry.get("homeAway") == home_away:
@@ -1309,6 +1342,11 @@ def _soccer_rows(
         rows.append({
             "team": (side.get("team") or {}).get("displayName", ""),
             "opponent": (other.get("team") or {}).get("displayName", ""),
+            # The feed's own id for each side. A name is the feed's opinion and
+            # differs between competitions; an id is the feed agreeing with
+            # itself, which is what the league's own-club filter needs.
+            "team_id": str((side.get("team") or {}).get("id") or ""),
+            "opponent_id": str((other.get("team") or {}).get("id") or ""),
             "date": day.isoformat(),
             "competition": competition_label,
             "competition_key": competition,

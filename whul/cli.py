@@ -1071,6 +1071,99 @@ def cmd_retract_titles(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_feed_seed(args: argparse.Namespace) -> int:
+    """Put a source's history where the ledger can always find it again.
+
+    A feed that serves a rolling window cannot be asked about last month, so
+    everything before the ledger started has to come from somewhere else: the
+    tennis2026 app's own database, an export, a list typed by hand. Whatever it
+    comes from, it lands in one place -- ``data/seed/<source>.jsonl``, in the
+    repository -- and every pull loads it before it loads the window.
+
+    In the repository and not in the database on purpose. Three workflows
+    rebuild the database and force-push it to the data branch, and a history
+    that had to be restored by somebody remembering to restore it is one that
+    eventually is not.
+
+    Idempotent. Run it again with a fresher export and the new matches are
+    added, the ones already held are left as they were, and the file stays
+    sorted so the diff is readable.
+    """
+    from pathlib import Path
+
+    from whul.benchmark_sources import resolve
+    from whul.store import feed_ledger
+
+    source = next((s for s in resolve(None) if s.key == args.source), None)
+    if source is None:
+        print(f"\nNo source {args.source!r}.\n", file=sys.stderr)
+        return 1
+    keys = getattr(source, "accumulates", ())
+    if not keys:
+        print(f"\n{args.source} reads a feed that answers for whole seasons, so "
+              f"it has no history to keep.\n", file=sys.stderr)
+        return 1
+
+    path = Path(args.source_file)
+    if not path.exists():
+        print(f"\nNo such file: {path}\n", file=sys.stderr)
+        return 1
+    try:
+        rows = _read_feed_history(path, args.source)
+    except Exception as exc:  # noqa: BLE001 -- the path is the whole message
+        print(f"\nCould not read {path}: {type(exc).__name__}: {exc}\n",
+              file=sys.stderr)
+        return 1
+    if rows is None or rows.empty:
+        print(f"\n{path} holds no matches.\n", file=sys.stderr)
+        return 1
+
+    missing = [k for k in keys if k not in rows.columns]
+    if missing:
+        print(f"\n{path} has no {', '.join(missing)}. {args.source} identifies a "
+              f"row by {', '.join(keys)}, and a history keyed on anything else "
+              f"would be paid for twice alongside the feed's own copy.\n",
+              file=sys.stderr)
+        return 1
+
+    before = len(feed_ledger.read_seed(args.source))
+    total = feed_ledger.write_seed(args.source, rows, keys)
+    seed = feed_ledger.seed_path(args.source)
+    print(f"\n  {len(rows):,} row(s) read from {path}")
+    print(f"  {total - before:,} new; {total:,} now in {seed}")
+    if "date" in rows.columns and not rows["date"].isna().all():
+        held = feed_ledger.read_seed(args.source)
+        print(f"  covering {held['date'].min()} to {held['date'].max()}")
+    print(f"\n  Commit {seed}. Every pull loads it before the feed's window, "
+          f"so\n  the history survives the database being rebuilt.\n")
+    return 0
+
+
+def _read_feed_history(path: Path, source: str):
+    """A history export, whatever shape it arrived in."""
+    import json
+
+    import pandas as pd
+
+    if path.suffix in (".db", ".sqlite", ".sqlite3"):
+        if source != "tennis":
+            raise ValueError(f"no database reader for {source}")
+        from whul.sources import tennis2026
+
+        return tennis2026.load_matches(path=path, verbose=True)
+    if path.suffix == ".csv":
+        return pd.read_csv(path)
+    if path.suffix in (".json", ".jsonl"):
+        text = path.read_text()
+        if path.suffix == ".jsonl":
+            return pd.DataFrame([json.loads(l) for l in text.splitlines() if l.strip()])
+        return pd.DataFrame(json.loads(text))
+    raise ValueError(
+        f"{path.suffix or 'that'} is not a shape this reads: a tennis2026 "
+        f"database (.db), or a .csv/.json/.jsonl carrying one row per match"
+    )
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     """Score every slot and write the standings snapshot -- the nightly job."""
     from datetime import date as _date
@@ -2557,6 +2650,17 @@ def main(argv: list[str] | None = None) -> int:
         help="say what would be taken back without writing anything",
     )
     retract.set_defaults(func=cmd_retract_titles)
+
+    seed = sub.add_parser(
+        "feed-seed",
+        help="keep a windowed feed's history where every pull can find it",
+    )
+    seed.add_argument("--source", default="tennis",
+                      help="the source key the history belongs to")
+    seed.add_argument("source_file", metavar="FILE",
+                      help="a tennis2026 database (.db), or a .csv/.json/.jsonl "
+                           "with one row per match")
+    seed.set_defaults(func=cmd_feed_seed)
 
     site = sub.add_parser("site", help="generate the static site")
     site.add_argument("--db", default="data/whul.sqlite3", help="database path")

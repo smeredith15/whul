@@ -194,3 +194,96 @@ def test_a_windowed_total_survives_the_window_rolling_past_it(store):
 
     assert totals(()) == [150.0, 150.0, 0.0], "the bug, for the record"
     assert totals(("match_uid",)) == [150.0, 150.0, 150.0]
+
+
+# --- the committed history -------------------------------------------------
+#
+# A feed that serves a rolling window cannot be asked about last month, so what
+# predates the ledger has to come from somewhere else and then survive: the
+# database it lands in is rebuilt and force-pushed by three workflows.
+
+KEYS = ("season", "tournament", "round", "winner", "loser")
+
+
+def _seeded(tmp_path, rows):
+    from whul.store import feed_ledger
+
+    feed_ledger.write_seed("tennis", pd.DataFrame(rows), KEYS, root=tmp_path)
+    return tmp_path / "tennis.jsonl"
+
+
+def test_the_same_match_from_two_sources_is_paid_for_once(store):
+    """The point of keying on the match rather than on one feed's id for it.
+    Tonight's feed and the database the history came from describe the same
+    win, and differ over the spelling."""
+    from whul.store import feed_ledger
+
+    seeded = {"season": 2026, "tournament": "Cincinnati", "round": "F",
+              "winner": "Taylor Fritz", "loser": "Carlos Alcaraz", "date": "2026-08-24"}
+    from_feed = dict(seeded, tournament="cincinnati  ", winner="Taylor Fritz ")
+
+    feed_ledger.merge(store, "tennis", pd.DataFrame([seeded]), KEYS)
+    held = feed_ledger.merge(store, "tennis", pd.DataFrame([from_feed]), KEYS)
+    assert len(held) == 1, "case and spacing are not two different matches"
+
+
+def test_three_round_robin_wins_are_three_rows(store):
+    """A group stage gives a player three wins in the same round of the same
+    tournament. A key without the opponent keeps one of them, and the other two
+    are never paid -- which would have gone unnoticed until November."""
+    from whul.store import feed_ledger
+
+    held = feed_ledger.merge(store, "tennis", pd.DataFrame([
+        {"season": 2026, "tournament": "ATP Finals", "round": "RR",
+         "winner": "Carlos Alcaraz", "loser": beaten}
+        for beaten in ("Taylor Fritz", "Jannik Sinner", "Alex de Minaur")
+    ]), KEYS)
+    assert len(held) == 3
+
+
+def test_the_committed_history_is_loaded_on_every_pull(store, tmp_path):
+    """Not once. The ledger lives in a database three workflows rebuild and
+    force-push, and a history restored only when somebody remembers to restore
+    it is one that eventually is not."""
+    from whul.store import feed_ledger
+
+    _seeded(tmp_path, [{"season": 2026, "tournament": "Cincinnati", "round": "F",
+                        "winner": "Taylor Fritz", "loser": "Carlos Alcaraz"}])
+    for _ in range(3):
+        feed_ledger.apply_seed(store, "tennis", KEYS, root=tmp_path)
+    assert len(feed_ledger.load(store, "tennis")) == 1
+
+
+def test_a_seed_file_grows_rather_than_being_replaced(tmp_path):
+    """Run again with a fresher export and the new matches are added, so a
+    later export that happens to be shorter cannot erase what is held."""
+    from whul.store import feed_ledger
+
+    _seeded(tmp_path, [{"season": 2026, "tournament": "Cincinnati", "round": "F",
+                        "winner": "Taylor Fritz", "loser": "Carlos Alcaraz"}])
+    total = feed_ledger.write_seed("tennis", pd.DataFrame([
+        {"season": 2026, "tournament": "US Open", "round": "F",
+         "winner": "Carlos Alcaraz", "loser": "Jannik Sinner"}]), KEYS, root=tmp_path)
+    assert total == 2
+    held = feed_ledger.read_seed("tennis", root=tmp_path)
+    assert sorted(held["tournament"]) == ["Cincinnati", "US Open"]
+
+
+def test_a_seed_file_stays_sorted_so_its_diff_is_readable(tmp_path):
+    from whul.store import feed_ledger
+
+    feed_ledger.write_seed("tennis", pd.DataFrame([
+        {"date": "2026-09-07", "season": 2026, "tournament": "US Open",
+         "round": "F", "winner": "A", "loser": "B"},
+        {"date": "2026-08-24", "season": 2026, "tournament": "Cincinnati",
+         "round": "F", "winner": "C", "loser": "D"},
+    ]), KEYS, root=tmp_path)
+    lines = (tmp_path / "tennis.jsonl").read_text().splitlines()
+    assert "2026-08-24" in lines[0] and "2026-09-07" in lines[1]
+
+
+def test_no_seed_file_is_not_an_error(store, tmp_path):
+    """Every source but tennis has none, and tennis had none until today."""
+    from whul.store import feed_ledger
+
+    assert feed_ledger.apply_seed(store, "tennis", KEYS, root=tmp_path) == 0
