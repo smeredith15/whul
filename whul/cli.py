@@ -1577,15 +1577,25 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
 
 
 def _print_benchmark_diff(diff) -> None:
+    """What adopting a draft would do, group by group.
+
+    The kind is a column of its own because a group name does not identify a
+    group: club soccer normalizes players and clubs against the same six league
+    names, so a comparison listing "Premier League" twice with different
+    numbers and nothing between them is one a reader has to guess at. A review
+    that cannot be read is a review that gets skipped.
+    """
     if diff.empty:
         print("    (nothing in common)")
         return
-    print(f"    {'group':<24}{'before':>11}{'after':>11}{'change':>9}")
+    kinds = {"Team": "teams", "Player": "players"}
+    print(f"    {'group':<24}{'kind':<9}{'before':>11}{'after':>11}{'change':>9}")
     for row in diff.itertuples():
         before = f"{row.before:,.1f}" if pd.notna(row.before) else "--"
         after = f"{row.after:,.1f}" if pd.notna(row.after) else "--"
         change = f"{row.change_pct:+.1f}%" if pd.notna(row.change_pct) else "new"
-        print(f"    {row.norm_key:<24}{before:>11}{after:>11}{change:>9}")
+        kind = kinds.get(str(row.asset_type), str(row.asset_type).lower())
+        print(f"    {row.norm_key:<24}{kind:<9}{before:>11}{after:>11}{change:>9}")
     moved = diff["change_pct"].abs()
     if moved.notna().any():
         print(
