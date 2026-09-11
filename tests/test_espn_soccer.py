@@ -817,3 +817,53 @@ def test_qualifying_for_the_champions_cup_is_still_paid(monkeypatch):
           "competition": "CONCACAF Champions Cup", "entry_round": "Round One"}]))
     got = bs._continental_entrants("mls", [2025])
     assert set(got["competition"]) == {"CONCACAF Champions Cup"}
+
+
+def _title_rows(champions: dict[int, list[str]], clubs=("Alpha", "Beta")):
+    """A scored frame carrying only what the champions report reads."""
+    rows = []
+    for season, won in champions.items():
+        for club in clubs:
+            rows.append({"season": season, "team": club,
+                         "league_champion": club in won})
+    return pd.DataFrame(rows)
+
+
+def test_the_league_title_is_named_in_the_review(capsys):
+    """A title is ten points awarded to one club at the very top of the pool,
+    which is exactly where the 99th percentile lives. Ligue 1 fell 9.3 between
+    two runs with the same pool depth and there was no line anywhere to say
+    whether a title had moved."""
+    from whul import benchmark_sources as bs
+
+    bs._report_champions("ligue1", _title_rows({2024: ["Alpha"], 2025: ["Beta"]}))
+    printed = capsys.readouterr().out
+    assert "2024  Alpha" in printed
+    assert "2025  Beta" in printed
+
+
+def test_a_season_with_no_champion_is_listed_rather_than_omitted(capsys):
+    """A season that ought to have a champion and does not is the quieter half
+    of the same fault: it does not announce itself by moving a number."""
+    from whul import benchmark_sources as bs
+
+    bs._report_champions("laliga", _title_rows({2024: ["Alpha"], 2025: []}))
+    assert "2025  not awarded" in capsys.readouterr().out
+
+
+def test_a_shared_title_says_so(capsys):
+    """Two clubs the table cannot separate are paid ten points each, which is
+    twenty points into a pool that should have had ten."""
+    from whul import benchmark_sources as bs
+
+    bs._report_champions("seriea", _title_rows({2025: ["Alpha", "Beta"]}))
+    printed = capsys.readouterr().out
+    assert "Alpha, Beta" in printed and "(shared)" in printed
+
+
+def test_a_frame_without_the_column_reports_nothing(capsys):
+    """The players path scores the same league names and has no titles in it."""
+    from whul import benchmark_sources as bs
+
+    bs._report_champions("epl", pd.DataFrame([{"season": 2025, "team": "Alpha"}]))
+    assert capsys.readouterr().out == ""
