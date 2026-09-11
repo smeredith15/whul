@@ -21,45 +21,53 @@
 
 name: Benchmarks
 
+# The dispatch form is a narrow dropdown and GitHub prints each description
+# above its field, so the descriptions here are one line each. The reasoning
+# behind them lives below, where there is room for it.
+#
+# `leagues`  Keys from `benchmarks list`, space separated, or `all`. Only these
+#            are recomputed; every other group is inherited from the frozen
+#            scale. There is deliberately no default: a default here once sent
+#            a run at the league it was last used for and returned numbers
+#            identical to the frozen ones, which reads exactly like a change
+#            that did nothing. To correct one league without walking the rest,
+#            name its own key -- `mls-players` pulls MLS and its two cups where
+#            `soccer-players` pulls six leagues and eleven competitions. Never
+#            name both: the group would be computed twice and the run would
+#            keep whichever finished last.
+#
+# `seasons`  Leave empty, which is right: each league carries its own depth
+#            (five for most, eight for international soccer, two full four-year
+#            cycles, because five holds one World Cup and either one
+#            continental championship or two depending on where it starts).
+#            Set a number only to override every league at once.
+#
+# `freeze`   Leave unticked on the first run, read the comparison, and tick it
+#            on a second run only if the numbers are right. Freezing refuses
+#            while any rostered asset lacks a benchmark.
+#
+# `version`  Continue an existing draft instead of starting one. With leagues
+#            named it computes them *into* that draft; with the box empty it
+#            freezes it. This is what makes a long recompute splittable: the
+#            six club-soccer leagues are about twelve hours cold and a job is
+#            capped at six, so name three, then run again with Version set to
+#            the draft this one reports and the other three.
+
 on:
   workflow_dispatch:
     inputs:
       leagues:
-        description: >-
-          Keys from `benchmarks list`, space separated. Only these are
-          recomputed; every other group is inherited from the frozen scale.
-          Required -- there is deliberately no default, because a default here
-          once sent a run at the league it was last used for and returned
-          numbers identical to the frozen ones, which reads exactly like a
-          change that did nothing. Type `all` to recompute every league.
-          Leave empty only on a freeze-only run, where Version names the draft.
-          To correct one league without walking the rest, name its own key:
-          `mls-players` pulls MLS and its two cups where `soccer-players`
-          pulls six leagues and eleven competitions. Never name both -- the
-          group would be computed twice and the run would keep whichever
-          finished last.
+        description: "Keys from `benchmarks list`, space separated, or `all`"
         default: ""
       seasons:
-        description: >-
-          How many seasons to draw the pool from. Leave empty, which is right:
-          each league carries its own depth (five for most, eight for
-          international soccer, two full four-year cycles, because five holds
-          one World Cup and either one continental championship or two
-          depending on where it starts). Set a number only to override every
-          league at once.
+        description: "Seasons in the pool. Leave empty -- each league has its own"
         default: ""
       freeze:
-        description: >-
-          Adopt the draft as the scale. Leave this unticked on the first run,
-          read the comparison, and tick it on a second run only if the numbers
-          are right. Freezing refuses while any rostered asset lacks a
-          benchmark.
+        description: "Adopt the draft as the scale (read the comparison first)"
         type: boolean
         default: false
       version:
-        description: >-
-          Freeze this existing draft instead of computing a new one. Leave
-          empty to compute.
+        description: "Freeze this existing draft instead of computing"
         default: ""
 
 permissions:
@@ -82,10 +90,23 @@ jobs:
         # A compute run with no leagues named would silently mean "all of
         # them" -- twenty leagues, some of which walk dates for an hour. The
         # box is empty on purpose so that the operator has to say.
+        #
+        # It reports what it actually received. The first version said only
+        # what was wanted, which is no help at all when the box looked filled
+        # in: an empty `leagues` and a `leagues` that did not reach the run
+        # produce the same message, and they have different fixes.
         if: ${{ !inputs.version && !inputs.leagues }}
         run: |
-          echo "::error::Name the leagues to recompute (keys from" \
-               "\`benchmarks list\`, space separated), or type 'all'."
+          echo "::error::No leagues named, so there is nothing to compute."
+          echo "This run received:"
+          echo "  leagues  '${{ inputs.leagues }}'"
+          echo "  seasons  '${{ inputs.seasons }}'"
+          echo "  freeze   '${{ inputs.freeze }}'"
+          echo "  version  '${{ inputs.version }}'"
+          echo
+          echo "Name the leagues to recompute -- keys from \`benchmarks list\`,"
+          echo "space separated -- or type 'all'. To freeze a draft that already"
+          echo "exists, put its version in Version and leave this empty."
           exit 1
 
       - uses: actions/setup-python@v5
@@ -94,6 +115,24 @@ jobs:
           cache: pip
 
       - run: pip install -e .
+
+      - name: Restore the feed cache
+        # Every date this walks is cached to disk, and without this the cache
+        # was thrown away at the end of every run. A cold pass over the six
+        # club-soccer leagues is 140 date-walks and about twelve hours; the
+        # same pass with the dates on disk is a fraction of that, because the
+        # walk still happens but each date is a file read.
+        #
+        # Its own key prefix rather than the publish job's. The two barely
+        # overlap -- that one fetches today and this one fetches five years of
+        # history -- and sharing a prefix would have each evicting the other
+        # under the repository cache limit.
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: bench-cache-${{ github.run_id }}
+          restore-keys: |
+            bench-cache-
 
       - name: Take the database from the data branch
         run: |
@@ -124,11 +163,33 @@ jobs:
 
       - name: Use the draft named in the inputs
         if: ${{ inputs.version }}
-        run: echo "DRAFT=${{ inputs.version }}" >> "$GITHUB_ENV"
+        run: |
+          echo "DRAFT=${{ inputs.version }}" >> "$GITHUB_ENV"
+          # The comparison is always against the frozen scale, which the derive
+          # step reports and a continuing run has to look up.
+          python - <<'PY' >> "$GITHUB_ENV"
+          from whul.config.league import SEASON
+          from whul.store import open_store
+          from whul.store import benchmarks as bm
+          active = bm.active_version(open_store("data/whul.sqlite3"), SEASON.label)
+          print(f"FROM={active.version if active else ''}")
+          PY
 
       - name: Compute
         id: compute
-        if: ${{ !inputs.version }}
+        # Whenever leagues are named, whether the draft is new or continuing.
+        # A twelve-hour compute does not fit in a six-hour job, so it has to be
+        # splittable: name three leagues, then run again with Version set to
+        # the same draft and the other three. Before this, naming a version
+        # skipped the compute entirely and the only way to recompute six
+        # leagues was one run that could not finish.
+        if: ${{ inputs.leagues }}
+        # Below the runner's own six-hour limit, which cancels the job outright
+        # -- no database saved, no cache saved, no report, and the whole walk
+        # thrown away. Stopping first means the draft keeps what it computed,
+        # the dates it fetched stay on disk for the next run, and the report
+        # says what is still inherited.
+        timeout-minutes: 300
         # Failing here would skip the review and throw away the draft, so the
         # failure is carried to the end of the job instead -- see "A league did
         # not compute". The database is still saved and the comparison still
@@ -155,7 +216,7 @@ jobs:
         run: python -m whul.cli benchmarks coverage "$DRAFT" | tee -a benchmarks.txt
 
       - name: What adopting it would change
-        if: ${{ !inputs.version }}
+        if: ${{ env.FROM }}
         continue-on-error: true
         run: |
           python -m whul.cli benchmarks compare "$FROM" "$DRAFT" | tee -a benchmarks.txt
@@ -184,9 +245,16 @@ jobs:
           if [ "${{ inputs.freeze }}" = "true" ]; then
             echo "  FROZEN. Run 'Publish standings' with backfill to rescore."
           else
-            echo "  Nothing is frozen. Read the comparison above, then run this"
-            echo "  workflow again with Freeze ticked and Version set to:"
+            echo "  Nothing is frozen yet."
+            echo
+            echo "  More leagues to compute? Run this again with Version set to"
             echo "    $DRAFT"
+            echo "  and only the leagues still to do in Leagues. Every date this"
+            echo "  run fetched is cached, so a repeat is far cheaper."
+            echo
+            echo "  Done computing? Read the comparison above, then run this"
+            echo "  again with Freeze ticked, Version set to the draft, and"
+            echo "  Leagues empty."
           fi
           echo "==================================================="
 
