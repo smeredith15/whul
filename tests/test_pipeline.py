@@ -562,3 +562,44 @@ def test_a_league_that_holds_nothing_still_scores():
         "total_points": [200.0],
     }), benchmarks, "Player")
     assert got["held_score"].iloc[0] == 0.0
+
+
+def test_a_result_taken_back_reads_as_withdrawn_not_as_a_bad_day():
+    """A figure that counts up cannot come down by being played: nobody
+    un-draws a match. Roma's Champions League draw disappeared overnight and
+    the day panel said "Draws -1 · Pts draws -1.7", which was read -- reasonably
+    -- as a draw being scored as a penalty."""
+    from whul.site import build
+
+    line = build._day_line(
+        {"draws": 0, "matches_played": 3, "pts_draws": 0.0},
+        {"draws": 1, "matches_played": 4, "pts_draws": 1.7},
+    )
+    assert line[0] == "withdrawn"
+    assert not any("-" in part for part in line), line
+    assert any("Draws 1" in part for part in line)
+
+
+def test_a_real_day_is_untouched():
+    """The ordinary case, and the one that must not start saying 'withdrawn'."""
+    from whul.site import build
+
+    line = build._day_line(
+        {"draws": 1, "matches_played": 4, "pts_draws": 1.7},
+        {"draws": 0, "matches_played": 3, "pts_draws": 0.0},
+    )
+    assert "withdrawn" not in line
+    assert any("Draws 1" in part for part in line)
+
+
+def test_a_day_that_both_gained_and_lost_keeps_its_signs():
+    """A correction alongside a result is not a withdrawal, and flattening the
+    signs would hide which half was which."""
+    from whul.site import build
+
+    line = build._day_line(
+        {"wins": 2, "draws": 0},
+        {"wins": 1, "draws": 1},
+    )
+    assert "withdrawn" not in line
+    assert any("-1" in part for part in line)
