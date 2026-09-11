@@ -89,7 +89,7 @@ def ingest(
     try:
         scored = _pull(
             source, as_of, verbose, names=list(assets["display_name"]),
-            notes=notes, upcoming=upcoming,
+            notes=notes, upcoming=upcoming, store=store,
         )
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
@@ -649,9 +649,37 @@ def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
     return raw[days.isna() | (days.dt.date >= season_start(league))]
 
 
+def _accumulating(fetch, source, store: Store, verbose: bool = True):
+    """``fetch``, but keeping what the feed forgets.
+
+    Flashscore's tennis feed serves seven days either side of today and has no
+    more to give, so a season total recomputed from it each night is a rolling
+    one-week figure wearing a season's name. Taylor Fritz held 150 points for
+    six days and then zero, having done nothing, because the tournament he won
+    aged out of the window -- and the standings ledger, which differences
+    consecutive days, read that as a loss.
+
+    A wider request cannot fix it. Only a record of what the feed said while it
+    was still saying it, which is what this keeps.
+    """
+    from whul.store import feed_ledger
+
+    def fetch_and_keep(years):
+        window = fetch(years)
+        held = feed_ledger.merge(store, source.key, window, source.accumulates)
+        if verbose:
+            fresh = 0 if window is None or window.empty else len(window)
+            print(f"  {source.key}: {fresh} row(s) in the feed's window, "
+                  f"{len(held)} kept from every run so far", flush=True)
+        return held
+
+    return fetch_and_keep
+
+
 def _pull(
     source, as_of: date, verbose: bool, names: list[str] | None = None,
     notes: list[str] | None = None, upcoming: list | None = None,
+    store: Store | None = None,
 ) -> pd.DataFrame:
     """Season-to-date totals for one league, however that league counts them.
 
@@ -691,6 +719,15 @@ def _pull(
         if live and source.roster_scoped
         else load
     )
+    # A feed that only serves a window is asked for the window and answered for
+    # the season: what it shows is written down on the way past, and what comes
+    # back is everything it has ever shown. Wrapped around `fetch` rather than
+    # placed at either use of it, because the windowed and whole-season paths
+    # below both need it and only one of them is tennis today.
+    # getattr, as `cumulative` below: a Source is duck-typed at this boundary
+    # and a test double need not carry every field to be pulled from.
+    if getattr(source, "accumulates", ()) and store is not None:
+        fetch = _accumulating(fetch, source, store, verbose)
     if not source.windowed:
         raw = fetch(seasons)
         if raw is None or raw.empty:

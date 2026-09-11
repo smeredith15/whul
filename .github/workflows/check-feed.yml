@@ -75,6 +75,7 @@ jobs:
 
       - name: What the feed calls things, against the roster
         run: |
+          set -o pipefail
           python -m whul.cli feed-names "${{ inputs.league || 'nfl-teams' }}" \
             ${{ inputs.date && format('--date {0}', inputs.date) || '' }} \
             | tee feed-names.txt

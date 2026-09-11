@@ -184,6 +184,7 @@ jobs:
       - name: Start a draft from the frozen scale
         if: ${{ !inputs.version }}
         run: |
+          set -o pipefail
           python -m whul.cli benchmarks derive frozen \
             --notes "recomputing ${{ inputs.leagues }}" | tee derive.txt
           # "  <draft> holds N benchmark(s), copied from <frozen>."

@@ -297,3 +297,36 @@ CREATE TABLE IF NOT EXISTS fixtures (
 );
 
 CREATE INDEX IF NOT EXISTS fixtures_next_idx ON fixtures (season, fixture_date);
+
+-- Rows a feed showed us once, kept because the feed will forget them.
+--
+-- Most feeds answer for a whole season. A few answer for a window and nothing
+-- else: Flashscore's tennis feed serves seven days either side of today, so a
+-- player's "season total", recomputed from it each night, is really a rolling
+-- one-week figure. Taylor Fritz held 150 points for six days and then zero,
+-- having done nothing, because the tournament he won aged out of the window.
+-- Every tennis total falls that way between events, and the ledger -- which
+-- differences consecutive days -- reads each roll-off as a loss.
+--
+-- The fix cannot be a wider request; the feed has no more to give. It has to be
+-- a record of what it said while it was still saying it, which is this table.
+--
+-- Keyed on the feed's own id for the row rather than on anything derived: two
+-- players can meet twice in a season, and a key built from the names and the
+-- round would collapse the pair. The payload is the row as the source produced
+-- it, so a change in what a source reads costs nothing here.
+CREATE TABLE IF NOT EXISTS feed_rows (
+    source     TEXT NOT NULL,
+    row_key    TEXT NOT NULL,
+    season     TEXT NOT NULL DEFAULT '',
+    payload    TEXT NOT NULL,
+    -- When it first arrived, and when it was last confirmed. A row the feed
+    -- stops mentioning is kept, not dropped: that is the whole point. But a
+    -- result the feed later corrects should win, so the payload is replaced
+    -- while the first sighting is not.
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL,
+    PRIMARY KEY (source, row_key)
+);
+
+CREATE INDEX IF NOT EXISTS feed_rows_source_idx ON feed_rows (source, season);
