@@ -894,11 +894,40 @@ def _soccer(key: str, category: str):
                 for club, season, names in clashes[:10]:
                     print(f"      {club} ({season})  <-  {', '.join(names)}",
                           flush=True)
+            _report_champions(key, scored)
             return scored
 
         return load, score
 
     return build
+
+
+def _report_champions(key: str, scored: pd.DataFrame) -> None:
+    """Who the league title was paid to, season by season.
+
+    A title is ten points awarded to one club at the very top of the pool,
+    which is exactly where the 99th percentile lives -- so getting it wrong
+    moves the benchmark by most of ten points and nothing in the review says
+    so. Ligue 1 fell 9.3 between two runs with the same pool depth, and there
+    was no line anywhere to say whether a title had moved.
+
+    Seasons with no champion are listed too. A season that ought to have one
+    and does not is the quieter half of the same fault, and it does not
+    announce itself by moving a number.
+    """
+    if scored.empty or "league_champion" not in scored.columns:
+        return
+    seasons = sorted(set(scored["season"]))
+    won = scored[scored["league_champion"].astype(bool)]
+    named = {int(row.season): [] for row in scored.itertuples()}
+    for row in won.itertuples():
+        named[int(row.season)].append(str(row.team))
+    print(f"  {key} league title:", flush=True)
+    for season in seasons:
+        clubs = sorted(named.get(int(season), []))
+        who = ", ".join(clubs) if clubs else "not awarded"
+        shared = "  (shared)" if len(clubs) > 1 else ""
+        print(f"      {season}  {who}{shared}", flush=True)
 
 
 def _pga_players():
