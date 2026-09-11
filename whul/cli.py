@@ -1787,6 +1787,49 @@ def cmd_benchmarks_freeze(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_range_probe(found: dict) -> int:
+    """The range probe, laid out so the verdict is the first thing read."""
+    shapes = {k: v for k, v in found.items() if isinstance(v, dict)}
+    for key, value in found.items():
+        if isinstance(value, (dict, list)):
+            continue
+        print(f"  {key:<26} {value}")
+    for name in ("unread_dates",):
+        if found.get(name):
+            print(f"\n  {name}:")
+            for line in found[name][:8]:
+                print(f"      {line}")
+
+    worked = False
+    for shape, report in shapes.items():
+        print(f"\n  {shape}")
+        if isinstance(report, str):
+            print(f"      {report}")
+            continue
+        for key, value in report.items():
+            if isinstance(value, list):
+                if not value:
+                    continue
+                print(f"      {key}:")
+                for line in value:
+                    print(f"          {line}")
+            else:
+                print(f"      {key:<22} {value}")
+        if str(report.get("verdict", "")).startswith("IDENTICAL"):
+            worked = True
+
+    print()
+    if worked:
+        print("  A range that returns exactly what the walk does is safe to "
+              "adopt.\n  Send me this output and I will wire it in.\n")
+        return 0
+    print("  No shape matched the day-by-day walk, so the walk stays. That is "
+          "the\n  right outcome to report: a range that returns fewer matches "
+          "would\n  lower the benchmark and raise every score above it.\n",
+          file=sys.stderr)
+    return 1
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
     if args.events:
@@ -1913,6 +1956,26 @@ def cmd_probe(args: argparse.Namespace) -> int:
         from datetime import date as _d
 
         from whul.sources import espn
+
+        if getattr(args, "span", None):
+            start, _, end = args.span.partition(":")
+            if not end:
+                print("\n  --range takes START:END, e.g. "
+                      "2025-08-15:2025-08-31\n", file=sys.stderr)
+                return 2
+            try:
+                first, last = _d.fromisoformat(start), _d.fromisoformat(end)
+            except ValueError as exc:
+                print(f"\n  --range: {exc}\n", file=sys.stderr)
+                return 2
+            if last < first:
+                print("\n  --range: the end is before the start.\n",
+                      file=sys.stderr)
+                return 2
+            found = espn.probe_soccer_range(args.league, first, last)
+            print(f"\nESPN soccer date-range probe -- {found['league']} "
+                  f"{found['span']}\n")
+            return _print_range_probe(found)
 
         day = _d.fromisoformat(args.date) if args.date else None
         result = espn.probe_soccer(args.league, day)
@@ -2408,6 +2471,12 @@ def main(argv: list[str] | None = None) -> int:
     probe.add_argument(
         "--tour", choices=("atp", "wta", "tennistonic"),
         help="which schedule source to probe (default: all three)",
+    )
+    probe.add_argument(
+        "--range", dest="span", metavar="START:END",
+        help="soccer only: walk this span a day at a time, then ask for it in "
+             "one request, and compare the two match by match "
+             "(e.g. 2025-08-15:2025-08-31)",
     )
     probe.set_defaults(func=cmd_probe)
 
