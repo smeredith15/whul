@@ -874,6 +874,203 @@ def _rescore_day(store, season: str, day: str, bench, kinds, apply_benchmarks):
     return joined.assign(league_points=joined["total_points"])
 
 
+#: Title fields a stored payload can carry. One whose name begins ``pts_``
+#: carries its own points and is authoritative; a bare flag is paid at the
+#: scorer's own weight, looked up rather than copied here so that the two
+#: cannot drift apart.
+TITLE_FIELDS = ("pts_div_champ", "pts_reg_champ", "pts_league_title", "div_champ")
+
+
+def _title_weight(field: str) -> float:
+    if field == "div_champ":
+        from whul.scoring import nfl as nfl_scoring
+
+        return float(nfl_scoring.TEAM_WEIGHTS["div_champ"])
+    return 1.0
+
+
+def _titles_held(payload: dict) -> dict:
+    """Title fields this payload was paid for, and what each was worth."""
+    held = {}
+    for field in TITLE_FIELDS:
+        if field not in payload:
+            continue
+        try:
+            value = float(payload[field])
+        except (TypeError, ValueError):
+            continue
+        if value:
+            held[field] = value * _title_weight(field)
+    return held
+
+
+def cmd_retract_titles(args: argparse.Namespace) -> int:
+    """Take back a title that was awarded before its season was settled.
+
+    A title is a season outcome and nobody holds one in September, but the
+    scorer used to hand one to whoever led the table. New England and Seattle
+    each carried an NFL division title after a single game -- one of which they
+    lost -- Miami six points for an ACC title on a 1-0 conference record, and
+    three clubs an MLB division five. ``settled_seasons`` stopped it happening
+    again; it cannot reach the days it already happened on.
+
+    Nor can anything else here. ``rescore`` re-divides a stored total by a new
+    benchmark and never re-runs a scorer, and ``backfill`` rebuilds the
+    standings from the scores rather than from the feeds. So yesterday keeps
+    the title, today does not, and the ledger -- which differences consecutive
+    days -- reads the correction as a fifteen-point collapse by a team that did
+    nothing.
+
+    This edits the stored figures, which nothing else here does. Two things
+    keep that honest. It only takes back a title the asset no longer holds on
+    its newest stored day, so a division won in January is left alone and only
+    one the rules have since withdrawn is touched. And having rescored a day it
+    checks that every asset it did *not* edit came back exactly as stored,
+    refusing the lot if any moved -- the same guard ``rescore`` uses, and the
+    only available evidence that the rescoring does what the scorer does.
+
+    ``--all`` widens it to every title in the season, for the case the first
+    rule cannot see: an asset whose feed stopped answering has no newer day for
+    the title to be gone on. Miami's sat on its last four stored days and there
+    was no fifth. That is only correct while the season is still being played,
+    when no title can have been won yet, so it is a flag that has to be typed
+    rather than a judgement made quietly.
+
+    Written for one job, on one season, once. Run it with --dry-run first.
+    """
+    import json
+
+    from whul import pipeline
+    from whul.normalize import apply_benchmarks
+    from whul.store import benchmarks as store_benchmarks
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    active = store_benchmarks.active_version(store, args.season)
+    if active is None:
+        print(f"\nNo frozen benchmark for {args.season}, so the days it touches "
+              f"could not be rescored.\n", file=sys.stderr)
+        return 1
+    bench = store_benchmarks.load(store, active.version)
+
+    # Source and phase are part of the key, not decoration: an asset can have a
+    # regular row and a postseason one on the same day, and an update matching
+    # only the date would write one payload over both.
+    raw = store.query(
+        "SELECT as_of, asset_id, source, phase, stats FROM raw_stats "
+        "WHERE season = ? ORDER BY asset_id, as_of", (args.season,),
+    )
+    if raw.empty:
+        print(f"\nNo stored figures for {args.season}.\n", file=sys.stderr)
+        return 1
+
+    series: dict = {}
+    for row in raw.itertuples():
+        series.setdefault((row.asset_id, row.source, row.phase), []).append(
+            (str(row.as_of), json.loads(row.stats)))
+
+    edits = []
+    still_held = []
+    for (asset_id, source, phase), days in series.items():
+        held = [(day, payload, _titles_held(payload)) for day, payload in days]
+        if held[-1][2] and not args.all:
+            # Still holding it on the newest day, so it may have been won: a
+            # title the rules withdrew is one that is gone by now. Except that
+            # an asset whose feed stopped answering has no newer day to be
+            # gone on -- Miami's ACC title sat on its last four stored days and
+            # there was no fifth -- which is what --all is for, and why it says
+            # what it assumes rather than quietly assuming it.
+            still_held.append((asset_id, held[-1][0], sorted(held[-1][2])))
+            continue
+        edits += [(day, asset_id, source, phase, payload, titles)
+                  for day, payload, titles in held if titles]
+
+    if not edits:
+        print(f"\nNo title to take back in {args.season}.\n")
+        for asset_id, day, fields in sorted(still_held):
+            print(f"  {asset_id} still holds {', '.join(fields)} on {day}, "
+                  f"so it is left alone")
+        return 0
+
+    print(f"\nTaking back {len(edits)} title(s) awarded in {args.season}, "
+          f"then rescoring against {active.version}.\n")
+    for day, asset_id, _, _, payload, titles in sorted(edits):
+        what = ", ".join(f"{f} {p:g}" for f, p in sorted(titles.items()))
+        was = float(payload.get("total_points") or 0.0)
+        print(f"  {day}  {asset_id:<38}{was:>9.2f} -> "
+              f"{was - sum(titles.values()):>8.2f}   ({what})")
+    for asset_id, day, fields in sorted(still_held):
+        print(f"\n  {asset_id} still holds {', '.join(fields)} on {day}, "
+              f"so it is left alone")
+
+    if args.dry_run:
+        print("\n  --dry-run, so nothing was written.\n")
+        return 0
+
+    touched: dict = {}
+    with store.transaction() as conn:
+        for day, asset_id, source, phase, payload, titles in edits:
+            for field in titles:
+                payload[field] = 0
+            for total in ("total_points", "regular_points", "league_points"):
+                if total in payload:
+                    try:
+                        payload[total] = float(payload[total]) - sum(titles.values())
+                    except (TypeError, ValueError):
+                        pass
+            conn.execute(
+                "UPDATE raw_stats SET stats = ? WHERE season = ? AND as_of = ? "
+                "AND asset_id = ? AND source = ? AND phase = ?",
+                (json.dumps(payload), args.season, day, asset_id, source, phase),
+            )
+            touched.setdefault(day, set()).add(asset_id)
+
+    assets = store.query("SELECT asset_id, asset_type, league FROM assets")
+    kinds = (dict(zip(assets["asset_id"], assets["asset_type"])),
+             dict(zip(assets["asset_id"], assets["league"])))
+
+    plan, wrong = [], []
+    for day in sorted(touched):
+        stored = store.query(
+            "SELECT asset_id, scaled_score FROM daily_scores WHERE season = ? "
+            "AND as_of = ?", (args.season, day),
+        ).set_index("asset_id")["scaled_score"].to_dict()
+        rows = _rescore_day(store, args.season, day, bench, kinds, apply_benchmarks)
+        if rows is None or rows.empty:
+            continue
+        for row in rows.itertuples():
+            was = stored.get(row.asset_id)
+            if was is None or row.asset_id in touched[day]:
+                continue
+            if abs(float(row.scaled_score) - float(was)) > 0.05:
+                wrong.append((day, row.asset_id, float(was), float(row.scaled_score)))
+        plan.append((day, rows))
+
+    if wrong:
+        print(f"\n  REFUSED. {len(wrong)} asset(s) this did not edit came back "
+              f"changed anyway:", file=sys.stderr)
+        for day, asset_id, was, now in wrong[:10]:
+            print(f"    {day} {asset_id}: {was:.2f} -> {now:.2f}", file=sys.stderr)
+        print("\n  That means the rescoring is not reproducing what the scorer "
+              "does, so\n  the edited rows cannot be trusted either. The "
+              "figures were rolled back.\n", file=sys.stderr)
+        store.conn.rollback()
+        return 1
+
+    written = 0
+    for day, rows in plan:
+        written += pipeline.write_daily_scores(
+            store, rows.assign(total_points=rows["league_points"]),
+            args.season, day, active.version,
+        )
+    store.conn.commit()
+    print(f"\n  {len(edits)} title(s) taken back; {written} row(s) rescored "
+          f"across {len(plan)} day(s).")
+    print(f"\n  Now run `rollup --backfill` to rebuild the standings from "
+          f"them.\n")
+    return 0
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     """Score every slot and write the standings snapshot -- the nightly job."""
     from datetime import date as _date
@@ -2342,6 +2539,24 @@ def main(argv: list[str] | None = None) -> int:
         help="say what would move without writing anything",
     )
     rescore.set_defaults(func=cmd_rescore)
+
+    retract = sub.add_parser(
+        "retract-titles",
+        help="take back a title awarded before its season was settled",
+    )
+    retract.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    retract.add_argument("--season", default="2026-27-SIM")
+    retract.add_argument(
+        "--all", action="store_true",
+        help="take back every title in the season, not only those already "
+             "withdrawn. Correct only while the season is still being played, "
+             "when no title can have been won yet",
+    )
+    retract.add_argument(
+        "--dry-run", action="store_true",
+        help="say what would be taken back without writing anything",
+    )
+    retract.set_defaults(func=cmd_retract_titles)
 
     site = sub.add_parser("site", help="generate the static site")
     site.add_argument("--db", default="data/whul.sqlite3", help="database path")
