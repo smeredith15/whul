@@ -300,3 +300,148 @@ def test_an_in_memory_store_is_never_a_missing_one():
     from whul.store.db import missing_database_note
 
     assert missing_database_note(open_store(":memory:")) == ""
+
+
+def _titled(tmp_path, days: dict, league: str = "NFL", norm_key: str = "NFL"):
+    """A store holding one team's stored figures across several days.
+
+    ``days`` maps a date to the payload stored for it. Everything else -- the
+    asset, a frozen benchmark, and a scored row per day -- is the minimum the
+    retraction reads.
+    """
+    import json
+
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("assets", [
+        {"asset_id": "team-x", "asset_type": "Team", "display_name": "X",
+         "league": league, "norm_key": norm_key, "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    store.upsert("benchmark_versions", [
+        {"version": "v1", "season": "2026-27", "quantile": 0.99, "managers": 5,
+         "computed_at": "2026-09-01", "frozen_at": "2026-09-01", "notes": ""},
+    ], ["version"])
+    store.upsert("benchmarks", [
+        {"version": "v1", "asset_type": "Team", "norm_key": norm_key,
+         "benchmark": 100.0, "pool_size": 50, "seasons": "2025"},
+    ], ["version", "asset_type", "norm_key"])
+    store.upsert("raw_stats", [
+        {"season": "2026-27", "as_of": day, "asset_id": "team-x",
+         "source": "test", "phase": "regular", "league": league,
+         "stats": json.dumps(payload), "fetched_at": day}
+        for day, payload in days.items()
+    ], ["asset_id", "season", "as_of", "source", "phase"])
+    store.upsert("daily_scores", [
+        {"season": "2026-27", "as_of": day, "asset_id": "team-x",
+         "scaled_score": float(payload["total_points"]),
+         "league_points": float(payload["total_points"]),
+         "benchmark_version": "v1", "computed_at": day}
+        for day, payload in days.items()
+    ], ["asset_id", "season", "as_of"])
+    store.conn.commit()
+    return store
+
+
+def _retract(tmp_path, **kw):
+    import argparse
+
+    from whul import cli
+
+    args = argparse.Namespace(db=str(tmp_path / "whul.sqlite3"),
+                              season="2026-27", all=False, dry_run=False)
+    for k, v in kw.items():
+        setattr(args, k, v)
+    return cli.cmd_retract_titles(args)
+
+
+def _stored(tmp_path, day: str) -> dict:
+    import json
+
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    row = store.query(
+        "SELECT stats FROM raw_stats WHERE as_of = ? AND asset_id = 'team-x'",
+        (day,))
+    return json.loads(row["stats"].iloc[0])
+
+
+def test_a_title_the_rules_withdrew_is_taken_off_the_total(tmp_path, capsys):
+    """New England carried an NFL division title after one game, which they
+    lost. `settled_seasons` stopped it happening again and cannot reach the day
+    it happened on: `rescore` re-divides a stored total and never re-runs a
+    scorer, so yesterday keeps the title, today does not, and the ledger reads
+    the correction as a fifteen-point collapse by a team that did nothing."""
+    _titled(tmp_path, {
+        "2026-09-10": {"league": "NFL", "div_champ": 1, "total_points": 14.7},
+        "2026-09-11": {"league": "NFL", "div_champ": 0, "total_points": -0.3},
+    })
+    assert _retract(tmp_path) == 0
+
+    was = _stored(tmp_path, "2026-09-10")
+    assert was["div_champ"] == 0
+    # Fifteen, the scorer's own weight for it -- not one, which a flag read as
+    # its own points would have cost.
+    assert was["total_points"] == pytest.approx(-0.3)
+    # And the day after is what it always was, so the ledger differences to zero.
+    assert _stored(tmp_path, "2026-09-11")["total_points"] == pytest.approx(-0.3)
+
+
+def test_a_title_carrying_its_own_points_is_taken_back_at_those(tmp_path):
+    """MLB and the NCAA store the points beside the flag, and those are
+    authoritative: a conference title is a pool split between however many
+    teams tied for it, so its value is not a constant to look up."""
+    _titled(tmp_path, {
+        "2026-09-07": {"league": "NCAAF", "pts_reg_champ": 6.0, "total_points": 21.95},
+        "2026-09-08": {"league": "NCAAF", "pts_reg_champ": 0.0, "total_points": 15.95},
+    }, league="NCAAF", norm_key="NCAAF")
+    assert _retract(tmp_path) == 0
+    assert _stored(tmp_path, "2026-09-07")["total_points"] == pytest.approx(15.95)
+
+
+def test_a_title_still_held_on_the_newest_day_is_left_alone(tmp_path, capsys):
+    """A division won in January is a division won. Only a title that is gone
+    by the newest stored day is one the rules withdrew."""
+    _titled(tmp_path, {
+        "2027-01-04": {"league": "NFL", "div_champ": 1, "total_points": 120.0},
+        "2027-01-05": {"league": "NFL", "div_champ": 1, "total_points": 122.0},
+    })
+    assert _retract(tmp_path) == 0
+    assert _stored(tmp_path, "2027-01-04")["total_points"] == pytest.approx(120.0)
+    assert "left alone" in capsys.readouterr().out
+
+
+def test_all_reaches_a_title_that_has_no_later_day_to_be_gone_on(tmp_path):
+    """Miami's ACC title sat on its last four stored days and there was no
+    fifth, because its feed stopped answering. Nothing later says the rules
+    withdrew it, and it was still six points for a 1-0 conference record."""
+    _titled(tmp_path, {
+        "2026-09-09": {"league": "NCAAF", "pts_reg_champ": 6.0, "total_points": 21.95},
+        "2026-09-10": {"league": "NCAAF", "pts_reg_champ": 6.0, "total_points": 21.95},
+    }, league="NCAAF", norm_key="NCAAF")
+    assert _retract(tmp_path) == 0, "the careful rule sees nothing to do"
+    assert _stored(tmp_path, "2026-09-10")["total_points"] == pytest.approx(21.95)
+
+    assert _retract(tmp_path, all=True) == 0
+    for day in ("2026-09-09", "2026-09-10"):
+        assert _stored(tmp_path, day)["total_points"] == pytest.approx(15.95)
+        assert _stored(tmp_path, day)["pts_reg_champ"] == 0
+
+
+def test_a_dry_run_writes_nothing(tmp_path, capsys):
+    _titled(tmp_path, {
+        "2026-09-10": {"league": "NFL", "div_champ": 1, "total_points": 14.7},
+        "2026-09-11": {"league": "NFL", "div_champ": 0, "total_points": -0.3},
+    })
+    assert _retract(tmp_path, dry_run=True) == 0
+    assert _stored(tmp_path, "2026-09-10")["total_points"] == pytest.approx(14.7)
+    assert "nothing was written" in capsys.readouterr().out
+
+
+def test_a_season_with_no_title_to_take_back_says_so(tmp_path, capsys):
+    _titled(tmp_path, {
+        "2026-09-10": {"league": "NFL", "div_champ": 0, "total_points": 14.7},
+    })
+    assert _retract(tmp_path) == 0
+    assert "No title to take back" in capsys.readouterr().out
