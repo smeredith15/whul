@@ -48,6 +48,12 @@ class Source:
     #: not simply the calendar year. Set for the feeds that number a season by
     #: the year it ends in.
     seasons_for: Callable[[date], list[int]] | None = None
+    #: Columns identifying one row, for a feed that serves only a window and
+    #: forgets everything outside it. Set, the live pull writes each row down as
+    #: it goes past and scores the union of everything it has ever seen, rather
+    #: than whatever is in the window tonight. Empty for a feed that answers for
+    #: a whole season, which is nearly all of them.
+    accumulates: tuple[str, ...] = ()
     #: True when the live loader takes the rostered names as a second argument.
     #: A team league is far cheaper and far more complete pulled team by team
     #: than by walking dates -- eight requests instead of a season of them, and
@@ -1119,6 +1125,10 @@ SOURCES: dict[str, Source] = _register(
            note="one pull, two benchmarks -- each series against itself"),
     Source("tennis", "Tennis", "Player", _tennis_players, live=_tennis_live,
            windowed=True, produces=("ATP", "WTA"),
+           # The feed's own match id. Two players can meet twice in a season,
+           # so a key built from the names and the round would collapse the
+           # pair and pay for one of the two wins.
+           accumulates=("match_uid",),
            note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
         Source(key, category, "Team", _ncaa(key, category),
