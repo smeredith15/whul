@@ -46,10 +46,12 @@ name: Benchmarks
 #            on a second run only if the numbers are right. Freezing refuses
 #            while any rostered asset lacks a benchmark.
 #
-# `version`  Names an existing draft to freeze instead of computing a new one.
-#            A second compute run derives from the *frozen* scale again, so it
-#            cannot add to a draft -- one compute run has to name every league
-#            that is changing.
+# `version`  Continue an existing draft instead of starting one. With leagues
+#            named it computes them *into* that draft; with the box empty it
+#            freezes it. This is what makes a long recompute splittable: the
+#            six club-soccer leagues are about twelve hours cold and a job is
+#            capped at six, so name three, then run again with Version set to
+#            the draft this one reports and the other three.
 
 on:
   workflow_dispatch:
@@ -114,6 +116,24 @@ jobs:
 
       - run: pip install -e .
 
+      - name: Restore the feed cache
+        # Every date this walks is cached to disk, and without this the cache
+        # was thrown away at the end of every run. A cold pass over the six
+        # club-soccer leagues is 140 date-walks and about twelve hours; the
+        # same pass with the dates on disk is a fraction of that, because the
+        # walk still happens but each date is a file read.
+        #
+        # Its own key prefix rather than the publish job's. The two barely
+        # overlap -- that one fetches today and this one fetches five years of
+        # history -- and sharing a prefix would have each evicting the other
+        # under the repository cache limit.
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: bench-cache-${{ github.run_id }}
+          restore-keys: |
+            bench-cache-
+
       - name: Take the database from the data branch
         run: |
           mkdir -p data
@@ -143,11 +163,33 @@ jobs:
 
       - name: Use the draft named in the inputs
         if: ${{ inputs.version }}
-        run: echo "DRAFT=${{ inputs.version }}" >> "$GITHUB_ENV"
+        run: |
+          echo "DRAFT=${{ inputs.version }}" >> "$GITHUB_ENV"
+          # The comparison is always against the frozen scale, which the derive
+          # step reports and a continuing run has to look up.
+          python - <<'PY' >> "$GITHUB_ENV"
+          from whul.config.league import SEASON
+          from whul.store import open_store
+          from whul.store import benchmarks as bm
+          active = bm.active_version(open_store("data/whul.sqlite3"), SEASON.label)
+          print(f"FROM={active.version if active else ''}")
+          PY
 
       - name: Compute
         id: compute
-        if: ${{ !inputs.version }}
+        # Whenever leagues are named, whether the draft is new or continuing.
+        # A twelve-hour compute does not fit in a six-hour job, so it has to be
+        # splittable: name three leagues, then run again with Version set to
+        # the same draft and the other three. Before this, naming a version
+        # skipped the compute entirely and the only way to recompute six
+        # leagues was one run that could not finish.
+        if: ${{ inputs.leagues }}
+        # Below the runner's own six-hour limit, which cancels the job outright
+        # -- no database saved, no cache saved, no report, and the whole walk
+        # thrown away. Stopping first means the draft keeps what it computed,
+        # the dates it fetched stay on disk for the next run, and the report
+        # says what is still inherited.
+        timeout-minutes: 300
         # Failing here would skip the review and throw away the draft, so the
         # failure is carried to the end of the job instead -- see "A league did
         # not compute". The database is still saved and the comparison still
@@ -174,7 +216,7 @@ jobs:
         run: python -m whul.cli benchmarks coverage "$DRAFT" | tee -a benchmarks.txt
 
       - name: What adopting it would change
-        if: ${{ !inputs.version }}
+        if: ${{ env.FROM }}
         continue-on-error: true
         run: |
           python -m whul.cli benchmarks compare "$FROM" "$DRAFT" | tee -a benchmarks.txt
@@ -203,9 +245,16 @@ jobs:
           if [ "${{ inputs.freeze }}" = "true" ]; then
             echo "  FROZEN. Run 'Publish standings' with backfill to rescore."
           else
-            echo "  Nothing is frozen. Read the comparison above, then run this"
-            echo "  workflow again with Freeze ticked and Version set to:"
+            echo "  Nothing is frozen yet."
+            echo
+            echo "  More leagues to compute? Run this again with Version set to"
             echo "    $DRAFT"
+            echo "  and only the leagues still to do in Leagues. Every date this"
+            echo "  run fetched is cached, so a repeat is far cheaper."
+            echo
+            echo "  Done computing? Read the comparison above, then run this"
+            echo "  again with Freeze ticked, Version set to the draft, and"
+            echo "  Leagues empty."
           fi
           echo "==================================================="
 
