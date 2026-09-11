@@ -1390,3 +1390,94 @@ def test_a_feed_that_states_no_season_keeps_every_row(monkeypatch):
     out = espn.load_soccer_matches("seriea", [2021], include_cups=False,
                                    verbose=False)
     assert len(out) == 4, "two matches, two rows each"
+
+
+def test_a_league_season_that_did_not_come_back_whole_names_its_clubs(
+    monkeypatch, capsys
+):
+    """Every other check here can say only that a number looks wrong. A club
+    and a season is something a person can go and look up in a minute, which is
+    the difference between "five matches missing from La Liga 2022-23" and five
+    fixtures with names on them."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2022, 8, 1) + timedelta(days=n) for n in range(60)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    # Four clubs playing each other home and away is twelve matches and six
+    # apiece. This feed loses one of them.
+    clubs = ["Alpha", "Beta", "Gamma", "Delta"]
+    fixtures = [(h, a) for h in clubs for a in clubs if h != a][:-1]
+
+    # _dated_match only names the home side, so pair each up by hand.
+    def feed(competition, start, end):
+        if start != days[0]:
+            return {"events": []}
+        events = []
+        for i, (home, away) in enumerate(fixtures):
+            event = _dated_match(f"m{i}", "2022-08-02", home)
+            event["competitions"][0]["competitors"][1]["team"]["displayName"] = away
+            events.append(event)
+        return {"events": events}
+
+    monkeypatch.setattr(espn, "scoreboard_range", feed)
+    espn.load_soccer_matches("laliga", [2023], include_cups=False)
+
+    printed = capsys.readouterr().out
+    assert "11 match(es), where 4 clubs" in printed
+    assert "is 12" in printed
+    assert "The clubs not on 6:" in printed
+    # The fixture left out was Delta at home to Gamma, so those two are short
+    # and the other two are not. Both halves of that matter: a report that
+    # named every club would be a report that named none of them.
+    assert "Delta 5" in printed and "Gamma 5" in printed
+    named = printed.split("not on 6:")[1]
+    assert "Alpha" not in named and "Beta" not in named
+
+
+def test_a_whole_league_season_says_nothing(monkeypatch, capsys):
+    """The report is for the season that did not arrive whole. Twenty-three of
+    twenty-five league seasons are exact, and a line apiece saying so would
+    bury the two that are not."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2022, 8, 1) + timedelta(days=n) for n in range(60)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    clubs = ["Alpha", "Beta", "Gamma", "Delta"]
+    fixtures = [(h, a) for h in clubs for a in clubs if h != a]
+
+    def feed(competition, start, end):
+        if start != days[0]:
+            return {"events": []}
+        events = []
+        for i, (home, away) in enumerate(fixtures):
+            event = _dated_match(f"m{i}", "2022-08-02", home)
+            event["competitions"][0]["competitors"][1]["team"]["displayName"] = away
+            events.append(event)
+        return {"events": events}
+
+    monkeypatch.setattr(espn, "scoreboard_range", feed)
+    espn.load_soccer_matches("laliga", [2023], include_cups=False)
+    assert "clubs not on" not in capsys.readouterr().out
+
+
+def test_a_cup_is_never_measured_against_a_round_robin(monkeypatch, capsys):
+    """A cup is a knockout. Every club in it has played a different number of
+    matches by design, which would make this report fire on every season of
+    every cup and mean nothing on any of them."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2022, 8, 1) + timedelta(days=n) for n in range(60)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+    monkeypatch.setattr(
+        espn, "scoreboard_range",
+        lambda competition, start, end: {"events": [
+            _dated_match("a", "2022-08-02", "Alpha")]} if start == days[0]
+        else {"events": []})
+
+    espn.load_soccer_matches("copadelrey", [2023], include_cups=False)
+    assert "clubs not on" not in capsys.readouterr().out

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections import Counter
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -944,7 +945,10 @@ def load_soccer_matches(
                 if verbose and index and index % 60 == 0:
                     print(f"    {index}/{len(walk)} dates, "
                           f"{len(season_rows):,} rows", flush=True)
-            rows.extend(_the_season_asked_for(season_rows, competition, verbose))
+            season_rows = _the_season_asked_for(season_rows, competition, verbose)
+            if verbose:
+                _report_unbalanced(season_rows, competition, season)
+            rows.extend(season_rows)
             if failed:
                 lost[competition] = lost.get(competition, 0) + failed
                 print(f"    {competition} {season}: {failed} of {len(days)} date(s) "
@@ -1175,13 +1179,48 @@ def _the_season_asked_for(
     stated = [row["season_year"] for row in rows if row.get("season_year")]
     if not stated:
         return rows
-    belongs = max(set(stated), key=stated.count)
+    belongs = Counter(stated).most_common(1)[0][0]
     kept = [row for row in rows
             if row.get("season_year") in (None, "", belongs)]
     if verbose and len(kept) != len(rows):
         print(f"    {len(rows) - len(kept)} row(s) the feed labels another "
               f"season than {belongs}, left out of {competition}", flush=True)
     return kept
+
+
+#: Leagues that play a balanced double round-robin. They are the one pool whose
+#: size is known before it is fetched -- N clubs playing each other home and
+#: away is N*(N-1) matches and 2*(N-1) apiece -- which makes a missing fixture
+#: nameable rather than merely countable.
+BALANCED_LEAGUES = ("epl", "laliga", "seriea", "bundesliga", "ligue1")
+
+
+def _report_unbalanced(rows: list[dict], competition: str, season: int) -> None:
+    """Name the clubs whose league season did not come back whole.
+
+    Every other check here can say only that a number looks wrong. This one
+    says which club, and a club and a season is something a person can go and
+    look up in a minute. That is the difference between "five matches missing
+    from La Liga 2022-23", which is where a re-run gets you, and five fixtures
+    with names on them, which is where a fix does.
+
+    It reports and does not drop: a season with an extra match in it is as
+    interesting as one with a match missing, and neither is an error the feed
+    would ever raise.
+    """
+    if competition not in BALANCED_LEAGUES or not rows:
+        return
+    played = Counter(row["team"] for row in rows)
+    clubs = len(played)
+    each = 2 * (clubs - 1)
+    odd = sorted((team, n) for team, n in played.items() if n != each)
+    if not odd:
+        return
+    print(f"  {competition} {season}: {len(rows) // 2} match(es), where {clubs} "
+          f"clubs playing each other home and away is {clubs * (clubs - 1)}. "
+          f"The clubs not on {each}:", flush=True)
+    for team, n in odd:
+        print(f"      {team} {n}", flush=True)
 
 
 def _scoreboard_or_none(competition: str, day: date) -> dict | None:
