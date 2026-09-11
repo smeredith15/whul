@@ -511,9 +511,35 @@ STAT_LABELS = {
     "made_cut": "Cuts made", "primary_score": "Primary role",
     "secondary_score": "Secondary role", "secondary_role": "Secondary role",
     "is_two_way": "Two-way player",
-    "pts_reg_wins": "Regular-season wins", "pts_big_wins": "Big wins",
-    "pts_shutouts": "Shutouts", "pts_run_diff": "Run differential",
+    # A points column and the count it is derived from must not share a label.
+    # "Regular-season wins 1 - Regular-season wins 2.4" on one line invites the
+    # reader to decide which of the two is wrong, which is the same fault the
+    # goal columns above were given their own wording for.
+    "pts_reg_wins": "Points for wins", "pts_big_wins": "Points for big wins",
+    "pts_shutouts": "Points for shutouts",
+    "pts_run_diff": "Points for run differential",
     "pts_div_champ": "Division title", "pts_playoff": "Postseason",
+    # Club soccer, which had none at all: a drawn Champions League match read
+    # as "Pts draws 1.7", and the reader has to know the column name to know
+    # what that is.
+    "draws": "Draws", "losses": "Losses", "big_margins": "Big wins",
+    "clean_sheets": "Clean sheets", "matches_played": "Matches played",
+    "shootout_wins": "Shootout wins", "shootout_losses": "Shootout losses",
+    "pts_wins": "Points for wins", "pts_draws": "Points for draws",
+    "pts_big_margin": "Points for big wins",
+    "pts_clean_sheet": "Points for clean sheets",
+    "pts_shootout_wins": "Points for shootout wins",
+    "pts_shootout_losses": "Points for shootout losses",
+    "pts_league_title": "League title", "league_champion": "League title",
+    "pts_continental_entry": "European qualification",
+    "continental_entry": "European qualification",
+    "continental": "European competition",
+    "wins_league": "League wins", "wins_domestic_cup": "Domestic cup wins",
+    "wins_champions_league": "Champions League wins",
+    "wins_europa": "Europa League wins",
+    "wins_conference": "Conference League wins",
+    "wins_continental_cup": "Continental cup wins",
+    "wins_domestic_postseason": "Domestic postseason wins",
     "year_n_points": "This season's share", "year_n1_points": "Next season's share",
     "hr": "Home runs", "h": "Hits", "ab": "At bats", "bb": "Walks",
     "sb": "Stolen bases", "cs": "Caught stealing", "hbp": "Hit by pitch",
@@ -1167,6 +1193,17 @@ def _innings(value: float) -> str:
     return f"{outs // 3}.{outs % 3}"
 
 
+#: Figures that can fall without anything being taken back. A differential is
+#: the arithmetic of a bad day rather than a tally of one, and a rating is a
+#: rating: losing by three takes three off a run differential and the team
+#: played the match all the same.
+SIGNED = frozenset({
+    "run_diff", "pts_run_diff", "point_diff", "goal_diff", "goal_differential",
+    "war", "offense", "defense", "primary_score", "secondary_score",
+    "standings_points", "total_points", "regular_points", "league_points",
+})
+
+
 def _day_line(now: dict, before: dict, comparable: bool = True) -> list[str]:
     """What a player or team did *that day*, not what they have done all year.
 
@@ -1181,7 +1218,7 @@ def _day_line(now: dict, before: dict, comparable: bool = True) -> list[str]:
     # take. `raw_stats` reaches back only as far as the first nightly run while
     # `slot_scores` were backfilled, so the earliest listed days have a score
     # to compare and no stats to compare -- and subtracting nothing from a
-    # season総 printed a whole year as one day: "19.0 IP, 15 H, 9 K" under a
+    # season total printed a whole year as one day: "19.0 IP, 15 H, 9 K" under a
     # score that moved by four. Better to say nothing than that.
     if not comparable:
         return []
@@ -1207,6 +1244,23 @@ def _day_line(now: dict, before: dict, comparable: bool = True) -> list[str]:
             parts.append(f"{_number(hits or 0)}-for-{_number(at_bats)}")
         elif hits:
             parts.append(f"{_number(hits)} H")
+
+    # A figure that counts up cannot come down by being played: nobody un-draws
+    # a match or un-hits a single, so a count that falls is a result being taken
+    # back -- a match the feed stopped returning, a window that rolled past it.
+    # Printed with minus signs it reads as a day's work that went badly: Roma's
+    # Champions League draw disappeared overnight and the panel said "Draws -1,
+    # Pts draws -1.7", which was read, reasonably, as a draw being scored as a
+    # penalty.
+    #
+    # A differential is not a count. Losing by three takes three off a run
+    # differential and nothing has been withdrawn, which is why a day whose only
+    # movement is signed is left exactly as it is.
+    withdrawn = (all(v < 0 for v in delta.values())
+                 and any(c not in SIGNED for c in delta))
+    if withdrawn:
+        delta = {c: -v for c, v in delta.items()}
+        parts.append("withdrawn")
 
     order = {c: i for i, c in enumerate(HEADLINE)}
     for column in sorted(delta, key=lambda c: (order.get(c, len(HEADLINE)), c)):
