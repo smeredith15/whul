@@ -1427,13 +1427,11 @@ def test_a_league_season_that_did_not_come_back_whole_names_its_clubs(
     printed = capsys.readouterr().out
     assert "11 match(es), where 4 clubs" in printed
     assert "is 12" in printed
-    assert "The clubs not on 6:" in printed
-    # The fixture left out was Delta at home to Gamma, so those two are short
-    # and the other two are not. Both halves of that matter: a report that
-    # named every club would be a report that named none of them.
-    assert "Delta 5" in printed and "Gamma 5" in printed
-    named = printed.split("not on 6:")[1]
-    assert "Alpha" not in named and "Beta" not in named
+    # The fixture left out was Delta at home to Gamma, so that pairing met once
+    # where it should have met twice -- and the report says so by name. Both
+    # halves matter: one that named every club would name none of them.
+    assert "Delta v Gamma: 1 of 2" in printed
+    assert "Alpha" not in printed and "Beta" not in printed
 
 
 def test_a_whole_league_season_says_nothing(monkeypatch, capsys):
@@ -1461,7 +1459,7 @@ def test_a_whole_league_season_says_nothing(monkeypatch, capsys):
 
     monkeypatch.setattr(espn, "scoreboard_range", feed)
     espn.load_soccer_matches("laliga", [2023], include_cups=False)
-    assert "clubs not on" not in capsys.readouterr().out
+    assert "match(es), where" not in capsys.readouterr().out
 
 
 def test_a_cup_is_never_measured_against_a_round_robin(monkeypatch, capsys):
@@ -1480,4 +1478,36 @@ def test_a_cup_is_never_measured_against_a_round_robin(monkeypatch, capsys):
         else {"events": []})
 
     espn.load_soccer_matches("copadelrey", [2023], include_cups=False)
-    assert "clubs not on" not in capsys.readouterr().out
+    assert "match(es), where" not in capsys.readouterr().out
+
+
+def test_a_pairing_played_too_often_is_named_too(monkeypatch, capsys):
+    """Serie A 2022-23 came back with a 381st match because Hellas Verona and
+    Spezia finished level on points and played off to stay up. That is a real
+    match, and a check that only looked for gaps would have hidden it."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2022, 8, 1) + timedelta(days=n) for n in range(60)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+
+    clubs = ["Alpha", "Beta", "Gamma", "Delta"]
+    fixtures = [(h, a) for h in clubs for a in clubs if h != a]
+    fixtures.append(("Alpha", "Beta"))  # played off to stay up
+
+    def feed(competition, start, end):
+        if start != days[0]:
+            return {"events": []}
+        events = []
+        for i, (home, away) in enumerate(fixtures):
+            event = _dated_match(f"m{i}", "2022-08-02", home)
+            event["competitions"][0]["competitors"][1]["team"]["displayName"] = away
+            events.append(event)
+        return {"events": events}
+
+    monkeypatch.setattr(espn, "scoreboard_range", feed)
+    espn.load_soccer_matches("seriea", [2023], include_cups=False)
+
+    printed = capsys.readouterr().out
+    assert "13 match(es)" in printed
+    assert "Alpha v Beta: 3 of 2" in printed

@@ -1196,31 +1196,44 @@ BALANCED_LEAGUES = ("epl", "laliga", "seriea", "bundesliga", "ligue1")
 
 
 def _report_unbalanced(rows: list[dict], competition: str, season: int) -> None:
-    """Name the clubs whose league season did not come back whole.
+    """Name the fixtures a league season did not come back whole without.
 
-    Every other check here can say only that a number looks wrong. This one
-    says which club, and a club and a season is something a person can go and
-    look up in a minute. That is the difference between "five matches missing
-    from La Liga 2022-23", which is where a re-run gets you, and five fixtures
-    with names on them, which is where a fix does.
+    Every other check here can say only that a number looks wrong. A balanced
+    league is the one pool whose size is known before it is fetched -- N clubs
+    playing each other home and away is N*(N-1) matches, 2*(N-1) apiece and
+    every pairing exactly twice -- so what is missing can be named down to the
+    two clubs who were meant to play it. That is the difference between five
+    matches missing from somewhere in La Liga 2022-23 and five fixtures a
+    person can look up in a minute.
 
-    It reports and does not drop: a season with an extra match in it is as
-    interesting as one with a match missing, and neither is an error the feed
-    would ever raise.
+    It reports and does not drop. Serie A 2022-23 came back with a 381st match
+    because Hellas Verona and Spezia finished level and played off to stay up,
+    which is a real match this check cannot be allowed to hide, and is why it
+    names pairings met too often as well as too seldom.
     """
     if competition not in BALANCED_LEAGUES or not rows:
         return
     played = Counter(row["team"] for row in rows)
     clubs = len(played)
-    each = 2 * (clubs - 1)
-    odd = sorted((team, n) for team, n in played.items() if n != each)
-    if not odd:
+    # Two rows a match, so a pairing played home and away is four rows.
+    met = Counter(frozenset((row["team"], row["opponent"])) for row in rows)
+    odd = sorted((sorted(pair), n // 2) for pair, n in met.items()
+                 if len(pair) == 2 and n != 4)
+    missing = sorted(team for team, n in played.items() if n != 2 * (clubs - 1))
+    if not odd and not missing:
         return
     print(f"  {competition} {season}: {len(rows) // 2} match(es), where {clubs} "
-          f"clubs playing each other home and away is {clubs * (clubs - 1)}. "
-          f"The clubs not on {each}:", flush=True)
-    for team, n in odd:
-        print(f"      {team} {n}", flush=True)
+          f"clubs playing each other home and away is {clubs * (clubs - 1)}.",
+          flush=True)
+    for (one, other), meetings in odd:
+        print(f"      {one} v {other}: {meetings} of 2", flush=True)
+    named = {club for pair, _ in odd for club in pair}
+    for club in missing:
+        if club not in named:
+            # Short a match against nobody in particular: an opponent it never
+            # met at all leaves no pairing to count.
+            print(f"      {club}: {played[club]} of {2 * (clubs - 1)}, "
+                  f"no pairing to name", flush=True)
 
 
 def _scoreboard_or_none(competition: str, day: date) -> dict | None:
