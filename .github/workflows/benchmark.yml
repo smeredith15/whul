@@ -229,6 +229,13 @@ jobs:
           LEAGUES: ${{ inputs.leagues }}
           SEASONS: ${{ inputs.seasons }}
         run: |
+          # A pipeline exits with its LAST command's status and the default
+          # shell here is `bash -e`, not `bash -eo pipefail`: without this line
+          # `tee` returns 0 however the compute exited, the step goes green, and
+          # "A league did not compute" below never fires. That guard exists so a
+          # draft holding an inherited group cannot produce a green run, and it
+          # had never once worked.
+          set -o pipefail
           # `all` is spelled out rather than left as an empty box, so that
           # recomputing twenty leagues is something a person chose.
           if [ "$LEAGUES" = "all" ]; then LEAGUES=""; fi
@@ -256,7 +263,12 @@ jobs:
         # computed. On a version-only run compute is skipped, not failed, so
         # this still allows the second-pass freeze it was built for.
         if: ${{ inputs.freeze && steps.compute.outcome != 'failure' }}
-        run: python -m whul.cli benchmarks freeze "$DRAFT" | tee -a benchmarks.txt
+        # Piped, so it needs pipefail for the same reason the compute does. A
+        # freeze that refuses -- an uncovered asset, a version already frozen --
+        # would otherwise report success and leave the scale unchanged.
+        run: |
+          set -o pipefail
+          python -m whul.cli benchmarks freeze "$DRAFT" | tee -a benchmarks.txt
 
       - name: Save the database
         run: |
