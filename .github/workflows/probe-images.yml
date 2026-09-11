@@ -80,6 +80,7 @@ jobs:
 
       - name: Probe
         run: |
+          set -o pipefail
           python scripts/probe-images.py \
             --db data/whul.sqlite3 \
             --season "${{ inputs.season || '2026-27' }}" \
@@ -89,11 +90,14 @@ jobs:
 
       - name: Fetch the images
         if: inputs.fetch
-        run: python scripts/fetch-images.py image-urls.json | tee fetch-images.txt
+        run: |
+          set -o pipefail
+          python scripts/fetch-images.py image-urls.json | tee fetch-images.txt
 
       - name: What is still missing
         if: inputs.fetch
         run: |
+          set -o pipefail
           python -m whul.cli images-needed \
             --db data/whul.sqlite3 \
             --season "${{ inputs.season || '2026-27' }}" \

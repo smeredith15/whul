@@ -75,14 +75,29 @@ jobs:
           git reset -q -- data/whul.sqlite3
 
       - name: Take the titles back
+        # The flags are built in the shell, from the inputs as plain strings.
+        # `${{ inputs.apply && '' || '--dry-run' }}` looks like a ternary and is
+        # not: GitHub's && and || return values, so with Apply ticked
+        # `true && ''` is the empty string, which is falsy, and the expression
+        # falls through to `--dry-run`. The workflow dry-ran every time,
+        # including the run that was meant to write. Its sibling
+        # `inputs.all && '--all' || ''` survived only because '--all' happens to
+        # be a truthy string -- the same construct, right by luck.
+        #
         # pipefail because a pipeline exits with its last command's status and
         # the default shell is `bash -e`: without it `tee` reports success
         # however the command exited, and a refusal would go green.
+        env:
+          APPLY: ${{ inputs.apply }}
+          EVERY: ${{ inputs.all }}
         run: |
           set -o pipefail
-          python -m whul.cli retract-titles --season "$SEASON" \
-            ${{ inputs.all && '--all' || '' }} \
-            ${{ inputs.apply && '' || '--dry-run' }} | tee retract.txt
+          FLAGS=""
+          if [ "$EVERY" = "true" ]; then FLAGS="$FLAGS --all"; fi
+          if [ "$APPLY" != "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          echo "retract-titles --season $SEASON$FLAGS"
+          python -m whul.cli retract-titles --season "$SEASON" $FLAGS \
+            | tee retract.txt
 
       - name: Rebuild the standings from the corrected scores
         if: ${{ inputs.apply }}

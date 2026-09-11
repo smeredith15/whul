@@ -51,6 +51,7 @@ jobs:
 
       - name: Probe
         run: |
+          set -o pipefail
           python scripts/probe-ncaaf.py --db data/whul.sqlite3 \
             ${{ inputs.date && format('--date {0}', inputs.date) || '' }} \
             | tee probe-ncaaf.txt
@@ -60,7 +61,9 @@ jobs:
       # and the two together say both what is missing and where it should be.
       - name: The existing coverage check, for comparison
         if: always()
-        run: python -m whul.cli probe ncaaf | tee -a probe-ncaaf.txt
+        run: |
+          set -o pipefail
+          python -m whul.cli probe ncaaf | tee -a probe-ncaaf.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
