@@ -1065,6 +1065,184 @@ def _soccer_rows(
     return rows
 
 
+#: Request shapes for a span of dates, most informative first. ESPN takes a
+#: range in the same ``dates`` parameter a single day goes in, separated by a
+#: hyphen -- the golf and racing paths already ask for a whole year that way.
+#: Whether the *soccer* scoreboard honours it, and whether it caps the number
+#: of events it will return, is what the probe is for.
+def range_variants(start: date, end: date) -> list[dict]:
+    span = f"{start:%Y%m%d}-{end:%Y%m%d}"
+    return [
+        {"dates": span, "limit": 900},
+        {"dates": span},
+    ]
+
+
+def _event_day(event: dict, fallback: date) -> date:
+    """The day an event was played, from the event itself.
+
+    A single-date request can stamp every row with the date it asked for. A
+    range cannot: one response spans weeks, and a row carrying the wrong day
+    would be filtered by the wrong season start and land on the wrong line of
+    the daily ledger. So this reads the event's own date, and the probe checks
+    that it agrees with the day the per-day walk found the match on.
+    """
+    raw = str(event.get("date") or "")[:10]
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        return fallback
+
+
+def _rows_by_match(rows: list[dict]) -> dict[tuple, dict]:
+    """Rows keyed by the match and side they describe."""
+    return {
+        (r["date"], r["competition_key"], r["team"], r["opponent"]): r
+        for r in rows
+    }
+
+
+def probe_soccer_range(league: str, start: date, end: date) -> dict:
+    """Whether one range request returns what a span of daily requests does.
+
+    A league-season is 304 daily requests and about five minutes. If the
+    scoreboard honours a date range, it is a handful of requests instead, and a
+    benchmark recompute stops being an overnight job. The catch is the one this
+    project keeps meeting: a feed that *accepts* a parameter and quietly
+    returns less is worse than one that refuses it, because the result is a
+    smaller pool, a lower benchmark, and every score above it larger.
+
+    So this does not ask whether the range works. It walks the span a day at a
+    time -- exactly as production does -- then asks for the same span in one
+    request, turns both into scored rows through ``_soccer_rows``, and compares
+    them match by match. Anything the range is missing, anything extra, and any
+    match whose score differs is named.
+
+    Margins and clean sheets are counted from both paths and reported side by
+    side, because those are the two figures that would degrade *silently* if
+    the range returned matches without their scores: a missing goal total reads
+    as a 0-0, which is a clean sheet for both sides and a big win for neither.
+    """
+    out: dict[str, object] = {
+        "league": league,
+        "span": f"{start.isoformat()} to {end.isoformat()}",
+        "days": (end - start).days + 1,
+    }
+    if league not in LEAGUE_PATHS:
+        out["path"] = f"FAILED: no ESPN path configured for {league}"
+        return out
+    sport, path = LEAGUE_PATHS[league]
+    out["path"] = f"{sport}/{path}"
+    url = f"{BASE}/{sport}/{path}/scoreboard"
+
+    # --- the baseline: one request a day, which is what production does ------
+    began = time.monotonic()
+    day_rows: list[dict] = []
+    day_events = 0
+    unread = 0
+    label = ""
+    day = start
+    while day <= end:
+        try:
+            board = scoreboard(league, day)
+        except Exception as exc:  # noqa: BLE001 -- one date, not the probe
+            unread += 1
+            out.setdefault("unread_dates", []).append(f"{day}: {type(exc).__name__}")
+            day += timedelta(days=1)
+            continue
+        label = label or scoreboard_league_name(board)
+        events = board.get("events") or []
+        day_events += len(events)
+        for event in events:
+            day_rows.append((day, event))
+        day += timedelta(days=1)
+    out["day_by_day_seconds"] = round(time.monotonic() - began, 1)
+    out["day_by_day_requests"] = out["days"]
+    out["day_by_day_events"] = day_events
+    out["day_by_day_unread"] = unread
+    out["league_name_day_by_day"] = label or "(absent)"
+
+    baseline = _rows_by_match([
+        row for day, event in day_rows
+        for row in _soccer_rows(event, league, day, label)
+    ])
+    out["day_by_day_rows"] = len(baseline)
+    out["day_by_day_big_wins"] = sum(
+        1 for r in baseline.values() if r["goals_for"] - r["goals_against"] >= 3)
+    out["day_by_day_clean_sheets"] = sum(
+        1 for r in baseline.values()
+        if r["goals_against"] == 0 and r["goals_for"] > r["goals_against"])
+
+    # --- the range, uncached, one shape at a time ---------------------------
+    for params in range_variants(start, end):
+        shape = "dates=range" + (" + limit" if "limit" in params else "")
+        began = time.monotonic()
+        try:
+            payload = _get(url, params)
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            out[shape] = f"FAILED ({status}): {type(exc).__name__}"
+            continue
+        seconds = round(time.monotonic() - began, 1)
+        events = payload.get("events") or []
+        name = scoreboard_league_name(payload)
+        rows = _rows_by_match([
+            row for event in events
+            for row in _soccer_rows(event, league, _event_day(event, start), name)
+        ])
+
+        report: dict[str, object] = {
+            "seconds": seconds,
+            "requests": 1,
+            "events": len(events),
+            "rows": len(rows),
+            "league_name": name or "(absent)",
+            "distinct_dates": len({key[0] for key in rows}),
+            "big_wins": sum(
+                1 for r in rows.values() if r["goals_for"] - r["goals_against"] >= 3),
+            "clean_sheets": sum(
+                1 for r in rows.values()
+                if r["goals_against"] == 0 and r["goals_for"] > r["goals_against"]),
+        }
+
+        missing = sorted(set(baseline) - set(rows))
+        extra = sorted(set(rows) - set(baseline))
+        differs = [
+            key for key in set(baseline) & set(rows)
+            if any(baseline[key][field] != rows[key][field]
+                   for field in ("goals_for", "goals_against",
+                                 "shootout_for", "shootout_against"))
+        ]
+        report["missing"] = len(missing)
+        report["extra"] = len(extra)
+        report["scores_differ"] = len(differs)
+        report["sample_missing"] = [" ".join(map(str, k)) for k in missing[:6]]
+        report["sample_extra"] = [" ".join(map(str, k)) for k in extra[:6]]
+        report["sample_differs"] = [
+            f"{' '.join(map(str, k))}: day-by-day "
+            f"{baseline[k]['goals_for']:.0f}-{baseline[k]['goals_against']:.0f}, "
+            f"range {rows[k]['goals_for']:.0f}-{rows[k]['goals_against']:.0f}"
+            for k in sorted(differs)[:6]
+        ]
+        if not baseline:
+            # Two empty answers agree about nothing. A span the walk found no
+            # completed matches in -- a blocked host, a quiet fortnight, a
+            # season that had not started -- would otherwise read as proof
+            # that the range works, on no evidence at all.
+            report["verdict"] = (
+                "NO EVIDENCE -- the day-by-day walk found no completed match "
+                "in this span, so there is nothing for the range to match. "
+                "Pick a span with league football in it."
+            )
+        elif not missing and not extra and not differs:
+            report["verdict"] = (
+                "IDENTICAL -- the range returns exactly what the walk does")
+        else:
+            report["verdict"] = "DIFFERENT -- do not use the range; see the samples"
+        out[shape] = report
+    return out
+
+
 def probe_soccer(league: str, day: date | None = None) -> dict:
     """Reachability and shape check for one soccer competition."""
     day = day or date(2025, 10, 25)
