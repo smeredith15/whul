@@ -1303,3 +1303,90 @@ def test_the_range_can_be_turned_off_without_a_release(monkeypatch):
 
     espn.load_soccer_matches("mls", [2025], include_cups=False, verbose=False)
     assert walked == days
+
+
+def _match_in(season_year, day: str, event_id: str = "1") -> dict:
+    match = _dated_match(event_id, day)
+    match["season"] = {"year": season_year, "slug": "regular-season"}
+    return match
+
+
+def test_a_european_season_window_runs_to_the_end_of_june():
+    """La Liga, Serie A and Ligue 1 all finished 2022-23 in the first days of
+    June. A window closing on 31 May cut the last matchday off every one of
+    them -- 365, 370 and 370 matches where a 20-club league plays 380 -- and
+    took Serie A's 2 June replay of Atalanta-Fiorentina out of 2023-24. None of
+    that was missing from anywhere: it was a smaller pool, a lower benchmark,
+    and every score measured against it larger."""
+    from whul.sources import espn
+
+    for key in ("epl", "laliga", "seriea", "bundesliga", "ligue1"):
+        days = espn.season_dates(2023, key)
+        assert date(2023, 6, 4) in days, f"{key} misses its own final matchday"
+    assert date(2024, 6, 2) in espn.season_dates(2024, "seriea")
+
+
+def test_a_match_the_feed_labels_another_season_stays_out_of_this_one(
+    monkeypatch, capsys
+):
+    """Serie A's 2019-20 ended on 1 August 2020, which is the day the window for
+    2020-21 opens. The pool for that season carried ten matches none of its
+    clubs played in it: 390 where a 20-club league plays 380."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2020, 8, 1) + timedelta(days=n) for n in range(30)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+    monkeypatch.setattr(
+        espn, "scoreboard_range",
+        lambda competition, start, end: {"events": [
+            _match_in(2019, "2020-08-01", "old"),
+            _match_in(2020, "2020-08-20", "a"),
+            _match_in(2020, "2020-08-21", "b"),
+        ]})
+
+    out = espn.load_soccer_matches("seriea", [2021], include_cups=False)
+    assert set(out["date"]) == {"2020-08-20", "2020-08-21"}
+    assert "labels another season" in capsys.readouterr().out
+    assert "season_year" not in out.columns, "the label chose the rows, no more"
+
+
+def test_the_season_label_is_read_from_the_feed_not_assumed(monkeypatch):
+    """Which year ESPN numbers a European season by is not something to guess
+    at. Taking the label the bulk of the window carries needs no convention --
+    and gets the same answer whichever one the feed uses."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2020, 8, 1) + timedelta(days=n) for n in range(30)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+    # The same shape, numbered by the year the season ends rather than starts.
+    monkeypatch.setattr(
+        espn, "scoreboard_range",
+        lambda competition, start, end: {"events": [
+            _match_in(2020, "2020-08-01", "old"),
+            _match_in(2021, "2020-08-20", "a"),
+            _match_in(2021, "2020-08-21", "b"),
+        ]})
+
+    out = espn.load_soccer_matches("seriea", [2021], include_cups=False,
+                                   verbose=False)
+    assert set(out["date"]) == {"2020-08-20", "2020-08-21"}
+
+
+def test_a_feed_that_states_no_season_keeps_every_row(monkeypatch):
+    """Dropping rows on the strength of a missing field is the direction that
+    quietly shrinks a pool."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    days = [date(2020, 8, 1) + timedelta(days=n) for n in range(30)]
+    monkeypatch.setattr(espn, "season_dates", lambda season, league="nba": days)
+    monkeypatch.setattr(
+        espn, "scoreboard_range",
+        lambda competition, start, end: {"events": [
+            _dated_match("a", "2020-08-01"), _dated_match("b", "2020-08-20")]})
+
+    out = espn.load_soccer_matches("seriea", [2021], include_cups=False,
+                                   verbose=False)
+    assert len(out) == 4, "two matches, two rows each"

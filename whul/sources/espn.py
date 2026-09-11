@@ -174,8 +174,14 @@ SEASON_WINDOWS = {
     "ncaaw": ((11, 1), (4, 15), "ends"),
     "ncaabaseball": ((2, 1), (6, 30), "within"),
     "ncaasoftball": ((2, 1), (6, 30), "within"),
-    # European seasons run August to May and are labelled by the year they end.
-    **{key: ((8, 1), (5, 31), "ends") for key in
+    # European seasons are labelled by the year they end. The window runs to the
+    # end of June, not the end of May: the southern leagues now finish in the
+    # first days of June, and a window closing on 31 May cut the last matchday
+    # off La Liga, Serie A and Ligue 1 in 2022-23, and took Serie A's 2 June
+    # replay of Atalanta-Fiorentina out of 2023-24. Those matches were not
+    # missing from anywhere -- they were a smaller pool, a lower benchmark, and
+    # every score measured against it larger.
+    **{key: ((8, 1), (6, 30), "ends") for key in
        ("epl", "laliga", "seriea", "bundesliga", "ligue1",
         "ucl", "uel", "uecl", "facup", "efl_cup", "copadelrey",
         "dfbpokal", "coppaitalia", "coupedefrance")},
@@ -923,8 +929,7 @@ def load_soccer_matches(
             if verbose:
                 print(f"  {competition} {season}: {len(days)} dates ...", flush=True)
             failed = 0
-            gathered, walk = _by_range(competition, days, verbose=verbose)
-            rows.extend(gathered)
+            season_rows, walk = _by_range(competition, days, verbose=verbose)
             for index, day in enumerate(walk):
                 board = _scoreboard_or_none(competition, day)
                 if board is None:
@@ -935,9 +940,11 @@ def load_soccer_matches(
                     continue
                 name = scoreboard_league_name(board)
                 for event in board.get("events", []):
-                    rows.extend(_soccer_rows(event, competition, day, name))
+                    season_rows.extend(_soccer_rows(event, competition, day, name))
                 if verbose and index and index % 60 == 0:
-                    print(f"    {index}/{len(walk)} dates, {len(rows):,} rows", flush=True)
+                    print(f"    {index}/{len(walk)} dates, "
+                          f"{len(season_rows):,} rows", flush=True)
+            rows.extend(_the_season_asked_for(season_rows, competition, verbose))
             if failed:
                 lost[competition] = lost.get(competition, 0) + failed
                 print(f"    {competition} {season}: {failed} of {len(days)} date(s) "
@@ -977,7 +984,8 @@ def load_soccer_matches(
                   f"is drawn from fewer matches than were played, which lowers "
                   f"the benchmark and raises every score measured against it. "
                   f"Re-run before freezing.\n", flush=True)
-    return pd.DataFrame(rows)
+    # The feed's season label chose the rows; it is not for the scorers to read.
+    return pd.DataFrame(rows).drop(columns=["season_year"], errors="ignore")
 
 
 #: Dates asked for in one range request. The probe settled that the soccer
@@ -1146,6 +1154,36 @@ def _by_range(
 RETRY_PAUSE = 2.0
 
 
+def _the_season_asked_for(
+    rows: list[dict], competition: str, verbose: bool = True
+) -> list[dict]:
+    """Rows the feed itself labels as one season, out of a window holding more.
+
+    A window is a pair of calendar dates and a season is not. Serie A's 2019-20
+    ended on 1 August 2020, which is the day the window for 2020-21 opens, so
+    that pool carried ten matches none of its clubs played that season: 390
+    where a 20-club league plays 380. The Europa League is worse, its 2019-20
+    knockout rounds having been played in August 2020 outright.
+
+    Which year ESPN numbers a European season by is not something to guess at,
+    so this does not compare against the season asked for. It takes the label
+    the bulk of the window carries and drops what disagrees with it, which
+    needs no convention at all -- and a feed that states no season leaves every
+    row alone, since dropping rows on the strength of a missing field is the
+    direction that quietly shrinks a pool.
+    """
+    stated = [row["season_year"] for row in rows if row.get("season_year")]
+    if not stated:
+        return rows
+    belongs = max(set(stated), key=stated.count)
+    kept = [row for row in rows
+            if row.get("season_year") in (None, "", belongs)]
+    if verbose and len(kept) != len(rows):
+        print(f"    {len(rows) - len(kept)} row(s) the feed labels another "
+              f"season than {belongs}, left out of {competition}", flush=True)
+    return kept
+
+
 def _scoreboard_or_none(competition: str, day: date) -> dict | None:
     """One day's board, or None having tried twice."""
     for attempt in range(2):
@@ -1209,7 +1247,9 @@ def _soccer_rows(
     notes = " ".join(
         str(n.get("headline", "")) for n in (inner.get("notes") or []) if isinstance(n, dict)
     )
-    season_type = ((event.get("season") or {}).get("slug") or "").replace("-", " ")
+    season = event.get("season") or {}
+    season_type = (season.get("slug") or "").replace("-", " ")
+    season_year = season.get("year")
     competition_label = " ".join(p for p in (name, notes, season_type) if p).strip()
 
     rows = []
@@ -1224,6 +1264,7 @@ def _soccer_rows(
             "goals_against": score(other),
             "shootout_for": shootout(side),
             "shootout_against": shootout(other),
+            "season_year": season_year,
         })
     return rows
 
