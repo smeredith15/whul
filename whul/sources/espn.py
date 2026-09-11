@@ -1216,13 +1216,16 @@ def probe_soccer_range(league: str, start: date, end: date) -> dict:
         report["missing"] = len(missing)
         report["extra"] = len(extra)
         report["scores_differ"] = len(differs)
-        report["sample_missing"] = [" ".join(map(str, k)) for k in missing[:6]]
-        report["sample_extra"] = [" ".join(map(str, k)) for k in extra[:6]]
-        report["sample_differs"] = [
+        # Every one of them, not a sample. The terminal shows the first few;
+        # the file this is written to carries the lot, because "eleven matches
+        # missing" is a fact and *which* eleven is the diagnosis.
+        report["missing_matches"] = [" ".join(map(str, k)) for k in missing]
+        report["extra_matches"] = [" ".join(map(str, k)) for k in extra]
+        report["differing_matches"] = [
             f"{' '.join(map(str, k))}: day-by-day "
             f"{baseline[k]['goals_for']:.0f}-{baseline[k]['goals_against']:.0f}, "
             f"range {rows[k]['goals_for']:.0f}-{rows[k]['goals_against']:.0f}"
-            for k in sorted(differs)[:6]
+            for k in sorted(differs)
         ]
         if not baseline:
             # Two empty answers agree about nothing. A span the walk found no
