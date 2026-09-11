@@ -837,6 +837,57 @@ def _continental_entrants(key: str, seasons):
     return pd.concat(frames, ignore_index=True)
 
 
+def _the_leagues_own(matches: pd.DataFrame, key: str, own: set) -> pd.DataFrame:
+    """Keep the league's own clubs, by name or by the feed's id for them.
+
+    A competition's scoreboard returns every match in it, so the rows have to be
+    filtered back to the clubs this league is made of. Doing that on the display
+    name alone assumes the feed calls a club the same thing in every
+    competition, and it does not: Bayern's Champions League matches named a club
+    the Bundesliga's own team list does not contain, so they were dropped, and
+    Bayern finished a European week having apparently not played. Nothing said
+    so -- the filter's whole job is to drop rows, and a row it should have kept
+    looks exactly like the hundreds it should not.
+
+    The id is used only to keep rows the name filter would drop, never to drop
+    rows it would keep, because one id per club across competitions is
+    UNVERIFIED from here. If the ids do not line up, this is the filter it
+    always was.
+
+    What is still dropped and looks like one of ours is named. Most dropped
+    rows are lower-division cup opponents and correct; a name close to a club
+    in the league is the one worth a human's attention.
+    """
+    from whul.scoring.soccer import _compare_key
+    from whul.sources import espn
+
+    by_name = matches["team"].isin(own)
+    ours = {_compare_key(str(n)): str(n) for n in own}
+    ids = espn.load_eligible_team_ids(key)
+    by_id = (matches["team_id"].astype(str).isin(ids)
+             if ids and "team_id" in matches.columns
+             else pd.Series(False, index=matches.index))
+
+    rescued = matches[by_id & ~by_name]
+    if not rescued.empty:
+        named = sorted(set(rescued["team"].astype(str)))
+        print(f"  {key}: {len(rescued)} row(s) the league's own team list does "
+              f"not name, kept because the feed gives them one of its own team "
+              f"ids: {', '.join(named[:8])}", flush=True)
+
+    dropped = matches[~(by_name | by_id)]
+    if not dropped.empty:
+        near_ours = sorted({
+            str(t) for t in dropped["team"].astype(str).unique()
+            if _compare_key(str(t)) in ours
+        })
+        if near_ours:
+            print(f"  {key}: {len(near_ours)} club(s) dropped as not this league's, "
+                  f"whose names match one that is: {', '.join(near_ours[:8])}",
+                  flush=True)
+    return matches[by_name | by_id]
+
+
 def _soccer(key: str, category: str):
     """A club's league, cup and European matches, gathered into one total.
 
@@ -860,7 +911,7 @@ def _soccer(key: str, category: str):
                 return matches
             own = espn.load_eligible_teams(key)
             if own:
-                matches = matches[matches["team"].isin(own)]
+                matches = _the_leagues_own(matches, key, own)
             else:
                 # Better to say so than to quietly benchmark against Europe.
                 print(

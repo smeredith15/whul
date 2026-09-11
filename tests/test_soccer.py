@@ -1099,3 +1099,77 @@ def test_a_league_with_no_finishing_date_wins_nothing():
                  competition="Eredivisie", competition_key="eredivisie")]
     got = score_teams(pd.DataFrame(rows), as_of=OVER)
     assert got["pts_league_title"].sum() == 0.0
+
+
+def _euro_row(team, opponent, team_id="", opponent_id="", competition="ucl"):
+    return {"team": team, "opponent": opponent, "team_id": team_id,
+            "opponent_id": opponent_id, "competition_key": competition,
+            "competition": "UEFA Champions League", "date": "2026-09-16",
+            "goals_for": 2.0, "goals_against": 1.0,
+            "shootout_for": 0.0, "shootout_against": 0.0}
+
+
+def test_a_club_the_european_feed_spells_differently_is_still_ours(monkeypatch, capsys):
+    """Bayern's Champions League matches named a club the Bundesliga's own team
+    list does not contain, so the filter that keeps a league to its own clubs
+    dropped them -- and Bayern finished a European week having apparently not
+    played. Nothing said so: the filter's whole job is to drop rows, and one it
+    should have kept looks exactly like the hundreds it should not."""
+    from whul import benchmark_sources as bs
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "load_eligible_team_ids", lambda key: {"132"})
+    matches = pd.DataFrame([
+        _euro_row("Bayern Munich", "Lower Division", team_id="132"),
+        _euro_row("Bayern Munchen", "Real Madrid", team_id="132"),
+    ])
+    kept = bs._the_leagues_own(matches, "bundesliga", {"Bayern Munich"})
+
+    assert len(kept) == 2, "the id keeps the row the name could not"
+    assert "kept because the feed gives them one of its own team ids" in \
+        capsys.readouterr().out
+
+
+def test_an_opponent_from_another_league_is_still_dropped(monkeypatch):
+    """The filter's actual job. Without it the Premier League pool was 213
+    clubs a season instead of 20."""
+    from whul import benchmark_sources as bs
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "load_eligible_team_ids", lambda key: {"132"})
+    matches = pd.DataFrame([
+        _euro_row("Bayern Munich", "Real Madrid", team_id="132"),
+        _euro_row("Real Madrid", "Bayern Munich", team_id="86"),
+    ])
+    kept = bs._the_leagues_own(matches, "bundesliga", {"Bayern Munich"})
+    assert list(kept["team"]) == ["Bayern Munich"]
+
+
+def test_an_id_that_does_not_line_up_leaves_the_filter_as_it_was(monkeypatch):
+    """One id per club across competitions is UNVERIFIED from where this was
+    written, so the id may only keep rows the name filter would drop -- never
+    drop rows it would keep."""
+    from whul import benchmark_sources as bs
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "load_eligible_team_ids", lambda key: set())
+    matches = pd.DataFrame([_euro_row("Bayern Munich", "Real Madrid", team_id="132")])
+    kept = bs._the_leagues_own(matches, "bundesliga", {"Bayern Munich"})
+    assert list(kept["team"]) == ["Bayern Munich"]
+
+
+def test_a_dropped_club_whose_name_matches_one_of_ours_is_named(monkeypatch, capsys):
+    """Most dropped rows are lower-division cup opponents and correct. One
+    whose name reduces to a club in the league is the one worth attention."""
+    from whul import benchmark_sources as bs
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "load_eligible_team_ids", lambda key: set())
+    matches = pd.DataFrame([
+        _euro_row("FC Bayern Munich 05", "Real Madrid"),
+        _euro_row("Some Fourth Division Side", "Bayern Munich"),
+    ])
+    bs._the_leagues_own(matches, "bundesliga", {"Bayern Munich"})
+    printed = capsys.readouterr().out
+    assert "whose names match one that is" in printed
+    assert "Some Fourth Division Side" not in printed
