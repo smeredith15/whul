@@ -99,7 +99,7 @@ def test_a_capped_range_is_caught_and_named(monkeypatch):
     for report in shapes(found):
         assert report["verdict"].startswith("DIFFERENT")
         assert report["missing"] == 4
-        assert any("Liverpool" in line for line in report["sample_missing"])
+        assert any("Liverpool" in line for line in report["missing_matches"])
 
 
 def test_a_score_that_disagrees_is_caught(monkeypatch):
@@ -115,7 +115,7 @@ def test_a_score_that_disagrees_is_caught(monkeypatch):
         assert report["scores_differ"] == 2
         assert report["big_wins"] == 0
         assert any("day-by-day 4-0, range 0-0" in line
-                   for line in report["sample_differs"])
+                   for line in report["differing_matches"])
 
 
 def test_every_match_stamped_with_one_date_is_caught(monkeypatch):
@@ -154,3 +154,68 @@ def test_a_shape_the_feed_refuses_is_reported_not_raised(monkeypatch):
 def test_a_league_with_no_path_says_so():
     found = espn.probe_soccer_range("nosuchleague", START, END)
     assert str(found["path"]).startswith("FAILED")
+
+
+# --- the report as a file ---------------------------------------------------
+
+def result(monkeypatch, range_payload):
+    return run(monkeypatch, range_payload)
+
+
+def test_the_report_is_written_where_it_can_be_attached(monkeypatch, tmp_path):
+    """The terminal is where a verdict is read; the file is what gets sent."""
+    from whul import cli
+
+    found = result(monkeypatch, board(
+        event("Arsenal", "Everton", 4, 0, "2025-08-15"),
+        event("Chelsea", "Fulham", 1, 1, "2025-08-16"),
+        event("Liverpool", "Brentford", 3, 2, "2025-08-17"),
+    ))
+    target = tmp_path / "report.txt"
+    assert cli._print_range_probe(found, str(target)) == 0
+    written = target.read_text()
+    assert "IDENTICAL" in written
+    assert "day_by_day_big_wins" in written and "clean_sheets" in written
+
+
+def test_the_file_carries_every_match_and_the_terminal_a_sample(capsys, monkeypatch, tmp_path):
+    """"Eleven matches missing" is a fact and *which* eleven is the diagnosis,
+    and a diagnosis that scrolls off the top of a terminal is one nobody sends
+    on."""
+    from whul import cli
+
+    days = {
+        date(2025, 8, 15 + i): board(
+            event(f"Home{i}", f"Away{i}", 3, 0, f"2025-08-{15 + i}"))
+        for i in range(3)
+    }
+    found = run(monkeypatch, board(
+        event("Home0", "Away0", 3, 0, "2025-08-15")), days=days)
+    target = tmp_path / "report.txt"
+    cli._print_range_probe(found, str(target))
+
+    shown = capsys.readouterr().out
+    written = target.read_text()
+    # Four rows missing -- two matches, two sides each.
+    assert "missing                4" in written
+    for team in ("Home1", "Home2"):
+        assert team in written, team
+    assert f"Written to {target}" in shown
+
+
+def test_a_file_that_cannot_be_written_does_not_lose_the_run(capsys, monkeypatch, tmp_path):
+    """The terminal copy is still the answer, and this says why there is no
+    file rather than leaving somebody looking for one."""
+    from whul import cli
+
+    found = result(monkeypatch, board(
+        event("Arsenal", "Everton", 4, 0, "2025-08-15"),
+        event("Chelsea", "Fulham", 1, 1, "2025-08-16"),
+        event("Liverpool", "Brentford", 3, 2, "2025-08-17"),
+    ))
+    blocked = tmp_path / "a-file"
+    blocked.write_text("not a directory")
+    assert cli._print_range_probe(found, str(blocked / "report.txt")) == 0
+    out = capsys.readouterr()
+    assert "Could not write" in out.err
+    assert "IDENTICAL" in out.out

@@ -1787,41 +1787,90 @@ def cmd_benchmarks_freeze(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_range_probe(found: dict) -> int:
-    """The range probe, laid out so the verdict is the first thing read."""
-    shapes = {k: v for k, v in found.items() if isinstance(v, dict)}
+#: How many of a list the terminal shows. The file gets all of them: "eleven
+#: matches missing" is a fact and *which* eleven is the diagnosis, and a
+#: diagnosis that scrolls off the top of a terminal is one nobody sends on.
+TERMINAL_SAMPLE = 6
+
+
+def _range_probe_lines(found: dict, limit: int | None) -> list[str]:
+    """The report, as lines. ``limit`` truncates every list; None keeps all."""
+    def listed(values: list) -> list[str]:
+        shown = values if limit is None else values[:limit]
+        out = [f"          {line}" for line in shown]
+        if limit is not None and len(values) > limit:
+            out.append(f"          ... and {len(values) - limit} more "
+                       f"(all of them are in the file)")
+        return out
+
+    lines = [
+        f"ESPN soccer date-range probe -- {found.get('league')} "
+        f"{found.get('span')}",
+        "",
+    ]
     for key, value in found.items():
         if isinstance(value, (dict, list)):
             continue
-        print(f"  {key:<26} {value}")
-    for name in ("unread_dates",):
-        if found.get(name):
-            print(f"\n  {name}:")
-            for line in found[name][:8]:
-                print(f"      {line}")
+        lines.append(f"  {key:<26} {value}")
+    if found.get("unread_dates"):
+        lines += ["", "  unread_dates:"] + listed(found["unread_dates"])
 
-    worked = False
-    for shape, report in shapes.items():
-        print(f"\n  {shape}")
+    for shape, report in found.items():
+        if not shape.startswith("dates="):
+            continue
+        lines += ["", f"  {shape}"]
         if isinstance(report, str):
-            print(f"      {report}")
+            lines.append(f"      {report}")
             continue
         for key, value in report.items():
             if isinstance(value, list):
-                if not value:
-                    continue
-                print(f"      {key}:")
-                for line in value:
-                    print(f"          {line}")
+                if value:
+                    lines += [f"      {key}:"] + listed(value)
             else:
-                print(f"      {key:<22} {value}")
-        if str(report.get("verdict", "")).startswith("IDENTICAL"):
-            worked = True
+                lines.append(f"      {key:<22} {value}")
+    return lines
+
+
+def _print_range_probe(found: dict, out: str | None) -> int:
+    """The range probe, to the terminal and to a file that can be sent on.
+
+    Both, rather than either. The terminal is where a verdict is read and the
+    file is what gets attached to a message -- and the file carries every
+    missing match rather than the first handful, because the whole point of
+    writing one is that it does not have to fit on a screen.
+    """
+    from pathlib import Path
+
+    worked = any(
+        str(report.get("verdict", "")).startswith("IDENTICAL")
+        for shape, report in found.items()
+        if shape.startswith("dates=") and isinstance(report, dict)
+    )
+
+    target = Path(out) if out else Path(
+        f"probe-{found.get('league', 'soccer')}-range-"
+        f"{str(found.get('span', '')).replace(' to ', '-').replace(' ', '')}.txt"
+    )
+    written = ""
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(_range_probe_lines(found, None)) + "\n")
+        written = str(target)
+    except OSError as exc:
+        # A report that cannot be written is not a reason to lose the run: the
+        # terminal copy is still the answer, and this says why there is no file
+        # rather than leaving somebody looking for one.
+        print(f"\n  Could not write {target}: {exc}\n", file=sys.stderr)
 
     print()
+    for line in _range_probe_lines(found, TERMINAL_SAMPLE):
+        print(line)
+    print()
+    if written:
+        print(f"  Written to {written} -- send me that file.\n")
     if worked:
         print("  A range that returns exactly what the walk does is safe to "
-              "adopt.\n  Send me this output and I will wire it in.\n")
+              "adopt.\n")
         return 0
     print("  No shape matched the day-by-day walk, so the walk stays. That is "
           "the\n  right outcome to report: a range that returns fewer matches "
@@ -1973,9 +2022,7 @@ def cmd_probe(args: argparse.Namespace) -> int:
                       file=sys.stderr)
                 return 2
             found = espn.probe_soccer_range(args.league, first, last)
-            print(f"\nESPN soccer date-range probe -- {found['league']} "
-                  f"{found['span']}\n")
-            return _print_range_probe(found)
+            return _print_range_probe(found, getattr(args, "out", None))
 
         day = _d.fromisoformat(args.date) if args.date else None
         result = espn.probe_soccer(args.league, day)
@@ -2471,6 +2518,11 @@ def main(argv: list[str] | None = None) -> int:
     probe.add_argument(
         "--tour", choices=("atp", "wta", "tennistonic"),
         help="which schedule source to probe (default: all three)",
+    )
+    probe.add_argument(
+        "--out", metavar="FILE",
+        help="where to write the range probe's report (default: a "
+             "probe-<league>-range-<span>.txt beside you)",
     )
     probe.add_argument(
         "--range", dest="span", metavar="START:END",
