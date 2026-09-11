@@ -983,9 +983,13 @@ def _tennis_live():
             return pd.DataFrame()
         both = pd.concat(frames, ignore_index=True)
         # The two overlap over the last week; the same win must not be paid
-        # twice, and either copy will do.
+        # twice, and either copy will do. The loser is part of what makes a
+        # match unique: a round-robin group gives a player three wins in the
+        # same round of the same tournament, and without it two of the three
+        # were being dropped every November.
         return both.drop_duplicates(
-            subset=["season", "tournament", "round", "winner"], keep="first"
+            subset=["season", "tournament", "round", "winner", "loser"],
+            keep="first",
         )
 
     # Losses count here and not in the benchmark: a rostered player who lost
@@ -1125,10 +1129,14 @@ SOURCES: dict[str, Source] = _register(
            note="one pull, two benchmarks -- each series against itself"),
     Source("tennis", "Tennis", "Player", _tennis_players, live=_tennis_live,
            windowed=True, produces=("ATP", "WTA"),
-           # The feed's own match id. Two players can meet twice in a season,
-           # so a key built from the names and the round would collapse the
-           # pair and pay for one of the two wins.
-           accumulates=("match_uid",),
+           # The match itself, not one feed's id for it: the same match
+           # arrives from tonight's feed, from the database the history was
+           # seeded from, and from a list typed by hand, and a key only one of
+           # them can produce would pay for it three times. The loser belongs
+           # in it -- a round-robin group gives a player three wins in the same
+           # round of the same tournament, and a key without the opponent keeps
+           # one of them.
+           accumulates=("season", "tournament", "round", "winner", "loser"),
            note="one pull, two benchmarks; the 2022-23 window is the earliest"),
     *[
         Source(key, category, "Team", _ncaa(key, category),

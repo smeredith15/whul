@@ -665,12 +665,18 @@ def _accumulating(fetch, source, store: Store, verbose: bool = True):
     from whul.store import feed_ledger
 
     def fetch_and_keep(years):
+        # The committed history first, every time. It lives in the repository
+        # and the ledger lives in a database that three workflows rebuild and
+        # force-push, so a history that had to be restored by remembering to
+        # restore it is one that eventually is not.
+        seeded = feed_ledger.apply_seed(store, source.key, source.accumulates)
         window = fetch(years)
         held = feed_ledger.merge(store, source.key, window, source.accumulates)
         if verbose:
             fresh = 0 if window is None or window.empty else len(window)
             print(f"  {source.key}: {fresh} row(s) in the feed's window, "
-                  f"{len(held)} kept from every run so far", flush=True)
+                  f"{seeded} from the committed history, "
+                  f"{len(held)} kept in all", flush=True)
         return held
 
     return fetch_and_keep
