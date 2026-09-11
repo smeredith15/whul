@@ -151,6 +151,36 @@ jobs:
         # roster has to be current or the check is against a stale one.
         run: python -m whul.cli import-rosters --season 2026-27 --write
 
+      - name: Say if a draft is already open
+        # Starting a new draft while one is open loses whatever was computed
+        # into the open one -- not visibly, because the new draft inherits the
+        # frozen values and a comparison against frozen then reads +0.0% for
+        # every group the earlier sitting had already corrected. That is what
+        # a finished recompute looks like. It cost a full six-league run.
+        #
+        # Not an error: starting fresh is legitimate, and the run that follows
+        # a freeze is exactly that. A warning names the draft and says how to
+        # continue it instead, which is the thing that is hard to remember and
+        # impossible to guess.
+        if: ${{ !inputs.version }}
+        run: |
+          python - > open_draft.txt <<'PY'
+          try:
+              from whul.config.league import SEASON
+              from whul.store import open_store
+              from whul.store import benchmarks as bm
+              draft = bm.latest_draft(open_store("data/whul.sqlite3"), SEASON.label)
+              print(draft.version if draft else "")
+          except Exception:
+              # A diagnostic must not stop a run that would otherwise work.
+              print("")
+          PY
+          OPEN=$(cat open_draft.txt)
+          echo "OPEN_DRAFT=$OPEN" >> "$GITHUB_ENV"
+          if [ -n "$OPEN" ]; then
+            echo "::warning::$OPEN is an unfrozen draft, and this run is starting a new one instead of adding to it. Anything already computed into $OPEN will not be in this draft, and the comparison below will not show it as a change. To continue that draft, cancel this run and start it again with Version set to $OPEN."
+          fi
+
       - name: Start a draft from the frozen scale
         if: ${{ !inputs.version }}
         run: |
@@ -242,6 +272,13 @@ jobs:
         run: |
           echo "==================================================="
           echo "  Draft: $DRAFT"
+          if [ -n "$OPEN_DRAFT" ]; then
+            echo
+            echo "  NOTE: $OPEN_DRAFT was already open when this run started,"
+            echo "  and this run did not add to it. If that draft held work you"
+            echo "  still want, run again with Version set to it -- the groups"
+            echo "  computed here would have to be computed again into it."
+          fi
           if [ "${{ inputs.freeze }}" = "true" ]; then
             echo "  FROZEN. Run 'Publish standings' with backfill to rescore."
           else
