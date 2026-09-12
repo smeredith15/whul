@@ -1289,7 +1289,8 @@ def cmd_probe_athlete(args: argparse.Namespace) -> int:
 
     found = espn_soccer.probe_athlete(
         args.league, athlete_id=args.athlete,
-        season=int(args.season) if args.season else None, club=args.club)
+        season=int(args.season) if args.season else None, club=args.club,
+        dump_dir=args.dump)
 
     lines = [
         f"ESPN soccer athlete probe -- {found['league']} "
@@ -2842,6 +2843,11 @@ def main(argv: list[str] | None = None) -> int:
     athlete.add_argument("--club", help="pick the athlete from this club")
     athlete.add_argument("--season", help="our season label, e.g. 2027")
     athlete.add_argument("--out", help="write the report to this file too")
+    athlete.add_argument(
+        "--dump", metavar="DIR",
+        help="write each payload to this directory as JSON. Four rounds of "
+             "inferring a shape through a summary is three more than reading "
+             "the shape itself")
     athlete.set_defaults(func=cmd_probe_athlete)
 
     site = sub.add_parser("site", help="generate the static site")

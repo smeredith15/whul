@@ -32,6 +32,8 @@ The payload shape, which was found rather than assumed::
 
 from __future__ import annotations
 
+import json
+
 import time
 
 import pandas as pd
@@ -397,7 +399,7 @@ def _competition_names(node, found: set, depth: int = 0) -> set:
 
 def probe_athlete(
     league: str, athlete_id: str | None = None, season: int | None = None,
-    club: str | None = None, session=None,
+    club: str | None = None, session=None, dump_dir=None,
 ) -> dict:
     """Whether an athlete's own record says which competition a figure is from.
 
@@ -441,6 +443,18 @@ def probe_athlete(
             entry["error"] = f"{type(exc).__name__} {status}"
             out["shapes"][label] = entry
             continue
+        if dump_dir is not None:
+            # The payload itself, not a description of it. Every question so
+            # far has been answered by a shape nobody could see, and each round
+            # of guessing at one costs a run.
+            from pathlib import Path
+
+            target = Path(dump_dir)
+            target.mkdir(parents=True, exist_ok=True)
+            name = label.replace(" ", "-")
+            (target / f"{name}.json").write_text(
+                json.dumps(payload, indent=1, default=str)[:4_000_000])
+            entry["dumped"] = f"{name}.json"
         entry["keys"] = sorted(payload)[:20]
         names = sorted(_competition_names(payload, set()))
         entry["names"] = names[:30]
@@ -797,8 +811,12 @@ def probe_gamelog_paths(
     for path in paths:
         for label, params in (
             ("no season", {}),
-            ("season", {"season": season} if season else {}),
-            ("season+league", {"season": season, "league": path} if season else {}),
+            # ESPN's numbering, not ours. The first version of this asked for
+            # 2027 -- a season nobody has played -- and read the zero matches
+            # back as the endpoint refusing to filter.
+            ("season", {"season": roster_season(path, season)} if season else {}),
+            ("season+league", {"season": roster_season(path, season),
+                               "league": path} if season else {}),
         ):
             url = (f"https://site.web.api.espn.com/apis/common/v3/sports/soccer/"
                    f"{path}/athletes/{athlete_id}/gamelog")
