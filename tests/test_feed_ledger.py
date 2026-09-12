@@ -21,6 +21,12 @@ def store():
     return open_store(":memory:")
 
 
+@pytest.fixture
+def seed_root(tmp_path):
+    """A seed directory of this test's own, never the repository's."""
+    return tmp_path
+
+
 def _match(uid: str, winner: str, tournament: str = "US Open",
            round_name: str = "Final", season: int = 2026) -> dict:
     return {"match_uid": uid, "winner": winner, "loser": "Someone Else",
@@ -310,3 +316,46 @@ def test_the_committed_tennis_seed_keys_the_way_tennis_does(store):
     missing = [k for k in source.accumulates if k not in held.columns]
     assert not missing, f"the seed has no {missing} to key on"
     assert feed_ledger.apply_seed(store, "tennis", source.accumulates) == len(held)
+
+
+def test_a_seed_defers_to_what_the_database_already_holds(store, seed_root):
+    """A seed is a reconstruction -- typed by hand, or read out of another
+    application -- and it overlaps whatever the feed has already written down.
+    Where the two describe the same match the feed's copy is the better one: it
+    came from the source rather than from somebody reading a draw sheet."""
+    from whul.store import feed_ledger
+
+    feed_ledger.merge(store, "tennis", pd.DataFrame([
+        dict(_match("m1", "Aryna Sabalenka"), score="7-5 6-2",
+             note="from the feed")]), KEYS)
+    _seeded(seed_root, [dict(_match("m1", "Aryna Sabalenka"), score="7-5 6-2")])
+    added = feed_ledger.apply_seed(store, "tennis", KEYS, root=seed_root)
+
+    held = feed_ledger.load(store, "tennis")
+    assert added == 0, "the match was already held"
+    assert len(held) == 1
+    assert held.iloc[0]["note"] == "from the feed"
+
+
+def test_a_seed_still_fills_what_the_database_lacks(store, seed_root):
+    from whul.store import feed_ledger
+
+    feed_ledger.merge(store, "tennis", pd.DataFrame([
+        _match("m1", "Aryna Sabalenka")]), KEYS)
+    _seeded(seed_root, [_match("m1", "Aryna Sabalenka"),
+                        _match("m2", "Elena Rybakina")])
+    added = feed_ledger.apply_seed(store, "tennis", KEYS, root=seed_root)
+    assert added == 1
+    assert len(feed_ledger.load(store, "tennis")) == 2
+
+
+def test_the_feed_may_still_correct_a_row_it_owns(store):
+    """Only the seed defers. A result the feed itself restates should win, and
+    that is what keeps a retirement recorded as a walkover from standing."""
+    from whul.store import feed_ledger
+
+    feed_ledger.merge(store, "tennis", pd.DataFrame([
+        dict(_match("m1", "Aryna Sabalenka"), score="7-5 6-2")]), KEYS)
+    held = feed_ledger.merge(store, "tennis", pd.DataFrame([
+        dict(_match("m1", "Aryna Sabalenka"), score="7-5 2-1 RET")]), KEYS)
+    assert held.iloc[0]["score"] == "7-5 2-1 RET"
