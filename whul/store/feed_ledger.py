@@ -60,12 +60,20 @@ def row_key(row: dict, keys: tuple[str, ...]) -> str:
 
 
 def record(store: Store, source: str, frame: pd.DataFrame,
-           keys: tuple[str, ...], now: str | None = None) -> int:
+           keys: tuple[str, ...], now: str | None = None,
+           overwrite: bool = True) -> int:
     """Write down every row, keeping the first sighting of each.
 
     A row already held has its payload replaced -- a result the feed corrects
     should win -- and its ``first_seen`` left alone, which is the only record
     of when it was actually played that survives the feed forgetting it.
+
+    ``overwrite=False`` adds only what is absent, which is what a seed wants.
+    A seed is a reconstruction: typed by hand, or read out of another
+    application's database, and it overlaps whatever the feed has already
+    written down. Where the two describe the same match the feed's copy is the
+    better one -- it came from the source rather than from somebody reading a
+    draw sheet -- so the seed fills gaps and defers to what is held.
     """
     if frame is None or frame.empty:
         return 0
@@ -84,16 +92,28 @@ def record(store: Store, source: str, frame: pd.DataFrame,
             source, row_key(clean, keys), str(clean.get("season") or ""),
             json.dumps(clean, default=str), stamp, stamp,
         ))
+    conflict = (
+        "ON CONFLICT (source, row_key) DO UPDATE SET "
+        "payload = excluded.payload, season = excluded.season, "
+        "last_seen = excluded.last_seen"
+        if overwrite else
+        "ON CONFLICT (source, row_key) DO NOTHING"
+    )
     with store.transaction() as conn:
+        before = conn.execute(
+            "SELECT COUNT(*) FROM feed_rows WHERE source = ?", (source,)
+        ).fetchone()[0]
         conn.executemany(
             "INSERT INTO feed_rows (source, row_key, season, payload, "
-            "first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (source, row_key) DO UPDATE SET "
-            "payload = excluded.payload, season = excluded.season, "
-            "last_seen = excluded.last_seen",
+            f"first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?) {conflict}",
             rows,
         )
-    return len(rows)
+        after = conn.execute(
+            "SELECT COUNT(*) FROM feed_rows WHERE source = ?", (source,)
+        ).fetchone()[0]
+    # What was added, not what was offered. A seed reloaded every night would
+    # otherwise report its whole size as if it were news.
+    return after - before if not overwrite else len(rows)
 
 
 def load(store: Store, source: str) -> pd.DataFrame:
@@ -180,4 +200,7 @@ def apply_seed(store: Store, source: str, keys: tuple[str, ...],
     held = read_seed(source, root)
     if held.empty:
         return 0
-    return record(store, source, held, keys)
+    # Adds only what is missing. The seed overlaps the feed -- both cover the
+    # last week of it -- and where they describe the same match the one the
+    # feed wrote down is the one to keep.
+    return record(store, source, held, keys, overwrite=False)
