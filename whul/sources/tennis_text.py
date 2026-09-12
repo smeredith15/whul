@@ -34,6 +34,21 @@ CATEGORIES = {
 ROUNDS = {"RR", "R128", "R64", "R32", "R16", "QF", "SF", "F"}
 
 
+def _when(dates: dict, tournament: str, round_name: str, tour: str):
+    """A round's date: the most specific of the three keys that is given.
+
+    A round is not always one day for both tours -- the US Open's men's and
+    women's semi-finals are played on different ones -- so a tour-specific key
+    wins, then the round, then the tournament as a whole.
+    """
+    name = tournament.casefold()
+    for key in (f"{name}:{round_name.casefold()}:{tour.casefold()}",
+                f"{name}:{round_name.casefold()}", name):
+        if key in dates:
+            return dates[key]
+    return None
+
+
 def parse(text: str, dates: dict | None = None) -> tuple[list[dict], list[str]]:
     """``(matches, problems)``.
 
@@ -97,7 +112,7 @@ def parse(text: str, dates: dict | None = None) -> tuple[list[dict], list[str]]:
             "round": round_name.upper(), "winner": winner, "loser": loser,
             "score": score, "tour": _tour(tier, player),
         }
-        when = dates.get(tournament.casefold())
+        when = _when(dates, tournament, row["round"], row["tour"])
         if when:
             row["date"] = when
             row["season"] = int(str(when)[:4])
@@ -160,7 +175,7 @@ def _tour(tier: str, player: str) -> str:
 DRAW = ["R128", "R64", "R32", "R16", "QF", "SF", "F"]
 
 
-def gaps(rows: list[dict], players: set) -> list[str]:
+def gaps(rows: list[dict], players: set, as_of=None) -> list[str]:
     """Where a player's run through a draw does not hold together.
 
     Two faults, and the second is the one a reader would not think to look for.
@@ -190,8 +205,25 @@ def gaps(rows: list[dict], players: set) -> list[str]:
             found.append(f"{who} at {tournament}: reached "
                          f"{DRAW[at[-1]]} but no {', '.join(missing)}")
         last = DRAW[at[-1]]
-        if rounds[last] and last != "F":
-            after = DRAW[DRAW.index(last) + 1]
-            found.append(f"{who} at {tournament}: won the {last}, so the "
-                         f"{after} was played and is not here")
+        if not rounds[last] or last == "F":
+            continue
+        after = DRAW[DRAW.index(last) + 1]
+        # A win short of the final means the next round exists -- but not
+        # necessarily that it has been played. The semi-finals were the last
+        # matches at Flushing Meadows when these were typed, and calling three
+        # unplayed finals "missing" would be crying wolf at the one check whose
+        # value is that it is quiet until something is actually wrong.
+        played = _played_on(rows, tournament, after)
+        if as_of is not None and (played is None or played >= str(as_of)):
+            continue
+        found.append(f"{who} at {tournament}: won the {last}, so the "
+                     f"{after} was played and is not here")
     return found
+
+
+def _played_on(rows: list[dict], tournament: str, round_name: str):
+    """When a round was played, from the rows themselves, or None."""
+    dates = [str(r.get("date")) for r in rows
+             if r["tournament"] == tournament and r["round"] == round_name
+             and r.get("date")]
+    return min(dates) if dates else None

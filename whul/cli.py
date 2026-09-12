@@ -1085,11 +1085,13 @@ def _seed_from_typed_results(args, path, source, keys) -> int:
     from whul.sources import tennis_text
     from whul.store import feed_ledger
 
+    from datetime import date as _date
+
     dates = {}
     for entry in args.date or []:
         if "=" not in entry:
-            print(f"\n--date wants TOURNAMENT=YYYY-MM-DD, not {entry!r}\n",
-                  file=sys.stderr)
+            print(f"\n--date wants TOURNAMENT[:ROUND[:TOUR]]=YYYY-MM-DD, not "
+                  f"{entry!r}\n", file=sys.stderr)
             return 1
         name, when = entry.split("=", 1)
         dates[name.strip().casefold()] = when.strip()
@@ -1098,7 +1100,7 @@ def _seed_from_typed_results(args, path, source, keys) -> int:
     named = {r["winner"] for r in rows} | {r["loser"] for r in rows}
     players = {w for w in named if sum(
         1 for r in rows if w in (r["winner"], r["loser"])) > 1}
-    incomplete = tennis_text.gaps(rows, players)
+    incomplete = tennis_text.gaps(rows, players, as_of=_date.today())
 
     print(f"\n  {len(rows)} distinct match(es) from {path}")
     if problems:
@@ -3051,8 +3053,10 @@ def main(argv: list[str] | None = None) -> int:
                       help="the source key the history belongs to")
     seed.add_argument(
         "--date", action="append", metavar="TOURNAMENT=DATE",
-        help="when a tournament was played, for typed results that carry no "
-             "dates. Repeatable")
+        help="when a round was played, for typed results that carry no dates. "
+             "TOURNAMENT, TOURNAMENT:ROUND or TOURNAMENT:ROUND:TOUR -- the most "
+             "specific given wins, because a round is not always one day for "
+             "both tours. Repeatable")
     seed.add_argument("source_file", metavar="FILE",
                       help="a tennis2026 database (.db), or a .csv/.json/.jsonl "
                            "with one row per match, or a .txt of typed results")
