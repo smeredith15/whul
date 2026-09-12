@@ -452,21 +452,20 @@ def probe_athlete(
                     "coppa", "copa", "coupe", "fa "))
         )[:20]
         entry["splits_by"] = _splits_shape(payload)
+        if label == "overview":
+            entry["overview"] = overview_report(payload)
         # The gamelog is the shape that could attribute a match, so it is the
         # one worth reading properly rather than counting names in.
         if label == "gamelog":
             entry["gamelog"] = gamelog_report(payload)
             # The filter names the competitions this player has appeared in,
             # which is exactly the list to ask for one at a time.
-            named = [
-                str(o["value"])
-                for f in entry["gamelog"].get("filters") or []
-                if f.get("name") == "league"
-                for o in f.get("options") or [] if o.get("value")
-            ]
-            if named:
-                out["by_competition"] = probe_gamelog_by_competition(
-                    league, athlete_id, season, named, session)
+            # The `league` parameter does not filter: eight different values
+            # each returned the same single Champions League match. So the
+            # competition is varied in the path instead, which is where the
+            # rest of ESPN's soccer API puts it.
+            out["by_path"] = probe_gamelog_paths(athlete_id, season,
+                                                 session=session)
         out["shapes"][label] = entry
     return out
 
@@ -734,3 +733,89 @@ def probe_gamelog_by_competition(
 #: roster derives it as appearances minus substitute appearances; if no gamelog
 #: field carries it, the roster stays the source for that one figure.
 NEEDED_FROM_A_MATCH = ("appearances", "subIns", "substitute", "starts", "minutes")
+
+
+def overview_report(payload: dict) -> dict:
+    """Every statistics block in an athlete overview, and what names it.
+
+    The overview named "2026-27 Bundesliga Stats" among its competitions, which
+    is the shape a per-competition season total would wear. If it holds one
+    block per competition then a player costs one request and every figure
+    arrives already attributed -- which is what the roster cannot do and the
+    gamelog, having ignored its own league filter, cannot either.
+
+    Walks for anything holding a list of named stat blocks rather than reading
+    a path, because the path is what is being discovered.
+    """
+    out: dict = {"blocks": []}
+
+    def walk(node, trail, depth=0):
+        if depth > 7 or len(out["blocks"]) > 30:
+            return
+        if isinstance(node, dict):
+            names = node.get("names") or node.get("labels")
+            stats = node.get("stats") or node.get("splits")
+            title = (node.get("displayName") or node.get("name")
+                     or node.get("shortDisplayName"))
+            if title and (names or stats):
+                entry = {"at": ".".join(trail)[:60], "title": str(title)}
+                if isinstance(names, list):
+                    entry["labels"] = [str(n) for n in names[:14]]
+                if isinstance(stats, list) and stats:
+                    entry["values"] = [str(v)[:14] for v in stats[:14]
+                                       if not isinstance(v, (dict, list))]
+                    entry["stat_entries"] = len(stats)
+                out["blocks"].append(entry)
+            for key, value in node.items():
+                if isinstance(value, (dict, list)):
+                    walk(value, trail + [key], depth + 1)
+        elif isinstance(node, list):
+            for index, value in enumerate(node[:12]):
+                walk(value, trail + [f"[{index}]"], depth + 1)
+
+    walk(payload, [])
+    return out
+
+
+#: Where the competition might live for a gamelog, since the `league` query
+#: parameter demonstrably does not filter: every one of eight values returned
+#: the same single Champions League match. The rest of ESPN's soccer API puts
+#: the competition in the *path* -- `/soccer/ger.dfb_pokal/teams/...` -- so the
+#: path is the next thing to vary, and it is varied against no season, our
+#: season, and the season with a league parameter, because which of the three
+#: the endpoint wants is exactly what is unknown.
+GAMELOG_TRIALS = ("ger.1", "ger.dfb_pokal", "uefa.champions")
+
+
+def probe_gamelog_paths(
+    athlete_id: str, season: int | None = None, paths: tuple = GAMELOG_TRIALS,
+    session=None,
+) -> dict:
+    """Vary the competition in the path rather than in a parameter."""
+    session = session or requests.Session()
+    out: dict = {"tried": []}
+    for path in paths:
+        for label, params in (
+            ("no season", {}),
+            ("season", {"season": season} if season else {}),
+            ("season+league", {"season": season, "league": path} if season else {}),
+        ):
+            url = (f"https://site.web.api.espn.com/apis/common/v3/sports/soccer/"
+                   f"{path}/athletes/{athlete_id}/gamelog")
+            entry = {"path": path, "shape": label, "params": dict(params)}
+            try:
+                payload = _get(url, params, session)
+            except Exception as exc:  # noqa: BLE001 -- one trial, not the probe
+                status = getattr(getattr(exc, "response", None), "status_code", "?")
+                entry["error"] = f"{type(exc).__name__} {status}"
+                out["tried"].append(entry)
+                continue
+            events = payload.get("events")
+            found = list(events.values()) if isinstance(events, dict) else (events or [])
+            entry["matches"] = len(found)
+            entry["named"] = sorted({
+                str(e.get("leagueName") or "") for e in found if isinstance(e, dict)
+            } - {""})
+            entry["labels"] = [str(n) for n in (payload.get("names") or [])[:12]]
+            out["tried"].append(entry)
+    return out

@@ -1164,6 +1164,49 @@ def _read_feed_history(path: Path, source: str):
     )
 
 
+def _overview_lines(report: dict) -> list[str]:
+    """The overview's statistics blocks, which may already be per competition."""
+    blocks = (report or {}).get("blocks") or []
+    if not blocks:
+        return []
+    lines = ["", "      --- statistics blocks in the overview ---"]
+    for block in blocks[:14]:
+        lines.append(f"      {block.get('title')!r}  at {block.get('at')}")
+        if block.get("labels"):
+            lines.append(f"          labels: {', '.join(block['labels'])}")
+        if block.get("values"):
+            lines.append(f"          values: {', '.join(block['values'])}")
+    titles = [str(b.get("title")) for b in blocks]
+    lines.append(f"      {len(blocks)} block(s); distinct titles: "
+                 f"{len(set(titles))}")
+    if len(set(titles)) > 1:
+        lines.append("      ^ more than one title, so this may already be split by "
+                     "competition")
+    return lines
+
+
+def _by_path_lines(report: dict) -> list[str]:
+    """The competition in the path rather than in a parameter."""
+    lines = ["", "  --- gamelog with the competition in the PATH ---",
+             "      (the `league` parameter was shown not to filter: eight values,",
+             "       one identical Champions League match each)"]
+    for entry in report.get("tried") or []:
+        head = f"      {entry.get('path'):<18}{entry.get('shape'):<14}"
+        if entry.get("error"):
+            lines.append(head + f"refused: {entry['error']}")
+            continue
+        named = ", ".join(entry.get("named") or []) or "-"
+        lines.append(head + f"{entry.get('matches', 0)} match(es): {named}")
+    lines += [
+        "",
+        "      If a path returns its own competition's matches and nobody else's,",
+        "      that is the request shape. If every path returns the same match",
+        "      again, the gamelog cannot be asked for a competition at all and the",
+        "      overview's blocks are the remaining hope.",
+    ]
+    return lines
+
+
 def _by_competition_lines(report: dict) -> list[str]:
     """One competition at a time, which is how a loader would ask."""
     from whul.sources.espn_soccer import NEEDED_FROM_A_MATCH
@@ -1268,14 +1311,15 @@ def cmd_probe_athlete(args: argparse.Namespace) -> int:
         lines.append(f"      top-level keys: {', '.join(entry.get('keys') or []) or '-'}")
         for shape in entry.get("splits_by") or []:
             lines.append(f"      {shape}")
+        lines += _overview_lines(entry.get("overview") or {})
         comps = entry.get("competitions") or []
         lines.append(f"      competitions named ({len(comps)}): "
                      f"{', '.join(comps) or 'none'}")
         if len(comps) > 1:
             lines.append("      ^ more than one, so this shape can tell them apart")
         lines += _gamelog_lines(entry.get("gamelog") or {})
-    if found.get("by_competition"):
-        lines += _by_competition_lines(found["by_competition"])
+    if found.get("by_path"):
+        lines += _by_path_lines(found["by_path"])
     lines += ["", "  What to look for: a shape naming more than one competition is one",
               "  that knows which match a figure came from. That is the one to read",
               "  a player's season from, instead of inheriting the request's league.",
