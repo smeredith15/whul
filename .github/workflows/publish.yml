@@ -166,6 +166,27 @@ jobs:
         # available check that the restatement does what the scorer does.
         run: python -m whul.cli rescore --season "$SEASON"
 
+      - name: Check players against their clubs' results
+        # A club-soccer player arrives as a season aggregate per competition,
+        # and the aggregate carries whatever ESPN scoped the request to. That
+        # scoping wobbles: Bayern's Bundesliga roster returned Harry Kane with
+        # his Champions League match among his appearances, so it was counted
+        # as domestic football and held as a European bonus on the same night,
+        # and was gone again the next.
+        #
+        # The clubs' results never wobbled -- every match is fetched under the
+        # competition it was played in -- so they are the authority, and the
+        # player's gamelog is the link: both carry ESPN's own match id.
+        #
+        # Reports and changes nothing, and never fails the run. What to do
+        # about a disagreement is a scoring decision, and it should be made
+        # against a few weeks of these rather than the first one.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m whul.cli check-attribution --season "$SEASON" \
+            | tee -a attribution.txt
+
       - name: Roll up the standings
         run: |
           if [ "${{ inputs.backfill }}" = "true" ] \
@@ -187,6 +208,13 @@ jobs:
           git add -f data/whul.sqlite3
           git commit -qm "Database after $(date -u +%Y-%m-%d)"
           git push -f origin data-tmp:data
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attribution
+          path: attribution.txt
+          if-no-files-found: ignore
 
       - uses: actions/upload-pages-artifact@v3
         with:

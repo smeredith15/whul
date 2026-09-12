@@ -1378,6 +1378,125 @@ def cmd_probe_athlete(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_attribution(args: argparse.Namespace) -> int:
+    """Check each rostered club-soccer player's competitions against his club's.
+
+    A player reaches this project as a season aggregate per competition, and the
+    aggregate carries whatever ESPN scoped the request to. That scoping wobbles:
+    Bayern's Bundesliga roster returned Harry Kane with his Champions League
+    match among his appearances, so it was counted as domestic football and held
+    as a European bonus on the same night, and was gone again the next.
+
+    The club's results never wobbled, because they are read from a scoreboard
+    walk where every match is fetched under the competition it was played in.
+    So the club is the authority and the player's gamelog is the link: both
+    carry ESPN's own match id, which makes the join exact rather than a
+    date-and-name guess.
+
+    One request per rostered player. Reports and changes nothing -- what to do
+    about a disagreement is a scoring decision, and it should be made against a
+    week of these rather than the first one.
+    """
+    from whul import attribution
+    from whul import resolve as resolver
+    from whul.benchmark_sources import PLAYER_LEAGUES
+    from whul.sources import espn, espn_soccer
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    rostered = resolver.rostered_assets(store, args.season, "Player")
+    mine = rostered[rostered["league"].isin(PLAYER_LEAGUES)]
+    if args.league:
+        mine = mine[mine["league"] == args.league]
+    if mine.empty:
+        print(f"\nNo club-soccer players rostered in {args.season}.\n")
+        return 0
+
+    season = int(args.feed_season) if args.feed_season else None
+    print(f"\nChecking {len(mine)} rostered club-soccer player(s) against their "
+          f"clubs' results.\n")
+
+    club_results: dict[str, object] = {}
+    attributed: dict[str, object] = {}
+    unreadable = 0
+    for row in mine.itertuples():
+        key = PLAYER_LEAGUES[str(row.league)]
+        if key not in club_results:
+            # The clubs' results for the whole league, once, however many of
+            # its players are rostered.
+            try:
+                club_results[key] = espn.load_soccer_matches(
+                    key, [season], verbose=False)
+            except Exception as exc:  # noqa: BLE001 -- one league, not the run
+                print(f"  {key}: could not read the clubs' results "
+                      f"({type(exc).__name__}); its players are skipped")
+                club_results[key] = None
+        athlete, club = espn_soccer.athlete_named(key, str(row.display_name), season)
+        if not athlete:
+            unreadable += 1
+            print(f"  {row.display_name}: no athlete id in {key}")
+            continue
+        events = espn_soccer.load_gamelog(key, athlete, season)
+        if events.empty:
+            unreadable += 1
+            print(f"  {row.display_name}: the gamelog returned no matches")
+            continue
+        matches = club_results[key]
+        if matches is not None and not matches.empty and club:
+            matches = matches[matches["team"].astype(str) == str(club)]
+        counted = attribution.attribute(events, matches)
+        attributed[str(row.display_name)] = counted
+        print(f"  {row.display_name} ({club or '?'}): "
+              + ", ".join(f"{r.competition_key} {r.appearances:g}"
+                          for r in counted.itertuples()))
+
+    # What the stored figures counted, for the same players. Read from
+    # `raw_stats` rather than re-pulled: the question is whether what was
+    # recorded agrees with what the clubs played, and re-fetching would ask a
+    # different night's answer.
+    stated = _rostered_player_figures(store, args.season, mine)
+    leagues = {str(r.display_name): str(r.league) for r in mine.itertuples()}
+    found: list[dict] = []
+    for player, counted in attributed.items():
+        if player in stated:
+            found += attribution.disagreements(
+                counted, stated[player], player, leagues.get(player, ""))
+
+    lines = attribution.report(found)
+    print()
+    for line in lines or ["  Nothing claims more than its club played."]:
+        print(line)
+    if unreadable:
+        print(f"\n  {unreadable} player(s) could not be read, so they were "
+              f"neither confirmed nor faulted.")
+    print()
+    return 0
+
+
+def _rostered_player_figures(store, season: str, rostered) -> dict:
+    """``{player: counted appearances}`` from the most recent stored day.
+
+    One number, not a breakdown, because that is what a season aggregate folded
+    down to: `matches` is domestic football alone -- European appearances are
+    held rather than counted -- which is exactly the figure the club's own
+    matches can be checked against.
+    """
+    import json
+
+    names = {str(r.asset_id): str(r.display_name) for r in rostered.itertuples()}
+    if not names:
+        return {}
+    latest = store.query(
+        "SELECT asset_id, stats FROM raw_stats WHERE season = ? AND as_of = "
+        "(SELECT MAX(as_of) FROM raw_stats WHERE season = ?)", (season, season))
+    out: dict = {}
+    for row in latest.itertuples():
+        who = names.get(str(row.asset_id))
+        if who:
+            out[who] = float(json.loads(row.stats).get("matches") or 0)
+    return out
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     """Score every slot and write the standings snapshot -- the nightly job."""
     from datetime import date as _date
@@ -2893,6 +3012,17 @@ def main(argv: list[str] | None = None) -> int:
              "inferring a shape through a summary is three more than reading "
              "the shape itself")
     athlete.set_defaults(func=cmd_probe_athlete)
+
+    check = sub.add_parser(
+        "check-attribution",
+        help="check rostered players' competitions against their clubs' results",
+    )
+    check.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    check.add_argument("--season", default="2026-27")
+    check.add_argument("--league", help="one scored league, e.g. Bundesliga")
+    check.add_argument("--feed-season", default="2027",
+                       help="our season label for the feed, e.g. 2027")
+    check.set_defaults(func=cmd_check_attribution)
 
     site = sub.add_parser("site", help="generate the static site")
     site.add_argument("--db", default="data/whul.sqlite3", help="database path")

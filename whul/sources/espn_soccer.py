@@ -915,3 +915,51 @@ def athlete_named(league: str, name: str, season: int, session=None):
             if wanted in str(row.player).casefold():
                 return str(row.player_id), club
     return None, None
+
+
+GAMELOG_HOST = "https://site.web.api.espn.com/apis/common/v3"
+
+
+def load_gamelog(
+    league: str, athlete_id: str, season: int | None = None, session=None,
+) -> pd.DataFrame:
+    """One player's matches, each naming the competition it was played in.
+
+    The rows are ``event_id, date, competition, opponent`` -- no statistics,
+    because the numbers are not what this is for. What it answers is *which
+    match*, which is the one thing a roster's season aggregate cannot say and
+    the whole of the fault it causes.
+
+    Both request shapes are asked, because they return different competitions
+    and neither returns all of them: bare gave a player's two Bundesliga
+    matches and the seasoned request gave his Champions League tie. Whichever
+    subset comes back, every event in it names itself honestly, which is what
+    makes a partial answer still worth having.
+    """
+    session = session or requests.Session()
+    sport, path = LEAGUE_PATHS[league]
+    url = f"{GAMELOG_HOST}/sports/{sport}/{path}/athletes/{athlete_id}/gamelog"
+    shapes: list[dict] = [{}]
+    if season:
+        shapes.append({"season": roster_season(league, season)})
+
+    rows: dict[str, dict] = {}
+    for params in shapes:
+        try:
+            payload = _get(url, params, session)
+        except Exception:  # noqa: BLE001 -- one shape, and the other may answer
+            continue
+        events = payload.get("events")
+        listed = events.values() if isinstance(events, dict) else (events or [])
+        for event in listed:
+            if not isinstance(event, dict) or not event.get("id"):
+                continue
+            rows[str(event["id"])] = {
+                "event_id": str(event["id"]),
+                "date": str(event.get("gameDate") or "")[:10],
+                "competition": str(event.get("leagueName") or ""),
+                "opponent": str((event.get("opponent") or {}).get("displayName")
+                                if isinstance(event.get("opponent"), dict)
+                                else event.get("opponent") or ""),
+            }
+    return pd.DataFrame(list(rows.values()))
