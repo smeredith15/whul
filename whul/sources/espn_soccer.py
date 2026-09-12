@@ -584,3 +584,65 @@ def gamelog_report(payload: dict) -> dict:
         for e in sample if isinstance(e, dict)
     ]
     return out
+
+
+def competition_of(espn_key: str) -> str | None:
+    """ESPN's own key for a competition, as the key this project scores it by.
+
+    The gamelog names the competition on every event -- `ger.dfb_pokal`,
+    `uefa.champions` -- and those are ESPN's spellings, not ours. Feeding them
+    to the classifier unmapped is not a near miss: every unknown key falls
+    through to a *league* match worth three points and counted in the base
+    score, so a Champions League night would be paid as a league win and folded
+    into the total the benchmark measures, which is the fault the gamelog is
+    being read to fix, made worse.
+
+    Inverted from ``LEAGUE_PATHS`` rather than written out again. That table
+    already says which ESPN path each competition is fetched from; a second
+    copy of it would be right on the day it was written and wrong on the day a
+    competition was added to one of them.
+    """
+    for key, (_, path) in LEAGUE_PATHS.items():
+        if path == espn_key:
+            return key
+    return None
+
+
+#: Competitions the gamelog will name that this project does not score.
+#: Friendlies are not competitive football. The rest are one-off finals that
+#: are neither the domestic league, nor a domestic cup, nor one of UEFA's three
+#: -- and what they are worth is a rules question rather than a mapping, so
+#: they are left out and reported rather than guessed at.
+#:
+#: Anything here scores nothing. Anything *not* here and not in LEAGUE_PATHS is
+#: reported too, because a competition nobody has decided about must not be
+#: quietly paid as a league match.
+UNSCORED_COMPETITIONS = {
+    "club.friendly": "a friendly",
+    "ger.super_cup": "a domestic super cup",
+    "esp.super_cup": "a domestic super cup",
+    "ita.super_cup": "a domestic super cup",
+    "fra.super_cup": "a domestic super cup",
+    "eng.charity": "a domestic super cup",
+    "uefa.super_cup": "the UEFA Super Cup",
+    "fifa.cwc": "the Club World Cup",
+    "global.champs_cup": "a cross-confederation cup",
+    "concacaf.leagues.cup": "a cross-confederation cup",
+}
+
+
+def classify_gamelog_league(espn_key: str) -> tuple[str | None, str]:
+    """``(our key, why)`` for a competition the gamelog named.
+
+    A key this project scores returns its own name. One deliberately left out
+    returns None and says what it is. One nobody has seen before returns None
+    too -- the safe direction, because the unsafe one pays it as a league match
+    and nothing says so.
+    """
+    ours = competition_of(espn_key)
+    if ours:
+        return ours, "scored"
+    if espn_key in UNSCORED_COMPETITIONS:
+        return None, f"not scored: {UNSCORED_COMPETITIONS[espn_key]}"
+    return None, ("not scored: this project has never seen this competition, and "
+                  "an unmapped key would otherwise be paid as a league win")
