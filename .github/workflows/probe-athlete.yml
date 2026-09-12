@@ -24,8 +24,11 @@ on:
       club:
         description: "Pick the player from this club (a substring is enough)"
         default: "Bayern"
+      player:
+        description: "Player name, e.g. Harry Kane. Better than a club: picking the first athlete found a goalkeeper"
+        default: "Harry Kane"
       athlete:
-        description: "ESPN athlete id, if you already have one. Overrides the club"
+        description: "ESPN athlete id, if you already have one. Overrides the name"
         default: ""
       season:
         description: "Our season label, e.g. 2027. Empty asks without a season"
@@ -46,19 +49,23 @@ jobs:
         env:
           LEAGUE: ${{ inputs.league }}
           CLUB: ${{ inputs.club }}
+          PLAYER: ${{ inputs.player }}
           ATHLETE: ${{ inputs.athlete }}
           SEASON: ${{ inputs.season }}
         run: |
           set -o pipefail
           ARGS="--league $LEAGUE --out athlete.txt --dump payloads"
           if [ -n "$ATHLETE" ]; then ARGS="$ARGS --athlete $ATHLETE"
+          elif [ -n "$PLAYER" ]; then ARGS="$ARGS --player \"$PLAYER\""
           elif [ -n "$CLUB" ]; then ARGS="$ARGS --club $CLUB"; fi
           if [ -n "$SEASON" ]; then ARGS="$ARGS --season $SEASON"; fi
           echo "probe-athlete $ARGS"
+          # eval, because the player name is quoted inside ARGS and a bare
+          # expansion would split "Harry Kane" into two arguments.
           # --out already writes the file; the command prints it as well, so
           # the log and the artifact say the same thing without a tee
           # appending a second copy to the file it just wrote.
-          python -m whul.cli probe-athlete $ARGS
+          eval python -m whul.cli probe-athlete $ARGS
 
       - uses: actions/upload-artifact@v4
         if: always()
