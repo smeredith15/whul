@@ -1185,6 +1185,34 @@ def _overview_lines(report: dict) -> list[str]:
     return lines
 
 
+def _compared_lines(report: dict) -> list[str]:
+    """The roster and the overview, on the same player and competition."""
+    lines = ["", "  --- roster against overview, same player, same competition ---",
+             f"      asked ESPN for season {report.get('asked')}"]
+    roster = report.get("roster") or {}
+    over = report.get("overview") or {}
+    if report.get("roster_error"):
+        lines.append(f"      roster: {report['roster_error']}")
+    else:
+        lines.append(f"      roster  {roster.get('player', '?')}: "
+                     f"matches={roster.get('matches')} starts={roster.get('starts')} "
+                     f"goals={roster.get('goals')}")
+    if report.get("overview_error"):
+        lines.append(f"      overview: {report['overview_error']}")
+    else:
+        lines.append(f"      overview {over.get('label', '?')!r}")
+        for name, value in over.items():
+            if name != "label":
+                lines.append(f"          {name} = {value}")
+    lines += [
+        "",
+        "      If the overview says fewer appearances than the roster, it is the",
+        "      better-scoped endpoint and the fix. If the two agree, both carry",
+        "      the same European match and no endpoint here rescues attribution.",
+    ]
+    return lines
+
+
 def _by_path_lines(report: dict) -> list[str]:
     """The competition in the path rather than in a parameter."""
     lines = ["", "  --- gamelog with the competition in the PATH ---",
@@ -1287,10 +1315,23 @@ def cmd_probe_athlete(args: argparse.Namespace) -> int:
     """
     from whul.sources import espn_soccer
 
+    season = int(args.season) if args.season else None
+    athlete = args.athlete
+    club = args.club
+    if args.player and not athlete:
+        # By name, because picking the first athlete on the first club returned
+        # Bayern's goalkeeper -- whose figures are saves and clean sheets, and
+        # read as a feed with no appearances in it rather than as a probe that
+        # had chosen a keeper.
+        athlete, club = espn_soccer.athlete_named(args.league, args.player, season)
+        print(f"\n  {args.player} -> athlete {athlete or '(not found)'} at "
+              f"{club or '-'}")
     found = espn_soccer.probe_athlete(
-        args.league, athlete_id=args.athlete,
-        season=int(args.season) if args.season else None, club=args.club,
+        args.league, athlete_id=athlete, season=season, club=club,
         dump_dir=args.dump)
+    if athlete and season:
+        found["compared"] = espn_soccer.compare_roster_and_overview(
+            args.league, athlete, season)
 
     lines = [
         f"ESPN soccer athlete probe -- {found['league']} "
@@ -1321,6 +1362,8 @@ def cmd_probe_athlete(args: argparse.Namespace) -> int:
         lines += _gamelog_lines(entry.get("gamelog") or {})
     if found.get("by_path"):
         lines += _by_path_lines(found["by_path"])
+    if found.get("compared"):
+        lines += _compared_lines(found["compared"])
     lines += ["", "  What to look for: a shape naming more than one competition is one",
               "  that knows which match a figure came from. That is the one to read",
               "  a player's season from, instead of inheriting the request's league.",
@@ -2841,6 +2884,7 @@ def main(argv: list[str] | None = None) -> int:
                          help="ESPN league key the player is asked for under")
     athlete.add_argument("--athlete", help="ESPN athlete id, if you have one")
     athlete.add_argument("--club", help="pick the athlete from this club")
+    athlete.add_argument("--player", help="pick the athlete by name, e.g. 'Harry Kane'")
     athlete.add_argument("--season", help="our season label, e.g. 2027")
     athlete.add_argument("--out", help="write the report to this file too")
     athlete.add_argument(

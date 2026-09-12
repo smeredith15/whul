@@ -837,3 +837,81 @@ def probe_gamelog_paths(
             entry["labels"] = [str(n) for n in (payload.get("names") or [])[:12]]
             out["tried"].append(entry)
     return out
+
+
+def summary_stats(payload: dict) -> dict:
+    """An athlete overview's season summary, as ``{name: value}`` plus its label.
+
+    ``athlete.statsSummary`` names the competition it is for -- "2026-27
+    Bundesliga Stats" -- and carries ``starts-subIns``, which is the one figure
+    the scorer needs that a gamelog row does not offer. That combination is
+    what makes it worth comparing against the roster.
+    """
+    block = ((payload.get("athlete") or {}).get("statsSummary") or {})
+    out = {"label": str(block.get("displayName") or "")}
+    for stat in block.get("statistics") or []:
+        if isinstance(stat, dict) and stat.get("name"):
+            out[str(stat["name"])] = stat.get("displayValue", stat.get("value"))
+    return out
+
+
+def compare_roster_and_overview(
+    league: str, athlete_id: str, season: int, session=None,
+) -> dict:
+    """Do the two endpoints agree about one competition's figures?
+
+    They are scoped the same way -- the competition is in the path for both --
+    so the overview is only worth moving to if it excludes what the roster
+    included. Bayern's Bundesliga roster returned Harry Kane with his Champions
+    League match among his appearances; if the overview says two where the
+    roster says three, that is the fix. If both say three, ESPN's scoping is
+    simply not reliable and no endpoint here rescues it.
+    """
+    session = session or requests.Session()
+    sport, path = LEAGUE_PATHS[league]
+    asked = roster_season(league, season)
+    out: dict = {"league": league, "athlete_id": athlete_id, "asked": asked}
+
+    try:
+        overview = _get(
+            f"https://site.api.espn.com/apis/common/v3/sports/{sport}/{path}"
+            f"/athletes/{athlete_id}", {"season": asked}, session)
+        out["overview"] = summary_stats(overview)
+    except Exception as exc:  # noqa: BLE001
+        out["overview_error"] = f"{type(exc).__name__}"
+
+    # The same figures the live pull reads, for the same player.
+    try:
+        team_id = str(((overview.get("athlete") or {}).get("team") or {}).get("id") or "")
+        squad = load_squad(league, team_id, season, session)
+        mine = squad[squad["player_id"].astype(str) == str(athlete_id)]
+        out["roster"] = ({} if mine.empty else {
+            "player": str(mine.iloc[0]["player"]),
+            "matches": float(mine.iloc[0]["matches"]),
+            "starts": float(mine.iloc[0]["starts"]),
+            "goals": float(mine.iloc[0]["goals"]),
+        })
+        out["team_id"] = team_id
+    except Exception as exc:  # noqa: BLE001
+        out["roster_error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def athlete_named(league: str, name: str, season: int, session=None):
+    """``(id, club)`` for a player by name, so a probe can ask about a real one.
+
+    Picking the first athlete on the first club returned Bayern's goalkeeper,
+    whose statistics are saves and clean sheets -- which read as a feed with no
+    appearances in it rather than as a probe that had chosen a keeper.
+    """
+    session = session or requests.Session()
+    wanted = name.strip().casefold()
+    for club, team_id in (team_ids(league, season, session) or {}).items():
+        try:
+            squad = load_squad(league, team_id, season, session)
+        except Exception:  # noqa: BLE001 -- one club, not the search
+            continue
+        for row in squad.itertuples():
+            if wanted in str(row.player).casefold():
+                return str(row.player_id), club
+    return None, None
