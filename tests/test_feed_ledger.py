@@ -113,7 +113,10 @@ def test_the_pull_scores_the_union_not_the_window(store, capsys):
     seen = []
 
     class Windowed:
-        key, league, asset_type = "tennis", "Tennis", "Player"
+        # Not "tennis": that source has a committed seed, which every pull
+        # loads, and a test that picked it up would be testing the repository's
+        # data rather than the accumulation. The mechanism is generic.
+        key, league, asset_type = "windowed", "Tennis", "Player"
         accumulates = ("match_uid",)
         windowed = False
         dated_by_source = True
@@ -170,7 +173,8 @@ def test_a_windowed_total_survives_the_window_rolling_past_it(store):
             for _, row in matches.iterrows()])
 
     class Tennis:
-        key, league, asset_type = "tennis", "ATP", "Player"
+        # Not "tennis", for the same reason: the committed seed would load.
+        key, league, asset_type = "windowed", "ATP", "Player"
         windowed = dated_by_source = cumulative = True
         produces, roster_scoped, live, seasons_for = ("ATP",), False, None, None
         accumulates = ("match_uid",)
@@ -287,3 +291,22 @@ def test_no_seed_file_is_not_an_error(store, tmp_path):
     from whul.store import feed_ledger
 
     assert feed_ledger.apply_seed(store, "tennis", KEYS, root=tmp_path) == 0
+
+
+def test_the_committed_tennis_seed_keys_the_way_tennis_does(store):
+    """The seed and the source have to agree about what identifies a match.
+
+    They did not, briefly: the seed was written keyed on the match while two
+    tests still declared `match_uid`, and every pull that loaded the seed
+    raised. A seed that cannot be loaded is a history that is not there.
+    """
+    from whul.benchmark_sources import resolve
+    from whul.store import feed_ledger
+
+    source = next(s for s in resolve(None) if s.key == "tennis")
+    held = feed_ledger.read_seed("tennis")
+    if held.empty:
+        return
+    missing = [k for k in source.accumulates if k not in held.columns]
+    assert not missing, f"the seed has no {missing} to key on"
+    assert feed_ledger.apply_seed(store, "tennis", source.accumulates) == len(held)
