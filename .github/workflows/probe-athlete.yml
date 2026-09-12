@@ -50,7 +50,7 @@ jobs:
           SEASON: ${{ inputs.season }}
         run: |
           set -o pipefail
-          ARGS="--league $LEAGUE --out athlete.txt"
+          ARGS="--league $LEAGUE --out athlete.txt --dump payloads"
           if [ -n "$ATHLETE" ]; then ARGS="$ARGS --athlete $ATHLETE"
           elif [ -n "$CLUB" ]; then ARGS="$ARGS --club $CLUB"; fi
           if [ -n "$SEASON" ]; then ARGS="$ARGS --season $SEASON"; fi
@@ -64,5 +64,7 @@ jobs:
         if: always()
         with:
           name: athlete
-          path: athlete.txt
+          path: |
+            athlete.txt
+            payloads/
           if-no-files-found: warn
