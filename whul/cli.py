@@ -1071,6 +1071,63 @@ def cmd_retract_titles(args: argparse.Namespace) -> int:
     return 0
 
 
+def _seed_from_typed_results(args, path, source, keys) -> int:
+    """Results typed by hand, checked before anything is written.
+
+    They arrive from the player's point of view, so a match appears twice --
+    once as a win and once as a loss -- and the two copies are collapsed. What
+    is *not* collapsed is a doubt: a row missing its opponent is left out and
+    named, because importing it blank would key differently from the same match
+    arriving named later, and the pair would be paid twice.
+    """
+    from pathlib import Path
+
+    from whul.sources import tennis_text
+    from whul.store import feed_ledger
+
+    dates = {}
+    for entry in args.date or []:
+        if "=" not in entry:
+            print(f"\n--date wants TOURNAMENT=YYYY-MM-DD, not {entry!r}\n",
+                  file=sys.stderr)
+            return 1
+        name, when = entry.split("=", 1)
+        dates[name.strip().casefold()] = when.strip()
+
+    rows, problems = tennis_text.parse(path.read_text(), dates)
+    named = {r["winner"] for r in rows} | {r["loser"] for r in rows}
+    players = {w for w in named if sum(
+        1 for r in rows if w in (r["winner"], r["loser"])) > 1}
+    incomplete = tennis_text.gaps(rows, players)
+
+    print(f"\n  {len(rows)} distinct match(es) from {path}")
+    if problems:
+        print(f"\n  {len(problems)} row(s) not imported:")
+        for line in problems:
+            print(f"      {line}")
+    if incomplete:
+        print(f"\n  {len(incomplete)} run(s) that do not hold together:")
+        for line in incomplete:
+            print(f"      {line}")
+
+    undated = sorted({r["tournament"] for r in rows if not r.get("date")})
+    if undated:
+        print(f"\n  REFUSED. No date for: {', '.join(undated)}.")
+        print("  A tennis total is summed over the league year, so a match with")
+        print("  no date is a match that scores nothing -- silently. Supply one")
+        print("  per tournament:")
+        for name in undated:
+            print(f"      --date \"{name}=YYYY-MM-DD\"")
+        print()
+        return 1
+
+    total = feed_ledger.write_seed(source.key, pd.DataFrame(rows), keys)
+    seed = feed_ledger.seed_path(source.key)
+    print(f"\n  {total:,} match(es) now in {seed}\n")
+    print(f"  Commit it. Every pull loads it before the feed's window.\n")
+    return 0
+
+
 def cmd_feed_seed(args: argparse.Namespace) -> int:
     """Put a source's history where the ledger can always find it again.
 
@@ -1105,6 +1162,8 @@ def cmd_feed_seed(args: argparse.Namespace) -> int:
         return 1
 
     path = Path(args.source_file)
+    if path.suffix == ".txt":
+        return _seed_from_typed_results(args, path, source, keys)
     if not path.exists():
         print(f"\nNo such file: {path}\n", file=sys.stderr)
         return 1
@@ -2990,9 +3049,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     seed.add_argument("--source", default="tennis",
                       help="the source key the history belongs to")
+    seed.add_argument(
+        "--date", action="append", metavar="TOURNAMENT=DATE",
+        help="when a tournament was played, for typed results that carry no "
+             "dates. Repeatable")
     seed.add_argument("source_file", metavar="FILE",
                       help="a tennis2026 database (.db), or a .csv/.json/.jsonl "
-                           "with one row per match")
+                           "with one row per match, or a .txt of typed results")
     seed.set_defaults(func=cmd_feed_seed)
 
     athlete = sub.add_parser(
