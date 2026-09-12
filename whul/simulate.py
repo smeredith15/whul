@@ -1,0 +1,592 @@
+"""A simulated league, for building against before the draft is done.
+
+The real season is ``2026-27``. Everything here goes under ``2026-27-SIM``,
+which is not a label the pipeline ever produces on its own, so the two cannot
+collide and purging is one delete rather than a careful untangling. Asset ids
+are prefixed ``sim-`` for the same reason, and the season is recorded as
+simulated in ``admin_overrides`` so any view that cares can say so.
+
+The players are invented. The *shape* is not: five managers, the real roster
+template, real leagues and categories, a full season of daily scores with
+plausible dispersion, and a handful of mid-season trades. That is what the
+standings table, the contribution bars and the progression line all need in
+order to be built and looked at honestly.
+
+Everything is seeded, so two runs produce the same league and a screenshot
+taken today still matches the data tomorrow.
+"""
+
+from __future__ import annotations
+
+import random
+from datetime import date, timedelta
+
+import pandas as pd
+
+from whul.config.league import ALL_SLOTS, SEASON, active_slots
+from whul.config.league import MANAGERS as LEAGUE_MANAGERS
+from whul.pipeline import backfill, write_daily_scores
+from whul.store import benchmarks as bm
+from whul.store import rosters
+from whul.store.db import Store, _now
+
+#: Never the real season label, so the two can never be confused or merged.
+SIM_SEASON = f"{SEASON.label}-SIM"
+SIM_PREFIX = "sim-"
+
+#: The real league. Only the assets are invented -- using the actual managers
+#: means their pages, colours and ids are already right when the roster file
+#: lands, and the banner still says the scores are placeholders.
+MANAGERS = tuple(LEAGUE_MANAGERS)
+
+#: How often a category is left one short. A partly-drafted league is the state
+#: the app is actually in right now, so the simulation should be in it too --
+#: an empty slot that only appears in production is an empty slot nobody tested.
+#: Expressed per category rather than as a share of all slots, because most
+#: categories hold one to four slots and a percentage of four rounds to four.
+SHORT_CATEGORY_ODDS = 0.22
+
+#: Enough surnames to fill every category without repeating inside one.
+_SURNAMES = (
+    "Ashworth Brennan Calloway Delgado Ellery Fairbank Grayson Halloran "
+    "Ingram Jarrett Kingsley Lockwood Mercer Nolan Osborne Pemberton Quinlan "
+    "Radcliffe Sinclair Thorne Underhill Vance Whitlock Yarrow Ziegler "
+    "Abbott Beckett Carver Donnelly Eastwood"
+).split()
+_FIRST_INITIALS = "ABCDEHJKLMNPRSTW"
+_CITIES = (
+    "Ashford Bellhaven Cotswold Dunmore Elmridge Fairhaven Glenmoor Harrow "
+    "Ironvale Kestrel Larkspur Marlowe Northgate Oakhurst Pinecrest Redstone "
+    "Stonebridge Thornbury Westmere Yarmouth"
+).split()
+
+#: A category's typical top-end scaled score, used to give each one a different
+#: distribution. The numbers are illustrative: what matters is that categories
+#: differ, so the contribution chart has something to show.
+_CEILING = {
+    "NFL": 105, "NBA": 100, "MLB": 95, "NHL": 95,
+    "Club Soccer Top 3": 100, "Club Soccer Other": 85, "Intl Soccer": 90,
+    "NCAAF": 95, "NCAAM": 90, "NCAAW": 90,
+    "NCAA Baseball": 85, "NCAA Softball": 85,
+    "PGA": 95, "Tennis": 100, "Motorsports": 90,
+}
+DEFAULT_CEILING = 90
+
+#: How many trades to make, and the window they fall in.
+TRADE_COUNT = 6
+
+#: Roughly when each category actually plays, as inclusive month numbers with
+#: wraparound. Without this every asset accrues evenly all year, the managers'
+#: totals converge on identical straight lines, and the progression chart shows
+#: nothing -- which is exactly what the first build of it did. Real seasons
+#: start and stop, so the line should step.
+_ACTIVE_MONTHS = {
+    "NFL": (9, 1),
+    "NCAAF": (9, 1),
+    "NBA": (10, 4),
+    "NHL": (10, 4),
+    "NCAAM": (11, 3),
+    "NCAAW": (11, 3),
+    "MLB": (4, 10),
+    "NCAA Baseball": (2, 6),
+    "NCAA Softball": (2, 6),
+    "Club Soccer Top 3": (8, 5),
+    "Club Soccer Other": (3, 11),
+    "Intl Soccer": (9, 6),
+    "PGA": (1, 12),
+    "Tennis": (1, 12),
+    "Motorsports": (2, 11),
+}
+
+#: Plausible stat lines per category, as (label, share of the raw score,
+#: unit). The profile window shows what a raw score was built from, so the
+#: simulation has to build one from something rather than inventing a total.
+_STAT_LINES = {
+    "NFL": (("Passing yards", 0.42, 1.0), ("Passing TDs", 0.30, 0.06),
+            ("Rushing yards", 0.18, 0.55), ("Receptions", 0.10, 0.11)),
+    "NBA": (("Points", 0.46, 0.9), ("Rebounds", 0.22, 0.35),
+            ("Assists", 0.20, 0.30), ("Steals + blocks", 0.12, 0.10)),
+    "MLB": (("Total bases", 0.40, 0.7), ("RBI", 0.24, 0.28),
+            ("Runs", 0.22, 0.27), ("Stolen bases", 0.14, 0.07)),
+    "NHL": (("Goals", 0.38, 0.10), ("Assists", 0.32, 0.13),
+            ("Shots", 0.20, 0.55), ("Plus/minus", 0.10, 0.06)),
+    "PGA": (("Top-10 finishes", 0.45, 0.02), ("Events played", 0.30, 0.05),
+            ("Wins", 0.25, 0.006)),
+    "Tennis": (("Match wins", 0.50, 0.05), ("Straight-set wins", 0.30, 0.03),
+               ("Titles", 0.20, 0.004)),
+    "Motorsports": (("Top-5 finishes", 0.44, 0.03), ("Laps led", 0.32, 1.4),
+                    ("Wins", 0.24, 0.008)),
+}
+_TEAM_STAT_LINES = (
+    ("Wins", 0.46, 0.09), ("Big wins", 0.24, 0.04),
+    ("Shutouts", 0.16, 0.02), ("Point differential", 0.14, 0.5),
+)
+_SOCCER_STAT_LINES = (
+    ("Appearances", 0.34, 0.09), ("Goals", 0.30, 0.05),
+    ("Assists", 0.22, 0.04), ("Clean sheets", 0.14, 0.03),
+)
+
+
+def _stat_lines(category: str, asset_type: str) -> tuple:
+    if asset_type == "Team":
+        return _TEAM_STAT_LINES
+    if "Soccer" in category:
+        return _SOCCER_STAT_LINES
+    return _STAT_LINES.get(category, _TEAM_STAT_LINES)
+
+
+def build_stats(
+    asset_id: str, category: str, asset_type: str, raw_points: float
+) -> dict:
+    """A stat line that adds up to the raw score.
+
+    The profile window's job is showing how a raw score was arrived at, so the
+    components have to reconcile to it rather than being decorative.
+    """
+    stats = {}
+    for label, share, unit in _stat_lines(category, asset_type):
+        stats[label] = round(raw_points * share * unit, 1)
+    return stats
+
+
+#: A manager's overall form, so the standings separate instead of converging.
+#: Spread deliberately narrow: a runaway leader makes the chart as
+#: uninformative as five identical lines.
+_MANAGER_STRENGTH = (1.00, 0.97, 1.03, 0.99, 1.01)
+
+
+def _in_season(category: str, day: date) -> bool:
+    """Whether a category is playing on a given day."""
+    window = _ACTIVE_MONTHS.get(category)
+    if window is None:
+        return True
+    first, last = window
+    if first <= last:
+        return first <= day.month <= last
+    return day.month >= first or day.month <= last  # wraps the new year
+
+
+def _asset_name(rng: random.Random, asset_type: str, index: int) -> str:
+    if asset_type == "Team":
+        return f"{_CITIES[index % len(_CITIES)]} {rng.choice(('United', 'City', 'Athletic', 'Rovers'))}"
+    return f"{rng.choice(_FIRST_INITIALS)}. {_SURNAMES[index % len(_SURNAMES)]}"
+
+
+def build_assets(rng: random.Random) -> pd.DataFrame:
+    """One pool of invented assets per category, large enough to draft from.
+
+    Sized so every manager can be filled without any asset appearing twice,
+    which the best-ball rollup would otherwise double-count.
+    """
+    rows = []
+    for group in active_slots(ALL_SLOTS):
+        needed = group.cap * len(MANAGERS) + 4  # a few spare, for trades
+        for index in range(needed):
+            key = group.category.lower().replace(" ", "-")
+            rows.append({
+                "asset_id": f"{SIM_PREFIX}{group.asset_type.lower()}-{key}-{index:02d}",
+                "asset_type": group.asset_type,
+                "display_name": _asset_name(rng, group.asset_type, index),
+                "league": group.category,
+                "role": "" if group.asset_type == "Team" else "Player",
+                "norm_key": group.category,
+                "active": 1,
+                "created_at": _now(),
+            })
+    return pd.DataFrame(rows)
+
+
+def _draft(
+    rng: random.Random, assets: pd.DataFrame
+) -> dict[str, dict[tuple[str, str], list[str]]]:
+    """Deal each category's pool round-robin, so no asset is drafted twice.
+
+    Keyed by ``(asset_type, category)`` rather than returned as a flat list.
+    A flat list has to be zipped against the slots, and the two orderings are
+    not the same -- the template is in declaration order and the store returns
+    slots sorted -- so zipping put a golfer in a hockey slot.
+    """
+    picks: dict[str, dict[tuple[str, str], list[str]]] = {m: {} for m in MANAGERS}
+    for group in active_slots(ALL_SLOTS):
+        key = (group.asset_type, group.category)
+        pool = assets[
+            (assets["league"] == group.category)
+            & (assets["asset_type"] == group.asset_type)
+        ]["asset_id"].tolist()
+        rng.shuffle(pool)
+        for manager in MANAGERS:
+            picks[manager][key] = pool[: group.cap]
+            pool = pool[group.cap:]
+    return picks
+
+
+def _undraft(rng: random.Random, picks: dict) -> int:
+    """Leave some slots empty, as a draft in progress does.
+
+    Removed from the end of each category's list so the slots that stay filled
+    are contiguous, which is what a snake draft actually produces -- a manager
+    fills their first NFL slot before their fourth.
+    """
+    emptied = 0
+    for groups in picks.values():
+        for key, pool in groups.items():
+            if len(pool) > 1 and rng.random() < SHORT_CATEGORY_ODDS:
+                groups[key] = pool[:-1]
+                emptied += 1
+    return emptied
+
+
+def _score_curve(
+    rng: random.Random,
+    ceiling: float,
+    days: list[date],
+    category: str,
+    strength: float = 1.0,
+) -> list[float]:
+    """A season-to-date series that rises and never falls.
+
+    Cumulative scores only go up, so the series is built from non-negative
+    daily gains. Two things shape them:
+
+    * **Nothing accrues out of season.** An NFL player earns between September
+      and January and is flat either side, which is what puts steps in a
+      manager's total rather than a straight line.
+    * **Gains are uneven in season.** A burst then a quiet fortnight, because a
+      smooth ramp hides exactly the behaviour the progression chart exists to
+      show.
+    """
+    final = ceiling * rng.uniform(0.25, 1.05) * strength
+    weights = [
+        max(0.0, rng.gauss(1.0, 0.9)) if _in_season(category, day) else 0.0
+        for day in days
+    ]
+    total = sum(weights)
+    if total <= 0:
+        # A category with no in-season day in this window still needs a series,
+        # or its slot would read as a hole rather than as an offseason.
+        return [0.0] * len(days)
+    running = 0.0
+    series = []
+    for weight in weights:
+        running += final * weight / total
+        series.append(round(running, 2))
+    return series
+
+
+def mirror_roster(store: Store, source_season: str) -> int:
+    """Copy a real roster into the simulated season.
+
+    Once the draft file exists, inventing players is the wrong placeholder: the
+    real rosters with placeholder *scores* is a far better rehearsal, and it
+    means the photographs, the names and the categories on screen are the ones
+    that will be there in October. Only the numbers are made up -- which is
+    what the banner says, and why the scores stay under their own season label
+    rather than being written into the real one.
+    """
+    slots = store.query(
+        "SELECT slot_id, manager_id, category, asset_type, slot_index "
+        "FROM roster_slots WHERE season = ?",
+        (source_season,),
+    )
+    if slots.empty:
+        return 0
+
+    store.upsert(
+        "roster_slots",
+        [
+            {
+                "slot_id": f"{r.slot_id}:sim", "manager_id": r.manager_id,
+                "season": SIM_SEASON, "category": r.category,
+                "asset_type": r.asset_type, "slot_index": r.slot_index,
+            }
+            for r in slots.itertuples()
+        ],
+        keys=("slot_id",),
+    )
+    occupancy = store.query(
+        "SELECT o.slot_id, o.asset_id, o.start_date, o.end_date, o.cost, o.note "
+        "FROM slot_occupancy o JOIN roster_slots s ON s.slot_id = o.slot_id "
+        "WHERE s.season = ?",
+        (source_season,),
+    )
+    store.upsert(
+        "slot_occupancy",
+        [
+            {
+                "slot_id": f"{r.slot_id}:sim", "asset_id": r.asset_id,
+                "start_date": r.start_date, "end_date": r.end_date,
+                "cost": r.cost, "note": r.note,
+            }
+            for r in occupancy.itertuples()
+        ],
+        keys=("slot_id", "start_date"),
+    )
+    return len(occupancy)
+
+
+def generate(
+    store: Store,
+    seed: int = 2026,
+    start: date | None = None,
+    end: date | None = None,
+    verbose: bool = True,
+    from_season: str | None = None,
+) -> dict:
+    """Build the simulated league and roll up its standings.
+
+    With ``from_season``, the rosters are copied from a real season and only
+    the scores are invented. Without it, the assets are invented too -- which
+    is what to do before there is a draft file to read.
+    """
+    rng = random.Random(seed)
+    start = start or SEASON.start
+    end = min(end or date.today(), SEASON.end)
+    days = [start + timedelta(days=n) for n in range((end - start).days + 1)]
+    if not days:
+        raise ValueError(f"no days between {start} and {end}")
+
+    store.upsert(
+        "admin_overrides",
+        [{
+            "scope": "simulation",
+            # What is invented, so the site's banner can say so accurately.
+            # Once the roster is real, calling the players placeholders is a
+            # lie on every page -- and a banner nobody can trust is worse than
+            # no banner.
+            "key": "scores_only" if from_season else "everything",
+            "value": "whul.simulate",
+            "season": SIM_SEASON, "set_by": "simulate", "set_at": _now(),
+            "note": (
+                f"Placeholder scores over the real {from_season} roster."
+                if from_season else
+                "Invented assets and rosters."
+            ) + " Safe to delete; the real season is a different label.",
+        }],
+        keys=("scope", "key", "season"),
+    )
+    store.conn.execute(
+        "DELETE FROM admin_overrides WHERE scope = 'simulation' AND season = ? "
+        "AND key != ?",
+        (SIM_SEASON, "scores_only" if from_season else "everything"),
+    )
+    store.conn.commit()
+
+    if from_season:
+        mirrored = mirror_roster(store, from_season)
+        if not mirrored:
+            raise ValueError(
+                f"no roster in {from_season}. Import one first, or drop "
+                f"--from-season to invent placeholder players too."
+            )
+        assets = store.query(
+            "SELECT asset_id, asset_type, display_name, league, role, norm_key "
+            "FROM assets"
+        )
+        slots_by_manager = {
+            m: rosters.load_slots(store, SIM_SEASON, m)
+            for m in sorted({s.manager for s in rosters.load_slots(store, SIM_SEASON)})
+        }
+        picks = {
+            manager: {}
+            for manager in slots_by_manager
+        }
+        for manager, slots in slots_by_manager.items():
+            for slot in slots:
+                if slot.occupancies:
+                    key = (slot.asset_type, slot.category)
+                    picks[manager].setdefault(key, []).append(
+                        slot.occupancies[0].asset_id
+                    )
+        empty = sum(
+            1 for slots in slots_by_manager.values()
+            for s in slots if not s.occupancies
+        )
+    else:
+        assets = build_assets(rng)
+        store.insert_frame("assets", assets, keys=("asset_id",))
+
+        for manager in MANAGERS:
+            rosters.add_manager(store, manager, LEAGUE_MANAGERS[manager])
+            rosters.create_slots(store, manager, SIM_SEASON)
+
+        slots_by_manager = {
+            m: rosters.load_slots(store, SIM_SEASON, m) for m in MANAGERS
+        }
+        picks = _draft(rng, assets)
+        empty = _undraft(rng, picks)
+        for manager, slots in slots_by_manager.items():
+            remaining = {k: list(v) for k, v in picks[manager].items()}
+            for slot in slots:
+                pool = remaining.get((slot.asset_type, slot.category))
+                if pool:
+                    rosters.assign(store, slot.slot_id, pool.pop(0), start)
+
+    # Daily scores for every drafted asset, plus the spares so a trade has
+    # somewhere to come from.
+    drafted = {a for chosen in picks.values() for pool in chosen.values() for a in pool}
+    # Whose asset it is decides its form, so the managers' totals separate.
+    # Keyed off whoever is actually in this league, not the configured five: a
+    # mirrored roster may hold a subset, and a partly-imported draft certainly
+    # does.
+    owner_strength = {
+        asset: _MANAGER_STRENGTH[index % len(_MANAGER_STRENGTH)]
+        for index, (manager, groups) in enumerate(sorted(picks.items()))
+        for pool in groups.values()
+        for asset in pool
+    }
+    curves = {
+        row.asset_id: _score_curve(
+            rng, _CEILING.get(row.league, DEFAULT_CEILING), days,
+            row.league, owner_strength.get(row.asset_id, 1.0),
+        )
+        for row in assets.itertuples()
+        if row.asset_id in drafted
+    }
+    version = _freeze_benchmarks(store, assets)
+    lookup = assets.set_index("asset_id")
+    for index, day in enumerate(days):
+        frame = pd.DataFrame({
+            "asset_id": list(curves),
+            "total_points": [c[index] * 4 for c in curves.values()],
+            "scaled_score": [c[index] for c in curves.values()],
+        })
+        write_daily_scores(store, frame, SIM_SEASON, day, version)
+
+    # Raw stats for the final day only. The profile window reads the latest,
+    # and writing a full season of them would multiply the database for
+    # placeholder data nobody will look back through.
+    final = days[-1]
+    by_league: dict[str, list[dict]] = {}
+    for asset_id, curve in curves.items():
+        row = lookup.loc[asset_id]
+        stats = build_stats(asset_id, row["league"], row["asset_type"], curve[-1] * 4)
+        by_league.setdefault(row["league"], []).append({"asset_id": asset_id, **stats})
+    for league, rows in by_league.items():
+        store.record_stats(rows, source="simulate", season=SIM_SEASON,
+                           as_of=final, league=league)
+
+    # Real rosters are not ours to rearrange: a made-up trade between two
+    # managers' actual players would look like something that happened.
+    trades = 0 if from_season else _make_trades(store, rng, slots_by_manager, days)
+    reports = backfill(
+        store, SIM_SEASON, start=start, end=end, today=end, verbose=False
+    )
+
+    summary = {
+        "season": SIM_SEASON,
+        "managers": len(MANAGERS),
+        "empty_slots": empty,
+        "assets": len(assets),
+        "slots": sum(len(s) for s in slots_by_manager.values()),
+        "days": len(days),
+        "trades": trades,
+        "benchmark_version": version,
+        "warnings": [w for r in reports for w in r.warnings],
+    }
+    if verbose:
+        print(
+            f"simulated {summary['season']}: {summary['managers']} managers, "
+            f"{summary['slots']} slots, {summary['assets']} assets, "
+            f"{summary['days']} days, {trades} trades, {empty} slots still empty",
+            flush=True,
+        )
+    return summary
+
+
+def _freeze_benchmarks(store: Store, assets: pd.DataFrame) -> str:
+    """A benchmark of 100 per group, so a scaled score reads as itself.
+
+    The simulation writes scaled scores directly rather than deriving them, so
+    a flat scale keeps the two consistent -- and makes a wrong number in the UI
+    obvious rather than plausible.
+    """
+    rows = pd.DataFrame({
+        "asset_type": assets["asset_type"],
+        "norm_key": assets["norm_key"],
+        "benchmark": 100.0,
+        "pool_size": 0,
+        "seasons": "simulated",
+    }).drop_duplicates(subset=["asset_type", "norm_key"])
+    version = f"{SIM_SEASON}-flat"
+    if bm.get_version(store, version) is None:
+        bm.save(store, rows, SIM_SEASON, version=version, notes="simulated, flat scale")
+    return bm.freeze(store, version).version
+
+
+def _make_trades(
+    store: Store, rng: random.Random, slots_by_manager: dict, days: list[date]
+) -> int:
+    """A few reciprocal swaps, so accrual splitting has something to split.
+
+    Both sides of a trade must be the same category and asset type -- a team
+    slot cannot hold a player -- so partners are drawn from matching slots.
+    """
+    if len(days) < 14:
+        return 0
+
+    made = 0
+    for _ in range(TRADE_COUNT):
+        left, right = rng.sample(MANAGERS, 2)
+        group = rng.choice(active_slots(ALL_SLOTS))
+        left_slots = [
+            s for s in slots_by_manager[left]
+            if s.category == group.category and s.asset_type == group.asset_type
+        ]
+        right_slots = [
+            s for s in slots_by_manager[right]
+            if s.category == group.category and s.asset_type == group.asset_type
+        ]
+        if not left_slots or not right_slots:
+            continue
+
+        left_slot = rng.choice(left_slots)
+        right_slot = rng.choice(right_slots)
+        left_asset = _occupant(store, left_slot.slot_id)
+        right_asset = _occupant(store, right_slot.slot_id)
+        if not left_asset or not right_asset or left_asset == right_asset:
+            continue
+
+        when = days[rng.randrange(7, len(days) - 1)]
+        rosters.trade(store, left_slot.slot_id, right_slot.slot_id,
+                      left_asset, right_asset, when, note="simulated trade")
+        made += 1
+    return made
+
+
+def _occupant(store: Store, slot_id: str) -> str | None:
+    row = store.conn.execute(
+        "SELECT asset_id FROM slot_occupancy WHERE slot_id = ? AND end_date IS NULL "
+        "ORDER BY start_date DESC LIMIT 1",
+        (slot_id,),
+    ).fetchone()
+    return row["asset_id"] if row else None
+
+
+def purge(store: Store) -> dict[str, int]:
+    """Delete the simulated league entirely.
+
+    Ordered so a foreign key never blocks a delete: the rows that point at
+    others go first.
+    """
+    removed = {}
+    with store.transaction() as conn:
+        for table, sql in (
+            ("standings_snapshots", "DELETE FROM standings_snapshots WHERE season = ?"),
+            ("slot_scores", "DELETE FROM slot_scores WHERE season = ?"),
+            ("slot_occupancy",
+             "DELETE FROM slot_occupancy WHERE slot_id IN "
+             "(SELECT slot_id FROM roster_slots WHERE season = ?)"),
+            ("roster_slots", "DELETE FROM roster_slots WHERE season = ?"),
+            ("daily_scores", "DELETE FROM daily_scores WHERE season = ?"),
+            ("raw_stats", "DELETE FROM raw_stats WHERE season = ?"),
+            ("benchmarks",
+             "DELETE FROM benchmarks WHERE version IN "
+             "(SELECT version FROM benchmark_versions WHERE season = ?)"),
+            ("benchmark_versions", "DELETE FROM benchmark_versions WHERE season = ?"),
+            ("admin_overrides", "DELETE FROM admin_overrides WHERE season = ?"),
+        ):
+            removed[table] = conn.execute(sql, (SIM_SEASON,)).rowcount
+        removed["assets"] = conn.execute(
+            "DELETE FROM assets WHERE asset_id LIKE ?", (f"{SIM_PREFIX}%",)
+        ).rowcount
+    return removed

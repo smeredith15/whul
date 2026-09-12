@@ -1,0 +1,140 @@
+# Take back a title awarded before its season was settled -- once.
+#
+# The scorer used to hand a division or conference title to whoever led the
+# table. New England and Seattle each carried an NFL division title after a
+# single game, one of which they lost; Miami six points for an ACC title on a
+# 1-0 conference record; three clubs an MLB division five. `settled_seasons`
+# stopped that happening again and cannot reach the days it already happened
+# on, and neither can anything else: `rescore` re-divides a stored total by a
+# new benchmark and never re-runs a scorer, and the rollup rebuilds standings
+# from the scores rather than from the feeds. Nor can the days be re-fetched --
+# a player's stored figures are season-to-date aggregates and ESPN serves only
+# today's, so there is no asking what Cole Palmer's were on the tenth.
+#
+# So yesterday keeps the title, today does not, and the ledger -- which
+# differences consecutive days -- reads the correction as a fifteen-point
+# collapse by a team that did nothing.
+#
+# This is the one-time fix. It edits the stored figures, which nothing else
+# here does, which is why it is its own workflow with its own dry run rather
+# than a tick-box on the nightly job.
+
+name: Retract titles
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to correct"
+        default: "2026-27"
+      all:
+        description: >-
+          Take back every title in the season, not only those already
+          withdrawn. Needed for a title whose asset has no newer day for it to
+          be gone on -- Miami's sat on its last four stored days and there was
+          no fifth. Correct only while the season is still being played, when
+          no title can have been won yet.
+        type: boolean
+        default: false
+      apply:
+        description: >-
+          Write the correction. Leave unticked for a dry run first: it names
+          every title it would take back, and the total before and after.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  # The nightly job's group: both write the same database on the same branch,
+  # and the loser of a race would have its work force-pushed away by the winner.
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  retract:
+    runs-on: ubuntu-latest
+    env:
+      SEASON: ${{ inputs.season || '2026-27' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+          git reset -q -- data/whul.sqlite3
+
+      - name: Take the titles back
+        # The flags are built in the shell, from the inputs as plain strings.
+        # `${{ inputs.apply && '' || '--dry-run' }}` looks like a ternary and is
+        # not: GitHub's && and || return values, so with Apply ticked
+        # `true && ''` is the empty string, which is falsy, and the expression
+        # falls through to `--dry-run`. The workflow dry-ran every time,
+        # including the run that was meant to write. Its sibling
+        # `inputs.all && '--all' || ''` survived only because '--all' happens to
+        # be a truthy string -- the same construct, right by luck.
+        #
+        # pipefail because a pipeline exits with its last command's status and
+        # the default shell is `bash -e`: without it `tee` reports success
+        # however the command exited, and a refusal would go green.
+        env:
+          APPLY: ${{ inputs.apply }}
+          EVERY: ${{ inputs.all }}
+        run: |
+          set -o pipefail
+          FLAGS=""
+          if [ "$EVERY" = "true" ]; then FLAGS="$FLAGS --all"; fi
+          if [ "$APPLY" != "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          echo "retract-titles --season $SEASON$FLAGS"
+          python -m whul.cli retract-titles --season "$SEASON" $FLAGS \
+            | tee retract.txt
+
+      - name: Rebuild the standings from the corrected scores
+        if: ${{ inputs.apply }}
+        run: |
+          set -o pipefail
+          python -m whul.cli rollup --season "$SEASON" --backfill | tee -a retract.txt
+
+      - name: Build the site
+        if: ${{ inputs.apply }}
+        run: python -m whul.cli site --season "$SEASON"
+
+      - name: Save the database
+        if: ${{ inputs.apply }}
+        run: |
+          git config user.name "whul-bot"
+          git config user.email "whul-bot@users.noreply.github.com"
+          git checkout --orphan data-tmp
+          git rm -rq --cached . || true
+          git add -f data/whul.sqlite3
+          git commit -qm "Titles retracted $(date -u +%Y-%m-%d)"
+          git push -f origin data-tmp:data
+
+      - name: What to do next
+        run: |
+          echo "==================================================="
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            echo "  Written, and the standings rebuilt from the corrected"
+            echo "  scores. Run 'Publish standings' to put the site live."
+          else
+            echo "  DRY RUN. Nothing was written. Read the list above, then"
+            echo "  run again with Apply ticked."
+          fi
+          echo "==================================================="
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retract
+          path: retract.txt
+          if-no-files-found: warn

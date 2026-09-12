@@ -1,0 +1,231 @@
+# Nightly: refresh the league, rebuild the site, publish it.
+#
+# The whole app is a batch job and a folder of HTML, so this is the entire
+# deployment: no server to keep alive, no bill, nothing to patch. GitHub runs
+# the pipeline once a day and Pages serves the result.
+#
+# The database is the one piece of state, and it lives on a `data` branch
+# rather than in `main` -- committing a growing binary to the working branch
+# would put a diff nobody can read into every pull request. The branch is
+# restored before the run and pushed after it, so the season accumulates.
+#
+# UNVERIFIED: written where GitHub Actions cannot be exercised. The first run
+# is the test. If the data branch does not exist yet the restore step is
+# skipped and the run starts a fresh database, which is the correct behaviour
+# for the first night.
+
+name: Publish standings
+
+on:
+  schedule:
+    # 07:37 UTC, and the odd minute is the point.
+    #
+    # GitHub runs scheduled workflows at the lowest priority and delays them
+    # under load, which peaks hardest on the hour. At "0 9" this job was late
+    # every single day it ever ran -- 3h27, 3h40, 4h13, 4h22, 5h51 -- so it
+    # landed between 08:30 and 11:00 Eastern rather than overnight, and the
+    # league read yesterday's standings over breakfast.
+    #
+    # An odd minute does not make GitHub punctual; it avoids the worst of the
+    # contention. Nominally 03:37 Eastern, which with the usual slip should
+    # land while nobody is looking, and early enough that a bad night can be
+    # noticed and re-run before anyone is.
+    - cron: "37 7 * * *"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to publish"
+        default: "2026-27"
+      leagues:
+        description: >-
+          Leagues to pull, space separated, as `benchmarks list` names them.
+          Empty means every one. The default is every league WHUL drafts, in
+          season or not: a league that has not opened returns an empty season
+          list and is never fetched, so it costs nothing until its first game
+          and needs nobody to remember it on the morning of one.
+        default: >-
+          nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf
+          nhl nhl-teams nba nba-teams ncaam ncaaw ncaabaseball ncaasoftball
+          epl laliga seriea bundesliga ligue1 mls nwsl soccer-players
+          intl-soccer
+      backfill:
+        description: "Rebuild every day from the season start"
+        type: boolean
+        default: false
+      rescore:
+        description: >-
+          Restate every stored day against the frozen benchmark, before the
+          rollup. Tick this after freezing a new scale. Without it the days
+          scored before the freeze keep the old divisor, and the ledger --
+          which differences consecutive days -- shows every asset in a group
+          dropping on the changeover by that group's percentage, having done
+          nothing. Implies backfill: restating the scores without rebuilding
+          the standings from them would leave the two disagreeing.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # to push the database back to the data branch
+  pages: write
+  id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false   # never interrupt a run mid-write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      SEASON: ${{ inputs.season || '2026-27' }}
+      # Kept in step with the `leagues` default above -- the scheduled run
+      # passes no inputs, so this string is what the league is scored from
+      # every night and the one there is is the one that matters.
+      LEAGUES: ${{ inputs.leagues || 'nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf nhl nhl-teams nba nba-teams ncaam ncaaw ncaabaseball ncaasoftball epl laliga seriea bundesliga ligue1 mls nwsl soccer-players intl-soccer' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      # The feeds are walked one date at a time and a finished date never
+      # changes, so without this every night re-fetches the whole season from
+      # scratch -- thousands of requests for results already known. Restored
+      # from the most recent run and saved under today's key.
+      - name: Restore the feed cache
+        uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: feed-cache-${{ github.run_id }}
+          restore-keys: |
+            feed-cache-
+
+      - name: Restore the database
+        run: |
+          mkdir -p data
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch origin data --depth 1
+            git checkout origin/data -- data/whul.sqlite3 || true
+          fi
+          if [ ! -f data/whul.sqlite3 ]; then
+            echo "No database yet -- building one from the draft file."
+            python -m whul.cli import-rosters --season 2026-27 --write
+            # The benchmarks are not rebuilt here. They take hours, they are a
+            # deliberate act rather than a nightly one, and a frozen version is
+            # part of the state the data branch carries. A run that finds no
+            # frozen version records the raw figures and says so.
+          fi
+
+      - name: Refresh the rosters from the draft file
+        # Cheap and idempotent, and it means a re-uploaded spreadsheet reaches
+        # the site on the next run without anyone having to remember a step.
+        run: python -m whul.cli import-rosters --season 2026-27 --write
+
+      - name: Drop assets the spreadsheet no longer holds
+        # Only after the import, and only if it succeeded -- the step above
+        # exits non-zero on a sheet it could not read, which stops the job
+        # before anything is removed. The occupancy *is* the spreadsheet, so an
+        # asset holding no slot is one the sheet does not name: a name
+        # corrected, a category moved, a player traded away.
+        #
+        # It refuses on its own account if that would be more than a quarter of
+        # the table, which is what a half-read sheet looks like rather than a
+        # tidy-up.
+        run: python -m whul.cli prune-assets --season "$SEASON" --write
+
+      - name: Pull today's results
+        # Never fatal. A feed that is down, or a league with nothing on today,
+        # must not take the site down with it -- yesterday's standings beat
+        # none, and every problem is printed in this step's log.
+        continue-on-error: true
+        run: python -m whul.cli ingest $LEAGUES --season "$SEASON"
+
+      - name: Pull upcoming fixtures
+        # MLB, the NBA and club soccer reach this project through a scoreboard
+        # walk, which asks only for dates that have already happened and so
+        # carries no fixtures. The NHL is worse off still: its feed reports
+        # season totals and no schedule at all. Theirs come from Flashscore
+        # instead -- seven requests per sport, and the soccer feed serves every
+        # competition at once, so nine club-soccer categories and both
+        # international ones cost one pass.
+        #
+        # Never fatal, for the same reason the pull above is not: the next
+        # fixture is a convenience on a page and the standings are the record.
+        continue-on-error: true
+        run: python -m whul.cli fixtures --season "$SEASON" --fetch
+
+      - name: Restate the stored days against the frozen scale
+        if: ${{ inputs.rescore }}
+        # No feed is touched: the raw figures are already stored and only the
+        # normalization is redone. It refuses if a day already scored against
+        # the frozen version does not come back the same, which is the only
+        # available check that the restatement does what the scorer does.
+        run: python -m whul.cli rescore --season "$SEASON"
+
+      - name: Check players against their clubs' results
+        # A club-soccer player arrives as a season aggregate per competition,
+        # and the aggregate carries whatever ESPN scoped the request to. That
+        # scoping wobbles: Bayern's Bundesliga roster returned Harry Kane with
+        # his Champions League match among his appearances, so it was counted
+        # as domestic football and held as a European bonus on the same night,
+        # and was gone again the next.
+        #
+        # The clubs' results never wobbled -- every match is fetched under the
+        # competition it was played in -- so they are the authority, and the
+        # player's gamelog is the link: both carry ESPN's own match id.
+        #
+        # Reports and changes nothing, and never fails the run. What to do
+        # about a disagreement is a scoring decision, and it should be made
+        # against a few weeks of these rather than the first one.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python -m whul.cli check-attribution --season "$SEASON" \
+            | tee -a attribution.txt
+
+      - name: Roll up the standings
+        run: |
+          if [ "${{ inputs.backfill }}" = "true" ] \
+             || [ "${{ inputs.rescore }}" = "true" ]; then
+            python -m whul.cli rollup --season "$SEASON" --backfill
+          else
+            python -m whul.cli rollup --season "$SEASON"
+          fi
+
+      - name: Build the site
+        run: python -m whul.cli site --season "$SEASON"
+
+      - name: Save the database
+        run: |
+          git config user.name "whul-bot"
+          git config user.email "whul-bot@users.noreply.github.com"
+          git checkout --orphan data-tmp
+          git rm -rq --cached . || true
+          git add -f data/whul.sqlite3
+          git commit -qm "Database after $(date -u +%Y-%m-%d)"
+          git push -f origin data-tmp:data
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attribution
+          path: attribution.txt
+          if-no-files-found: ignore
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,637 @@
+"""Upcoming team-sport matches from the Flashscore feed.
+
+The leagues whose results reach this project through a scoreboard walk -- MLB,
+the NBA, and every club soccer competition -- carry no fixtures with them: the
+walk asks for dates that have already happened. Their next games come from
+here instead, off the same feed ``whul.sources.flashscore`` already reads for
+tennis, at a different sport id.
+
+The payload is the same ``KEY÷value¬`` / ``~`` format, and the same two facts
+govern the parse: a ``ZA÷`` header opens a competition and every ``AA÷`` record
+after it belongs to that competition until the next header, so position
+matters; and ``AC÷`` carries the status, of which only the upcoming codes are
+wanted here. That is the exact inverse of the tennis parser, which keeps the
+finished ones.
+
+Team names come from ``AE÷`` and ``AF÷`` -- display names, not the ``WU``/``WV``
+slugs tennis uses, because a club is written out in full where a player is not.
+
+**No competition filter.** A club's next game is its next game whether it is a
+league match, a cup tie or a European night, and a table of competition names
+would be one more thing to keep in step with a feed that renames things. The
+filter is the roster instead: whatever the feed offers, only the clubs somebody
+holds are kept. That also makes the parse indifferent to which of the twenty
+leagues a club plays in.
+
+**UNVERIFIED.** Flashscore is blocked by egress policy from where this was
+written, so no line below has met a real payload. It is modelled on the tennis
+parser in the sibling module, which is running against this feed in
+``smeredith15/tennis2026``. Run ``python -m whul.cli probe fixtures`` from a
+machine with access: it prints what came back, what parsed, and which rostered
+clubs matched, which is what a correction would be made from.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from datetime import date, datetime, timezone
+
+import pandas as pd
+import requests
+
+from whul.sources.flashscore import (
+    PAGE_HEADERS, REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_HOCKEY,
+    SPORT_SOCCER, SPORT_TENNIS, TIMEOUT, _field, _get,
+    parse_tournament_header, slug_to_name,
+)
+
+#: Which sport id serves each league's fixtures.
+SPORTS: dict[str, int] = {
+    "MLB": SPORT_BASEBALL,
+    "NBA": SPORT_BASKETBALL,
+    "Premier League": SPORT_SOCCER,
+    "La Liga": SPORT_SOCCER,
+    "Serie A": SPORT_SOCCER,
+    "Bundesliga": SPORT_SOCCER,
+    "Ligue 1": SPORT_SOCCER,
+    "MLS": SPORT_SOCCER,
+    "NWSL": SPORT_SOCCER,
+    "Club Soccer": SPORT_SOCCER,
+    # National sides come off the same soccer feed as the clubs, in the same
+    # request. What they need beyond that is a way to tell the men's game from
+    # the women's: this roster holds England, France and Spain in *both*, under
+    # the same display name, and a fixture that lands on the wrong one of those
+    # is exactly the kind of plausible-looking wrong answer the country guard
+    # was written to stop. See `is_womens`.
+    "Men's Intl Soccer": SPORT_SOCCER,
+    "Women's Intl Soccer": SPORT_SOCCER,
+    # The NHL reports season totals and no schedule, so unlike the NFL there is
+    # nothing to harvest on the way past -- this feed is the only place its
+    # fixtures can come from.
+    "NHL": SPORT_HOCKEY,
+    # Tennis is the one individual sport this reader covers, because it is the
+    # one whose next event is a *match*: a named opponent in a named round,
+    # which is the same shape as everything above. Golf and motorsport are an
+    # entry list against a field, and nothing here describes that -- see
+    # `discover` for what would be needed.
+    "ATP": SPORT_TENNIS,
+    "WTA": SPORT_TENNIS,
+    "Tennis": SPORT_TENNIS,
+}
+
+#: How far ahead to look. The feed's window is a fortnight wide and only the
+#: future half is wanted, so this is half the requests the tennis reader makes.
+#: Seven days is enough for any of these sports to have played: a club that has
+#: no game inside a week is between competitions, and saying nothing is then
+#: the true answer rather than a gap.
+AHEAD = range(0, 8)
+
+#: Statuses meaning "has not started". Everything else -- in play, finished,
+#: postponed, cancelled -- is not a fixture anyone can turn up to.
+STATUS_UPCOMING = {"1", "18"}
+
+#: A competition header is "COUNTRY: Competition Name", sometimes with a stage
+#: after it. Both halves matter: the name is what a reader sees, and the
+#: country is what stops a club being given somebody else's fixture.
+_HEADER_SPLIT = re.compile(r"^\s*[^:]*:\s*")
+_COUNTRY = re.compile(r"^\s*([^:]+):")
+
+
+def competition_of(header: str) -> str:
+    """'ENGLAND: Premier League - Round 5' -> 'Premier League'."""
+    without_country = _HEADER_SPLIT.sub("", str(header or "")).strip()
+    return re.split(r"\s+[-–]\s+", without_country)[0].strip()
+
+
+def country_of(header: str) -> str:
+    """'ENGLAND: Premier League - Round 5' -> 'ENGLAND'.
+
+    This feed is the whole world at once -- the probe's first three days came
+    back with Argentine Primera C, Armenian second tier and Western Australian
+    play-offs -- and club names are not unique across it. Brazil's Serie B has
+    an Athletic Club; so does Bilbao. Without the country, one of them gets the
+    other's fixture and the page looks right while being wrong.
+    """
+    found = _COUNTRY.match(str(header or ""))
+    return found.group(1).strip().upper() if found else ""
+
+
+#: Names that are a club's second string rather than the club. Flashscore
+#: writes River Plate's reserves as "River Plate 2"; the age-group sides carry
+#: their bracket. Excluded outright: a reserve fixture beside a first-team
+#: badge is a wrong answer, not a partial one.
+#: A *single* trailing digit, 2 to 9. Not any number: Schalke 04, Hannover 96
+#: and Mainz 05 are first teams whose names end in a year, and a bare "\s\d+"
+#: rule would quietly drop all three. A reserve side is never "1".
+RESERVE_PATTERN = re.compile(
+    r"(\s[2-9]|\bU\s?1[5-9]\b|\bU\s?2[0-3]\b|\breserves?\b|\byouth\b|"
+    r"\bII\b|\sB)$",
+    re.IGNORECASE,
+)
+
+
+#: How this feed marks the women's side of a sport whose men's side shares the
+#: name. Flashscore writes the women's team with a trailing "W" -- "England W",
+#: "Barcelona W" -- and that suffix is the only thing separating them, because
+#: the competition header does not always say.
+#:
+#: UNVERIFIED as to the exact spelling; the parenthesised form is accepted too
+#: so a feed that writes "England (W)" is read rather than silently dropped
+#: into the men's bucket. Getting this wrong is not a blank cell: this roster
+#: holds England, France and Spain in both the men's and the women's category,
+#: so a women's fixture read as men's lands on a real card, on a plausible
+#: date, against a real opponent. `python -m whul.cli fixtures --probe
+#: --sport soccer` prints the team names as the feed spells them.
+WOMENS_SUFFIX = re.compile(r"\s*\(?W\)?$")
+
+
+def is_womens(name: str) -> bool:
+    """Whether the feed is naming a women's side.
+
+    A name that is *only* the marker is not one: stripping it would leave
+    nothing to match on, and "the empty club" would then be offered to every
+    lookup in the women's bucket.
+    """
+    text = str(name or "").strip()
+    return bool(WOMENS_SUFFIX.search(text)) and bool(strip_womens(text))
+
+
+def strip_womens(name: str) -> str:
+    """The name without the marker, which is how the roster spells it."""
+    return WOMENS_SUFFIX.sub("", str(name or "").strip()).strip()
+
+
+def _when(segment: str) -> date | None:
+    """The kickoff, as a date in UTC.
+
+    ``AD`` is a Unix timestamp. Read as UTC rather than local: the machine that
+    runs the nightly job and the machine someone reads the page on are in
+    different places, and a fixture that moves a day depending on who is asking
+    is worse than one that is occasionally a few hours out.
+    """
+    raw = _field(segment, "AD")
+    try:
+        return datetime.fromtimestamp(int(raw), tz=timezone.utc).date()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def iter_fixtures(raw: str):
+    """One dict per upcoming match in a raw payload.
+
+    Header position assigns a match to a competition, so records are walked in
+    order and the most recent header applies -- the same rule the tennis parser
+    follows, and for the same reason.
+    """
+    competition = ""
+    country = ""
+    for segment in (s for s in str(raw).split("~") if s):
+        if segment.startswith("ZA÷"):
+            header = _field(segment, "ZA") or ""
+            competition = competition_of(header)
+            country = country_of(header)
+            continue
+        if not segment.startswith("AA÷"):
+            continue
+        if (_field(segment, "AC") or "") not in STATUS_UPCOMING:
+            continue
+        home = (_field(segment, "AE") or "").strip()
+        away = (_field(segment, "AF") or "").strip()
+        when = _when(segment)
+        if not home or not away or when is None:
+            continue
+        if RESERVE_PATTERN.search(home) or RESERVE_PATTERN.search(away):
+            continue
+        yield {
+            "match_uid": _field(segment, "AA") or "",
+            "game_date": when.isoformat(),
+            "home_team": home,
+            "away_team": away,
+            "competition": competition,
+            "country": country,
+            # A schedule frame's shape, so `whul.fixtures.harvest` reads this
+            # exactly as it reads nflverse's. Null both sides: these are the
+            # games nobody has played.
+            "home_score": None,
+            "away_score": None,
+        }
+
+
+def fetch_window(sport: int, days: range = AHEAD, verbose: bool = True) -> str:
+    """The next week of one sport, as one payload."""
+    chunks = []
+    for day in days:
+        try:
+            chunks.append(_get(day, cache_key=None, sport=sport))
+        except requests.RequestException as exc:
+            # One bad day must not lose the other six.
+            if verbose:
+                print(f"  flashscore sport {sport} day {day}: "
+                      f"{type(exc).__name__}", flush=True)
+            continue
+        time.sleep(0)  # _get already paces itself; kept for readability
+    return "~".join(chunks)
+
+
+def load_upcoming(sport: int, days: range = AHEAD, verbose: bool = True) -> pd.DataFrame:
+    """Every upcoming match one sport has in the window, unfiltered.
+
+    Unfiltered on purpose: the caller narrows by roster, which is both cheaper
+    to keep right than a competition table and indifferent to a club playing in
+    a competition nobody listed.
+    """
+    raw = fetch_window(sport, days, verbose=verbose)
+    reader = iter_tennis_fixtures if sport == SPORT_TENNIS else iter_fixtures
+    rows = list(reader(raw))
+    if verbose:
+        competitions = sorted({r["competition"] for r in rows if r["competition"]})
+        print(f"  flashscore sport {sport}: {len(rows)} upcoming match(es) "
+              f"across {len(competitions)} competition(s)", flush=True)
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    return frame.drop_duplicates(subset=["match_uid"]).reset_index(drop=True)
+
+
+# --- a league's own season page --------------------------------------------
+#
+# The day feed above is a week wide, which is the right window for a league in
+# season and no window at all for one that is not. The NHL and the NBA open in
+# October: through September their next game is real, published and six weeks
+# away, and every cell was blank while the feed was working perfectly.
+#
+# Their own fixtures page carries the schedule instead of the week. It is the
+# same record format -- `whul.sources.flashscore` already reads `AA÷` blocks
+# off a tournament page for the tennis rounds -- with one difference that
+# matters: a league page is one competition, so it has no `ZA÷` header and the
+# competition and country have to be supplied rather than read.
+
+#: League -> (sport, path, competition, country). The path is what follows the
+#: host; both hosts below are tried, because the page a reader is given is on
+#: the regional one and the feed this module otherwise talks to is not.
+SEASON_PAGES: dict[str, tuple[int, str, str, str]] = {
+    "NHL": (SPORT_HOCKEY, "/hockey/usa/nhl/fixtures/", "NHL", "USA"),
+    "NBA": (SPORT_BASKETBALL, "/basketball/usa/nba/fixtures/", "NBA", "USA"),
+}
+
+#: Tried in order. The regional host is first because it is the one the pages
+#: are published on; the international host is the fallback and is the one the
+#: rest of this module uses.
+PAGE_HOSTS = ("https://www.flashscoreusa.com", "https://www.flashscore.com")
+
+
+def iter_page_fixtures(raw: str, competition: str = "", country: str = ""):
+    """One dict per match on a league's own fixtures page.
+
+    Two differences from the day feed, both because a league page is a single
+    competition rather than the whole world:
+
+    The competition and country are given rather than read from a header, so a
+    page that renders its title differently still produces rows the country
+    guard can judge.
+
+    A record with no status is kept. The day feed carries every state at once
+    and the status is the only thing separating a fixture from a result; a
+    fixtures page carries fixtures, and dropping every record because the
+    status field moved would be a blank column reported as a working one. A
+    status that *is* present and says the match has been played is still
+    refused, and `harvest` drops anything before the day it is asked about.
+    """
+    for segment in (s for s in str(raw).split("~") if s):
+        if not segment.startswith("AA÷"):
+            continue
+        status = _field(segment, "AC")
+        if status and status not in STATUS_UPCOMING:
+            continue
+        home = (_field(segment, "AE") or "").strip()
+        away = (_field(segment, "AF") or "").strip()
+        when = _when(segment)
+        if not home or not away or when is None:
+            continue
+        if RESERVE_PATTERN.search(home) or RESERVE_PATTERN.search(away):
+            continue
+        yield {
+            "match_uid": _field(segment, "AA") or "",
+            "game_date": when.isoformat(),
+            "home_team": home,
+            "away_team": away,
+            "competition": competition,
+            "country": country,
+            "home_score": None,
+            "away_score": None,
+        }
+
+
+def fetch_page(path: str, session=None, verbose: bool = True) -> str:
+    """One league page's HTML, from whichever host answers."""
+    client = session or requests
+    for host in PAGE_HOSTS:
+        try:
+            response = client.get(f"{host}{path}", headers=PAGE_HEADERS,
+                                  timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            if verbose:
+                print(f"  {host}{path}: {type(exc).__name__}", flush=True)
+            continue
+        if response.status_code != 200:
+            if verbose:
+                print(f"  {host}{path}: HTTP {response.status_code}", flush=True)
+            continue
+        time.sleep(REQUEST_PAUSE)
+        return response.text
+    return ""
+
+
+def load_season(league: str, session=None, verbose: bool = True) -> pd.DataFrame:
+    """A league's published schedule, as far ahead as its page renders.
+
+    Deliberately not paginated. The page loads a chunk and offers a button for
+    the rest, and a scraper that drives that button is a scraper that breaks
+    when the button changes. What the first render carries is weeks of
+    fixtures, which is more than enough to fill a column that currently says
+    nothing -- and the range it covers is printed, so a short answer is visible
+    rather than assumed.
+    """
+    if league not in SEASON_PAGES:
+        return pd.DataFrame()
+    _, path, competition, country = SEASON_PAGES[league]
+    raw = fetch_page(path, session, verbose=verbose)
+    if not raw:
+        if verbose:
+            print(f"  {league}: no season page answered, so no fixtures beyond "
+                  f"the week the day feed covers", flush=True)
+        return pd.DataFrame()
+    rows = list(iter_page_fixtures(raw, competition, country))
+    if verbose:
+        # Loudly, because the failure this cannot see is a page that answered
+        # with a shape this does not read: 200 OK, plenty of bytes, no rows.
+        seen = raw.count("AA\u00f7")
+        if not rows:
+            print(f"  {league}: the season page answered with {len(raw):,} "
+                  f"byte(s) and {seen} match record(s), none of which parsed. "
+                  f"The record format has moved; run `fixtures --probe`.",
+                  flush=True)
+        else:
+            days = sorted({r["game_date"] for r in rows})
+            print(f"  {league}: {len(rows)} fixture(s) on the season page, "
+                  f"{days[0]} to {days[-1]}", flush=True)
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    return frame.drop_duplicates(subset=["match_uid"]).reset_index(drop=True)
+
+
+def probe_season(league: str) -> dict:
+    """What a league's own fixtures page returns, and how far it reaches.
+
+    Separate from the day-feed probe because it fails separately: a different
+    host, a different response shape, and a page that renders its schedule in
+    chunks. The three things worth seeing are whether the page answered at all,
+    whether its records parsed, and what date the last one is -- the third
+    because a page that renders one chunk is the expected case and a page that
+    renders one *day* is a fault dressed as an answer.
+    """
+    out: dict[str, object] = {"league": league}
+    if league not in SEASON_PAGES:
+        out["result"] = "no season page is configured for this league"
+        return out
+    sport, path, competition, country = SEASON_PAGES[league]
+    out["sport"], out["path"] = sport, path
+    raw = ""
+    for host in PAGE_HOSTS:
+        try:
+            response = requests.get(f"{host}{path}", headers=PAGE_HEADERS,
+                                    timeout=TIMEOUT)
+        except requests.RequestException as exc:
+            out[host] = f"FAILED: {type(exc).__name__}"
+            continue
+        out[host] = f"HTTP {response.status_code}, {len(response.text):,} bytes"
+        if response.status_code == 200 and not raw:
+            raw = response.text
+    if not raw:
+        out["result"] = "no host answered"
+        return out
+
+    out["match_records"] = raw.count("AA\u00f7")
+    out["records_with_AE"] = raw.count("AE\u00f7")
+    out["status_codes"] = sorted({
+        _field(s, "AC") for s in raw.split("~") if s.startswith("AA\u00f7")
+        and _field(s, "AC")
+    })[:10]
+    rows = list(iter_page_fixtures(raw, competition, country))
+    out["parsed"] = len(rows)
+    if rows:
+        days = sorted({r["game_date"] for r in rows})
+        out["first"], out["last"] = days[0], days[-1]
+        out["days_covered"] = len(days)
+        out["sample"] = [
+            f"{r['game_date']}  {r['home_team']} v {r['away_team']}"
+            for r in rows[:6]
+        ]
+    else:
+        out["result"] = ("the page answered but nothing parsed -- the record "
+                         "format has moved")
+    return out
+
+
+def probe(sport: int = SPORT_SOCCER, days: range = range(0, 3)) -> dict:
+    """What the feed actually returns, for correcting this from its output.
+
+    Every guess in this module is reported separately, because they fail
+    separately: the request, the record split, the status codes present, the
+    name fields, and the competition headers. A parser that returns nothing
+    could be any one of them, and the whole point of a probe is to say which.
+    """
+    out: dict[str, object] = {"sport": sport, "days": str(days)}
+    try:
+        raw = fetch_window(sport, days, verbose=False)
+    except Exception as exc:  # noqa: BLE001
+        out["fetch"] = f"FAILED: {type(exc).__name__}: {exc}"
+        return out
+    out["bytes"] = len(raw)
+    if not raw:
+        out["fetch"] = "EMPTY -- the request worked and returned nothing"
+        return out
+
+    segments = [s for s in raw.split("~") if s]
+    out["records"] = len(segments)
+    out["headers"] = sum(1 for s in segments if s.startswith("ZA÷"))
+    out["matches"] = sum(1 for s in segments if s.startswith("AA÷"))
+    statuses: dict[str, int] = {}
+    for segment in segments:
+        if segment.startswith("AA÷"):
+            code = _field(segment, "AC") or "(none)"
+            statuses[code] = statuses.get(code, 0) + 1
+    out["status_codes"] = dict(sorted(statuses.items(), key=lambda kv: -kv[1]))
+    out["upcoming_expected"] = sorted(STATUS_UPCOMING)
+
+    # Whether the name fields are the ones assumed. A team sport writes clubs
+    # out in AE/AF; if this reports zero, the field codes are the bug and the
+    # sample below says what to use instead.
+    named = [s for s in segments if s.startswith("AA÷") and _field(s, "AE")]
+    out["records_with_AE"] = len(named)
+    if segments:
+        sample = next((s for s in segments if s.startswith("AA÷")), "")
+        out["sample_match_fields"] = sorted(
+            set(re.findall(r"([A-Z]{2})÷", sample))
+        )
+    out["sample_headers"] = [
+        _field(s, "ZA") for s in segments if s.startswith("ZA÷")
+    ][:8]
+
+    parsed = list(iter_fixtures(raw))
+    out["parsed"] = len(parsed)
+    out["sample_fixtures"] = [
+        f"{p['game_date']}  {p['home_team']} v {p['away_team']}  "
+        f"({p['country']}: {p['competition']})"
+        for p in parsed[:8]
+    ]
+    out["countries"] = sorted({p["country"] for p in parsed if p["country"]})[:25]
+
+    # The two guesses this reader cannot check for itself, reported separately
+    # because they fail separately.
+    #
+    # The women's marker decides which of two rostered assets a match belongs
+    # to -- England is held in both international categories -- so a wrong
+    # guess here is a real opponent on a real date on the wrong card, not a
+    # blank cell. If `womens_marked` is zero on a day with women's football in
+    # it, the suffix is not what `WOMENS_SUFFIX` expects.
+    marked = [p for p in parsed
+              if is_womens(p["home_team"]) or is_womens(p["away_team"])]
+    out["womens_marked"] = len(marked)
+    out["sample_womens"] = [
+        f"{p['home_team']} v {p['away_team']}  ({p['country']}: {p['competition']})"
+        for p in marked[:8]
+    ]
+    # And where a national side is filed. `COUNTRIES` refuses anything not on
+    # its list, so a confederation spelled differently here is a category that
+    # silently matches nothing.
+    international = [
+        p for p in parsed
+        if p["country"] in {"WORLD", "EUROPE", "AFRICA", "ASIA", "OCEANIA",
+                            "SOUTH AMERICA", "NORTH & CENTRAL AMERICA",
+                            "NORTH AMERICA"}
+    ]
+    out["international"] = len(international)
+    out["sample_international"] = [
+        f"{p['home_team']} v {p['away_team']}  ({p['country']}: {p['competition']})"
+        for p in international[:8]
+    ]
+    return out
+
+
+# --- tennis -----------------------------------------------------------------
+
+def iter_tennis_fixtures(raw: str):
+    """Upcoming main-draw singles matches, one dict per match.
+
+    The tennis half of this feed is already parsed in production by
+    ``whul.sources.flashscore``, which reads exactly these payloads and throws
+    the upcoming records away. This keeps them, and reuses that module's own
+    header reader so the tour, the category and the qualifying test stay
+    defined once -- a second copy of "which events are main-tour singles" is a
+    second copy to keep right.
+
+    Players arrive as ``WU``/``WV`` slugs rather than ``AE``/``AF``, surname
+    first, which is why ``slug_to_name`` exists.
+    """
+    header = None
+    for segment in (s for s in str(raw).split("~") if s):
+        if segment.startswith("ZA÷"):
+            header = parse_tournament_header(segment)
+            continue
+        if header is None or not segment.startswith("AA÷"):
+            continue
+        if header.get("is_qualifying"):
+            continue
+        if (_field(segment, "AC") or "") not in STATUS_UPCOMING:
+            continue
+        home = slug_to_name(_field(segment, "WU"))
+        away = slug_to_name(_field(segment, "WV"))
+        when = _when(segment)
+        if not home or not away or when is None:
+            continue
+        # The header's tournament keeps its trailing round ("Rome -
+        # Quarterfinal") because the scorer that reads it wants the string
+        # whole. Trimmed here rather than there: that name is matched against
+        # the tournament calendar, and shortening it upstream would be a
+        # change to what scores.
+        tournament = header["tournament"]
+        if header.get("round"):
+            tournament = re.sub(r"\s*[-–]\s*[^-–]+$", "", tournament).strip()
+        yield {
+            "match_uid": _field(segment, "AA") or "",
+            "game_date": when.isoformat(),
+            "home_team": home,
+            "away_team": away,
+            # The tournament, and the round where the header carries one. A
+            # round is what a tennis fixture means -- a quarter-final is not a
+            # first round -- so it rides alongside the competition and is
+            # shown the way a club's competition is.
+            "competition": tournament or header["tournament"],
+            "round": header.get("round", ""),
+            # Tennis headers name a tour, not a country ("ATP - SINGLES:
+            # Rome"), so there is none to narrow by. The roster scoping is
+            # what keeps this to tennis players.
+            "country": "",
+            "home_score": None,
+            "away_score": None,
+        }
+
+
+#: Sport ids worth asking about when looking for golf and motorsport. Flashscore
+#: serves more than a dozen sports off one feed and does not publish the map, so
+#: these are candidates rather than answers -- `discover` reports what each one
+#: actually returns.
+CANDIDATE_SPORTS: tuple[tuple[int, str], ...] = (
+    (1, "soccer"), (2, "tennis"), (3, "basketball"), (4, "hockey"),
+    (5, "american football"), (6, "baseball"), (7, "handball"),
+    (8, "rugby union"), (9, "floorball"), (10, "bandy"), (11, "futsal"),
+    (12, "volleyball"), (13, "cricket"), (14, "darts"), (15, "snooker"),
+    (16, "boxing"), (17, "beach volleyball"), (18, "aussie rules"),
+    (19, "rugby league"), (20, "badminton"), (21, "water polo"),
+    (22, "golf"), (23, "field hockey"), (24, "table tennis"),
+    (25, "beach soccer"), (26, "mma"), (27, "netball"), (28, "pesapallo"),
+    (29, "motorsport"), (30, "motorsport 2"), (31, "esports"),
+)
+
+
+def discover(days: range = range(0, 2)) -> list[dict]:
+    """Ask every candidate sport id what it serves, and report the shape.
+
+    Golf and motorsport are not fixtures. A golfer's next event is a tournament
+    with a field, and a driver's is a race with an entry list -- neither is two
+    named sides and a kickoff, which is all this module knows how to read. So
+    rather than guess a record shape from a sport id guessed in turn, this
+    prints what each id returns: how many headers and records, what the headers
+    say, and which field codes a sample record carries.
+
+    That output is what a parser for those two would be written from. Run it
+    from a machine with access:
+
+        python -m whul.cli fixtures --discover
+    """
+    out = []
+    for sport, guess in CANDIDATE_SPORTS:
+        row: dict[str, object] = {"sport": sport, "guess": guess}
+        try:
+            raw = fetch_window(sport, days, verbose=False)
+        except Exception as exc:  # noqa: BLE001
+            row["result"] = f"FAILED: {type(exc).__name__}"
+            out.append(row)
+            continue
+        if not raw.strip():
+            row["result"] = "empty"
+            out.append(row)
+            continue
+        segments = [s for s in raw.split("~") if s]
+        headers = [_field(s, "ZA") for s in segments if s.startswith("ZA÷")]
+        matches = [s for s in segments if s.startswith("AA÷")]
+        row["result"] = f"{len(headers)} header(s), {len(matches)} record(s)"
+        row["headers"] = [h for h in headers[:4] if h]
+        if matches:
+            row["fields"] = sorted(set(re.findall(r"([A-Z]{2})÷", matches[0])))
+            row["sample"] = matches[0][:200]
+        out.append(row)
+    return out

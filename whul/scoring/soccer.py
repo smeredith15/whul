@@ -1,0 +1,800 @@
+"""Club soccer scoring -- port of Club_Soccer.R.
+
+Teams score for how a match ended -- a win, a shootout win, a draw or a shootout
+loss are worth 3, 2, 1 and 1 on the league scale, and a loss nothing -- times
+what the competition it happened in is worth (see ``whul.scoring.competition``).
+Conceding nothing earns a point however the match ended, so a goalless draw is
+worth more than a 1-1. Winning by two goals or more earns another, which only a
+win can: a drawn match has no margin to be big.
+
+Players score appearance points, goals weighted by position, assists, and card
+penalties.
+
+**Each league normalizes against itself.** Premier League players are measured
+against the Premier League, not against a pooled European field.
+
+Season years roll in August for European leagues -- a match in September 2026
+belongs to 2026-27 -- while MLS and NWSL run within a calendar year, so their
+season is the year the match was played in. MLS moves to a fall-spring calendar
+in 2027, at which point it joins the European convention.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+
+import pandas as pd
+
+from whul.scoring.base import resolve_num, resolve_str
+from whul.scoring.competition import (
+    CONTINENTAL_TIERS, LEAGUE_TITLE_POINTS, Outcome, Tier, bye_credit, classify,
+    classify_key, continental_entry_points, outcome_points,
+)
+from whul.scoring.completion import is_complete
+from whul.scoring.postseason import (
+    DETAIL_COLUMN, bonus_for, credited_bonus, detail_for, pending_bonus,
+    rule_for,
+)
+
+# --- teams ----------------------------------------------------------------
+BIG_MARGIN = 2
+PTS_BIG_MARGIN = 1
+PTS_CLEAN_SHEET = 1
+
+#: How long a word must be before it counts as identifying a club. Five, so
+#: "real" does not make Real Betis look like Real Madrid, while "inter" still
+#: finds Internazionale behind "Inter Milan".
+DISTINCT = 5
+
+# --- players --------------------------------------------------------------
+#: Appearance points are **per game**: 2 for playing 60 minutes or more in a
+#: match, 1 for a shorter appearance. The R script tested *season-total* minutes
+#: against 60, which awarded 2 points for an entire year -- a per-game rule
+#: applied to aggregate data.
+PTS_FULL_APPEARANCE = 2
+PTS_SHORT_APPEARANCE = 1
+FULL_APPEARANCE_MINUTES = 60
+
+#: Goals are worth more the further back the scorer plays.
+GOAL_POINTS_BY_POSITION = {"defender": 6, "midfielder": 5, "forward": 4}
+PTS_ASSIST = 3
+PTS_YELLOW = -1
+PTS_RED = -3
+
+DEFENDER_CODES = ("DF", "CB", "RB", "LB", "GK", "D", "G")
+MIDFIELD_CODES = ("MF", "CM", "CD", "LM", "RM", "DM", "AM", "M")
+
+#: Calendar-year leagues. Everything else rolls its season in August.
+CALENDAR_YEAR_LEAGUES = ("MLS", "NWSL")
+SEASON_ROLLS_AFTER_MONTH = 7
+
+
+def season_for(match_date: pd.Series, league: pd.Series) -> pd.Series:
+    """Which league year a match belongs to."""
+    dates = pd.to_datetime(match_date, errors="coerce")
+    calendar = league.astype(str).str.upper().isin(CALENDAR_YEAR_LEAGUES)
+    rolled = dates.dt.year + (dates.dt.month > SEASON_ROLLS_AFTER_MONTH).astype(int)
+    return rolled.where(~calendar, dates.dt.year)
+
+
+def goal_points_for(position: str | None) -> int:
+    """Goal value by position, defaulting to forward for unknown codes."""
+    code = (position or "FW").strip().upper()[:2]
+    if code in DEFENDER_CODES or code[:1] in ("D", "G"):
+        return GOAL_POINTS_BY_POSITION["defender"]
+    if code in MIDFIELD_CODES or code[:1] == "M":
+        return GOAL_POINTS_BY_POSITION["midfielder"]
+    return GOAL_POINTS_BY_POSITION["forward"]
+
+
+def appearance_points_from_matches(minutes: pd.Series) -> pd.Series:
+    """Exact appearance points, given one row per player per match.
+
+    The rule as written: 60 minutes or more is a full appearance, anything less
+    is a short one. Use this wherever per-match minutes are available.
+    """
+    played = pd.to_numeric(minutes, errors="coerce").fillna(0.0)
+    return played.where(played <= 0, 0).mask(
+        played >= FULL_APPEARANCE_MINUTES, PTS_FULL_APPEARANCE
+    ).mask(
+        (played > 0) & (played < FULL_APPEARANCE_MINUTES), PTS_SHORT_APPEARANCE
+    )
+
+
+def appearance_points_from_season(starts: pd.Series, matches: pd.Series) -> pd.Series:
+    """Appearance points approximated from season aggregates.
+
+    Starts stand in for full appearances and substitute outings for short ones.
+    That is very close but not exact: a starter withdrawn at 50 minutes earns 2
+    here and 1 under the true rule, and a substitute who plays 45 earns 1 here
+    and 2. Season feeds carry only totals, so this is the best available from
+    them -- prefer ``appearance_points_from_matches`` where per-match minutes
+    exist.
+    """
+    starts = pd.to_numeric(starts, errors="coerce").fillna(0.0)
+    matches = pd.to_numeric(matches, errors="coerce").fillna(0.0)
+    substitute = (matches - starts).clip(lower=0)
+    return starts * PTS_FULL_APPEARANCE + substitute * PTS_SHORT_APPEARANCE
+
+
+def _outcome(margin: float, shootout_for: float, shootout_against: float) -> str:
+    """How the match ended for this side.
+
+    A shootout is only ever consulted on a level score, which is the only way
+    one can happen. That ordering also makes a feed that folds the shootout
+    into the score harmless to the *decided* matches: it can misread a tie, but
+    it cannot turn a 2-0 into anything else.
+    """
+    if margin > 0:
+        return Outcome.WIN.value
+    if margin < 0:
+        return Outcome.LOSS.value
+    if shootout_for > shootout_against:
+        return Outcome.SHOOTOUT_WIN.value
+    if shootout_for < shootout_against:
+        return Outcome.SHOOTOUT_LOSS.value
+    return Outcome.DRAW.value
+
+
+def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
+    """Per-match team points.
+
+    Expects one row per team per match: ``team``, ``league``, ``date``,
+    ``competition``, ``goals_for``, ``goals_against``, and optionally
+    ``shootout_for`` and ``shootout_against`` for a tie decided on penalties.
+    """
+    if matches is None or matches.empty:
+        return pd.DataFrame()
+
+    work = pd.DataFrame(
+        {
+            "team": resolve_str(matches, ["team"], required=True),
+            "league": resolve_str(matches, ["league", "primary_league"], required=True),
+            "date": resolve_str(matches, ["date", "game_date"], required=True),
+            "competition": resolve_str(matches, ["competition", "comp"]).fillna(""),
+            "competition_key": resolve_str(matches, ["competition_key"]).fillna(""),
+            # Required, now that a level score is worth something. Defaulted,
+            # a feed that renamed its goals column would report every match as
+            # 0-0 -- which used to mean every club scored nothing, obvious at a
+            # glance, and now means every club is paid for a season of draws.
+            "goals_for": resolve_num(matches, ["goals_for", "gf"], required=True),
+            "goals_against": resolve_num(
+                matches, ["goals_against", "ga"], required=True),
+            # Absent for all but a handful of cup ties, and absent entirely
+            # from a feed that does not report one. Zero on both sides is the
+            # right reading of "no shootout": a shootout nobody scored in does
+            # not exist, so it cannot be confused with one.
+            "shootout_for": resolve_num(
+                matches, ["shootout_for", "penalties_for", "so_for"]),
+            "shootout_against": resolve_num(
+                matches, ["shootout_against", "penalties_against", "so_against"]),
+        }
+    )
+    # Prefer the feed's own key: we chose it when making the request, so unlike a
+    # display name it cannot arrive missing or worded unexpectedly.
+    classified = [
+        classify_key(key, label) if key else classify(label)
+        for key, label in zip(work["competition_key"], work["competition"])
+    ]
+    work["tier"] = [c.tier.value for c in classified]
+    work["counts"] = [c.counts for c in classified]
+    # Qualifying rounds are dropped outright: they are neither scored nor
+    # allowed to pad a team's match count.
+    work = work[work["counts"]].copy()
+    if work.empty:
+        return pd.DataFrame()
+
+    work["season"] = season_for(work["date"], work["league"])
+    work["margin"] = work["goals_for"] - work["goals_against"]
+    work["outcome"] = [
+        _outcome(margin, so_for, so_against)
+        for margin, so_for, so_against in zip(
+            work["margin"], work["shootout_for"], work["shootout_against"]
+        )
+    ]
+    # A regulation win, which is what the two bonuses are gated on. A shootout
+    # win is deliberately not one: the match itself was drawn, so there is no
+    # margin to be big and no clean sheet to keep.
+    work["is_win"] = work["outcome"] == Outcome.WIN.value
+    work["base_points"] = [
+        (classify_key(key, label) if key else classify(label)).win_points
+        for key, label in zip(work["competition_key"], work["competition"])
+    ]
+
+    work["outcome_points"] = [
+        outcome_points(outcome, base)
+        for outcome, base in zip(work["outcome"], work["base_points"])
+    ]
+    # A clean sheet is conceding nothing, whatever the match ended as. Only the
+    # margin bonus is a win's alone -- a drawn match has no margin to be big.
+    # Nothing is given away by not gating this on the result: a side that
+    # conceded nothing cannot have lost in normal time, so the bonus reaches
+    # exactly wins to nil and goalless draws, penalties or no penalties.
+    work["clean_sheet"] = work["goals_against"] == 0
+    work["match_points"] = (
+        work["outcome_points"]
+        + (work["is_win"] & (work["margin"] >= BIG_MARGIN)) * PTS_BIG_MARGIN
+        + work["clean_sheet"] * PTS_CLEAN_SHEET
+    )
+    return work
+
+
+def score_teams(
+    matches: pd.DataFrame,
+    byes: pd.DataFrame | None = None,
+    continental_entry: pd.DataFrame | None = None,
+    as_of: date | None = None,
+) -> pd.DataFrame:
+    """Season totals per club.
+
+    ``byes`` credits rounds a team skipped by finishing high enough to earn one,
+    scored as a sweep. Expects ``team``, ``season``, ``tier`` and optionally
+    ``legs``; without it a bye is indistinguishable from an early exit.
+
+    ``continental_entry`` credits a continental place earned by the season's league
+    finish -- ``team``, ``season``, ``competition``, ``entry_round``. Nothing in
+    a club's own results says it earned one, so without this the biggest
+    outcome of a domestic season short of the title is worth nothing.
+    """
+    scored = score_team_matches(matches)
+    if scored.empty:
+        return pd.DataFrame()
+
+    # The components, not only the sum. A club with two wins and eleven points
+    # has not won twice in its league -- the league pays three a win and five
+    # at most with both bonuses -- but the total alone cannot say that, and a
+    # reader looking at the profile has no way to reach the same number. It is
+    # also what makes the arithmetic checkable at all: a competition the
+    # classifier could not place falls through to the league and pays three
+    # instead of five, and that is invisible in a total.
+    scored = scored.copy()
+    scored["big_margin"] = scored["is_win"] & (scored["margin"] >= BIG_MARGIN)
+    # One count and one points column per ending, so a total can be rebuilt
+    # from the profile. A draw is worth a third of a win, so a club with no
+    # wins is no longer a club with no points, and a total read on its own can
+    # no longer be bounded by the win count alone.
+    for outcome in Outcome:
+        scored[outcome.value] = scored["outcome"] == outcome.value
+        scored[f"pts_{outcome.value}"] = (
+            scored[outcome.value] * scored["outcome_points"]
+        )
+
+    totals = scored.groupby(["league", "team", "season"], as_index=False).agg(
+        matches_played=("match_points", "size"),
+        wins=("win", "sum"),
+        shootout_wins=("shootout_win", "sum"),
+        draws=("draw", "sum"),
+        shootout_losses=("shootout_loss", "sum"),
+        losses=("loss", "sum"),
+        pts_wins=("pts_win", "sum"),
+        pts_shootout_wins=("pts_shootout_win", "sum"),
+        pts_draws=("pts_draw", "sum"),
+        pts_shootout_losses=("pts_shootout_loss", "sum"),
+        big_margins=("big_margin", "sum"),
+        clean_sheets=("clean_sheet", "sum"),
+        total_points=("match_points", "sum"),
+    )
+    totals["pts_big_margin"] = totals["big_margins"] * PTS_BIG_MARGIN
+    totals["pts_clean_sheet"] = totals["clean_sheets"] * PTS_CLEAN_SHEET
+
+    # Wins by where they happened, so the tier premium is visible rather than
+    # folded into one figure.
+    for tier in Tier:
+        if tier is Tier.QUALIFYING:
+            continue
+        column = f"wins_{tier.value}"
+        won_here = scored["is_win"] & (scored["tier"] == tier.value)
+        by_club = scored.assign(_w=won_here).groupby(
+            ["league", "team", "season"], as_index=False
+        )["_w"].sum().rename(columns={"_w": column})
+        totals = totals.merge(by_club, on=["league", "team", "season"], how="left")
+        totals[column] = totals[column].fillna(0).astype(int)
+
+    totals["continental"] = _continental_played(scored, totals)
+    totals["league_champion"] = _league_champions(scored, totals, as_of)
+    totals["pts_league_title"] = totals["league_champion"] * LEAGUE_TITLE_POINTS
+    totals["total_points"] = totals["total_points"] + totals["pts_league_title"]
+
+    if byes is not None and not byes.empty:
+        credit = byes.copy()
+        credit["legs"] = credit.get("legs", pd.Series(2, index=credit.index)).fillna(2)
+        credit["bye_points"] = [
+            bye_credit(Tier(t), int(legs))
+            for t, legs in zip(credit["tier"], credit["legs"])
+        ]
+        credit = credit.groupby(["team", "season"], as_index=False)["bye_points"].sum()
+        totals = totals.merge(credit, on=["team", "season"], how="left")
+        totals["bye_points"] = totals["bye_points"].fillna(0.0)
+        totals["total_points"] = totals["total_points"] + totals["bye_points"]
+    else:
+        totals["bye_points"] = 0.0
+
+    totals = _with_continental_entry(totals, continental_entry)
+
+    return totals.sort_values(
+        ["season", "total_points"], ascending=[True, False]
+    ).reset_index(drop=True)
+
+
+#: League-table points. Not the WHUL scoring value of a win -- that is five in
+#: the Champions League and three at home -- but the three-one-nil every table
+#: in world football is built on. A match decided on penalties does not happen
+#: in a league, so a shootout outcome is scored as the draw it followed.
+TABLE_POINTS = {
+    Outcome.WIN.value: 3, Outcome.SHOOTOUT_WIN.value: 1,
+    Outcome.DRAW.value: 1, Outcome.SHOOTOUT_LOSS.value: 1,
+    Outcome.LOSS.value: 0,
+}
+
+
+def _league_champions(scored: pd.DataFrame, totals: pd.DataFrame,
+                      as_of: date | None = None) -> pd.Series:
+    """Who won each domestic league, from its own table.
+
+    Points, then goal difference, then goals scored -- over league matches
+    alone, so a cup run and a European night count for nothing here, which is
+    what a league table is.
+
+    Where that cannot separate two clubs the title is shared rather than
+    guessed. La Liga and Serie A break a tie on head to head and would not
+    share it; sharing costs the real champion half the prize, and picking the
+    wrong club pays it in full to somebody who won nothing.
+
+    Held until the season is over, for the reason every other title on this
+    site is: the club top of the table in October has not won anything. The
+    league's own feed is results-only -- it cannot say what is still to be
+    played -- so this asks the calendar instead, through the same completion
+    table the postseason bonuses use.
+    """
+    zero = pd.Series(0, index=totals.index, dtype=int)
+    if scored.empty or "tier" not in scored.columns:
+        return zero
+    table = scored[scored["tier"] == Tier.LEAGUE.value].copy()
+    if table.empty:
+        return zero
+    table["table_points"] = table["outcome"].map(TABLE_POINTS).fillna(0)
+    table["goal_diff"] = table["goals_for"] - table["goals_against"]
+    standing = table.groupby(["league", "team", "season"], as_index=False).agg(
+        table_points=("table_points", "sum"),
+        goal_diff=("goal_diff", "sum"),
+        goals_for=("goals_for", "sum"),
+    )
+
+    champ = zero.copy()
+    where = {(str(l), str(t), int(s)): i for i, (l, t, s) in enumerate(
+        zip(totals["league"], totals["team"], totals["season"]))}
+    for (league, season), block in standing.groupby(["league", "season"]):
+        if not is_complete(str(league), int(season), as_of):
+            continue
+        best = block
+        for column in ("table_points", "goal_diff", "goals_for"):
+            best = best[best[column] == best[column].max()]
+            if len(best) == 1:
+                break
+        for row in best.itertuples():
+            found = where.get((str(league), str(row.team), int(season)))
+            if found is not None:
+                champ.iloc[found] = 1
+    return champ
+
+
+def _continental_played(scored: pd.DataFrame, totals: pd.DataFrame) -> list[str]:
+    """Which continental competition each club is actually in this season.
+
+    Read from a match it has played there rather than declared from a
+    participant list. Nothing has to be fetched, nothing has to be kept in step
+    with a page somebody else edits, and the answer cannot be wrong in the
+    direction that matters -- a club named in a competition it is not in.
+
+    It can be *late*: a club shows nothing until its first European match, and
+    the Conference League's opening week is a fortnight after the Champions
+    League's. That is a blank filling itself in, not a wrong answer, and it is
+    the trade this is making on purpose.
+
+    Where a club has played in two -- a Europa League knockout exit decides a
+    Conference League place -- the one it went furthest in is the one named.
+    """
+    order = {tier.value: index for index, (tier, _) in enumerate(CONTINENTAL_TIERS)}
+    names = {tier.value: name for tier, name in CONTINENTAL_TIERS}
+    best: dict[tuple[str, str, int], str] = {}
+    played = scored[scored["tier"].isin(order)] if "tier" in scored.columns \
+        else scored.iloc[0:0]
+    for row in played.itertuples():
+        key = (str(row.league), str(row.team), int(row.season))
+        held = best.get(key)
+        if held is None or order[str(row.tier)] < order[held]:
+            best[key] = str(row.tier)
+    return [
+        names.get(best.get((str(league), str(team), int(season)), ""), "")
+        for league, team, season in zip(
+            totals["league"], totals["team"], totals["season"])
+    ]
+
+
+#: Wikipedia and the match feed do not always share a word, let alone a
+#: spelling. Only pairs that no rule can reach belong here -- every entry is a
+#: decision someone has to keep true, so the list should stay short.
+#: Values are the spellings to try, in order -- a tuple because a feed's name
+#: for a club is not always knowable in advance from here, and offering both
+#: candidates is honest where picking one would be a guess that fails silently.
+CLUB_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    # No word in common at all, in either direction.
+    "inter milan": ("internazionale",),
+    # An acronym against the words it stands for. Found by
+    # scripts/probe-concacaf-wikipedia.py: the Champions Cup article lists
+    # "Los Angeles FC" and nine other MLS clubs matched while this one did not,
+    # which is eight points a season and no error anywhere. A general acronym
+    # rule would be worse than this line -- it would reach names it should not.
+    "los angeles": ("lafc", "los angeles football club"),
+}
+
+#: Words too common to identify a club on their own. Used only when reporting a
+#: near miss, never when matching: "Dundee United" against "Manchester United"
+#: and "Racing Union" against "Union Berlin" are noise, and a report full of
+#: noise is a report nobody reads.
+COMMON_CLUB_WORDS = {
+    "united", "union", "city", "town", "club", "athletic", "atletico",
+    "racing", "dynamo", "dinamo", "sporting", "real", "saints", "rovers",
+    "wanderers", "olympique", "borussia",
+}
+
+
+def _compare_key(name: str) -> str:
+    """A club name reduced to the words that identify it.
+
+    Bare numerals go, because they are a naming convention rather than an
+    identity: the feed's "1. FC Union Berlin" and Wikipedia's "Union Berlin"
+    are one club, as are "Mainz 05" and "Mainz". A numeral never distinguishes
+    two clubs in the same league.
+    """
+    from whul.resolve import normalize_team
+
+    words = [w for w in normalize_team(name).split() if not w.isdigit()]
+    return " ".join(words) or normalize_team(name)
+
+
+def _find_club(name: str, ours: dict[str, str]) -> str | None:
+    """The club in ``ours`` that this entrant is, if it can be told safely.
+
+    Three rules, in order of how much they assume:
+
+    1. The reduced names agree.
+    2. One name's words are all in the other's, *they start with the same
+       word*, and the entrant is more than one word -- which is what separates
+       "West Ham United" from "West Ham" and "Athletic Bilbao" from "Athletic
+       Club".
+    3. A recorded alias, for pairs no rule can reach.
+
+    The first-word condition in (2) is the guard that matters. Without it,
+    "Inter Milan" contains every word of "Milan" and would be scored as AC
+    Milan -- twelve points to the wrong club, which is worse than none to the
+    right one. A match must also be unique: two candidates is not an answer.
+
+    The word-count condition guards the same mistake from the other side, and
+    only on the entrant. An entrant that reduces to one word has offered a city
+    or a common noun, which does not identify a club where a league has two in
+    that city: "Vancouver FC" reduces to "vancouver", which is inside
+    "Vancouver Whitecaps" and starts with the same word -- and Vancouver FC
+    play in the Canadian Premier League. It is deliberately not symmetric. A
+    one-word *feed* name is the ordinary way this list is short -- "Atalanta"
+    against "Atalanta EL", "Athletic" against "Athletic Bilbao" -- and those
+    are real pairs. Refusing an entrant costs nothing unreported, because one
+    matching nobody is printed; a false match is silent.
+    """
+    key = _compare_key(name)
+    if key in ours:
+        return ours[key]
+
+    words = key.split()
+    candidates = []
+    for other, full in ours.items():
+        theirs = other.split()
+        if not words or not theirs or words[0] != theirs[0]:
+            continue
+        if len(words) < 2:
+            continue
+        if set(words) <= set(theirs) or set(theirs) <= set(words):
+            candidates.append(full)
+    if len(candidates) == 1:
+        return candidates[0]
+
+    for aliased in CLUB_NAME_ALIASES.get(key, ()):
+        if aliased in ours:
+            return ours[aliased]
+    return None
+
+
+def _with_continental_entry(
+    totals: pd.DataFrame, entry: pd.DataFrame | None
+) -> pd.DataFrame:
+    """Add the points for a continental place earned by this season's finish.
+
+    Europe for the five European leagues, the CONCACAF Champions Cup for MLS.
+    Matched on a reduced name rather than the feed's exact string, because the
+    participant list and the match feed spell clubs differently -- and a name
+    that fails to match costs the club up to twelve points while reading as
+    nothing at all. ``unmatched_continental_entry`` is what names those.
+    """
+    totals = totals.copy()
+    totals["continental_entry"] = ""
+    totals["pts_continental_entry"] = 0.0
+    if entry is None or entry.empty:
+        totals["total_points"] = totals["total_points"] + totals["pts_continental_entry"]
+        return totals
+
+    by_season: dict[int, dict[str, str]] = {}
+    for row in totals.itertuples():
+        by_season.setdefault(int(row.season), {})[_compare_key(str(row.team))] = \
+            str(row.team)
+
+    wanted: dict[tuple[str, int], tuple[str, str]] = {}
+    for row in entry.itertuples():
+        season = int(row.season)
+        club = _find_club(str(row.team), by_season.get(season, {}))
+        if club is not None:
+            wanted[(club, season)] = (str(row.competition), str(row.entry_round))
+    return _apply_entry(totals, wanted)
+
+
+def duplicate_continental_entry(
+    totals: pd.DataFrame, entry: pd.DataFrame | None
+) -> list[tuple[str, int, list[str]]]:
+    """Clubs two different entrants both resolved to, in the same season.
+
+    One club cannot enter a competition twice, so this is always a matching
+    error and never football. It is the shape a *false* match takes, and false
+    matches are the silent half: an entrant matching nobody is reported by
+    ``unmatched_continental_entry``, while one matching the wrong club just
+    quietly pays somebody.
+
+    Found in a live run. The 2026 Champions Cup lists Vancouver FC, of the
+    Canadian Premier League, alongside the Vancouver Whitecaps -- and both
+    landed on the Whitecaps, because "Vancouver FC" reduces to the bare city.
+    """
+    if entry is None or entry.empty or totals.empty:
+        return []
+    by_season: dict[int, dict[str, str]] = {}
+    for row in totals.itertuples():
+        by_season.setdefault(int(row.season), {})[_compare_key(str(row.team))] = \
+            str(row.team)
+
+    seen: dict[tuple[str, int], list[str]] = {}
+    for row in entry.itertuples():
+        season = int(row.season)
+        club = _find_club(str(row.team), by_season.get(season, {}))
+        if club is not None:
+            seen.setdefault((club, season), []).append(str(row.team))
+    return [(club, season, names)
+            for (club, season), names in sorted(seen.items())
+            if len(names) > 1]
+
+
+def _apply_entry(
+    totals: pd.DataFrame, wanted: dict[tuple[str, int], tuple[str, str]]
+) -> pd.DataFrame:
+
+    labels, points = [], []
+    for row in totals.itertuples():
+        found = wanted.get((str(row.team), int(row.season)))
+        if found is None:
+            labels.append("")
+            points.append(0.0)
+            continue
+        competition, entry_round = found
+        labels.append(f"{competition} -- {entry_round}")
+        points.append(continental_entry_points(competition, entry_round))
+    totals["continental_entry"] = labels
+    totals["pts_continental_entry"] = points
+    totals["total_points"] = totals["total_points"] + totals["pts_continental_entry"]
+    return totals
+
+
+def unmatched_continental_entry(
+    totals: pd.DataFrame, entry: pd.DataFrame | None
+) -> list[tuple[str, int, str]]:
+    """Entrants that look like one of our clubs but matched none of them.
+
+    Returns the club it came nearest to as well as its own name, because a
+    report that only says "Aston Villa did not match" invites the reader to
+    hunt for a Villa that is not there. Saying "nearest: Villarreal" makes a
+    false alarm obvious at a glance, and a real miss equally so.
+
+    The participant list holds every club in Europe, most of which have nothing
+    to do with the five leagues scored here, so an unmatched name is usually
+    correct. Only names sharing a distinctive word with a club in the frame are
+    returned -- and words like "United" and "Union" are not distinctive.
+    """
+    if entry is None or entry.empty or totals is None or totals.empty:
+        return []
+
+    ours: dict[int, dict[str, str]] = {}
+    for row in totals.itertuples():
+        ours.setdefault(int(row.season), {})[_compare_key(str(row.team))] = \
+            str(row.team)
+
+    def nearest(name: str, pool: dict[str, str]) -> str | None:
+        words = [w for w in _compare_key(name).split()
+                 if len(w) >= DISTINCT and w not in COMMON_CLUB_WORDS]
+        for other, full in pool.items():
+            for theirs in other.split():
+                if theirs in COMMON_CLUB_WORDS or len(theirs) < DISTINCT:
+                    continue
+                if any(w == theirs or w.startswith(theirs) or theirs.startswith(w)
+                       for w in words):
+                    return full
+        return None
+
+    missed = []
+    for row in entry.itertuples():
+        season = int(row.season)
+        pool = ours.get(season, {})
+        if _find_club(str(row.team), pool) is not None:
+            continue
+        close = nearest(str(row.team), pool)
+        if close:
+            missed.append((str(row.team), season, close))
+    return sorted(set(missed))
+
+
+def score_players(
+    players: pd.DataFrame, postseason: bool = True, as_of=None
+) -> pd.DataFrame:
+    """Season totals per player, one row per player rather than per competition.
+
+    Appearance points are per game. Where the input carries per-match minutes in
+    a ``match_minutes`` column they are used exactly; otherwise starts and
+    substitute outings approximate them from season aggregates.
+
+    ``postseason=False`` leaves the bonus off, which is what a benchmark is
+    computed from -- see ``_fold_competitions`` for which competitions that
+    excludes and why.
+    """
+    if players is None or players.empty:
+        return pd.DataFrame()
+
+    work = pd.DataFrame(
+        {
+            "player": resolve_str(players, ["player", "Player", "name"], required=True),
+            "league": resolve_str(players, ["league", "Comp_clean", "Comp"], required=True),
+            "season": resolve_num(players, ["season", "Season"], required=True).astype(int),
+            "position": resolve_str(players, ["position", "Pos"], default="FW"),
+            "matches": resolve_num(players, ["matches", "MP", "games"]),
+            "starts": resolve_num(players, ["starts", "Starts"]),
+            "minutes": resolve_num(players, ["minutes", "Min"]),
+            "goals": resolve_num(players, ["goals", "Gls"]),
+            "assists": resolve_num(players, ["assists", "Ast"]),
+            "yellow": resolve_num(players, ["yellow", "CrdY"]),
+            "red": resolve_num(players, ["red", "CrdR"]),
+        }
+    )
+
+    if "match_minutes" in players.columns:
+        work["appearance_points"] = appearance_points_from_matches(players["match_minutes"])
+    else:
+        work["appearance_points"] = appearance_points_from_season(
+            work["starts"], work["matches"]
+        )
+
+    work["goal_points"] = work["goals"] * work["position"].map(goal_points_for)
+    work["competition"] = resolve_str(
+        players, ["competition", "competition_name"], default="")
+    # The feed's own key for the competition, where there is one. It decides
+    # the tier ahead of the label, because a label can be honestly ambiguous:
+    # the CONCACAF Champions Cup was the Champions *League* until 2024, and
+    # classifying that by name puts MLS clubs in Europe. Rebuilding `work`
+    # without this column left `classify_key` reading a blank key and falling
+    # back to the label every time -- KEY_TIERS was dead, and silently so.
+    if "competition_key" in players.columns:
+        work["competition_key"] = players["competition_key"].astype(str).values
+    work["points"] = (
+        work["appearance_points"]
+        + work["goal_points"]
+        + work["assists"] * PTS_ASSIST
+        + work["yellow"] * PTS_YELLOW
+        + work["red"] * PTS_RED
+    )
+    return _fold_competitions(work, postseason, as_of).reset_index(drop=True)
+
+
+#: What a player's row keeps its identity by. The competition is deliberately
+#: absent: a player is one asset however many competitions they appeared in.
+PLAYER_KEYS = ["player", "league", "season", "position"]
+
+
+def _fold_competitions(
+    work: pd.DataFrame, postseason: bool, as_of=None
+) -> pd.DataFrame:
+    """One row per player, with European football paid as a bonus.
+
+    Domestic football -- the league and its cups -- is counted in full and is
+    what the benchmark is drawn from. European competition, an MLS or NWSL
+    playoff run and the CONCACAF Champions Cup are *not* in the benchmark: the
+    field for each is settled or nearly so before the draft, so they are
+    credited as a rate on top, at a share of a season set per competition in
+    ``whul.scoring.postseason``.
+
+    ``postseason=False`` returns the domestic half alone, which is what
+    computing a benchmark asks for. The two paths therefore differ by exactly
+    the term that must not be in the pool, rather than by a second code path
+    somebody has to keep in step.
+    """
+    tiers = [
+        (classify_key(key, label) if key else classify(label)).tier.value
+        for key, label in zip(
+            work.get("competition_key", pd.Series("", index=work.index)),
+            work["competition"],
+        )
+    ]
+    work = work.assign(_tier=tiers)
+    rules = [rule_for(tier, league)
+             for tier, league in zip(work["_tier"], work["league"])]
+    work = work.assign(_bonus=[r is not None for r in rules])
+
+    counted = work[~work["_bonus"]]
+    totals = counted.groupby(PLAYER_KEYS, as_index=False).agg(
+        matches=("matches", "sum"), starts=("starts", "sum"),
+        minutes=("minutes", "sum"), goals=("goals", "sum"),
+        assists=("assists", "sum"), yellow=("yellow", "sum"),
+        red=("red", "sum"), appearance_points=("appearance_points", "sum"),
+        goal_points=("goal_points", "sum"), regular_points=("points", "sum"),
+    )
+
+    extra = work[work["_bonus"]].assign(
+        _rule=[r for r, keep in zip(rules, work["_bonus"]) if keep])
+    if extra.empty:
+        totals["bonus_matches"] = 0.0
+        totals["bonus_points"] = 0.0
+        totals["postseason_bonus"] = 0.0
+        totals[DETAIL_COLUMN] = [[] for _ in range(len(totals))]
+    else:
+        extra = extra.assign(_credit=[
+            bonus_for(points, matches, rule)
+            for points, matches, rule in zip(
+                extra["points"], extra["matches"], extra["_rule"])
+        ])
+        by_player = extra.groupby(PLAYER_KEYS, as_index=False).agg(
+            bonus_matches=("matches", "sum"), bonus_points=("points", "sum"),
+            postseason_bonus=("_credit", "sum"),
+        )
+        # A player can be in two of these at once -- a Europa League run and
+        # the MLS Cup playoffs pay different shares -- so the breakdown is per
+        # competition rather than one figure. The share travels with it: a page
+        # that mapped a competition back to its percentage would be a second
+        # copy of RULES, and the two would drift the first time a share moved.
+        detail = (
+            extra.assign(_detail=[
+                detail_for(str(name), matches, points, rule,
+                           season=int(season), as_of=as_of)
+                for name, matches, points, rule, season in zip(
+                    extra["competition"], extra["matches"],
+                    extra["points"], extra["_rule"], extra["season"])
+            ])
+            .groupby(PLAYER_KEYS, as_index=False)
+            .agg(**{DETAIL_COLUMN: ("_detail", list)})
+        )
+        by_player = by_player.merge(detail, on=PLAYER_KEYS, how="left")
+        # An outer merge, because a player can appear in a European tie having
+        # played no domestic football at all -- a January signing, or a squad
+        # rotated for a cup. Dropping them would score the run at nothing.
+        totals = totals.merge(by_player, on=PLAYER_KEYS, how="outer")
+
+    if DETAIL_COLUMN in totals.columns:
+        totals[DETAIL_COLUMN] = [
+            value if isinstance(value, list) else []
+            for value in totals[DETAIL_COLUMN]
+        ]
+    else:
+        totals[DETAIL_COLUMN] = [[] for _ in range(len(totals))]
+    numeric = [c for c in totals.columns
+               if c not in PLAYER_KEYS and c != DETAIL_COLUMN]
+    totals[numeric] = totals[numeric].fillna(0.0)
+    # Split the rate into what is settled and what is still moving. Only the
+    # settled half reaches the score; the rest is carried so the page can show
+    # what is waiting on a competition to finish.
+    totals["postseason_bonus"] = [
+        credited_bonus(d) for d in totals[DETAIL_COLUMN]]
+    totals["postseason_pending"] = [
+        pending_bonus(d) for d in totals[DETAIL_COLUMN]]
+    totals["total_points"] = totals["regular_points"] + (
+        totals["postseason_bonus"] if postseason else 0.0)
+    return totals

@@ -1,0 +1,77 @@
+# Ask whether a player's own record on ESPN names the competition.
+#
+# A team roster gives a player one statistics block for a season and does not
+# say which competition it covers, so a figure inherits whichever request
+# fetched it. Bayern's Bundesliga roster briefly returned Harry Kane with his
+# Champions League match in his appearances: it was counted as domestic
+# football and held as a European bonus on the same night, and gone again the
+# next. Nothing in that payload could tell the two apart, because the payload
+# has no competitions in it.
+#
+# This runs here because the agent sandbox this repository is developed in
+# cannot reach ESPN at all. It changes nothing and writes nothing: it asks the
+# same question five ways and prints what came back, so the fix can be built
+# against what the feed serves rather than against what it ought to.
+
+name: Probe athlete
+
+on:
+  workflow_dispatch:
+    inputs:
+      league:
+        description: "ESPN league key -- bundesliga, epl, laliga, seriea, ligue1, mls"
+        default: "bundesliga"
+      club:
+        description: "Pick the player from this club (a substring is enough)"
+        default: "Bayern"
+      player:
+        description: "Player name, e.g. Harry Kane. Better than a club: picking the first athlete found a goalkeeper"
+        default: "Harry Kane"
+      athlete:
+        description: "ESPN athlete id, if you already have one. Overrides the name"
+        default: ""
+      season:
+        description: "Our season label, e.g. 2027. Empty asks without a season"
+        default: "2027"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+
+      - name: Ask the athlete endpoints
+        env:
+          LEAGUE: ${{ inputs.league }}
+          CLUB: ${{ inputs.club }}
+          PLAYER: ${{ inputs.player }}
+          ATHLETE: ${{ inputs.athlete }}
+          SEASON: ${{ inputs.season }}
+        run: |
+          set -o pipefail
+          ARGS="--league $LEAGUE --out athlete.txt --dump payloads"
+          if [ -n "$ATHLETE" ]; then ARGS="$ARGS --athlete $ATHLETE"
+          elif [ -n "$PLAYER" ]; then ARGS="$ARGS --player \"$PLAYER\""
+          elif [ -n "$CLUB" ]; then ARGS="$ARGS --club $CLUB"; fi
+          if [ -n "$SEASON" ]; then ARGS="$ARGS --season $SEASON"; fi
+          echo "probe-athlete $ARGS"
+          # eval, because the player name is quoted inside ARGS and a bare
+          # expansion would split "Harry Kane" into two arguments.
+          # --out already writes the file; the command prints it as well, so
+          # the log and the artifact say the same thing without a tee
+          # appending a second copy to the file it just wrote.
+          eval python -m whul.cli probe-athlete $ARGS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: athlete
+          path: |
+            athlete.txt
+            payloads/
+          if-no-files-found: warn

@@ -1,0 +1,122 @@
+season,tour,tournament,category,draw_size
+2026,ATP,ATP Finals,Tour Finals,8
+2026,ATP,Acapulco,500,32
+2026,ATP,Adelaide,250,28
+2026,ATP,Almaty,250,28
+2026,ATP,Auckland,250,28
+2026,ATP,Australian Open,Grand Slam,128
+2026,ATP,Barcelona,500,32
+2026,ATP,Basel,500,32
+2026,ATP,Bastad,250,28
+2026,ATP,Beijing,500,32
+2026,ATP,Brisbane,250,32
+2026,ATP,Brussels,250,28
+2026,ATP,Bucharest,250,28
+2026,ATP,Buenos Aires,250,28
+2026,ATP,Chengdu,250,28
+2026,ATP,Cincinnati,Masters 1000,95
+2026,ATP,Dallas,500,32
+2026,ATP,Davis Cup Finals,International,
+2026,ATP,Davis Cup Qualifiers,International,
+2026,ATP,Davis Cup Qualifiers Rd. 2,International,
+2026,ATP,Delray Beach,250,28
+2026,ATP,Doha,500,32
+2026,ATP,Dubai,500,32
+2026,ATP,Eastbourne,250,28
+2026,ATP,Estoril,250,28
+2026,ATP,Geneva,250,28
+2026,ATP,Gstaad,250,28
+2026,ATP,Halle,500,32
+2026,ATP,Hamburg,500,32
+2026,ATP,Hangzhou,250,28
+2026,ATP,Hong Kong,250,28
+2026,ATP,Houston,250,28
+2026,ATP,Indian Wells,Masters 1000,96
+2026,ATP,Kitzbuhel,250,28
+2026,ATP,London,500,32
+2026,ATP,Los Cabos,250,28
+2026,ATP,Lyon,250,28
+2026,ATP,Madrid,Masters 1000,96
+2026,ATP,Mallorca,250,28
+2026,ATP,Marrakech,250,28
+2026,ATP,Miami,Masters 1000,96
+2026,ATP,Monte Carlo,Masters 1000,56
+2026,ATP,Montpellier,250,28
+2026,ATP,Montreal,Masters 1000,96
+2026,ATP,Munich,500,32
+2026,ATP,Paris,Masters 1000,56
+2026,ATP,Rio de Janeiro,500,32
+2026,ATP,Roland Garros,Grand Slam,128
+2026,ATP,Rome,Masters 1000,96
+2026,ATP,Rotterdam,500,32
+2026,ATP,Santiago,250,28
+2026,ATP,Shanghai,Masters 1000,96
+2026,ATP,Stockholm,250,28
+2026,ATP,Stuttgart,250,28
+2026,ATP,TBD,250,28
+2026,ATP,Tokyo,500,32
+2026,ATP,US Open,Grand Slam,128
+2026,ATP,Umag,250,28
+2026,ATP,United Cup,International,
+2026,ATP,Vienna,500,32
+2026,ATP,Washington DC,500,32
+2026,ATP,Wimbledon,Grand Slam,128
+2026,ATP,Winston-Salem,250,48
+2026,ATP,s-Hertogenbosch,250,28
+2026,WTA,Abu Dhabi,500,28
+2026,WTA,Adelaide,500,30
+2026,WTA,Athens,250,32
+2026,WTA,Auckland,250,32
+2026,WTA,Austin,250,32
+2026,WTA,Australian Open,Grand Slam,128
+2026,WTA,BJK Cup Finals,International,
+2026,WTA,BJK Cup Rd 1,International,
+2026,WTA,Bad Homburg,500,28
+2026,WTA,Beijing,Masters 1000,96
+2026,WTA,Berlin,500,28
+2026,WTA,Bogota,250,32
+2026,WTA,Brisbane,500,48
+2026,WTA,Charleston,500,48
+2026,WTA,Chennai,250,32
+2026,WTA,Cincinnati,Masters 1000,96
+2026,WTA,Cluj-Napoca,250,32
+2026,WTA,Doha,Masters 1000,56
+2026,WTA,Dubai,Masters 1000,56
+2026,WTA,Eastbourne,250,32
+2026,WTA,Guadalajara,500,28
+2026,WTA,Guangzhou,250,32
+2026,WTA,Hamburg,250,32
+2026,WTA,Hobart,250,32
+2026,WTA,Hong Kong,250,32
+2026,WTA,Iasi,250,32
+2026,WTA,Indian Wells,Masters 1000,96
+2026,WTA,Linz,500,28
+2026,WTA,London,500,28
+2026,WTA,Madrid,Masters 1000,96
+2026,WTA,Memphis,250,32
+2026,WTA,Merida,500,28
+2026,WTA,Miami,Masters 1000,96
+2026,WTA,Monterrey,500,28
+2026,WTA,Ningbo,500,28
+2026,WTA,Nottingham,250,32
+2026,WTA,Osaka,250,32
+2026,WTA,Ostrava,250,30
+2026,WTA,Prague,250,32
+2026,WTA,Rabat,250,32
+2026,WTA,Roland Garros,Grand Slam,128
+2026,WTA,Rome,Masters 1000,96
+2026,WTA,Rouen,250,32
+2026,WTA,Sao Paolo,250,32
+2026,WTA,Seoul,250,28
+2026,WTA,Singapore,500,32
+2026,WTA,Strasbourg,500,28
+2026,WTA,Stuttgart,500,28
+2026,WTA,Tokyo,500,28
+2026,WTA,Toronto,Masters 1000,96
+2026,WTA,US Open,Grand Slam,128
+2026,WTA,United Cup,International,
+2026,WTA,WTA Finals,Tour Finals,
+2026,WTA,Washington DC,500,28
+2026,WTA,Wimbledon,Grand Slam,128
+2026,WTA,Wuhan,Masters 1000,56
+2026,WTA,s-Hertogenbosch,250,32

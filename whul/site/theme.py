@@ -1,0 +1,686 @@
+"""Colour and type tokens for the generated site.
+
+The palette is the validated reference instance from the data-viz guidance.
+Five managers means five categorical slots, checked with the validator in both
+modes before anything was drawn:
+
+    light  worst adjacent CVD dE 9.1, normal-vision dE 19.6  -- all checks pass
+    dark   worst adjacent CVD dE 8.4, normal-vision dE 19.3  -- all checks pass
+
+Light mode raises a contrast warning: aqua, yellow and magenta sit below 3:1 on
+the light surface. That is not dismissable, so the relief is built in -- every
+series is directly labelled on the charts, and the standings table is the
+default view rather than an alternative one.
+
+**Colour follows the manager, never their rank.** A manager keeps the same hue
+on every chart and every page, so the eye can carry identity between them, and
+a change in the standings never repaints anything.
+"""
+
+from __future__ import annotations
+
+#: Categorical slots, in the fixed order the validator passed them in. Never
+#: cycled: a sixth manager takes slot 6, and past eight the league would need
+#: a different encoding rather than an invented hue.
+SERIES_LIGHT = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4",
+                "#008300", "#4a3aa7", "#e34948")
+SERIES_DARK = ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181",
+               "#008300", "#9085e9", "#e66767")
+MAX_SERIES = len(SERIES_LIGHT)
+
+
+def series_index(managers: list[str], manager: str) -> int:
+    """A manager's fixed slot, from a stable ordering of the league."""
+    return sorted(managers).index(manager) % MAX_SERIES
+
+
+STYLESHEET = """\
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+  /* Status, reserved. Never a series colour: a feed's state is not a manager,
+     and the two must not be confused on a page carrying both.
+
+     Both pairs are validated rather than chosen by eye. The first attempt read
+     fine and failed under simulated deuteranopia in dark mode -- the green and
+     the red came out 4.4 apart, which is two pills nobody could tell apart --
+     so the pairs were re-stepped until the worst adjacent separation cleared
+     8 in both modes (light 11.0, dark 8.6) and the pill text cleared 4.5:1 on
+     its own background. The state is also always written in words inside the
+     pill, so the colour never carries the meaning alone. */
+  --ok: #0e7a5f;
+  --ok-bg: #e6f4ee;
+  --alert: #c03403;
+  --alert-bg: #fceceb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+    --ok: #48c9a0;
+    --ok-bg: #14312a;
+    --alert: #ff8f6b;
+    --alert-bg: #3a1d1c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --ok: #48c9a0;
+  --ok-bg: #14312a;
+  --alert: #ff8f6b;
+  --alert-bg: #3a1d1c;
+}
+
+* { box-sizing: border-box; }
+/* An element the script hides stays hidden. The browser's own `[hidden]` rule
+   has the same weight as any class selector, so `display: grid` on a class
+   beats it -- which is how a filtered-out fixture went on being drawn while
+   the count above it correctly said it was gone. */
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text-primary);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: inherit; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
+
+header.masthead {
+  display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+  border-bottom: 1px solid var(--grid); padding-bottom: 14px; margin-bottom: 22px;
+}
+.masthead h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.masthead nav { display: flex; gap: 14px; margin-left: auto; flex-wrap: wrap; }
+.masthead nav a { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+.masthead nav a:hover, .masthead nav a[aria-current] {
+  color: var(--text-primary); text-decoration: underline; text-underline-offset: 4px;
+}
+.stamp { color: var(--muted); font-size: 13px; }
+
+.banner {
+  background: var(--surface-1); border: 1px solid var(--grid);
+  border-left: 3px solid var(--series-4);
+  padding: 10px 14px; border-radius: 6px; margin-bottom: 22px;
+  color: var(--text-secondary); font-size: 14px;
+}
+
+.card {
+  background: var(--surface-1); border: 1px solid var(--grid);
+  border-radius: 8px; padding: 18px 18px 12px; margin-bottom: 22px;
+}
+.card > h2 { font-size: 15px; margin: 0 0 2px; letter-spacing: -0.005em; }
+.card > p.sub { margin: 0 0 16px; color: var(--text-secondary); font-size: 13px; }
+
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--grid); }
+th { color: var(--muted); font-weight: 600; font-size: 12px;
+     text-transform: uppercase; letter-spacing: 0.04em; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: color-mix(in srgb, var(--grid) 35%, transparent); }
+.swatch {
+  display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+  margin-right: 8px; vertical-align: baseline;
+}
+.bench td { color: var(--text-secondary); }
+.bench .slotname::after {
+  content: " bench"; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.05em; margin-left: 6px;
+}
+
+.chart { width: 100%; overflow-x: auto; }
+.chart svg { display: block; max-width: 100%; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 4px 0 14px; font-size: 13px; }
+/* The counting mix. Ring and table side by side rather than stacked: the ring
+   answers "what is carrying this roster" at a glance and the table answers
+   "by exactly how much", and a reader usually wants the second right after the
+   first. They stack under 620px, where the ring alone is already the width. */
+.mix { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(220px, 1fr);
+       gap: 20px; align-items: center; }
+@media (max-width: 620px) { .mix { grid-template-columns: 1fr; } }
+.chart.donut { overflow: visible; }
+/* No stroke: the wedges are already separated by an angular gap, and a stroke
+   would also outline the inner and outer arcs, which are edges of the ring
+   rather than boundaries between fills. */
+.donutchart .wedge { cursor: pointer; transition: fill-opacity .08s; }
+.donutchart .wedge:hover { fill-opacity: 1; }
+.mixtable { font-size: 13px; }
+.mixtable th, .mixtable td { padding: 5px 8px; }
+
+.legend span { display: inline-flex; align-items: center; color: var(--text-secondary); }
+
+details.tableview { margin-top: 10px; }
+details.tableview summary {
+  cursor: pointer; color: var(--text-secondary); font-size: 13px; padding: 4px 0;
+}
+details.tableview[open] summary { margin-bottom: 8px; }
+
+.tooltip {
+  position: absolute; pointer-events: none; opacity: 0; transition: opacity .08s;
+  background: var(--surface-1); border: 1px solid var(--axis); border-radius: 6px;
+  padding: 8px 10px; font-size: 13px; box-shadow: 0 2px 10px rgba(0,0,0,.12);
+  z-index: 20; min-width: 150px;
+}
+.tooltip .tt-date { color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+.tooltip .tt-row { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.tooltip .tt-row b { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; object-fit: cover; flex: none;
+  font-weight: 650; letter-spacing: 0.01em; overflow: hidden;
+  vertical-align: middle;
+}
+.avatar.mono { border: 1px solid color-mix(in srgb, currentColor 28%, transparent); }
+/* A crest is fitted, not filled. Cropping a photograph to a circle costs a
+   corner of the background; cropping a crest to one costs the top of the
+   shield and the bottom of the scroll, which is most of what makes it that
+   club's -- Arsenal's cannon came out clipped at both ends. */
+.avatar.fitted { object-fit: contain; padding: 2px; }
+.badge {
+  width: 18px; height: 18px; border-radius: 3px; object-fit: contain;
+  vertical-align: middle; margin-left: 6px;
+}
+.who { display: inline-flex; align-items: center; gap: 9px; }
+.empty td { color: var(--muted); }
+.empty .undrafted {
+  font-style: italic;
+}
+.empty .slotname::after {
+  content: " open"; color: var(--series-4); font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.05em; margin-left: 6px;
+  font-style: normal;
+}
+/* The masthead carries the league's full name, at every width. It used to fall
+   back to "WHUL" below 640px, on the theory that a phone had no room for it --
+   but the name is 207px at this size and a 320px phone leaves 280px inside the
+   wrapper, so the fallback fired on every phone ever made and none of them
+   needed it. The initials still title the browser tab, which is the place that
+   really is too narrow. */
+
+/* --- the results page ---------------------------------------------------- */
+/* A figure is a card that closes. The summary carries the heading rather than
+   sitting above it, so the whole title is the hit target. */
+.figure { background: var(--surface-1); border: 1px solid var(--grid);
+  border-radius: 10px; padding: 0 18px; margin-bottom: 22px; }
+.figure > summary { cursor: pointer; list-style: none; padding: 16px 0;
+  display: flex; align-items: center; gap: 8px; }
+.figure > summary::-webkit-details-marker { display: none; }
+/* The literal character, not a CSS escape. This stylesheet is a Python string,
+   and Python reads a backslash-two-five in one as an octal escape long before
+   CSS sees it -- so the perfectly good CSS escape for this triangle reached the
+   browser as control character 0x15 followed by the letters "be", and every
+   figure's disclosure arrow read as tofu and then "be". The test that guards
+   this caught the same mistake a second time, in this very comment. */
+.figure > summary::before { content: "\u25be"; color: var(--muted);
+  transition: transform 0.12s ease; }
+.figure:not([open]) > summary::before { transform: rotate(-90deg); }
+.figure > summary h2 { margin: 0; font-size: 1.05rem; }
+.figure > summary:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 2px; border-radius: 6px; }
+.figurebody { padding-bottom: 18px; }
+
+.figureindex { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.jump { font-size: 0.82rem; color: var(--text-secondary);
+  border: 1px solid var(--grid); border-radius: 999px; padding: 4px 12px;
+  text-decoration: none; }
+.jump:hover { color: var(--text-primary); border-color: var(--text-secondary); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { font: inherit; font-size: 0.78rem; cursor: pointer; padding: 3px 10px;
+  border-radius: 999px; border: 1px solid var(--grid);
+  background: var(--page); color: var(--text-secondary); }
+.chip[aria-pressed="true"] { background: var(--text-primary);
+  border-color: var(--text-primary); color: var(--surface-1); }
+.chip:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+.filtercount { margin: 0 0 10px; }
+
+table.results { width: 100%; }
+table.results .rowmeta { display: block; font-size: 0.74rem; color: var(--muted); }
+.assetlink { font: inherit; background: none; border: 0; padding: 0;
+  color: var(--text-primary); cursor: pointer; text-align: left; }
+.assetlink:hover { text-decoration: underline; text-underline-offset: 3px; }
+.assetlink:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+
+/* A figure in the progression table that has a day behind it. Underlined
+   rather than coloured: the table's numbers are already carrying a manager's
+   colour in the chart above, and a second meaning on the same channel reads as
+   a status rather than as a link. */
+button.daycell {
+  font: inherit; color: inherit; background: none; border: 0; padding: 0;
+  cursor: pointer; text-decoration: underline dotted;
+  text-underline-offset: 3px; text-decoration-color: var(--muted);
+}
+button.daycell:hover { text-decoration-style: solid; }
+button.daycell:focus-visible {
+  outline: 2px solid var(--series-1); outline-offset: 2px;
+}
+
+/* What a day was made of. The name leads, the figures behind it sit under it
+   in small type, and the two numbers stay in a column a reader can scan. */
+table.daylist td { vertical-align: top; }
+table.daylist .micro {
+  font-size: 12px; color: var(--muted); margin-top: 2px; line-height: 1.4;
+}
+table.daylist .gain { font-variant-numeric: tabular-nums; }
+
+/* Feed health. The state is a word rather than a colour alone -- a reader who
+   cannot tell the two greens apart still reads "failing" -- and the colour is
+   on the word rather than the row, so a table of twenty-two leagues does not
+   become a wall of tint. */
+table.feeds td { vertical-align: top; }
+table.feeds .src, table.feeds .ago { color: var(--muted); font-size: 12px; }
+table.feeds .why { color: var(--muted); font-size: 12px; max-width: 34em; }
+table.feeds .state {
+  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--grid); color: var(--text-secondary);
+}
+table.feeds .feed-scoring .state { background: var(--ok-bg); color: var(--ok); }
+table.feeds .feed-failing .state,
+table.feeds .feed-never-pulled .state {
+  background: var(--alert-bg); color: var(--alert);
+}
+table.results tr[hidden] { display: none; }
+
+/* A team's next game, between its name and its score. Deliberately quiet:
+   it is context for the number beside it, not a number of its own, so it
+   wears muted ink and never a series colour. The opponent truncates rather
+   than wrapping -- sixty rows each growing a line would push the score off a
+   phone -- and the whole cell carries the untruncated text as a title. */
+td.fixture, th.fixture { font-size: 11.5px; color: var(--muted);
+  max-width: 16em; }
+th.fixture { font-weight: 600; letter-spacing: .02em; white-space: nowrap; }
+td.fixture .when { color: var(--text-secondary); white-space: nowrap; }
+td.fixture .against { white-space: nowrap; }
+td.fixture .when + .against { margin-left: 0.35em; }
+td.fixture .versus { opacity: 0.7; }
+/* A tour event fills the cell on its own -- no opponent, no competition pill --
+   and its name is longer than any club's: "World Wide Technology Championship"
+   against "Chelsea". So it wraps where a fixture truncates. The row can afford
+   the second line; every one of them is already two lines tall for the asset's
+   name and affiliation, and a tournament cut to "World Wide Tech..." has lost
+   the part that identifies it. */
+td.fixture.event .against { white-space: normal; overflow-wrap: break-word; }
+/* The competition, for a club that plays in five of them. Smaller and quieter
+   than the fixture it qualifies: it says which competition, not what happened.
+   A pill rather than plain text so "UCL" does not read as part of the
+   opponent's name. */
+td.fixture .comp { display: inline-block; margin-left: 0.4em; font-size: 10px;
+  font-weight: 600; letter-spacing: .03em; color: var(--muted);
+  background: var(--grid); border-radius: 3px; padding: 0 4px;
+  vertical-align: 1px; white-space: nowrap; }
+
+/* Narrow screens wrap rather than truncate. A fixture cut to "Sep 20 vs New
+   Or..." has lost the only part anybody reads it for, and the row has the
+   vertical space -- every one of them is already two lines tall for the
+   asset's name and affiliation. */
+@media (max-width: 620px) {
+  /* Four columns on a phone is more than 390px holds, and it was already one
+     column over before this one arrived. The card scrolls rather than the
+     page: a table that pushes the whole document sideways takes the header
+     and the nav with it, and the reader loses their place entirely. */
+  .card { overflow-x: auto; }
+  td.fixture, th.fixture { max-width: 10em; }
+  td.fixture .when { display: block; }
+  td.fixture .when + .against { margin-left: 0; }
+  /* `break-word`, not `anywhere`: a name is broken only when it genuinely
+     cannot fit, so "Carlos Alcaraz" wraps between the words instead of
+     leaving a lone "z" on the next line. The column can afford the width
+     because the card scrolls rather than the page. */
+  td.fixture .against { white-space: normal; overflow-wrap: break-word; }
+}
+
+/* An umbrella chip stands for several leagues rather than one, so it is drawn
+   a shade heavier than the chips it covers -- otherwise "Tennis" sitting
+   between "Serie A" and "WTA" looks like a third league of the same kind. */
+.chip.umbrella { border-color: var(--axis); font-weight: 600; }
+
+/* The totals above the filters. Deliberately small and narrow: it is a
+   readout of the table below it, not a second standings, and it sits between
+   the heading and the chips where a reader looks before choosing a filter. */
+table.filtertotals { width: auto; min-width: 260px; margin: 0 0 12px; }
+table.filtertotals th, table.filtertotals td { padding: 3px 14px 3px 0;
+  font-size: 12px; }
+table.filtertotals td.num[data-total] { font-weight: 600;
+  color: var(--text-primary); font-variant-numeric: tabular-nums; }
+table.filtertotals td.num[data-bench] { font-variant-numeric: tabular-nums; }
+
+/* The two figures on the standings that are not the total.
+
+   Held points ride on the total as a superscript: same score, same scale,
+   waiting on a competition to finish. Quieter than the number they sit on,
+   because the table is still ordered by what has been awarded.
+
+   The bench is greyed and italic on purpose -- it is not a smaller total, it
+   is a different thing: points best ball is not counting and will not count.
+   Italic because grey alone reads as "less important", and this is "not the
+   same kind of number". */
+sup.held { font-size: 9.5px; font-weight: 600; color: var(--muted);
+  margin-left: 2px; vertical-align: super; line-height: 0; cursor: help; }
+td.benched { color: var(--muted); font-style: italic; }
+th + th.num + th.num { font-weight: 600; }
+
+/* --- who plays whom ------------------------------------------------------
+   Every upcoming fixture with a drafted asset in it. Two columns because a
+   fixture has two sides; a tour event has one and takes the width, because a
+   field is not a fixture and a "v" against nobody is a sentence with a hole
+   in it. */
+.board { margin-top: 10px; }
+details.boardday { border-top: 1px solid var(--grid); }
+details.boardday > summary { cursor: pointer; list-style: none; padding: 7px 0;
+  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  color: var(--text-secondary); display: flex; align-items: center; gap: 8px; }
+details.boardday > summary::-webkit-details-marker { display: none; }
+/* The disclosure arrow, drawn rather than borrowed, so it points the way the
+   box is. \u25b8 written as an escape because a literal one in this file has
+   to survive being read as Python before it is read as CSS. */
+details.boardday > summary::before { content: "\u25b8"; color: var(--axis);
+  transition: transform .12s ease; display: inline-block; }
+details.boardday[open] > summary::before { transform: rotate(90deg); }
+details.boardday > summary .count { color: var(--muted); font-weight: 400;
+  font-size: 11px; }
+
+.tie { display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: start; gap: 8px; padding: 5px 0 5px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--grid) 45%, transparent); }
+.tie:first-of-type { border-top: 0; }
+/* A tour event has one heading and no opponent, so it takes the row. */
+.tie.event { grid-template-columns: 1fr; }
+.tie .v { color: var(--muted); font-size: 11px; padding-top: 2px; }
+.tie .sidename { font-size: 12.5px; font-weight: 600; color: var(--text-primary);
+  overflow-wrap: break-word; }
+/* The away side reads right-to-left, so the two names sit either side of the
+   "v" rather than both hugging the left and leaving a gap in the middle. Not
+   an event, which has one side and would otherwise push its own heading off
+   the right edge. */
+.tie:not(.event) > .side:last-of-type { text-align: right; }
+.tie:not(.event) > .side:last-of-type .holders { justify-content: flex-end; }
+.tie .comp { grid-column: 1 / -1; font-size: 10.5px; color: var(--muted);
+  letter-spacing: .02em; }
+.tie .holders { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+
+/* One drafted asset: a face and its owner's initials in an oval tinted to that
+   owner's series colour. Colour is never the only carrier -- the initials are
+   right there, which is what makes this readable in print and to a reader who
+   cannot tell two hues apart. */
+.holder { display: inline-flex; align-items: center; gap: 3px; cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--own) 60%, transparent);
+  background: color-mix(in srgb, var(--own) 16%, transparent);
+  border-radius: 999px; padding: 1px 6px 1px 1px; font: inherit; }
+.holder:hover { background: color-mix(in srgb, var(--own) 30%, transparent); }
+.holder b { font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
+  color: var(--text-primary); }
+.holder .avatar, .holder .badged { flex: 0 0 auto; }
+
+/* A phone gets one column, which is the only honest way to fit two sides and
+   six faces into 390px. The "v" becomes a rule between them. */
+@media (max-width: 620px) {
+  .tie, .tie.event { grid-template-columns: 1fr; gap: 4px; padding-left: 8px; }
+  .tie > .side:last-of-type { text-align: left; }
+  .tie > .side:last-of-type .holders { justify-content: flex-start; }
+  .tie .v { padding: 0; }
+}
+
+/* The calculator. A form, not a chart: the numbers it produces are the point,
+   so they sit apart from the inputs and are the only thing in the panel with
+   any weight to them. */
+.calculator { padding-top: 4px; }
+.calctop { display: flex; flex-wrap: wrap; gap: 12px 18px; margin-bottom: 4px; }
+.calcpick { display: flex; flex-direction: column; gap: 3px; font-size: 12px;
+  color: var(--text-secondary); }
+.calcpick select { font: inherit; font-size: 13px; color: var(--text-primary);
+  background: var(--surface-1); border: 1px solid var(--grid);
+  border-radius: 6px; padding: 5px 8px; max-width: 22em; }
+.calcgrid { display: grid; gap: 6px 22px; margin: 10px 0 14px;
+  grid-template-columns: repeat(auto-fill, minmax(19em, 1fr)); }
+.calcfield { display: grid; grid-template-columns: 1fr auto 5.5em;
+  align-items: baseline; gap: 8px; padding: 3px 0;
+  border-bottom: 1px solid var(--grid); }
+.calclabel { font-size: 13px; }
+/* What one of them is worth, beside the box you type into. The rules page is
+   two clicks away and this is the question being asked. */
+.calcworth { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.calcfield input { font: inherit; font-size: 13px; text-align: right;
+  color: var(--text-primary); background: var(--surface-1);
+  border: 1px solid var(--grid); border-radius: 5px; padding: 3px 6px;
+  width: 100%; }
+.calcfield input:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 1px; }
+.calcevents { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.calcevent { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end;
+  padding-bottom: 8px; border-bottom: 1px solid var(--grid); }
+.calcadd, .calcdrop { font: inherit; font-size: 12px; cursor: pointer;
+  background: var(--surface-1); color: var(--text-secondary);
+  border: 1px solid var(--grid); border-radius: 6px; padding: 5px 10px; }
+.calcadd:hover, .calcdrop:hover { color: var(--text-primary); }
+.calcswitches { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 2px; }
+.calctoggle { display: flex; gap: 8px; align-items: baseline; font-size: 13px;
+  cursor: pointer; }
+.calctoggle input { margin: 0; }
+.calcout { display: flex; flex-wrap: wrap; gap: 10px 32px; align-items: baseline;
+  margin-top: 16px; padding-top: 14px; border-top: 2px solid var(--grid); }
+.calcnum { display: flex; flex-direction: column; gap: 2px; }
+.calckey { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--muted); }
+.calcnum strong { font-size: 1.5rem; font-variant-numeric: tabular-nums;
+  line-height: 1.1; }
+.calcwhy { flex-basis: 100%; margin: 2px 0 0; font-size: 12px;
+  color: var(--muted); }
+@media (max-width: 620px) {
+  .calcfield { grid-template-columns: 1fr auto 4.5em; }
+  .calcgrid { grid-template-columns: 1fr; }
+}
+
+/* One asset type's raw scoring. Eighteen of these open at once is a page
+   nobody reads, so each opens on demand and the list inside is deliberately
+   plain text -- the sports do not share a shape, and a grid built for all of
+   them would be mostly empty cells. */
+details.rules { border-top: 1px solid var(--grid); }
+details.rules:last-of-type { border-bottom: 1px solid var(--grid); }
+details.rules > summary { cursor: pointer; padding: 0.55rem 0;
+  font-weight: 600; }
+details.rules > summary::marker { color: var(--muted); }
+details.rules > summary:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 2px; }
+.rulebody { padding: 0 0 0.9rem 1.1rem; }
+.rulebody .sub { margin: 0 0 0.6rem; max-width: 46em; }
+ul.rulelist { margin: 0; padding-left: 1.1rem; max-width: 46em; }
+ul.rulelist li { margin: 0.15rem 0; }
+ul.rulelist li.rulehead { list-style: none; margin: 0.7rem 0 0.25rem -1.1rem;
+  font-weight: 600; font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-secondary); }
+ul.rulenotes { margin: 0.7rem 0 0; padding-left: 1.1rem; max-width: 46em;
+  color: var(--muted); font-size: 12px; }
+ul.rulenotes li { margin: 0.2rem 0; }
+
+/* A collapsible league section. Twenty leagues open at once is a page that is
+   long before it is informative. */
+.leaguebox { border-top: 1px solid var(--grid); }
+.leaguebox > summary { cursor: pointer; padding: 0.5rem 0; display: flex;
+  align-items: baseline; gap: 0.6rem; font-weight: 600; }
+.leaguebox > summary .count { font-weight: 400; font-size: 0.78rem;
+  color: var(--muted); }
+.leaguebox > summary::marker { color: var(--muted); }
+
+/* A filtered-out manager. Dimmed rather than removed, so the axis does not
+   move and the remaining bars stay where the reader left them. */
+.legend.filterable .legenditem { background: none; border: 0; padding: 0;
+  font: inherit; color: inherit; cursor: pointer; display: inline-flex;
+  align-items: center; gap: 0.35rem; }
+.legend.filterable .legenditem.off { opacity: 0.4;
+  text-decoration: line-through; }
+.ghosted { opacity: 0.12; }
+.legend.filterable .legenditem:focus-visible { outline: 2px solid var(--series-1);
+  outline-offset: 2px; }
+
+.profile h3 { font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--muted); margin: 0 0 0.4rem; }
+.profile table.finishes td.when { color: var(--muted); font-size: 0.78rem;
+  white-space: nowrap; padding-left: 0.5rem; }
+/* A note explaining why a figure is not simply what the feed reported. */
+.profile .note { margin: 0 0 0.4rem; font-size: 0.8rem; color: var(--muted);
+  line-height: 1.45; }
+
+.struck { text-decoration: line-through; text-decoration-thickness: 1.5px;
+          color: var(--text-secondary); }
+
+button.assetlink {
+  background: none; border: 0; padding: 0; margin: 0; font: inherit;
+  color: inherit; cursor: pointer; text-align: left;
+}
+button.assetlink:hover span.nm { text-decoration: underline; text-underline-offset: 3px; }
+
+/* What a name is: position and club under it, and the group it is scored
+   against under that. Stacked rather than run on, because a roster is read down
+   the names and a reader's eye should not have to step over a club to reach the
+   next one. Every part is optional -- most of them are empty until a league
+   starts -- so the block collapses to the name alone. */
+/* A picture with a mark in its corner: a club's crest on a player, a league's
+   on a team, a flag on an athlete who plays for a country rather than a club.
+   The mark sits *over* the picture rather than beside it, so a row of names
+   stays a row of names -- put side by side these would double the width of
+   every asset column on the site.
+
+   It is drawn on the monogram too. A player with no photograph still plays for
+   somebody, and of that pair the crest is the more useful half. */
+.badged { position: relative; display: inline-block; flex: none; line-height: 0; }
+.badged .pip {
+  position: absolute; right: -2px; bottom: -2px;
+  border-radius: 50%; object-fit: contain;
+  /* A ring in the page's own colour, so a dark crest on a dark photograph is
+     still a separate thing rather than a smudge in the corner of it. */
+  background: var(--surface-1);
+  box-shadow: 0 0 0 1.5px var(--surface-1);
+}
+.tile .badged .pip, .card .badged .pip { background: var(--surface-1); }
+
+.stack { display: inline-flex; flex-direction: column; gap: 1px; min-width: 0; }
+.stack .nm { line-height: 1.25; }
+.idl, .rowmeta .idl {
+  display: block; color: var(--text-secondary); font-size: 12px; line-height: 1.3;
+}
+.grp {
+  display: block; color: var(--muted); font-size: 11px; font-style: italic;
+  line-height: 1.3;
+}
+#profile .meta + .grp { margin-top: 2px; font-size: 12px; }
+svg .bar { cursor: pointer; }
+svg .bar:hover { opacity: 0.82; }
+
+dialog.profile {
+  border: 1px solid var(--axis); border-radius: 10px; padding: 0;
+  background: var(--surface-1); color: var(--text-primary);
+  max-width: 420px; width: calc(100% - 32px);
+  box-shadow: 0 12px 40px rgba(0,0,0,.28);
+}
+dialog.profile::backdrop { background: rgba(0,0,0,.45); }
+dialog.profile .head {
+  display: flex; gap: 14px; align-items: center;
+  padding: 18px 18px 14px; border-bottom: 1px solid var(--grid);
+}
+dialog.profile .head .nm { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; }
+dialog.profile .head .meta { color: var(--text-secondary); font-size: 13px; margin-top: 1px; }
+dialog.profile .body { padding: 6px 18px 16px; }
+dialog.profile table { font-size: 13.5px; }
+dialog.profile .close {
+  position: absolute; top: 12px; right: 14px; background: none; border: 0;
+  color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer; padding: 4px;
+}
+/* A benched slot in the day panel. Present because what it did is worth
+   seeing, quieter because it did not count towards the total above it. */
+dialog.profile tr.benched td,
+dialog.profile tr.benched td button.assetlink { color: var(--text-secondary); }
+dialog.profile .bench {
+  margin-left: 6px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-secondary);
+  border: 1px solid currentColor; border-radius: 3px; padding: 0 3px;
+  vertical-align: 1px;
+}
+
+/* Playoff and European production. Collapsed by default -- empty for most
+   players most of the year, and a heading with nothing under it is worse than
+   no heading. */
+dialog.profile details.bonus > summary {
+  cursor: pointer; font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-secondary);
+  display: flex; align-items: baseline; gap: 8px; padding: 4px 0;
+}
+dialog.profile details.bonus > summary::-webkit-details-marker { display: none; }
+dialog.profile details.bonus > summary::before {
+  content: "\u25b8"; transition: transform .12s ease; display: inline-block;
+}
+dialog.profile details.bonus[open] > summary::before { transform: rotate(90deg); }
+dialog.profile details.bonus .adds {
+  margin-left: auto; text-transform: none; letter-spacing: 0;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+dialog.profile details.bonus .note { margin-top: 6px; }
+
+dialog.profile .scoreline {
+  display: flex; gap: 20px; padding: 12px 18px; border-top: 1px solid var(--grid);
+}
+dialog.profile .scoreline div { flex: 1; }
+dialog.profile .scoreline .label { color: var(--text-secondary); font-size: 12px; }
+dialog.profile .scoreline .value {
+  font-size: 20px; font-weight: 650; letter-spacing: -0.01em;
+}
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.tile { background: var(--surface-1); border: 1px solid var(--grid);
+        border-radius: 8px; padding: 14px 16px; }
+.tile .label { color: var(--text-secondary); font-size: 13px; }
+.tile .value { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; }
+.tile .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+footer { color: var(--muted); font-size: 12px; border-top: 1px solid var(--grid);
+         padding-top: 14px; margin-top: 30px; }
+@media (max-width: 640px) {
+  .masthead nav { margin-left: 0; width: 100%; }
+  th, td { padding: 6px 7px; }
+}
+"""

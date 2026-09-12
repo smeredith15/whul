@@ -1,0 +1,157 @@
+# Site changes to make
+
+*Scoring changes live elsewhere: [`INTL_SOCCER.md`](INTL_SOCCER.md) holds the
+international soccer tournament ladder.*
+
+Collected 2026-09-04, to be worked through once the benchmarks are frozen and
+the standings are real. Nothing here changes a number; it is all how the
+numbers are presented.
+
+
+**All seven are done**, along with four additions asked for afterwards: every
+figure behind a raw score in the profile window, a note wherever a score has
+been prorated or schedule-scaled, a finish list for the individual sports in
+the form `ATP Winston Salem 250 F  150`, and a day's scoring behind every
+figure in the progression table.
+
+## ~~8. What a day was made of~~ — done
+
+The progression table gives a manager's total by date and says nothing about
+how it got there. Every figure in it that moved is now a button, and it opens
+the counting assets that changed since the previous listed day: what each
+added, its score, and the figures behind it -- a statline for a player, a
+result for a team, a finish for an individual athlete. A name in the panel
+opens that asset's profile, which is one click further on and carries
+everything the panel summarises.
+
+The figures are the **day**, not the season. The feeds report season to date,
+so a day is the difference between two of them; shown cumulatively the line
+read "Hits 25, Home runs 13" under a score that moved by one -- true, and not
+an answer to what happened. Baseball gets its own shorthand because the sport
+has one and it is shorter than the words: `4-for-7 · 2 HR · 1 2B` for a batter,
+`5.1 IP · 4 H · 1 BB · 2 K` for a pitcher.
+
+The table is sorted newest first. A line has to be drawn left to right, but a
+table is read from the top.
+
+Only cells with something behind them are marked. Marking every one would
+promise a breakdown for days nothing happened on, which is a click that opens
+an empty panel.
+
+The data was already there: `raw_stats` keeps a day's figures per asset and
+`slot_scores` keeps a day's score per slot, so this needed no new fetching.
+It is keyed on the days the table actually lists -- about fifteen, sampled --
+so the payload is bounded by what is on screen rather than growing with the
+season.
+
+Kept as the record of what changed and why. Anything struck below is done.
+
+---
+
+## ~~1. Use the league's full name in the header~~ — done
+
+WHUL is the **Wolf Hill Uber League**. The header says "WHUL", which nobody
+outside the league can read.
+
+Full name in the page header, initials wherever there is no room for it — the
+same rule the managers already follow (Tyler in the standings, TG on a badge).
+`whul/site/build.py` writes the header; the `<title>` wants it too.
+
+---
+
+## ~~2. Collapsible league sections~~ — done
+
+The bar plots and tables are grouped by league and every group is always open,
+so the page is long before it is informative. Each league heading should
+collapse and expand.
+
+`<details>`/`<summary>` does this with no script and keeps working with
+JavaScript off, which suits a static site. Remembering which sections a reader
+left open (localStorage) is worth adding at the same time — a reader who
+collapses fifteen leagues does not want to do it again tomorrow.
+
+---
+
+## ~~3. Sort same-slot assets next to each other in the bar chart~~ — done
+
+A manager's NFL Team 1 and NFL Team 2 should be adjacent bars in that manager's
+colour, then the next manager's two, and so on. At the moment the ordering
+breaks the pair up, so a category cannot be read as a block.
+
+The grouping key is (category, manager, slot index) sorted in that order.
+`whul/site/build.py::_slot_rows` already ranks slots within a category — this
+is a change to how the result is laid out, not to what it computes.
+
+---
+
+## ~~4. Filter by manager, from the chart itself~~ — done
+
+Clicking a manager's name above a plot should hide and show that manager's
+series — on the bar chart, the tables, and the progression line together, since
+a reader filtering one means all three.
+
+The line chart already carries a per-series legend and a hover crosshair, so
+the mechanism is half there: `whul/site/charts.py` needs the legend entries to
+toggle a class rather than only label. Keep the axis fixed when a series is
+hidden — a rescaling y-axis makes the remaining lines appear to move.
+
+---
+
+## ~~5. Show every scoring category, not four of them~~ — done
+
+A team profile currently lists `total_points`, `team`, `matches_played`,
+`wins`, `bye_points`. That is what the *aggregate* carries; the categories that
+made it up are computed and then dropped.
+
+They are recoverable. `whul/scoring/soccer.py::score_team_matches` produces a
+row per match with the competition, its tier, goals for and against, and
+whether it counted; the NFL team scorer carries `reg_wins`, `reg_big_wins`,
+`reg_shutouts`, `div_wins`, `point_diff`, `playoff_appearance`, `playoff_wins`,
+`div_champ`. Nothing new needs fetching — the ingest stores the scored row, so
+this is a question of what the scorers keep and how the profile labels it.
+
+Labels want writing too: the window shows raw column names (`games_played`),
+which read as debug output.
+
+---
+
+## ~~6. List an athlete's actual finishes~~ — done
+
+"Daytona 500 4th · Indian Wells QF · Masters 2nd" says more than a points
+total, and it is the natural thing to want from a profile.
+
+The data is already there and already dated: `tennis.match_events`,
+`golf.score_events` and `motorsport.race_events` each return one row per event
+with the tournament, the date and the finish or round. Tennis carries losses
+too, as rows worth nothing, so a first-round exit shows as "US Open R128"
+rather than as an absence — which is what distinguishes a player who lost from
+one who is injured and did not enter. They were written for
+the window benchmarks and the live ingest sums them — so the finishes exist and
+are thrown away at aggregation. Keeping the event rows for rostered assets is
+the work; the profile then reads them newest first.
+
+---
+
+## ~~7. Strike the score, not the name~~ — done
+
+On a team page a benched slot is struck through entirely. Only the score should
+be — the player is not crossed out, their contribution is.
+
+`whul/site/build.py::_asset_button` applies the strike; move it to the score
+cell.
+
+## ~~9. Label individual athletes usefully~~ — done
+
+Every tennis player's role is "Singles", which distinguishes nobody, so the
+tour goes there instead: **ATP** or **WTA** where a footballer's position sits.
+
+A driver has no club, so the line that carries one for a footballer carries his
+car number -- **#1**, with the hash to keep it from reading as a finishing
+place, which is the other number a motorsport row is full of. It is never
+derived from the finish: fifth place is not car #5, and that mistake would look
+right. Where the feed reports no number the country stays, which is what the
+line showed before.
+
+F1's number comes from Jolpica's `permanentNumber`. NASCAR's is read from
+whichever of four keys ESPN uses, and until a live pull confirms which, those
+drivers keep their country.
