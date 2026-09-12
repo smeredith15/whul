@@ -660,7 +660,11 @@ def _soccer_players_live(only: tuple[str, ...] = ()):
     from whul.scoring import soccer
 
     load, _ = _soccer_players(only=only)
-    return load, lambda raw: soccer.score_players(raw, postseason=True)
+    # `as_of` is taken so that `_scored_on` passes the day being scored:
+    # the European bonus is held until its competition finishes, and that
+    # is a question about a date.
+    return load, lambda raw, as_of=None: soccer.score_players(
+        raw, postseason=True, as_of=as_of)
 
 
 #: What a competition is called, for the classifier that decides whether it is
@@ -922,9 +926,14 @@ def _soccer(key: str, category: str):
             held["entry"] = _continental_entrants(key, seasons)
             return matches.assign(league=category)
 
-        def score(matches):
+        def score(matches, as_of=None):
+            # `as_of` is the day being scored. The domestic league title is
+            # gated on the season being over, and nobody holds one in
+            # September; without it a backfilled day is judged against the
+            # calendar of the run rather than of the day.
             entry = held.get("entry")
-            scored = soccer.score_teams(matches, continental_entry=entry)
+            scored = soccer.score_teams(
+                matches, continental_entry=entry, as_of=as_of)
             missed = soccer.unmatched_continental_entry(scored, entry)
             if missed:
                 # A name that does not match costs the club up to twelve points

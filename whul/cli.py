@@ -1164,6 +1164,63 @@ def _read_feed_history(path: Path, source: str):
     )
 
 
+def cmd_probe_athlete(args: argparse.Namespace) -> int:
+    """Ask whether an athlete's own record names the competition.
+
+    The roster gives a player one statistics block for a season and does not
+    say which competition it covers, so a figure inherits whichever request
+    fetched it. That is how Harry Kane's Champions League match came to be
+    counted as Bundesliga football on one night and not the next.
+
+    This does not fix anything. It asks ESPN the same question five ways and
+    prints what came back, so the fix can be built against what the feed
+    actually serves rather than against what it ought to.
+    """
+    from whul.sources import espn_soccer
+
+    found = espn_soccer.probe_athlete(
+        args.league, athlete_id=args.athlete,
+        season=int(args.season) if args.season else None, club=args.club)
+
+    lines = [
+        f"ESPN soccer athlete probe -- {found['league']} "
+        f"({found['path']})",
+        "",
+        f"  athlete   {found.get('athlete_id') or '(none found)'}",
+        f"  club      {found.get('club') or '-'}",
+        f"  season    {found.get('season') or '(not asked for)'}",
+    ]
+    if found.get("problem"):
+        lines += ["", f"  {found['problem']}"]
+    for label, entry in found.get("shapes", {}).items():
+        lines += ["", f"  {label}", f"      {entry['url']}"]
+        if entry.get("params"):
+            lines.append(f"      params {entry['params']}")
+        if entry.get("error"):
+            lines.append(f"      refused: {entry['error']}")
+            continue
+        lines.append(f"      top-level keys: {', '.join(entry.get('keys') or []) or '-'}")
+        for shape in entry.get("splits_by") or []:
+            lines.append(f"      {shape}")
+        comps = entry.get("competitions") or []
+        lines.append(f"      competitions named ({len(comps)}): "
+                     f"{', '.join(comps) or 'none'}")
+        if len(comps) > 1:
+            lines.append("      ^ more than one, so this shape can tell them apart")
+    lines += ["", "  What to look for: a shape naming more than one competition is one",
+              "  that knows which match a figure came from. That is the one to read",
+              "  a player's season from, instead of inheriting the request's league.",
+              ""]
+    text = "\n".join(lines)
+    print(text)
+    if args.out:
+        from pathlib import Path
+
+        Path(args.out).write_text(text + "\n")
+        print(f"  written to {args.out}\n")
+    return 0
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     """Score every slot and write the standings snapshot -- the nightly job."""
     from datetime import date as _date
@@ -2661,6 +2718,18 @@ def main(argv: list[str] | None = None) -> int:
                       help="a tennis2026 database (.db), or a .csv/.json/.jsonl "
                            "with one row per match")
     seed.set_defaults(func=cmd_feed_seed)
+
+    athlete = sub.add_parser(
+        "probe-athlete",
+        help="ask whether a player's own record names the competition",
+    )
+    athlete.add_argument("--league", default="bundesliga",
+                         help="ESPN league key the player is asked for under")
+    athlete.add_argument("--athlete", help="ESPN athlete id, if you have one")
+    athlete.add_argument("--club", help="pick the athlete from this club")
+    athlete.add_argument("--season", help="our season label, e.g. 2027")
+    athlete.add_argument("--out", help="write the report to this file too")
+    athlete.set_defaults(func=cmd_probe_athlete)
 
     site = sub.add_parser("site", help="generate the static site")
     site.add_argument("--db", default="data/whul.sqlite3", help="database path")

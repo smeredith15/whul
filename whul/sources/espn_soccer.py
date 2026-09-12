@@ -350,3 +350,157 @@ def load_players(
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+#: Where an athlete's own record might live. ESPN's player pages show "stats by
+#: competition", so the data exists somewhere; which endpoint serves it, and
+#: under what shape, is what this probe is for. UNVERIFIED -- none of these is
+#: reachable from the environment this was written in.
+#:
+#: ``{name: (host, path suffix)}``. The common/v3 host is the one ESPN's own
+#: player pages call; the site/v2 host is the one the rest of this project
+#: uses, and is tried in case v3 is refused.
+ATHLETE_SHAPES = {
+    "overview": ("https://site.api.espn.com/apis/common/v3", ""),
+    "stats": ("https://site.api.espn.com/apis/common/v3", "/stats"),
+    "splits": ("https://site.api.espn.com/apis/common/v3", "/splits"),
+    "gamelog": ("https://site.web.api.espn.com/apis/common/v3", "/gamelog"),
+    "site overview": ("https://site.api.espn.com/apis/site/v2", ""),
+}
+
+
+def _competition_names(node, found: set, depth: int = 0) -> set:
+    """Every competition-ish name anywhere in a payload.
+
+    Deliberately shape-blind. The question this answers is "does this response
+    know which competition a number belongs to", and a probe that only looked
+    where the answer was expected would report absence for a payload that had
+    it somewhere else.
+    """
+    if depth > 8:
+        return found
+    if isinstance(node, dict):
+        for key in ("league", "competition", "displayName", "name", "abbreviation"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                found.add(value.strip())
+            elif isinstance(value, dict):
+                _competition_names(value, found, depth + 1)
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _competition_names(value, found, depth + 1)
+    elif isinstance(node, list):
+        for value in node[:40]:
+            _competition_names(value, found, depth + 1)
+    return found
+
+
+def probe_athlete(
+    league: str, athlete_id: str | None = None, season: int | None = None,
+    club: str | None = None, session=None,
+) -> dict:
+    """Whether an athlete's own record says which competition a figure is from.
+
+    The roster gives a player one statistics block for a season, and it is not
+    always the competition that was asked for: Bayern's Bundesliga roster
+    briefly returned Harry Kane with the Champions League match in his
+    appearances, so it was counted as domestic football *and* held as a European
+    bonus, and the next night it was not. Nothing in that payload could have
+    told the two apart, because the payload has no competitions in it.
+
+    An athlete endpoint that splits by competition would end that: a figure
+    would carry its own competition rather than inheriting whichever request
+    fetched it. This asks the shapes ESPN's own player pages are built from and
+    reports what each returned -- the keys near the top, whether anything in it
+    names more than one competition, and which names those are.
+
+    Nothing here is wired into scoring. It is a question, and the answer
+    decides what to build.
+    """
+    session = session or requests.Session()
+    sport, path = LEAGUE_PATHS[league]
+    if athlete_id is None:
+        athlete_id, club = _some_athlete(league, season, club, session)
+    out: dict = {
+        "league": league, "path": path, "athlete_id": athlete_id,
+        "club": club, "season": season, "shapes": {},
+    }
+    if athlete_id is None:
+        out["problem"] = ("no athlete id: the club list or the roster could not "
+                          "be read, so there was nobody to ask about")
+        return out
+
+    for label, (host, suffix) in ATHLETE_SHAPES.items():
+        url = f"{host}/sports/{sport}/{path}/athletes/{athlete_id}{suffix}"
+        params = {"season": roster_season(league, season)} if season else {}
+        entry: dict = {"url": url, "params": dict(params)}
+        try:
+            payload = _get(url, params, session)
+        except Exception as exc:  # noqa: BLE001 -- one shape, not the probe
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            entry["error"] = f"{type(exc).__name__} {status}"
+            out["shapes"][label] = entry
+            continue
+        entry["keys"] = sorted(payload)[:20]
+        names = sorted(_competition_names(payload, set()))
+        entry["names"] = names[:30]
+        entry["competitions"] = sorted(
+            n for n in names
+            if any(word in n.lower() for word in
+                   ("league", "cup", "liga", "serie", "bundesliga", "ligue",
+                    "uefa", "champions", "europa", "conference", "pokal",
+                    "coppa", "copa", "coupe", "fa "))
+        )[:20]
+        entry["splits_by"] = _splits_shape(payload)
+        out["shapes"][label] = entry
+    return out
+
+
+def _splits_shape(payload: dict) -> list[str]:
+    """How many statistics blocks the payload holds, and what labels them.
+
+    One block is a season aggregate and cannot answer the question. Several,
+    each with a name, is the competition breakdown this is looking for.
+    """
+    labels: list[str] = []
+    for key in ("statistics", "splits", "seasonTypes", "categories", "entries"):
+        node = payload.get(key)
+        if isinstance(node, list) and node:
+            for item in node[:12]:
+                if isinstance(item, dict):
+                    for naming in ("displayName", "name", "abbreviation", "type"):
+                        if isinstance(item.get(naming), str):
+                            labels.append(f"{key}[].{naming}={item[naming]}")
+                            break
+        elif isinstance(node, dict):
+            inner = node.get("splits")
+            if isinstance(inner, list):
+                labels.append(f"{key}.splits is a list of {len(inner)}")
+            elif isinstance(inner, dict):
+                labels.append(f"{key}.splits is one block")
+    return labels[:20]
+
+
+def _some_athlete(league, season, club, session):
+    """Any athlete in the league, to ask the question about."""
+    try:
+        clubs = team_ids(league, season or 0, session)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if not clubs:
+        return None, None
+    name, team_id = next(
+        ((n, i) for n, i in clubs.items() if club and club.lower() in n.lower()),
+        next(iter(clubs.items())),
+    )
+    sport, path = LEAGUE_PATHS[league]
+    try:
+        payload = _get(f"{BASE}/{sport}/{path}/teams/{team_id}/roster",
+                       {"season": roster_season(league, season)} if season else {},
+                       session)
+    except Exception:  # noqa: BLE001
+        return None, name
+    for athlete in _athletes(payload):
+        if athlete.get("id"):
+            return str(athlete["id"]), name
+    return None, name
