@@ -1347,6 +1347,11 @@ def _soccer_rows(
             # itself, which is what the league's own-club filter needs.
             "team_id": str((side.get("team") or {}).get("id") or ""),
             "opponent_id": str((other.get("team") or {}).get("id") or ""),
+            # ESPN's own id for the match. The team results are correctly
+            # attributed and a player's are not, so the id is what lets one
+            # answer for the other: a player's appearance in event 401915443 is
+            # in whatever competition the club played 401915443 in.
+            "event_id": str(event.get("id") or ""),
             "date": day.isoformat(),
             "competition": competition_label,
             "competition_key": competition,
