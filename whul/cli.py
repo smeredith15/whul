@@ -1164,6 +1164,39 @@ def _read_feed_history(path: Path, source: str):
     )
 
 
+def _gamelog_lines(report: dict) -> list[str]:
+    """The gamelog in the terms a loader would need, or nothing."""
+    import json
+
+    if not report:
+        return []
+    lines = ["", "      --- gamelog in detail ---"]
+    for entry in report.get("filters") or []:
+        options = ", ".join(
+            f"{o['value']}={o['label']}" for o in entry.get("options") or []
+        )
+        lines.append(f"      filter {entry.get('name')} = {entry.get('value')}"
+                     + (f"  [{options}]" if options else ""))
+    for key in ("labels", "names", "displayNames"):
+        if report.get(key):
+            lines.append(f"      {key}: {', '.join(report[key])}")
+    for entry in report.get("seasonTypes") or []:
+        lines.append(f"      seasonType {entry.get('displayName')!r} "
+                     f"({entry.get('matches')} match(es)) keys={entry.get('keys')}")
+    if report.get("events_shape"):
+        lines.append(f"      events: {report['events_shape']}")
+    if report.get("event_keys"):
+        lines.append(f"      an event carries: {', '.join(report['event_keys'])}")
+    for event in (report.get("events") or [])[:3]:
+        lines.append("      " + json.dumps(event, default=str)[:400])
+    lines += [
+        "",
+        "      The question: does an EVENT name its own competition? If it does,",
+        "      a match can be attributed without inheriting the request's league.",
+    ]
+    return lines
+
+
 def cmd_probe_athlete(args: argparse.Namespace) -> int:
     """Ask whether an athlete's own record names the competition.
 
@@ -1207,6 +1240,7 @@ def cmd_probe_athlete(args: argparse.Namespace) -> int:
                      f"{', '.join(comps) or 'none'}")
         if len(comps) > 1:
             lines.append("      ^ more than one, so this shape can tell them apart")
+        lines += _gamelog_lines(entry.get("gamelog") or {})
     lines += ["", "  What to look for: a shape naming more than one competition is one",
               "  that knows which match a figure came from. That is the one to read",
               "  a player's season from, instead of inheriting the request's league.",

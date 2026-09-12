@@ -452,6 +452,10 @@ def probe_athlete(
                     "coppa", "copa", "coupe", "fa "))
         )[:20]
         entry["splits_by"] = _splits_shape(payload)
+        # The gamelog is the shape that could attribute a match, so it is the
+        # one worth reading properly rather than counting names in.
+        if label == "gamelog":
+            entry["gamelog"] = gamelog_report(payload)
         out["shapes"][label] = entry
     return out
 
@@ -504,3 +508,79 @@ def _some_athlete(league, season, club, session):
         if athlete.get("id"):
             return str(athlete["id"]), name
     return None, name
+
+
+def gamelog_report(payload: dict) -> dict:
+    """What a gamelog actually holds, in the terms a loader would need.
+
+    The first probe established that this shape exists and names more than one
+    competition. What it could not say is whether an *event* carries its own
+    competition, which is the only thing that matters: a payload that groups by
+    competition at the top and then hands back a flat list of matches is no
+    better than the roster.
+
+    So this reads the parts a loader would read -- the filters the endpoint
+    accepts, how the season types are grouped and how many matches each holds,
+    the stat labels in order, and a handful of whole events with the keys they
+    carry.
+    """
+    out: dict = {}
+
+    filters = payload.get("filters")
+    if isinstance(filters, list):
+        out["filters"] = [
+            {
+                "name": f.get("name"),
+                "value": f.get("value"),
+                "options": [
+                    {"value": o.get("value"), "label": o.get("displayName") or o.get("label")}
+                    for o in (f.get("options") or [])[:25]
+                    if isinstance(o, dict)
+                ],
+            }
+            for f in filters[:8] if isinstance(f, dict)
+        ]
+
+    # The stat column headers, in the order the numbers arrive in.
+    for key in ("labels", "names", "displayNames"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            out[key] = [str(v) for v in value[:30]]
+
+    types = payload.get("seasonTypes")
+    if isinstance(types, list):
+        out["seasonTypes"] = []
+        for entry in types[:12]:
+            if not isinstance(entry, dict):
+                continue
+            groups = entry.get("categories") or entry.get("events") or []
+            counted = 0
+            if isinstance(groups, list):
+                for group in groups:
+                    inner = (group.get("events") if isinstance(group, dict) else None)
+                    counted += len(inner) if isinstance(inner, list) else 1
+            out["seasonTypes"].append({
+                "displayName": entry.get("displayName"),
+                "name": entry.get("name"),
+                "keys": sorted(k for k in entry if k not in ("categories", "events")),
+                "matches": counted,
+            })
+
+    events = payload.get("events")
+    if isinstance(events, dict):
+        out["events_shape"] = f"dict keyed by id, {len(events)} entries"
+        sample = list(events.values())[:4]
+    elif isinstance(events, list):
+        out["events_shape"] = f"list of {len(events)}"
+        sample = events[:4]
+    else:
+        sample = []
+    out["event_keys"] = sorted({k for e in sample if isinstance(e, dict) for k in e})
+    out["events"] = [
+        {k: (v if not isinstance(v, (dict, list)) else
+             {kk: vv for kk, vv in list(v.items())[:6]} if isinstance(v, dict)
+             else v[:8])
+         for k, v in e.items()}
+        for e in sample if isinstance(e, dict)
+    ]
+    return out
