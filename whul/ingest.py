@@ -682,6 +682,31 @@ def _accumulating(fetch, source, store: Store, verbose: bool = True):
     return fetch_and_keep
 
 
+def _scored_on(score, kept, as_of: date):
+    """Score a day, telling the scorer which day it is.
+
+    Whether a competition has finished is a question about a date, and the
+    scorers that ask it -- the European bonus, which is held until its
+    competition ends, and the domestic league title, which nobody holds in
+    September -- were never told which one. They defaulted to today, so a day
+    was always scored against the calendar of the run rather than of the day.
+    For the nightly job those are the same date. For a backfill they are not: a
+    day in September, rescored in June, would have every held bonus released
+    into it and a title awarded on it.
+
+    Passed only to scorers that take it, because most do not need it and a
+    scorer's signature is the honest declaration of whether a date changes its
+    answer.
+    """
+    import inspect
+
+    try:
+        takes = "as_of" in inspect.signature(score).parameters
+    except (TypeError, ValueError):  # a builtin or a C callable
+        takes = False
+    return score(kept, as_of=as_of) if takes else score(kept)
+
+
 def _pull(
     source, as_of: date, verbose: bool, names: list[str] | None = None,
     notes: list[str] | None = None, upcoming: list | None = None,
@@ -758,7 +783,7 @@ def _pull(
         # and would cut a World Cup off at the year's end.
         _harvest(source, raw, as_of, seasons, upcoming)
         kept = raw if source.dated_by_source else _from_season_start(raw, source.league)
-        scored = score(kept)
+        scored = _scored_on(score, kept, as_of)
         if (scored is None or scored.empty) and notes is not None:
             notes.append(_why_nothing_scored(raw, kept, source.league))
         if not getattr(source, "cumulative", False):
@@ -771,7 +796,8 @@ def _pull(
     # since two series sharing a pull need not start on the same day.
     years = sorted({season_start(source.league).year, as_of.year})
     fetched = fetch(years)
-    events = _carry_identity(score(fetched), fetched, source.asset_type)
+    events = _carry_identity(
+        _scored_on(score, fetched, as_of), fetched, source.asset_type)
     if events is None or events.empty:
         return pd.DataFrame()
     # Read off the scored events, because that frame is the only place that

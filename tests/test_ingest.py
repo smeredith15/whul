@@ -1401,3 +1401,53 @@ def test_the_nfl_starts_on_the_day_its_season_opens():
     from whul.config.league import season_start
 
     assert season_start("NFL") == date(2026, 9, 9)
+
+
+def test_a_day_is_scored_against_its_own_date(store):
+    """Whether a competition has finished is a question about a date, and the
+    scorers that ask it were never told which one. They defaulted to today, so
+    a day was scored against the calendar of the run rather than of the day --
+    and a September day rescored in June would have every held European bonus
+    released into it and a league title awarded on it."""
+    from whul import ingest
+
+    seen = []
+
+    class Dated:
+        key, league, asset_type = "epl", "Premier League", "Team"
+        windowed = roster_scoped = False
+        dated_by_source = cumulative = True
+        produces, live, seasons_for, accumulates = (), None, None, ()
+
+        @staticmethod
+        def build():
+            def score(raw, as_of=None):
+                seen.append(as_of)
+                return raw
+
+            return (lambda seasons: pd.DataFrame(
+                [{"team": "Arsenal", "total_points": 5.0}]), score)
+
+    ingest._pull(Dated(), date(2026, 9, 12), verbose=False, store=store)
+    assert seen == [date(2026, 9, 12)]
+
+
+def test_a_scorer_that_does_not_ask_about_dates_is_not_handed_one(store):
+    """Most do not, and a signature is the honest declaration of whether a date
+    changes the answer. Passing one regardless would break every scorer that
+    takes a frame and nothing else."""
+    from whul import ingest
+
+    class Undated:
+        key, league, asset_type = "nfl", "NFL", "Team"
+        windowed = roster_scoped = False
+        dated_by_source = cumulative = True
+        produces, live, seasons_for, accumulates = (), None, None, ()
+
+        @staticmethod
+        def build():
+            return (lambda seasons: pd.DataFrame([{"team": "SEA", "total_points": 5.0}]),
+                    lambda raw: raw)
+
+    out = ingest._pull(Undated(), date(2026, 9, 12), verbose=False, store=store)
+    assert not out.empty
