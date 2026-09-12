@@ -867,3 +867,75 @@ def test_a_frame_without_the_column_reports_nothing(capsys):
 
     bs._report_champions("epl", pd.DataFrame([{"season": 2025, "team": "Alpha"}]))
     assert capsys.readouterr().out == ""
+
+
+# --- what the gamelog calls a competition ----------------------------------
+
+
+def test_every_competition_we_score_is_reachable_from_espns_own_key():
+    """The gamelog names the competition on each event in ESPN's spelling, and
+    the scorer reads ours. Both ends of every competition this project pays
+    for have to meet in the middle."""
+    from whul.sources.espn import LEAGUE_PATHS
+    from whul.sources.espn_soccer import competition_of
+
+    for key, (_, path) in LEAGUE_PATHS.items():
+        assert competition_of(path) == key, path
+
+
+def test_a_domestic_cup_counts_towards_the_base_score():
+    """Domestic cups are in the base score and in the benchmark -- only Europe
+    is held. A cup mapped as a league match would be paid three where it should
+    be four, and one left unmapped would be paid three where it should be
+    four."""
+    from whul.scoring.competition import Tier, classify_key
+    from whul.sources.espn_soccer import classify_gamelog_league
+
+    for espn_key in ("ger.dfb_pokal", "eng.fa", "eng.league_cup",
+                     "esp.copa_del_rey", "ita.coppa_italia",
+                     "fra.coupe_de_france", "usa.open"):
+        ours, why = classify_gamelog_league(espn_key)
+        assert ours, f"{espn_key}: {why}"
+        found = classify_key(ours, ours)
+        assert found.tier == Tier.DOMESTIC_CUP, (espn_key, found.tier)
+        assert found.counts
+
+
+def test_europe_keeps_its_tier_through_the_mapping():
+    from whul.scoring.competition import Tier, classify_key
+    from whul.sources.espn_soccer import classify_gamelog_league
+
+    for espn_key, tier in (("uefa.champions", Tier.CHAMPIONS_LEAGUE),
+                           ("uefa.europa", Tier.EUROPA),
+                           ("uefa.europa.conf", Tier.CONFERENCE)):
+        ours, _ = classify_gamelog_league(espn_key)
+        assert classify_key(ours, ours).tier == tier
+
+
+def test_a_competition_nobody_has_decided_about_is_not_paid_as_a_league_match():
+    """The whole reason this mapping exists. Every unrecognised key falls
+    through the classifier to a *league* match worth three and counted in the
+    base score, so a Champions League night fed in raw would be paid as a
+    league win and folded into the total the benchmark measures -- the fault
+    the gamelog is being read to fix, made worse."""
+    from whul.scoring.competition import Tier, classify_key
+    from whul.sources.espn_soccer import classify_gamelog_league
+
+    # What the classifier does with a raw ESPN key, and why nothing may reach it.
+    assert classify_key("uefa.champions", "uefa.champions").tier == Tier.LEAGUE
+
+    for espn_key in ("club.friendly", "ger.super_cup", "uefa.super_cup",
+                     "fifa.cwc", "global.champs_cup", "never.seen.this"):
+        ours, why = classify_gamelog_league(espn_key)
+        assert ours is None, espn_key
+        assert "not scored" in why
+
+
+def test_a_friendly_is_named_as_a_friendly_rather_than_as_an_unknown():
+    """A competition left out on purpose and one nobody has seen are different
+    problems with different fixes, and reporting both as 'unknown' hides which
+    of the two arrived."""
+    from whul.sources.espn_soccer import classify_gamelog_league
+
+    assert "friendly" in classify_gamelog_league("club.friendly")[1]
+    assert "never seen" in classify_gamelog_league("zzz.made.up")[1]
