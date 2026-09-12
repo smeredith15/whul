@@ -456,6 +456,17 @@ def probe_athlete(
         # one worth reading properly rather than counting names in.
         if label == "gamelog":
             entry["gamelog"] = gamelog_report(payload)
+            # The filter names the competitions this player has appeared in,
+            # which is exactly the list to ask for one at a time.
+            named = [
+                str(o["value"])
+                for f in entry["gamelog"].get("filters") or []
+                if f.get("name") == "league"
+                for o in f.get("options") or [] if o.get("value")
+            ]
+            if named:
+                out["by_competition"] = probe_gamelog_by_competition(
+                    league, athlete_id, season, named, session)
         out["shapes"][label] = entry
     return out
 
@@ -566,6 +577,21 @@ def gamelog_report(payload: dict) -> dict:
                 "matches": counted,
             })
 
+    # Where the numbers actually live. `events` is match metadata keyed by id;
+    # the stat rows sit under the season types, referencing an event by id.
+    # A row is what a loader would read, so one is carried out whole.
+    for entry in (payload.get("seasonTypes") or [])[:4]:
+        if not isinstance(entry, dict):
+            continue
+        for group in (entry.get("categories") or [])[:4]:
+            rows = (group.get("events") if isinstance(group, dict) else None) or []
+            if rows and isinstance(rows[0], dict):
+                out["stat_row"] = rows[0]
+                out["stat_row_keys"] = sorted(rows[0])
+                break
+        if out.get("stat_row"):
+            break
+
     events = payload.get("events")
     if isinstance(events, dict):
         out["events_shape"] = f"dict keyed by id, {len(events)} entries"
@@ -646,3 +672,65 @@ def classify_gamelog_league(espn_key: str) -> tuple[str | None, str]:
         return None, f"not scored: {UNSCORED_COMPETITIONS[espn_key]}"
     return None, ("not scored: this project has never seen this competition, and "
                   "an unmapped key would otherwise be paid as a league win")
+
+
+def probe_gamelog_by_competition(
+    league: str, athlete_id: str, season: int | None = None,
+    keys: list[str] | None = None, session=None,
+) -> dict:
+    """Ask the gamelog for one competition at a time.
+
+    A bare request returned a single match -- the Champions League tie -- for a
+    player who had also played twice in the Bundesliga and once in the cup, so
+    whatever a bare request means, it is not "everything". The filter lists the
+    competitions the player has appeared in, which is exactly the list to ask
+    for one by one.
+
+    Reports, per competition: how many matches came back, which competitions
+    the returned events actually name -- a filter that does not filter would
+    show the others here -- and whether the stat rows carry appearances or
+    starts, which the scorer needs and the labels so far have not offered.
+    """
+    session = session or requests.Session()
+    sport, path = LEAGUE_PATHS[league]
+    url = (f"https://site.web.api.espn.com/apis/common/v3/sports/{sport}/{path}"
+           f"/athletes/{athlete_id}/gamelog")
+    out: dict = {"url": url, "asked": {}}
+    for key in keys or []:
+        params: dict = {"league": key}
+        if season:
+            params["season"] = roster_season(league, season)
+        entry: dict = {"params": dict(params), "our_key": competition_of(key)}
+        entry["scored"] = classify_gamelog_league(key)[1]
+        try:
+            payload = _get(url, params, session)
+        except Exception as exc:  # noqa: BLE001 -- one competition, not the probe
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            entry["error"] = f"{type(exc).__name__} {status}"
+            out["asked"][key] = entry
+            continue
+        report = gamelog_report(payload)
+        events = payload.get("events")
+        found = events.values() if isinstance(events, dict) else (events or [])
+        entry["matches"] = len(list(found))
+        entry["named"] = sorted({
+            str(e.get("leagueName") or e.get("leagueShortName") or "")
+            for e in found if isinstance(e, dict)
+        })
+        entry["labels"] = report.get("labels") or []
+        entry["names"] = report.get("names") or []
+        entry["stat_row_keys"] = report.get("stat_row_keys") or []
+        entry["seasonTypes"] = [
+            f"{t.get('displayName')} ({t.get('matches')})"
+            for t in report.get("seasonTypes") or []
+        ]
+        out["asked"][key] = entry
+    return out
+
+
+#: What the scorer needs from a player and cannot yet see in a gamelog label.
+#: An appearance is implied -- one event is one match -- but a *start* is not,
+#: and appearance points are 2 for a start and 1 for coming off the bench. The
+#: roster derives it as appearances minus substitute appearances; if no gamelog
+#: field carries it, the roster stays the source for that one figure.
+NEEDED_FROM_A_MATCH = ("appearances", "subIns", "substitute", "starts", "minutes")

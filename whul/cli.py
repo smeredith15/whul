@@ -1164,6 +1164,39 @@ def _read_feed_history(path: Path, source: str):
     )
 
 
+def _by_competition_lines(report: dict) -> list[str]:
+    """One competition at a time, which is how a loader would ask."""
+    from whul.sources.espn_soccer import NEEDED_FROM_A_MATCH
+
+    lines = ["", "  --- the gamelog, one competition at a time ---",
+             f"      {report.get('url', '')}"]
+    for key, entry in (report.get("asked") or {}).items():
+        ours = entry.get("our_key") or "-"
+        lines.append(f"      {key:<20} -> {ours:<14}{entry.get('scored', '')}")
+        if entry.get("error"):
+            lines.append(f"          refused: {entry['error']}")
+            continue
+        lines.append(f"          {entry.get('matches', 0)} match(es); season types: "
+                     f"{', '.join(entry.get('seasonTypes') or []) or '-'}")
+        named = [n for n in entry.get("named") or [] if n]
+        lines.append(f"          events name: {', '.join(named) or '-'}"
+                     + ("   <- the filter did NOT filter" if len(named) > 1 else ""))
+        if entry.get("stat_row_keys"):
+            lines.append(f"          a stat row carries: "
+                         f"{', '.join(entry['stat_row_keys'])}")
+        have = [n for n in entry.get("names") or []
+                if any(w.lower() in n.lower() for w in NEEDED_FROM_A_MATCH)]
+        lines.append(f"          appearance/start fields: {', '.join(have) or 'NONE'}")
+    lines += [
+        "",
+        "      Two questions. Does `league=` actually filter -- if the events name",
+        "      more than one competition, it does not. And is a *start* anywhere in",
+        "      a row? Appearance points are 2 for a start and 1 off the bench, and",
+        "      no label so far carries it.",
+    ]
+    return lines
+
+
 def _gamelog_lines(report: dict) -> list[str]:
     """The gamelog in the terms a loader would need, or nothing."""
     import json
@@ -1241,6 +1274,8 @@ def cmd_probe_athlete(args: argparse.Namespace) -> int:
         if len(comps) > 1:
             lines.append("      ^ more than one, so this shape can tell them apart")
         lines += _gamelog_lines(entry.get("gamelog") or {})
+    if found.get("by_competition"):
+        lines += _by_competition_lines(found["by_competition"])
     lines += ["", "  What to look for: a shape naming more than one competition is one",
               "  that knows which match a figure came from. That is the one to read",
               "  a player's season from, instead of inheriting the request's league.",
