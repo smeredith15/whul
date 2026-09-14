@@ -204,7 +204,7 @@ jobs:
           git config user.name "whul-bot"
           git config user.email "whul-bot@users.noreply.github.com"
           git checkout --orphan data-tmp
-          git rm -rq --cached . || true
+          git rm -rqf --cached .
           git add -f data/whul.sqlite3
           git commit -qm "Database after $(date -u +%Y-%m-%d)"
           git push -f origin data-tmp:data
