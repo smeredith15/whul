@@ -13,7 +13,8 @@ import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str, settled_seasons
 from whul.scoring.postseason import (
-    POSTSEASON, REGULAR, RULES, apply_bonus, regular_totals, split_phases,
+    POSTSEASON, REGULAR, RULES, apply_bonus, phase_totals, regular_totals,
+    split_phases,
 )
 
 SCORING_POSITIONS = ("QB", "RB", "WR", "TE")
@@ -95,13 +96,58 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
         .agg(lambda s: "/".join(sorted(set(x for x in s if x))))
     )
     counting = regular_totals(work, keys, PLAYER_WEIGHTS, work["phase"])
+    # January's figures, kept apart and labelled as such. The profile shows the
+    # same boxes for the postseason as for the season, and without these there
+    # was nothing to put in them: the postseason survived as a points total and
+    # a game count and no yards at all.
+    post_counting = phase_totals(
+        work, keys, PLAYER_WEIGHTS, work["phase"], POSTSEASON, prefix="post_")
     agg = apply_bonus(
-        phases.merge(teams, on=keys, how="left").merge(counting, on=keys, how="left"),
+        phases.merge(teams, on=keys, how="left")
+        .merge(counting, on=keys, how="left")
+        .merge(post_counting, on=keys, how="left")
+        .merge(_weeks_his_team_played(work, keys), on=keys, how="left"),
         RULES["NFL"] if postseason else None,
     )
+    for column in [f"post_{c}" for c in PLAYER_WEIGHTS] + ["team_games"]:
+        if column in agg.columns:
+            agg[column] = agg[column].fillna(0)
     agg["league"] = "NFL"
     agg["role"] = agg["position"]
     return agg[agg["total_points"] > 0].reset_index(drop=True)
+
+
+def _weeks_his_team_played(work: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """How many games the player's club played, beside how many he did.
+
+    The pair is the whole point: eleven games out of seventeen is a season
+    interrupted and eleven out of eleven is the league in September, and a
+    games-played figure on its own cannot tell them apart.
+
+    Counted off the weekly frame already in hand rather than fetched. Every
+    team appears in it once per player per week, so the weeks a team appears in
+    at all are the weeks it played -- no schedule to load, and no second
+    request per run.
+
+    A player traded mid-season gets the union of his clubs' weeks, which is the
+    number of games he could have appeared in. Counting one club would say he
+    missed the half of the season he spent at the other.
+    """
+    regular = work[work["phase"] == REGULAR]
+    if regular.empty:
+        return work[keys].drop_duplicates().assign(team_games=0)
+    weeks = (
+        regular.groupby("team")["week"]
+        .agg(lambda s: frozenset(s.dropna()))
+        .to_dict()
+    )
+    played = (
+        regular.groupby(keys)["team"]
+        .agg(lambda s: len(frozenset().union(
+            *(weeks.get(t, frozenset()) for t in set(s)))))
+        .reset_index(name="team_games")
+    )
+    return played
 
 
 def _team_games(schedules: pd.DataFrame) -> pd.DataFrame:

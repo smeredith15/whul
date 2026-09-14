@@ -461,3 +461,70 @@ def test_a_division_standing_is_read_for_the_right_season():
     assert out.loc[(2025, "BUF"), "div_champ"] == 1
     assert out.loc[(2026, "MIA"), "div_champ"] == 1
     assert out.loc[(2026, "BUF"), "div_champ"] == 0
+
+
+# --- what the profile needs, which must cost the score nothing --------------
+
+def test_the_postseason_keeps_its_own_counting_stats():
+    """The profile shows the same boxes for January as for the season. Before
+    this the postseason survived as a points total and a game count, so there
+    was nothing to put in them."""
+    stats = pd.DataFrame([
+        weekly(week=1, passing_yards=300, passing_tds=3),
+        weekly(week=20, season_type="POST", passing_yards=400, passing_tds=2),
+    ])
+    row = score_players(stats, postseason=True).iloc[0]
+
+    assert row["passing_yards"] == 300      # the season's, not both
+    assert row["post_passing_yards"] == 400
+    assert row["post_passing_tds"] == 2
+
+
+def test_carrying_the_postseason_figures_moves_no_score():
+    """The whole display pass is forbidden from changing a single point."""
+    stats = pd.DataFrame([
+        weekly(week=1, passing_yards=300, passing_tds=3, interceptions=1),
+        weekly(week=20, season_type="POST", passing_yards=400, passing_tds=2),
+    ])
+    row = score_players(stats, postseason=True).iloc[0]
+
+    # 300*0.04 + 3*4 - 1*2 = 22.0
+    assert row["regular_points"] == pytest.approx(22.0)
+    # January is priced by the rule rather than summed into the season, and
+    # the total is the season plus what that rule credits -- unchanged by
+    # carrying the figures, which was checked against the previous scorer on
+    # this same input before the columns were added.
+    assert row["postseason_points"] == pytest.approx(400 * 0.04 + 2 * 4)
+    assert row["total_points"] == pytest.approx(
+        row["regular_points"] + row["postseason_bonus"])
+
+
+def test_a_player_is_counted_against_the_games_his_team_played():
+    """Eleven of seventeen is an interrupted season; eleven of eleven is
+    September. A games-played figure alone cannot tell them apart."""
+    stats = pd.DataFrame([
+        # A player who scores nothing at all is dropped from the output, so
+        # these carry a yard apiece.
+        weekly(week=1, passing_yards=100), weekly(week=2, passing_yards=100),
+        weekly(week=3, passing_yards=100),
+        # A team-mate carries the week the player himself missed.
+        weekly(week=4, player_id="00-2", player_display_name="Other",
+               passing_yards=100),
+    ])
+    out = score_players(stats).set_index("player")
+    assert out.loc["Test QB", "team_games"] == 4
+    assert out.loc["Test QB", "games_played"] == 3
+
+
+def test_a_traded_player_gets_both_clubs_weeks():
+    """Counting one club would say he missed the half of the season he spent
+    at the other."""
+    stats = pd.DataFrame([
+        weekly(week=1, recent_team="BUF", passing_yards=100),
+        weekly(week=2, recent_team="MIA", passing_yards=100),
+        weekly(week=3, recent_team="MIA", player_id="00-2",
+               player_display_name="Other", passing_yards=100),
+    ])
+    out = score_players(stats).set_index("player")
+    # BUF played week 1; MIA played weeks 2 and 3.
+    assert out.loc["Test QB", "team_games"] == 3

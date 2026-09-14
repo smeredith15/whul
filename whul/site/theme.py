@@ -661,6 +661,86 @@ dialog.profile details.bonus .adds {
 }
 dialog.profile details.bonus .note { margin-top: 6px; }
 
+/* A stat as a box: the count large, and under it a strip carrying what the
+   count is worth. The strip is about a fifth of the box, enough to read as
+   attached to the figure above rather than as a second figure beside it --
+   which is exactly how the two read as table rows, where `Receptions 2` sat
+   above `Points for receptions 1.0`.
+
+   The top row is the role's own line and keeps its zeroes, so one profile lines
+   up with the next. The second row is everything else he did, smaller, and
+   drops what is empty.
+
+   Negative points take the alert token. It is a status colour and reserved,
+   but the minus sign is printed either way, so the colour reinforces a figure
+   that is already legible without it rather than carrying the meaning. A
+   positive stays in ink: colouring both would make a green and a red pair that
+   reads as a feed state, which is what the token is actually for. */
+dialog.profile .boxes .games {
+  display: flex; gap: 14px; font-size: 12px; color: var(--text-secondary);
+  text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 0 10px;
+}
+dialog.profile .boxes .games b {
+  font-weight: 650; color: var(--text-primary); font-variant-numeric: tabular-nums;
+}
+dialog.profile .boxrow {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 8px; margin-bottom: 8px;
+}
+/* Capped rather than stretched. With `1fr` a row holding two of them spread
+   each to half the dialog, so the secondary line came out larger than the top
+   one it is meant to sit under. */
+dialog.profile .boxrow.rest {
+  grid-template-columns: repeat(auto-fit, minmax(66px, 104px));
+  justify-content: start;
+}
+dialog.profile .statbox {
+  background: var(--surface-1); border: 1px solid var(--grid);
+  border-radius: 8px; overflow: hidden; text-align: center;
+}
+dialog.profile .statbox .bn {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-secondary); padding: 7px 4px 0;
+}
+dialog.profile .statbox .bv {
+  font-size: 22px; font-weight: 650; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; padding: 1px 4px 7px;
+  color: var(--text-primary);
+}
+dialog.profile .statbox .bp {
+  font-size: 11px; font-variant-numeric: tabular-nums; padding: 3px 4px;
+  border-top: 1px solid var(--grid); color: var(--text-secondary);
+  background: var(--page);
+}
+dialog.profile .statbox .bp.down { color: var(--alert); background: var(--alert-bg); }
+dialog.profile .statbox.small .bn { font-size: 9.5px; padding-top: 5px; }
+dialog.profile .statbox.small .bv { font-size: 16px; padding-bottom: 5px; }
+dialog.profile .statbox.small .bp { font-size: 10px; padding: 2px 4px; }
+dialog.profile details.boxes.post { padding: 0 18px 14px; }
+dialog.profile details.boxes.post > summary {
+  cursor: pointer; font-size: 0.78rem; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--text-secondary);
+  display: flex; align-items: baseline; gap: 8px; padding: 4px 0 8px;
+}
+dialog.profile details.boxes.post > summary::-webkit-details-marker { display: none; }
+dialog.profile details.boxes.post > summary::before {
+  content: "\u25b8"; transition: transform .12s ease; display: inline-block;
+}
+dialog.profile details.boxes.post[open] > summary::before { transform: rotate(90deg); }
+dialog.profile details.boxes.post .adds {
+  margin-left: auto; text-transform: none; letter-spacing: 0;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+}
+/* Two by two on a phone. Auto-fit put three across and left the fourth alone
+   on a line beside an empty half-row, which reads as a box that failed to
+   load rather than as the end of the set. */
+@media (max-width: 480px) {
+  dialog.profile .boxrow { grid-template-columns: repeat(2, 1fr); }
+  dialog.profile .boxrow.rest {
+    grid-template-columns: repeat(2, minmax(66px, 104px));
+  }
+}
+
 dialog.profile .scoreline {
   display: flex; gap: 20px; padding: 12px 18px; border-top: 1px solid var(--grid);
 }
