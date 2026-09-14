@@ -302,3 +302,74 @@ def test_a_league_year_spanning_two_seasons_keeps_both_breakdowns():
     assert out["total_points"] == 150.0
     assert [d["competition"] for d in out["bonus_detail"]] == [
         "MLS Cup Playoffs", "CONCACAF Champions Cup"]
+
+
+def _bench(store, version, season="2026-27"):
+    return bm.save(store, bm.compute(scored_history(), "Player", season),
+                   season, version=version)
+
+
+def test_a_draft_nobody_adopted_can_be_deleted(store):
+    _bench(store, "keep")
+    spent = _bench(store, "spent")
+
+    assert bm.discard(store, spent) > 0
+    assert bm.get_version(store, spent) is None
+    assert bm.get_version(store, "keep") is not None
+    # The rows go with it, or the next version to reuse the id inherits them.
+    assert store.query(
+        "SELECT * FROM benchmarks WHERE version = ?", (spent,)
+    ).empty
+
+
+def test_a_frozen_scale_is_never_deleted(store):
+    version = _bench(store, "live")
+    bm.freeze(store, version)
+
+    with pytest.raises(ValueError, match="frozen"):
+        bm.discard(store, version)
+    assert bm.get_version(store, version) is not None
+
+
+def test_a_draft_a_stored_score_names_is_refused(store):
+    """Unfrozen is not the same as unused. A number is only explainable while
+    the scale it was divided by still exists."""
+    version = _bench(store, "used")
+    add_asset(store)
+    store.upsert("daily_scores", [{
+        "asset_id": "nfl-lamar-jackson", "season": "2026-27",
+        "as_of": "2026-09-04", "league_points": 20.0, "postseason_bonus": 0.0,
+        "scaled_score": 50.0, "benchmark_version": version,
+        "computed_at": "2026-09-04", "held_score": 0.0,
+    }], keys=("asset_id", "season", "as_of"))
+
+    with pytest.raises(ValueError, match="explainable"):
+        bm.discard(store, version)
+    assert bm.get_version(store, version) is not None
+
+
+def test_the_sweep_keeps_the_draft_a_resumed_run_would_continue(store):
+    older = _bench(store, "older")
+    newer = _bench(store, "newer")
+    bm.freeze(store, _bench(store, "frozen"))
+
+    spent = [v.version for v in bm.spent_drafts(store, "2026-27")]
+    assert older in spent
+    # `latest_draft` hands this one to a resumed recompute; sweeping it would
+    # delete the sitting in progress.
+    assert newer not in spent
+    assert "frozen" not in spent
+
+
+def test_the_sweep_leaves_a_draft_that_is_named_by_a_score(store):
+    used = _bench(store, "used")
+    _bench(store, "newest")
+    add_asset(store)
+    store.upsert("daily_scores", [{
+        "asset_id": "nfl-lamar-jackson", "season": "2026-27",
+        "as_of": "2026-09-04", "league_points": 20.0, "postseason_bonus": 0.0,
+        "scaled_score": 50.0, "benchmark_version": used,
+        "computed_at": "2026-09-04", "held_score": 0.0,
+    }], keys=("asset_id", "season", "as_of"))
+
+    assert [v.version for v in bm.spent_drafts(store, "2026-27")] == []

@@ -2481,6 +2481,57 @@ def cmd_benchmarks_freeze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_benchmarks_discard(args: argparse.Namespace) -> int:
+    """Delete drafts nobody adopted, so they stop warning every later run."""
+    from whul.store import benchmarks as store_benchmarks
+
+    store = _benchmark_store(args)
+    if args.drafts:
+        targets = store_benchmarks.spent_drafts(store, args.season)
+        if not targets:
+            print(f"\n  No spent drafts for {args.season}.\n")
+            return 0
+    else:
+        if not args.version:
+            print("\nName a version, or pass --drafts to sweep the spent ones.\n",
+                  file=sys.stderr)
+            return 2
+        found = store_benchmarks.get_version(store, args.version)
+        if found is None:
+            print(f"\nNo benchmark version {args.version!r}.\n", file=sys.stderr)
+            return 1
+        targets = [found]
+
+    # Naming what is about to go, because a version id is fifteen digits and
+    # two of them can differ by a minute -- the abandoned draft and the scale
+    # in use were computed three hours apart on the same day.
+    print(f"\n  {len(targets)} version(s) to discard:\n")
+    for version in targets:
+        groups = len(store_benchmarks.load(store, version.version))
+        print(f"    {version.version}   {groups} group(s), computed "
+              f"{version.computed_at}")
+    if args.drafts:
+        newest = store_benchmarks.latest_draft(store, args.season)
+        if newest is not None:
+            print(f"\n  Keeping {newest.version}, the newest draft -- it is what "
+                  f"a resumed\n  recompute continues into. Name it to delete it.")
+    if not args.yes:
+        print("\n  Nothing frozen, and no stored score names any of them.")
+        print("  Pass --yes to delete.\n")
+        return 0
+
+    gone = 0
+    for version in targets:
+        try:
+            gone += store_benchmarks.discard(store, version.version)
+        except ValueError as exc:
+            print(f"\n{exc.args[0]}\n", file=sys.stderr)
+            return 1
+    print(f"\n  discarded {len(targets)} version(s) and {gone} benchmark "
+          f"group(s)\n")
+    return 0
+
+
 #: How many of a list the terminal shows. The file gets all of them: "eleven
 #: matches missing" is a fact and *which* eleven is the diagnosis, and a
 #: diagnosis that scrolls off the top of a terminal is one nobody sends on.
@@ -3251,6 +3302,21 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="freeze despite rostered assets with no benchmark",
     )
     bench_freeze.set_defaults(func=cmd_benchmarks_freeze)
+
+    bench_discard = _with_db(bench_sub.add_parser(
+        "discard", help="delete a draft nobody adopted"))
+    bench_discard.add_argument("version", nargs="?")
+    bench_discard.add_argument(
+        "--drafts", action="store_true",
+        help="every spent draft for the season, keeping the newest one",
+    )
+    bench_discard.add_argument("--season", default="2026-27",
+                               help="season to sweep with --drafts")
+    bench_discard.add_argument(
+        "--yes", action="store_true",
+        help="actually delete; without this the versions are only described",
+    )
+    bench_discard.set_defaults(func=cmd_benchmarks_discard)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     # Cups and European competitions are probeable even though they are not
