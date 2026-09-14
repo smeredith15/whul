@@ -2570,3 +2570,99 @@ def test_a_drivers_corner_is_his_flag_and_not_his_car_number():
     assert profile["team"] == "#1"
     # The flag is in the corner, where the car number never was one.
     assert profile["corner"] == ["flag", "great-britain"]
+
+
+# --- the NFL stat panel ---------------------------------------------------
+
+from whul.site import build as site_build
+
+def _nfl_row(**over):
+    row = {
+        "league": "NFL", "role": "QB", "position": "QB",
+        "passing_yards": 0, "passing_tds": 0, "interceptions": 0,
+        "rushing_yards": 0, "rushing_tds": 0, "receptions": 0,
+        "receiving_yards": 0, "receiving_tds": 0, "fumbles_lost": 0,
+    }
+    row.update(over)
+    return row
+
+
+def test_the_boxes_add_up_to_the_score_they_sit_above():
+    """The reason to pair a count with its points rather than list both: the
+    profile can be checked against itself, and one that does not reconcile is
+    visible rather than plausible."""
+    row = _nfl_row(passing_yards=334, passing_tds=2, rushing_yards=23,
+                   rushing_tds=2)
+    panel = site_build._nfl_boxes(row)
+
+    total = sum(b["points"] for b in panel["top"] + panel["secondary"])
+    # 334*0.04 + 2*4 + 23*0.1 + 2*6 = 35.7
+    assert round(total, 1) == 35.7
+
+
+def test_the_top_row_is_the_role_and_keeps_its_zeroes():
+    """It is the line that makes one profile comparable with the next."""
+    qb = site_build._nfl_boxes(_nfl_row(passing_yards=300))
+    assert [b["label"] for b in qb["top"]] == [
+        "Pass yds", "Pass TD", "INT", "Rush yds"]
+
+    wr = site_build._nfl_boxes(_nfl_row(role="WR", receptions=10, receiving_yards=67))
+    assert [b["label"] for b in wr["top"]] == [
+        "Rush yds", "Rec", "Rec yds", "TD"]
+
+
+def test_the_second_row_drops_what_is_empty_but_keeps_the_two_worth_zero():
+    """A quarterback has no receptions and saying so four times is noise. A
+    fumble count of zero is the good answer and its absence reads as missing."""
+    boxes = site_build._nfl_boxes(_nfl_row(passing_yards=300))
+    labels = [b["label"] for b in boxes["secondary"]]
+
+    assert "Rec" not in labels and "Rec yds" not in labels
+    # No touchdown box either: he ran for none and caught none, and a box
+    # reading "0 / 0" is the noise this rule exists to remove.
+    assert labels == ["Fumbles"]
+
+    ran = site_build._nfl_boxes(_nfl_row(passing_yards=300, rushing_tds=1))
+    assert [b["label"] for b in ran["secondary"]] == ["TD", "Fumbles"]
+
+
+def test_touchdowns_share_a_box_only_where_they_share_a_price():
+    """Rushing and receiving are both six, so one strip under two figures is
+    exact. Passing touchdowns are four, which is why they lead the row alone."""
+    wr = site_build._nfl_boxes(_nfl_row(role="WR", rushing_tds=1, receiving_tds=2))
+    td = next(b for b in wr["top"] if b["label"] == "TD")
+
+    assert td["value"] == "1 / 2"
+    assert td["points"] == 18.0
+
+
+def test_a_zero_against_a_negative_weight_is_not_printed_as_minus_zero():
+    boxes = site_build._nfl_boxes(_nfl_row(passing_yards=300))
+    ints = next(b for b in boxes["top"] if b["label"] == "INT")
+
+    assert ints["points"] == 0.0
+    assert str(ints["points"]) == "0.0"
+
+
+def test_the_playoff_boxes_read_january_and_not_the_season():
+    row = _nfl_row(passing_yards=334, postseason_games=3, team_games=17,
+                   regular_games=16, post_passing_yards=812, post_passing_tds=7,
+                   post_interceptions=2, post_rushing_yards=96,
+                   post_rushing_tds=2, post_receptions=0, post_receiving_yards=0,
+                   post_receiving_tds=0, post_fumbles_lost=1)
+    panel = site_build._nfl_panel(row)
+
+    assert panel["games"] == {"team": "17", "played": "16"}
+    assert panel["post"]["games"] == "3"
+    assert [b["value"] for b in panel["post"]["top"]] == ["812", "7", "2", "96"]
+    # The season's own row is untouched by January.
+    assert [b["value"] for b in panel["season"]["top"]] == ["334", "0", "0", "0"]
+
+
+def test_no_playoff_section_until_there_is_a_playoff():
+    """Four months of the year, an empty table saying nothing."""
+    assert "post" not in site_build._nfl_panel(_nfl_row(passing_yards=300))
+
+
+def test_a_league_without_a_panel_keeps_the_table():
+    assert site_build._nfl_boxes({"league": "MLB", "role": "Batter"}) is None

@@ -371,6 +371,7 @@ def asset_profiles(
     bonuses: dict[str, list[dict]] = {}
     notes: dict[str, list[str]] = {}
     raw_rows: dict[str, dict] = {}
+    panels: dict[str, dict] = {}
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
@@ -379,6 +380,10 @@ def asset_profiles(
             notes[asset_id] = _scaling_notes(row)
             lines[asset_id] = _stat_lines(row)
             raw_rows[asset_id] = row
+            if str(row.get("league")) == "NFL" and row.get("role"):
+                panel = _nfl_panel(row)
+                if panel:
+                    panels[asset_id] = panel
 
     out: dict[str, dict] = {}
     for asset_id in sorted(wanted):
@@ -447,6 +452,10 @@ def asset_profiles(
             "scaled": f"{float(scores.loc[asset_id, 'scaled_score']):,.1f}"
                       if asset_id in scores.index else "—",
             "stats": lines.get(asset_id, []),
+            # Where a league has a panel of its own, it replaces the table
+            # rather than joining it: the same figures twice, once as boxes and
+            # once as rows, is two things to keep in step.
+            "panel": panels.get(asset_id),
             "finishes": finishes.get(asset_id, []),
             "bonus": bonuses.get(asset_id, []),
             "notes": notes.get(asset_id, []),
@@ -480,6 +489,11 @@ STAT_SKIP = {
     "bonus_detail", "bonus_matches", "bonus_points", "postseason_bonus",
     "postseason_pending", "postseason_points", "postseason_games",
     "postseason_rate", "regular_games",
+    # The NFL panel's own figures. On the fallback table they would read
+    # "Post passing yards 0" in a column of season totals.
+    "team_games", "post_passing_yards", "post_passing_tds", "post_interceptions",
+    "post_rushing_yards", "post_rushing_tds", "post_receptions",
+    "post_receiving_yards", "post_receiving_tds", "post_fumbles_lost",
 }
 
 #: Raw column names read as debug output. These are what they mean.
@@ -558,6 +572,149 @@ STAT_LABELS = {
 def _label_for(column: str) -> str:
     """A stat's name in words. `games_played` reads as debug output."""
     return STAT_LABELS.get(column, column.replace("_", " ").capitalize())
+
+
+#: Which counting stats lead an NFL profile, by the role the player scores in.
+#: A quarterback's passing line is three zeroes on a receiver, and a flat list
+#: of every column showed exactly that -- nine rows, five of them nothing.
+#:
+#: `TDS` is not a column. Rushing and receiving touchdowns are one box with two
+#: figures, which is safe here and only here: both are worth six, so the single
+#: points strip beneath them is exact. It would not be on a quarterback's
+#: passing touchdowns, which are worth four -- which is why those lead his row
+#: on their own.
+NFL_TOP_LINE: dict[str, tuple[str, ...]] = {
+    "QB": ("passing_yards", "passing_tds", "interceptions", "rushing_yards"),
+    "RB": ("rushing_yards", "receptions", "receiving_yards", "TDS"),
+    "WR": ("rushing_yards", "receptions", "receiving_yards", "TDS"),
+    "TE": ("rushing_yards", "receptions", "receiving_yards", "TDS"),
+}
+
+#: Shown even at zero, because zero is the good answer and its absence reads as
+#: missing data rather than as a clean season. Everything else empty is dropped:
+#: a quarterback has no receptions and saying so four times is noise.
+NFL_ALWAYS = ("interceptions", "fumbles_lost")
+
+NFL_BOX_LABELS = {
+    "passing_yards": "Pass yds", "passing_tds": "Pass TD",
+    "interceptions": "INT", "rushing_yards": "Rush yds",
+    "rushing_tds": "Rush TD", "receptions": "Rec",
+    "receiving_yards": "Rec yds", "receiving_tds": "Rec TD",
+    "fumbles_lost": "Fumbles", "TDS": "TD",
+}
+
+
+def _nfl_box(row: dict, column: str, prefix: str = "",
+             keep_zero: bool = False) -> dict | None:
+    """One stat, its count, and what the count is worth.
+
+    The pair is the point. A flat list put `wins 1` directly above
+    `pts_reg_wins 2.4` and invited the reader to decide which of the two was
+    wrong; a box says the second *is* the first, priced.
+
+    Every figure here is `count x weight` off the scorer's own table, so the
+    boxes sum to the points beside them and a profile that does not add up is
+    visible rather than plausible.
+    """
+    from whul.scoring.nfl import PLAYER_WEIGHTS
+
+    def figure(name: str) -> float:
+        value = row.get(f"{prefix}{name}")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    if column == "TDS":
+        rushing, receiving = figure("rushing_tds"), figure("receiving_tds")
+        count, points = rushing + receiving, (rushing + receiving) * 6.0
+        text = f"{rushing:,.0f} / {receiving:,.0f}"
+    else:
+        count = figure(column)
+        points = count * PLAYER_WEIGHTS.get(column, 0.0)
+        text = f"{count:,.0f}"
+    if not count and not keep_zero and column not in NFL_ALWAYS:
+        return None
+    return {"label": NFL_BOX_LABELS.get(column, _label_for(column)),
+            # `or 0.0` because a zero count against a negative weight rounds to
+            # `-0.0`, which renders as "-0.0" and reads as a penalty nobody
+            # took. Negative zero is falsy, so this keeps every real figure.
+            "value": text, "points": round(points, 1) or 0.0}
+
+
+def _nfl_boxes(row: dict, prefix: str = "") -> dict | None:
+    """An NFL player's season as a top row and a smaller one beneath it.
+
+    The top row is the role's own line and the second is everything else he
+    did, which for most players is nothing and is therefore mostly empty. Both
+    are built from the same weight table the score is, so nothing here is a
+    second opinion about what a yard is worth.
+    """
+    from whul.scoring.nfl import PLAYER_WEIGHTS
+
+    role = str(row.get("role") or row.get("position") or "").upper()
+    lead = NFL_TOP_LINE.get(role)
+    if lead is None:
+        return None
+
+    # The top row keeps its zeroes. It is the line that makes one profile
+    # comparable with the next, and a receiver who happened not to run the ball
+    # would otherwise show three boxes where his team-mate shows four.
+    top = [box for box in
+           (_nfl_box(row, c, prefix, keep_zero=True) for c in lead) if box]
+    # Whatever the role's own line does not already carry. The touchdowns are
+    # folded into one box wherever they land, so a role whose top row has taken
+    # them must not be offered them again.
+    rest: list[str] = []
+    for column in PLAYER_WEIGHTS:
+        if column in lead:
+            continue
+        if column in ("rushing_tds", "receiving_tds"):
+            if "TDS" not in lead and "TDS" not in rest:
+                rest.append("TDS")
+            continue
+        rest.append(column)
+    secondary = [box for box in (_nfl_box(row, c, prefix) for c in rest) if box]
+    if not top and not secondary:
+        return None
+    return {"top": top, "secondary": secondary}
+
+
+def _nfl_panel(row: dict) -> dict | None:
+    """An NFL player's profile: his season in boxes, and January in the same.
+
+    The postseason gets the identical treatment rather than a summary, because
+    the question a manager opens a profile to ask is the same one in January as
+    in September, and answering it two different ways means reading the layout
+    before reading the figures.
+
+    It is absent until there is a postseason, which for the NFL is four months
+    of the year showing nothing rather than an empty table saying nothing.
+    """
+    season = _nfl_boxes(row)
+    if season is None:
+        return None
+    panel: dict = {"season": season}
+
+    def figure(name: str) -> float:
+        try:
+            return float(row.get(name) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Both figures or neither. "Games played 3" alone cannot say whether the
+    # other fourteen were missed or not yet played, which is the only reason
+    # the number is worth a heading.
+    team_games = figure("team_games")
+    if team_games:
+        panel["games"] = {"team": f"{team_games:,.0f}",
+                          "played": f"{figure('regular_games'):,.0f}"}
+    if figure("postseason_games"):
+        post = _nfl_boxes(row, prefix="post_")
+        if post:
+            post["games"] = f"{figure('postseason_games'):,.0f}"
+            panel["post"] = post
+    return panel
 
 
 def _stat_lines(row: dict) -> list[tuple[str, str]]:

@@ -325,23 +325,9 @@ def discard(store: Store, version: str) -> int:
     So this removes exactly what it says: a version that was never adopted and
     that nothing depends on.
     """
-    existing = get_version(store, version)
-    if existing is None:
-        raise ValueError(f"no benchmark version {version!r}")
-    if existing.is_frozen:
-        raise ValueError(
-            f"{version} was frozen at {existing.frozen_at} and is what stored "
-            f"scores are measured against; a frozen scale is never deleted"
-        )
-    scored = store.conn.execute(
-        "SELECT COUNT(*) FROM daily_scores WHERE benchmark_version = ?", (version,)
-    ).fetchone()[0]
-    if scored:
-        raise ValueError(
-            f"{version} is unfrozen but {scored:,} stored score(s) name it, and "
-            f"they stop being explainable without it; restate those days "
-            f"against the frozen scale first"
-        )
+    refused = refusal_for(store, version)
+    if refused:
+        raise ValueError(refused)
 
     with store.transaction() as conn:
         rows = conn.execute(
@@ -351,6 +337,36 @@ def discard(store: Store, version: str) -> int:
             "DELETE FROM benchmark_versions WHERE version = ?", (version,)
         )
     return rows
+
+
+def refusal_for(store: Store, version: str) -> str | None:
+    """Why this version cannot be deleted, or ``None`` if it can.
+
+    Separate from ``discard`` so that a dry run can say it. The first version
+    of this asked the same questions inside the delete, which meant the
+    describe-only path printed "nothing frozen, and no stored score names any
+    of them" about a frozen scale and then refused on the real run -- a
+    reassuring answer that was not true, which is the failure this project
+    exists to avoid rather than to commit.
+    """
+    existing = get_version(store, version)
+    if existing is None:
+        return f"no benchmark version {version!r}"
+    if existing.is_frozen:
+        return (
+            f"{version} was frozen at {existing.frozen_at} and is what stored "
+            f"scores are measured against; a frozen scale is never deleted"
+        )
+    scored = store.conn.execute(
+        "SELECT COUNT(*) FROM daily_scores WHERE benchmark_version = ?", (version,)
+    ).fetchone()[0]
+    if scored:
+        return (
+            f"{version} is unfrozen but {scored:,} stored score(s) name it, and "
+            f"they stop being explainable without it; restate those days "
+            f"against the frozen scale first"
+        )
+    return None
 
 
 def spent_drafts(store: Store, season: str) -> list[BenchmarkVersion]:

@@ -1061,10 +1061,55 @@ SCRIPT = """\
            '<p class="note">' + how + '</p></details>';
   }
 
+  // One stat as a box: the count large, and beneath it a strip carrying what
+  // the count is worth. The two were rows in a table, which put `Receptions 2`
+  // directly above `Points for receptions 1.0` and left the reader to work out
+  // that the second is the first, priced.
+  function statBox(box, small) {
+    var value = box.points;
+    var sign = value < 0 ? ' down' : (value > 0 ? ' up' : '');
+    var shown = (value > 0 ? '+' : '') + (Math.round(value * 10) / 10).toFixed(1);
+    return '<div class="statbox' + (small ? ' small' : '') + '">' +
+           '<div class="bn">' + box.label + '</div>' +
+           '<div class="bv">' + box.value + '</div>' +
+           '<div class="bp' + sign + '">' + shown + '</div></div>';
+  }
+
+  function boxRows(part) {
+    var top = (part.top || []).map(function (b) { return statBox(b, false); }).join('');
+    var rest = (part.secondary || []).map(function (b) { return statBox(b, true); }).join('');
+    return (top ? '<div class="boxrow">' + top + '</div>' : '') +
+           (rest ? '<div class="boxrow rest">' + rest + '</div>' : '');
+  }
+
+  // January in the same boxes as September, collapsed. Asking the same
+  // question two different ways means reading the layout before the figures.
+  function renderPanel(panel) {
+    if (!panel || !panel.season) return '';
+    var head = '';
+    if (panel.games) {
+      head = '<div class="games">' +
+             '<span><b>' + panel.games.team + '</b> team games</span>' +
+             '<span><b>' + panel.games.played + '</b> played</span></div>';
+    }
+    var post = '';
+    if (panel.post) {
+      post = '<details class="body boxes post"><summary>Playoffs' +
+             (panel.post.games
+               ? ' <span class="adds">' + panel.post.games + ' game' +
+                 (panel.post.games === '1' ? '' : 's') + '</span>'
+               : '') +
+             '</summary>' + boxRows(panel.post) + '</details>';
+    }
+    return '<div class="body boxes">' + head + boxRows(panel.season) +
+           '</div>' + post;
+  }
+
   function open(id) {
     var a = profiles[id];
     if (!a) return;
-    var stats = (a.stats || []).map(function (row) {
+    var panel = renderPanel(a.panel);
+    var stats = panel ? '' : (a.stats || []).map(function (row) {
       return '<tr><td>' + row[0] + '</td><td class="num">' + row[1] + '</td></tr>';
     }).join('');
     // Every finish, newest first. A total says how much; this says what
@@ -1096,7 +1141,8 @@ SCRIPT = """\
         ? '<div class="body"><h3>Finishes</h3><table class="finishes"><tbody>' +
           finishes + '</tbody></table></div>'
         : '') +
-      (stats ? '<div class="body">' + (finishes ? '<h3>Season totals</h3>' : '') +
+      (panel ? panel
+             : stats ? '<div class="body">' + (finishes ? '<h3>Season totals</h3>' : '') +
                '<table><tbody>' + stats + '</tbody></table></div>'
              : '<div class="body"><p class="sub">No stat lines recorded for this ' +
                'day yet.</p></div>') +

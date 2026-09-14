@@ -167,10 +167,11 @@ def split_phases(
     return out
 
 
-def regular_totals(
-    rows: pd.DataFrame, keys: list[str], columns, phase: pd.Series
+def phase_totals(
+    rows: pd.DataFrame, keys: list[str], columns, phase: pd.Series,
+    want: str = REGULAR, prefix: str = "",
 ) -> pd.DataFrame:
-    """The counting stats behind a player's regular season, summed.
+    """The counting stats behind one phase of a player's season, summed.
 
     ``split_phases`` reduces a season to points and games, which is all the
     bonus arithmetic needs and is why the raw figures were never carried past
@@ -178,20 +179,31 @@ def regular_totals(
     played 1.0" and nothing else -- no yards, no touchdowns, nothing a manager
     could check against a box score.
 
-    Regular-phase rows only, so the totals line up with ``regular_points``
-    beside them. What happened in the postseason is carried separately, by the
-    rule that prices it.
+    One phase at a time, so a set of totals lines up with the points figure
+    beside it and cannot be read as the other phase's. The postseason's are
+    prefixed for the same reason: a column called `passing_yards` that
+    sometimes means January is worse than no column at all.
     """
     work = rows.copy()
     work["_phase"] = phase.to_numpy()
     wanted = [c for c in columns if c in work.columns]
     if not wanted:
         return work[keys].drop_duplicates()
-    return (
-        work[work["_phase"] == REGULAR]
+    out = (
+        work[work["_phase"] == want]
         .groupby(keys, as_index=False)[wanted]
         .sum()
     )
+    if prefix:
+        out = out.rename(columns={c: f"{prefix}{c}" for c in wanted})
+    return out
+
+
+def regular_totals(
+    rows: pd.DataFrame, keys: list[str], columns, phase: pd.Series
+) -> pd.DataFrame:
+    """The regular season's counting stats. See ``phase_totals``."""
+    return phase_totals(rows, keys, columns, phase, REGULAR)
 
 
 #: Which rule pays for a club soccer competition that is *not* part of the
