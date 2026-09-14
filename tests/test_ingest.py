@@ -1451,3 +1451,56 @@ def test_a_scorer_that_does_not_ask_about_dates_is_not_handed_one(store):
 
     out = ingest._pull(Undated(), date(2026, 9, 12), verbose=False, store=store)
     assert not out.empty
+
+
+def test_a_run_that_saw_everybody_leaves_the_status_quiet(store):
+    rostered(store, "Josh Allen")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Josh Allen", "league": "NFL", "role": "QB", "total_points": 200.0},
+    ])
+
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+
+    status = store.query("SELECT * FROM source_status WHERE source = 'nfl'")
+    assert status.loc[0, "last_ok"] == 1
+    assert status.loc[0, "message"] == ""
+
+
+def test_an_unmatched_asset_reaches_the_status_row_not_only_the_log(store):
+    # The tennis case: the feed answers, the rows are healthy, and one rostered
+    # player is accounted for nowhere. `rows_last_run` cannot say so -- what
+    # landed is what landed -- so without the message this reads as a clean run.
+    rostered(store, "Josh Allen", "Jeremiyah Love")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Josh Allen", "league": "NFL", "role": "QB", "total_points": 200.0},
+    ])
+
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+
+    status = store.query("SELECT * FROM source_status WHERE source = 'nfl'")
+    message = status.loc[0, "message"]
+    assert "1 of 2 rostered matched" in message
+    assert "Jeremiyah Love (NFL)" in message
+    # Still a good run: the rows that arrived are real, and a player can score
+    # nothing honestly. The note says what happened, it does not cry failure.
+    assert status.loc[0, "last_ok"] == 1
+    assert status.loc[0, "rows_last_run"] == 1
+
+
+def test_a_feed_that_names_nobody_we_hold_is_not_left_reading_yesterdays_ok(store):
+    rostered(store, "Josh Allen")
+    frozen_benchmark(store)
+    store.record_source_status("nfl", "NFL", ok=True, rows=1,
+                               last_data_date="2026-09-03")
+    source = source_over([
+        {"player": "Somebody Else", "league": "NFL", "role": "QB",
+         "total_points": 200.0},
+    ])
+
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+
+    status = store.query("SELECT * FROM source_status WHERE source = 'nfl'")
+    assert status.loc[0, "last_ok"] == 0
+    assert "no rostered asset matched a feed row" in status.loc[0, "message"]
