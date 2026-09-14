@@ -65,3 +65,47 @@ def test_a_step_that_pipes_into_tee_asks_for_pipefail(path):
         f"{path.name}: {bad} pipe into `tee` without `set -o pipefail`, so the "
         f"step reports success however the command exited"
     )
+
+
+#: `git rm --cached` refuses a path whose staged content differs from both the
+#: working tree and HEAD, and the database always does: the run rewrites it
+#: before this step. `git checkout --orphan` keeps the index, so the unstage is
+#: the only thing standing between the orphan commit and the whole source tree.
+#: It errored on the database and stopped there, `|| true` swallowed it, and
+#: three workflows force-pushed a full copy of the repository to the data
+#: branch every night. `-f` is what makes the unstage actually happen.
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_the_orphan_save_unstages_forcibly(path):
+    bad = []
+    for step in _steps(path):
+        run = step.get("run") or ""
+        if "--orphan" not in run:
+            continue
+        for line in run.splitlines():
+            line = line.strip()
+            if not line.startswith("git rm "):
+                continue
+            if "--cached" in line and "f" not in line.split("--cached")[0].replace(
+                    "git rm ", ""):
+                bad.append(f"{step.get('name') or 'step'}: {line}")
+    assert not bad, (
+        f"{path.name}: {bad} -- `git rm --cached` without `-f` refuses the "
+        f"database, whose staged content differs from both the file and HEAD, "
+        f"and leaves the rest of the tree staged into the orphan commit"
+    )
+
+
+#: The same step, from the other side: swallowing the unstage is what let the
+#: fault run for months without a single red run.
+@pytest.mark.parametrize("path", WORKFLOWS, ids=lambda p: p.name)
+def test_the_orphan_save_does_not_swallow_the_unstage(path):
+    bad = [
+        line.strip() for step in _steps(path)
+        if "--orphan" in (step.get("run") or "")
+        for line in (step.get("run") or "").splitlines()
+        if line.strip().startswith("git rm ") and "|| true" in line
+    ]
+    assert not bad, (
+        f"{path.name}: {bad} -- `|| true` hides an unstage that failed, which "
+        f"is precisely how the whole repository reached the data branch"
+    )

@@ -42,12 +42,16 @@ SPORT_TENNIS = 2
 SPORT_SOCCER = 1
 SPORT_BASKETBALL = 3
 SPORT_BASEBALL = 6
-#: UNVERIFIED. Taken from the sport ordering in `CANDIDATE_SPORTS`, which is
-#: the same ordering the four above sit in and which `fixtures --discover`
-#: exists to confirm. Hockey is the one team sport this project rosters whose
-#: own feed reports season totals rather than games, so it is the one league
-#: with no schedule of its own to harvest -- which is why it is worth a sport
-#: id here rather than a note saying it cannot be done.
+#: Confirmed in production rather than by the probe that was written for it:
+#: the nightly fixture pull has been asking sport 4 for weeks and the rows come
+#: back headed "NHL" -- 92 fixtures over 14 clubs, reaching from the first
+#: preseason night to a fortnight past the opener. The other four ids answer
+#: the same way, and the day feed splits the women's game off as `1W`.
+#:
+#: Hockey is the one team sport this project rosters whose own feed reports
+#: season totals rather than games, so it is the one league with no schedule of
+#: its own to harvest -- which is why it is worth a sport id here rather than a
+#: note saying it cannot be done.
 SPORT_HOCKEY = 4
 
 API_URL = FEED_URL.format(sport=SPORT_TENNIS, day="{day}")

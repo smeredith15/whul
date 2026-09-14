@@ -1,0 +1,135 @@
+# Delete benchmark drafts nobody adopted.
+#
+# `derive` starts a draft per sitting and a long recompute takes several, so
+# the abandoned halves accumulate: eighteen of them in the twelve days after
+# the season opened, each holding a full copy of thirty-eight benchmark groups.
+# They are not merely clutter. `latest_draft` finds the newest one and every
+# later run warns that a draft is already open -- correctly, and with no way to
+# act on it, which is how a real warning becomes one nobody reads.
+#
+# Its own workflow rather than a box on the Benchmarks job, for the reason the
+# retraction has one: this deletes rows, and the compute job's every step is
+# already conditioned on which of four modes it is in. A fifth would be one
+# `if:` away from starting a draft during a run meant to remove them.
+#
+# What it will not delete is the point of it. A frozen version is what stored
+# scores are measured against and is never deleted -- that is the whole
+# discipline here. Nor is a draft some score already names: unfrozen is not the
+# same as unused, and a number stops being explainable the moment the scale it
+# was divided by is gone. Nor the newest draft, which is what a resumed
+# recompute continues into; name it explicitly if it really is spent.
+
+name: Discard drafts
+
+on:
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season whose drafts to sweep"
+        default: "2026-27"
+      version:
+        description: >-
+          One version to delete instead of sweeping. Use this for the newest
+          draft, which the sweep keeps on purpose.
+        default: ""
+      apply:
+        description: >-
+          Delete them. Leave unticked for a dry run first: it names every
+          version it would remove and how many groups each holds.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  # The nightly job's group: both write the same database on the same branch,
+  # and the loser of a race would have its work force-pushed away by the winner.
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  discard:
+    runs-on: ubuntu-latest
+    env:
+      SEASON: ${{ inputs.season || '2026-27' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+          # Staged by the checkout, and this job commits; taken out here and
+          # added back deliberately below.
+          git reset -q -- data/whul.sqlite3
+
+      - name: Say what is there now
+        run: |
+          set -o pipefail
+          python -m whul.cli benchmarks versions --db data/whul.sqlite3 \
+            | tee versions-before.txt
+
+      - name: Discard
+        # Flags built in the shell from the inputs as plain strings. A GitHub
+        # `a && b || c` is not a ternary -- the operators return values, so a
+        # true condition with an empty middle yields '', which is falsy, and
+        # the expression takes the right-hand branch anyway. That mistake made
+        # the retraction workflow dry-run the run that meant to write.
+        #
+        # pipefail because a pipeline exits with its last command's status and
+        # the default shell is `bash -e`: without it `tee` reports success
+        # however the command exited, and a refusal would go green.
+        env:
+          APPLY: ${{ inputs.apply }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -o pipefail
+          FLAGS=""
+          if [ -n "$VERSION" ]; then FLAGS="$VERSION"; else FLAGS="--drafts"; fi
+          if [ "$APPLY" = "true" ]; then FLAGS="$FLAGS --yes"; fi
+          echo "benchmarks discard --season $SEASON $FLAGS"
+          python -m whul.cli benchmarks discard --season "$SEASON" $FLAGS \
+            --db data/whul.sqlite3 | tee discard.txt
+
+      - name: Save the database
+        if: ${{ inputs.apply }}
+        run: |
+          git config user.name "whul-bot"
+          git config user.email "whul-bot@users.noreply.github.com"
+          git checkout --orphan data-tmp
+          git rm -rqf --cached .
+          git add -f data/whul.sqlite3
+          git commit -qm "Drafts discarded $(date -u +%Y-%m-%d)"
+          git push -f origin data-tmp:data
+
+      - name: What to do next
+        run: |
+          echo "==================================================="
+          if [ "${{ inputs.apply }}" = "true" ]; then
+            echo "  Deleted. Nothing else needs running: no score was"
+            echo "  measured against any of them, which is why they could"
+            echo "  go. The next Benchmarks run will stop warning about an"
+            echo "  open draft unless one is genuinely open."
+          else
+            echo "  DRY RUN. Nothing was deleted. Read the list above, then"
+            echo "  run again with Apply ticked."
+          fi
+          echo "==================================================="
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: discard
+          path: |
+            discard.txt
+            versions-before.txt
+          if-no-files-found: ignore

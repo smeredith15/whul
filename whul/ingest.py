@@ -119,6 +119,10 @@ def ingest(
     report.matched = len(resolution.matched)
     if mine.empty:
         report.problems.append("no rostered asset matched a feed row")
+        # A feed that answered and named nobody we hold is a failure, and
+        # without this the status row keeps yesterday's `ok`, which is the
+        # same trap `_record_nothing` was written for one branch earlier.
+        _record_nothing(store, source, as_of, report)
         return report
     resolver.save_aliases(store, source.key, resolution.matched)
 
@@ -136,6 +140,7 @@ def ingest(
         mine.to_dict("records"), source=source.key, season=season,
         as_of=as_of, league=source.league,
     )
+    _note_the_unmatched(store, source, as_of, report)
 
     version = store_benchmarks.active_version(store, season)
     if version is None:
@@ -1099,6 +1104,40 @@ def _record_fixtures(store: Store, source, season: str, as_of: date,
         print(f"  {source.league}: fixtures not recorded "
               f"({type(exc).__name__}: {exc})", flush=True)
         return 0
+
+
+def _note_the_unmatched(store: Store, source, as_of: date,
+                        report: IngestReport) -> None:
+    """Say on the run's own record that somebody rostered went unseen.
+
+    ``record_stats`` writes the source's status from inside the write, where
+    the only thing it can know is how many rows landed. So a feed that answers
+    fully and healthily, and still accounts for nobody we hold, is recorded as
+    `ok=1, rows=14, message=''` -- indistinguishable from a run that saw
+    everybody. The roster held fifteen tennis players and the feed named
+    fourteen for twenty-five days, and the only place that appeared was a line
+    in a seventeen-hundred-line log.
+
+    This is that line, put somewhere a query can reach. It is a note and not a
+    failure: a player who misses a tournament injured is *correctly* scoring
+    nothing, and neither this nor the feed can tell that apart from a name
+    spelled differently. What it can do is stop the two looking identical to
+    anybody reading the database afterwards.
+    """
+    if report.resolution is None or not report.resolution.unmatched:
+        return
+    missing = report.resolution.unmatched
+    named = ", ".join(f"{name} ({league})" for name, league in missing[:8])
+    if len(missing) > 8:
+        named += f", and {len(missing) - 8} more"
+    store.record_source_status(
+        source.key, source.league, ok=True, rows=report.recorded,
+        last_data_date=as_of.isoformat(),
+        message=(
+            f"{len(report.resolution.matched)} of {report.resolution.rostered} "
+            f"rostered matched; no feed row for {named}"
+        ),
+    )
 
 
 def _record_nothing(store: Store, source, as_of: date, report: IngestReport) -> None:

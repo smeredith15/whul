@@ -306,6 +306,76 @@ def freeze(store: Store, version: str, notes: str = "") -> BenchmarkVersion:
     return get_version(store, version)
 
 
+def discard(store: Store, version: str) -> int:
+    """Delete a draft nobody adopted, and say how many rows went with it.
+
+    Drafts accumulate. `derive` starts one per sitting, a long recompute takes
+    several, and the ones that were abandoned halfway stay in the table forever
+    -- where `latest_draft` keeps finding them and warning every later run that
+    a draft is already open. The warning is right; there was simply no way to
+    act on it.
+
+    Two things are refused rather than deleted. A frozen version is the record
+    every stored score points at through `daily_scores.benchmark_version`, and
+    the whole discipline here is that a frozen scale is never edited -- deleting
+    one is editing it in the most complete way available. And a draft that some
+    score already names is refused for the same reason: the number is only
+    explainable while the scale it was divided by still exists.
+
+    So this removes exactly what it says: a version that was never adopted and
+    that nothing depends on.
+    """
+    existing = get_version(store, version)
+    if existing is None:
+        raise ValueError(f"no benchmark version {version!r}")
+    if existing.is_frozen:
+        raise ValueError(
+            f"{version} was frozen at {existing.frozen_at} and is what stored "
+            f"scores are measured against; a frozen scale is never deleted"
+        )
+    scored = store.conn.execute(
+        "SELECT COUNT(*) FROM daily_scores WHERE benchmark_version = ?", (version,)
+    ).fetchone()[0]
+    if scored:
+        raise ValueError(
+            f"{version} is unfrozen but {scored:,} stored score(s) name it, and "
+            f"they stop being explainable without it; restate those days "
+            f"against the frozen scale first"
+        )
+
+    with store.transaction() as conn:
+        rows = conn.execute(
+            "DELETE FROM benchmarks WHERE version = ?", (version,)
+        ).rowcount
+        conn.execute(
+            "DELETE FROM benchmark_versions WHERE version = ?", (version,)
+        )
+    return rows
+
+
+def spent_drafts(store: Store, season: str) -> list[BenchmarkVersion]:
+    """Every draft for a season that can be deleted, newest first.
+
+    Excludes the frozen ones, anything a stored score names, and the newest
+    draft of all -- that last one is what `latest_draft` hands to a resumed
+    recompute, so a sweep that took it would delete the sitting in progress.
+    Naming it explicitly still works; this is the safe bulk form.
+    """
+    rows = store.conn.execute(
+        "SELECT * FROM benchmark_versions WHERE season = ? AND frozen_at IS NULL "
+        "ORDER BY computed_at DESC, rowid DESC",
+        (season,),
+    ).fetchall()
+    drafts = [_to_version(row) for row in rows]
+    return [
+        draft for draft in drafts[1:]
+        if not store.conn.execute(
+            "SELECT 1 FROM daily_scores WHERE benchmark_version = ? LIMIT 1",
+            (draft.version,),
+        ).fetchone()
+    ]
+
+
 def get_version(store: Store, version: str) -> BenchmarkVersion | None:
     row = store.conn.execute(
         "SELECT * FROM benchmark_versions WHERE version = ?", (version,)
