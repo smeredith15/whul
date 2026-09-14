@@ -373,3 +373,15 @@ def test_the_sweep_leaves_a_draft_that_is_named_by_a_score(store):
     }], keys=("asset_id", "season", "as_of"))
 
     assert [v.version for v in bm.spent_drafts(store, "2026-27")] == []
+
+
+def test_a_dry_run_refuses_what_the_real_run_would_refuse(store):
+    """The describe-only path once printed "nothing frozen" about a frozen
+    scale and only refused when asked to write. A reassuring answer that is
+    not true is the failure this project exists to avoid."""
+    version = _bench(store, "live")
+    bm.freeze(store, version)
+
+    assert "frozen" in bm.refusal_for(store, version)
+    assert bm.refusal_for(store, _bench(store, "spare")) is None
+    assert "no benchmark version" in bm.refusal_for(store, "never-existed")

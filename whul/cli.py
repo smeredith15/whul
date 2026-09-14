@@ -2502,6 +2502,21 @@ def cmd_benchmarks_discard(args: argparse.Namespace) -> int:
             return 1
         targets = [found]
 
+    # Asked before anything is described, so that the dry run cannot promise a
+    # deletion the real run would refuse. A frozen version named by mistake is
+    # the likely case -- the ids are fifteen digits and differ by a minute, and
+    # the first id typed into this workflow was a superseded frozen scale.
+    refusals = [
+        note for note in
+        (store_benchmarks.refusal_for(store, v.version) for v in targets)
+        if note
+    ]
+    if refusals:
+        for note in refusals:
+            print(f"\n{note}", file=sys.stderr)
+        print(file=sys.stderr)
+        return 1
+
     # Naming what is about to go, because a version id is fifteen digits and
     # two of them can differ by a minute -- the abandoned draft and the scale
     # in use were computed three hours apart on the same day.
@@ -2522,11 +2537,7 @@ def cmd_benchmarks_discard(args: argparse.Namespace) -> int:
 
     gone = 0
     for version in targets:
-        try:
-            gone += store_benchmarks.discard(store, version.version)
-        except ValueError as exc:
-            print(f"\n{exc.args[0]}\n", file=sys.stderr)
-            return 1
+        gone += store_benchmarks.discard(store, version.version)
     print(f"\n  discarded {len(targets)} version(s) and {gone} benchmark "
           f"group(s)\n")
     return 0
