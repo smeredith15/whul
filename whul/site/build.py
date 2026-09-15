@@ -412,6 +412,11 @@ def asset_profiles(
         name = str(info["display_name"])
         league = str(info["league"])
         badge = images.find("badge", _slug(league))
+        if asset_id not in panels:
+            empty = _panel_before_a_season(
+                league, str(info["asset_type"]), str(info["role"] or ""))
+            if empty:
+                panels[asset_id] = empty
         who = _identity(
             raw_rows.get(asset_id, {}), league, str(info["norm_key"] or ""),
             str(info["affiliation"] or ""),
@@ -893,15 +898,19 @@ def _rate_box(row: dict, column: str, label: str, games: float | None,
         value = "\u2014"
     else:
         value = f"{total / games:,.1f}"
+    # None, not zero, where the feed gave nothing. A strip reading "0.0" under
+    # a dash says the player earned none, which is a claim; we do not know.
     return {"label": label, "value": value,
-            "points": round((total or 0) * weight, 1) or 0.0}
+            "points": None if total is None
+            else (round(total * weight, 1) or 0.0)}
 
 
 def _tally_box(row: dict, column: str, label: str, weight: float) -> dict:
     total = _stat_number(row, column)
     return {"label": label,
             "value": "\u2014" if total is None else f"{total:,.0f}",
-            "points": round((total or 0) * weight, 1) or 0.0}
+            "points": None if total is None
+            else (round(total * weight, 1) or 0.0)}
 
 
 def _games_head(row: dict) -> list[list[str]]:
@@ -914,10 +923,10 @@ def _games_head(row: dict) -> list[list[str]]:
     if played is None:
         played = _stat_number(row, "games_played")
     team = _stat_number(row, "team_games")
-    out = [["Games played", "\u2014" if played is None else f"{played:,.0f}"]]
-    if team:
-        out.append(["Team games", f"{team:,.0f}"])
-    return out
+    return [
+        ["Games played", "\u2014" if played is None else f"{played:,.0f}"],
+        ["Team games", "\u2014" if not team else f"{team:,.0f}"],
+    ]
 
 
 def _nba_panel(row: dict) -> dict | None:
@@ -968,6 +977,27 @@ def _nhl_panel(row: dict) -> dict | None:
         "top": [_tally_box(row, c, label, weights[c]) for c, label in NHL_BOXES],
         "secondary": [],
     }
+
+
+#: Leagues whose profile is a panel built from figures, so that one can be
+#: drawn before the figures exist.
+EMPTY_PANELS = {"NBA": "_nba_panel", "NHL": "_nhl_panel"}
+
+
+def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | None:
+    """The panel a rostered asset gets before its league has played.
+
+    Built from nothing at all, which is the point: a club drafted in August
+    into a league that opens in October has a profile from the day it is
+    drafted, and until this it fell back to a table reading "No stat lines
+    recorded for this day yet". The boxes are the same boxes, every figure a
+    dash, so the page says what will be there rather than that there is no
+    page.
+    """
+    if asset_type != "Player" or league not in EMPTY_PANELS:
+        return None
+    made = {"NBA": _nba_panel, "NHL": _nhl_panel}[league]
+    return made({"league": league, "role": role})
 
 
 def _outcome_box(label: str, won, settled, points: float,

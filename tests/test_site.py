@@ -2829,19 +2829,44 @@ def test_nothing_played_reads_as_nothing_rather_than_as_zero():
     panel = site_build._nba_panel({"league": "NBA", "role": "C"})
 
     assert [b["value"] for b in panel["top"]] == ["—"] * 3
-    assert panel["head"] == [["Games played", "—"]]
+    assert panel["head"] == [["Games played", "—"],
+                             ["Team games", "—"]]
+    # And the strip beneath is blank too. "0.0" under a dash says the player
+    # earned none, which is a claim; nothing has been played.
+    assert [b["points"] for b in panel["top"]] == [None] * 3
 
     played = site_build._nba_panel(_nba_row(blocks=0))
     assert next(b for b in played["secondary"] if b["label"] == "BPG")["value"] == "0.0"
 
 
-def test_hockey_claims_no_team_games_it_cannot_know():
-    """The NHL endpoint serves one row per skater for the whole season, so
-    nothing on the row says how often his club played."""
+def test_hockey_says_it_does_not_know_rather_than_hiding_the_row():
+    """A club the standings do not name leaves the figure blank. The row stays,
+    because "we do not know" and "there is nothing to know" are different and
+    an omitted row says the second."""
     panel = site_build._nhl_panel(
         {"league": "NHL", "role": "Skater", "games_played": 70})
 
-    assert [h[0] for h in panel["head"]] == ["Games played"]
+    assert panel["head"] == [["Games played", "70"], ["Team games", "—"]]
+
+    known = site_build._nhl_panel(
+        {"league": "NHL", "role": "Skater", "games_played": 50,
+         "team_games": 62})
+    assert known["head"] == [["Games played", "50"], ["Team games", "62"]]
+
+
+def test_a_league_that_has_not_played_still_gets_its_panel():
+    """A club drafted in August into a league that opens in October has a
+    profile from the day it is drafted. Before this it fell back to a table
+    reading "No stat lines recorded for this day yet"."""
+    panel = site_build._panel_before_a_season("NBA", "Player", "C")
+
+    assert [b["label"] for b in panel["top"]] == ["PPG", "RPG", "APG"]
+    assert [b["value"] for b in panel["top"]] == ["—"] * 3
+
+    assert site_build._panel_before_a_season("NHL", "Player", "Skater")
+    # Not a team, and not a league whose profile is not a panel.
+    assert site_build._panel_before_a_season("NBA", "Team", "") is None
+    assert site_build._panel_before_a_season("PGA", "Player", "") is None
 
 
 def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
