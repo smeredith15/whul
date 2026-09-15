@@ -1252,3 +1252,48 @@ def test_an_unused_substitute_is_credited_with_nothing(monkeypatch):
                           "date": "2026-09-24", "opponent": "Luton Town"}])
 
     assert espn_soccer.matches_he_played("epl", "19", ties, 2027, seen={}) == []
+
+
+def test_a_player_with_no_gamelog_can_still_be_read_from_his_clubs_lineups(monkeypatch):
+    """Gozo's own ESPN record is an EFL Trophy record with no appearances in
+    it and no Premier League gamelog at all -- his only league filter value is
+    eng.trophy. His club's matches happened regardless, and their lineups say
+    whether he was in them."""
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    gozo, played = "374519", {"m1": True, "m2": True, "m3": True, "m4": False}
+
+    def get(url, params, session=None):
+        return {"rosters": [{"team": {"displayName": "Crystal Palace"}, "roster": [
+            {"athlete": {"id": gozo}, "active": True, "starter": False,
+             "subbedIn": played[params["event"]], "subbedOut": False}]}]}
+
+    monkeypatch.setattr(espn_soccer, "_get", get)
+    matches = pd.DataFrame([
+        {"event_id": m, "competition_key": "epl", "date": "2026-09-01",
+         "opponent": "Someone"} for m in played
+    ])
+
+    found = espn_soccer.matches_he_played("epl", gozo, matches, 2027, seen={})
+
+    assert len(found) == 3, "the match he was an unused substitute in counted"
+    assert {f["event_id"] for f in found} == {"m1", "m2", "m3"}
+
+
+def test_a_team_with_no_squad_reports_rather_than_raising(monkeypatch):
+    """A youth player's overview names several teams and selects none, so the
+    id read from it can be an under-21 side this league path has no squad for.
+    An empty frame has no columns, and asking one for `player_id` raised."""
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "load_squad", lambda *a, **k: pd.DataFrame())
+    monkeypatch.setattr(espn_soccer, "_get",
+                        lambda *a, **k: {"athlete": {"team": {"id": "4771"}}})
+
+    out = espn_soccer.compare_roster_and_overview("epl", "374519", 2027)
+
+    assert "no squad for team 4771" in out["roster_error"]

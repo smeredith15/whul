@@ -1704,27 +1704,40 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
                      if failed else "")
             print(f"  {row.display_name}: no athlete id in {key}{near}{broke}")
             continue
+        matches = club_results[key]
+        if matches is not None and not matches.empty and club:
+            matches = matches[matches["team"].astype(str) == str(club)]
         events = espn_soccer.load_gamelog(key, athlete, season)
         if events.empty:
             # An empty gamelog and a figure of nothing agree. Balogun has not
-            # played this season, his figures say none, and there is no
-            # disagreement to find -- counting him as unreadable overstated
-            # what was actually unknown. A figure claiming appearances against
-            # an empty gamelog is the case that cannot be checked.
+            # played this season and his figures say none, so there is no
+            # disagreement available to find and calling him unreadable
+            # overstated what was actually unknown.
             claims = float(stated.get(str(row.display_name)) or 0.0)
             if claims <= attribution.TOLERANCE:
                 nothing_claimed += 1
                 print(f"  {row.display_name}: no matches this season, and the "
                       f"figures claim none either")
-            else:
+                continue
+            # A figure claiming appearances against an empty gamelog is not
+            # unanswerable, only unanswerable *from him*. Gozo's own ESPN
+            # record is an EFL Trophy record with no appearances in it and no
+            # Premier League gamelog at all -- but his club's matches happened,
+            # and their lineups say whether he was in them. Every match, since
+            # there is no gamelog to be missing competitions from.
+            found = (espn_soccer.matches_he_played(
+                        key, athlete, matches, season, seen=lineups)
+                     if matches is not None and not getattr(matches, "empty", True)
+                     else [])
+            if not found:
                 unreadable += 1
-                print(f"  {row.display_name}: the gamelog returned no matches "
-                      f"for this season, so the {claims:g} its figures claim "
-                      f"cannot be checked")
-            continue
-        matches = club_results[key]
-        if matches is not None and not matches.empty and club:
-            matches = matches[matches["team"].astype(str) == str(club)]
+                print(f"  {row.display_name}: no gamelog for this season and "
+                      f"his club's lineups do not name him, so the "
+                      f"{claims:g} his figures claim cannot be confirmed")
+                continue
+            events = pd.DataFrame(found)
+            print(f"      + {len(found)} appearance(s) read from his club's "
+                  f"matches, which his own record does not carry")
         counted = attribution.attribute(events, matches)
         # The gamelog does not return the domestic cups, so a club that plays
         # one leaves its players unjudgeable -- the figure counts the cup tie
