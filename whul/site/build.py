@@ -1368,8 +1368,31 @@ def _mlb_by_year(row: dict, second, role: str, other: str, scale: float,
         sections = [build[role](primary.get(year, {}), scale)]
         if shows_second:
             sections.append(build[other](secondary.get(year, {}), scale))
-        out.append({"year": year, "sections": sections})
+        out.append({"year": year, "sections": sections,
+                    "raw": _section_points(sections)})
     return out
+
+
+def _section_points(sections: list) -> float:
+    """What one calendar season's boxes come to.
+
+    The figure the strip shows while that year is selected, and it is a sum of
+    the boxes rather than a second scoring of them: the live player path
+    prorates by one factor and does not carry the bisection weights -- those
+    govern the historical team path, where a whole season really is split into
+    its two shares. So the years add to the total, and this was measured
+    against every rostered batter and pitcher rather than assumed.
+
+    A box whose points are counted elsewhere is skipped, the same way it is
+    skipped when the section is checked against the score: home runs are in
+    the average above them and saying so twice would double them.
+    """
+    return round(sum(
+        box.get("points") or 0.0
+        for section in sections
+        for box in section.get("top", []) + section.get("secondary", [])
+        if not box.get("note")
+    ), 1)
 
 
 def _outcome_box(label: str, won, settled, points: float,

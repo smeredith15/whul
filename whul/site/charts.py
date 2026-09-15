@@ -1195,8 +1195,13 @@ SCRIPT = """\
     // answer which half of it was last summer.
     var views = [{ year: 'Total', sections: panel.sections }].concat(panel.years);
     var tabs = views.map(function (v, i) {
+      // The year carries what it is worth, so the strip beneath can follow the
+      // tab. Total carries none and falls back to the scorer's own figure,
+      // which is the one number here that was not rebuilt from boxes.
       return '<button class="yr' + (i === 0 ? ' on' : '') +
-             '" data-year="' + i + '">' + v.year + '</button>';
+             '" data-year="' + i + '"' +
+             (v.raw == null ? '' : ' data-raw="' + pts(v.raw) + '"') +
+             '>' + v.year + '</button>';
     }).join('');
     var panes = views.map(function (v, i) {
       return '<div class="yrpane"' + (i === 0 ? '' : ' hidden') + '>' +
@@ -1295,8 +1300,10 @@ SCRIPT = """\
       bonus +
       (notes ? '<div class="body">' + notes + '</div>' : '') +
       '<div class="scoreline">' +
-        '<div><div class="label">Raw score</div><div class="value">' + a.raw + '</div></div>' +
-        '<div><div class="label">Normalized</div><div class="value">' + a.scaled + '</div></div>' +
+        '<div><div class="label rawlabel">Raw score</div>' +
+          '<div class="value rawvalue">' + a.raw + '</div></div>' +
+        '<div><div class="label">Normalized</div>' +
+          '<div class="value scaledvalue">' + a.scaled + '</div></div>' +
       '</div>';
     dialog.querySelectorAll('button.yr').forEach(function (tab) {
       tab.addEventListener('click', function () {
@@ -1306,6 +1313,24 @@ SCRIPT = """\
         dialog.querySelectorAll('.yrpane').forEach(function (pane, i) {
           pane.hidden = String(i) !== tab.dataset.year;
         });
+        // And the strip follows it, because a season's boxes with the whole
+        // league year's score beneath them is two different questions answered
+        // in one place.
+        var rawCell = dialog.querySelector('.scoreline .rawvalue');
+        var scaledCell = dialog.querySelector('.scoreline .scaledvalue');
+        var rawLabel = dialog.querySelector('.scoreline .rawlabel');
+        if (!rawCell || !scaledCell || !rawLabel) return;
+        if (tab.dataset.raw) {
+          rawCell.textContent = tab.dataset.raw;
+          rawLabel.textContent = tab.textContent + ' raw score';
+          // Normalization is against a whole league year, so a part of one has
+          // no honest figure here rather than a smaller-looking score.
+          scaledCell.textContent = '\u2014';
+        } else {
+          rawCell.textContent = a.raw;
+          rawLabel.textContent = 'Raw score';
+          scaledCell.textContent = a.scaled;
+        }
       });
     });
     dialog.querySelector('.close').addEventListener('click', function () {
