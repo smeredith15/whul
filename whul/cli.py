@@ -1571,6 +1571,7 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
 
     club_results: dict[str, object] = {}
     attributed: dict[str, object] = {}
+    club_matches: dict[str, object] = {}
     unreadable = 0
     for row in mine.itertuples():
         key = PLAYER_LEAGUES[str(row.league)]
@@ -1599,6 +1600,10 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
             matches = matches[matches["team"].astype(str) == str(club)]
         counted = attribution.attribute(events, matches)
         attributed[str(row.display_name)] = counted
+        # His club's own matches, kept for the judgement below: they are the
+        # only hard ceiling, and they say which competitions his gamelog was
+        # silent about.
+        club_matches[str(row.display_name)] = matches
         print(f"  {row.display_name} ({club or '?'}): "
               + ", ".join(f"{r.competition_key} {r.appearances:g}"
                           for r in counted.itertuples()))
@@ -1613,7 +1618,8 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     for player, counted in attributed.items():
         if player in stated:
             found += attribution.disagreements(
-                counted, stated[player], player, leagues.get(player, ""))
+                counted, stated[player], player, leagues.get(player, ""),
+                club_matches.get(player))
 
     lines = attribution.report(found)
     print()
