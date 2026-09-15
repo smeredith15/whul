@@ -3085,6 +3085,61 @@ def test_the_club_lookup_reads_every_clubs_matches_played():
     assert site_build._club_games(pd.DataFrame()) == {}
 
 
+def test_a_footballers_domestic_cups_get_their_own_section():
+    """The cups count in full and were summed into one section named for the
+    league, so four league matches and two League Cup ties read as six
+    Premier League appearances -- on a page whose whole point is that a figure
+    says which competition it is from."""
+    row = _footballer(domestic_detail=[
+        {"competition": "Premier League", "games": 4.0, "points": 24.0,
+         "starts": 4.0, "goals": 2.0, "assists": 2.0, "yellow": 0.0,
+         "red": 0.0, "appearance_points": 8.0, "goal_points": 10.0},
+        {"competition": "EFL Cup", "games": 2.0, "points": 7.0, "starts": 1.0,
+         "goals": 1.0, "assists": 0.0, "yellow": 1.0, "red": 0.0,
+         "appearance_points": 3.0, "goal_points": 5.0},
+    ])
+    panel = site_build._soccer_player_panel(row, {}, "Premier League")
+
+    assert [s["name"] for s in panel["sections"]] == ["Premier League", "EFL Cup"]
+    # The same boxes in each, as the league and the cups are the same football.
+    assert [b["label"] for b in panel["sections"][0]["top"]] == \
+        [b["label"] for b in panel["sections"][1]["top"]]
+    cup = panel["sections"][1]
+    assert round(sum(b["points"] for b in cup["top"] + cup["secondary"]), 1) == 7.0
+
+
+def test_his_own_league_leads_the_cups():
+    panel = site_build._soccer_player_panel(_footballer(domestic_detail=[
+        {"competition": "EFL Cup", "games": 1.0, "points": 2.0},
+        {"competition": "FA Cup", "games": 1.0, "points": 2.0},
+        {"competition": "Premier League", "games": 4.0, "points": 24.0},
+    ]), {}, "Premier League")
+
+    assert [s["name"] for s in panel["sections"]] == [
+        "Premier League", "EFL Cup", "FA Cup"]
+
+
+def test_a_row_stored_before_the_breakdown_still_draws():
+    """Every row in the store predates it, and they keep the single set of
+    boxes rather than a section named for a league that may not be all of it."""
+    panel = site_build._soccer_player_panel(_footballer(), {}, "Premier League")
+
+    assert "sections" not in panel
+    assert panel["title"] == "Premier League"
+    assert [b["label"] for b in panel["top"]] == [
+        "Apps / Starts", "Goals", "Assists"]
+
+
+def test_a_match_is_not_pluralised_as_matchs():
+    note = site_build._campaign_note(
+        {"competition": "UEFA Champions League", "games": 1.0, "points": 7.0,
+         "share": 0.05, "scalar": 1.9, "credited": False,
+         "finishes": "2027-06-30"}, "match")
+
+    assert "one or two matches" in note
+    assert "matchs" not in note
+
+
 def _euro(**over):
     entry = {"competition": "UEFA Champions League", "games": 1.0,
              "points": 9.0, "share": 0.05, "scalar": 1.9, "adds": 17.1,
