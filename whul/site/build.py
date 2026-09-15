@@ -395,6 +395,10 @@ def asset_profiles(
                          else _nfl_team_panel(row))
                 if panel:
                     panels[asset_id] = panel
+            elif str(row.get("league")) == "NBA" and row.get("role"):
+                panels[asset_id] = _nba_panel(row)
+            elif str(row.get("league")) == "NHL" and row.get("role"):
+                panels[asset_id] = _nhl_panel(row)
             elif row.get("sections"):
                 panel = _soccer_panel(row)
                 if panel:
@@ -513,6 +517,8 @@ STAT_SKIP = {
     # The club soccer panel's own. `sections` is a list and is skipped anyway;
     # the other two are read as its heading rather than shown as figures.
     "sections", "league_settled", "season_settled", "div_rank", "team_division",
+    # Read as the NBA and NHL panels' own figures rather than as stat rows.
+    "double_doubles", "triple_doubles",
     # The NFL panel's own figures. On the fallback table they would read
     # "Post passing yards 0" in a column of season totals.
     "team_games", "post_passing_yards", "post_passing_tds", "post_interceptions",
@@ -845,6 +851,122 @@ def _ordinal(number: int) -> str:
     return f"{number}{suffix}"
 
 
+#: Basketball is read as a rate and hockey as a tally, so each is shown the way
+#: its own sport reports it. The weights are the scorers' own either way, so a
+#: rate box still carries what the season's total was worth.
+NBA_RATE_TOP = (("points", "PPG"), ("rebounds", "RPG"), ("assists", "APG"))
+NBA_RATE_REST = (("three_pt_made", "3PM/G"), ("steals", "SPG"),
+                 ("blocks", "BPG"), ("turnovers", "TOPG"))
+NBA_TALLY_REST = (("double_doubles", "Double-doubles"),
+                  ("triple_doubles", "Triple-doubles"),
+                  ("plus_minus", "+/-"))
+
+NHL_BOXES = (("goals", "Goals"), ("assists", "Assists"), ("shots", "Shots"),
+             ("plus_minus", "+/-"))
+
+
+def _stat_number(row: dict, column: str):
+    """A stored number, or None where the feed put nothing.
+
+    None and zero are different answers and the page says so: a club that has
+    not played reports nothing, and a player who took no shots reports none.
+    """
+    value = row.get(column)
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rate_box(row: dict, column: str, label: str, games: float | None,
+              weight: float) -> dict:
+    """A per-game rate, over what the season's total was worth.
+
+    The big figure is the rate because that is how basketball is read; the
+    strip beneath is the total times its weight, because that is what the score
+    was built from. The two are the same season said twice.
+    """
+    total = _stat_number(row, column)
+    if total is None or not games:
+        value = "\u2014"
+    else:
+        value = f"{total / games:,.1f}"
+    return {"label": label, "value": value,
+            "points": round((total or 0) * weight, 1) or 0.0}
+
+
+def _tally_box(row: dict, column: str, label: str, weight: float) -> dict:
+    total = _stat_number(row, column)
+    return {"label": label,
+            "value": "\u2014" if total is None else f"{total:,.0f}",
+            "points": round((total or 0) * weight, 1) or 0.0}
+
+
+def _games_head(row: dict) -> list[list[str]]:
+    """Games played, and out of how many the club played.
+
+    Both or neither: "50 played" alone cannot say whether the rest were missed
+    or not yet played, which is the only reason the number is worth a heading.
+    """
+    played = _stat_number(row, "regular_games")
+    if played is None:
+        played = _stat_number(row, "games_played")
+    team = _stat_number(row, "team_games")
+    out = [["Games played", "\u2014" if played is None else f"{played:,.0f}"]]
+    if team:
+        out.append(["Team games", f"{team:,.0f}"])
+    return out
+
+
+def _nba_panel(row: dict) -> dict | None:
+    """A basketball season as the sport reports it: rates, then the tallies."""
+    from whul.scoring.nba import (
+        BOX_WEIGHTS, DOUBLE_DOUBLE_BONUS, PLUS_MINUS_WEIGHT,
+        TRIPLE_DOUBLE_BONUS,
+    )
+
+    games = _stat_number(row, "regular_games") or _stat_number(row, "games_played")
+    tally_weights = {"double_doubles": DOUBLE_DOUBLE_BONUS,
+                     "triple_doubles": TRIPLE_DOUBLE_BONUS,
+                     "plus_minus": PLUS_MINUS_WEIGHT}
+    return {
+        "kind": "boxes",
+        "head": _games_head(row),
+        "top": [_rate_box(row, c, label, games, BOX_WEIGHTS[c])
+                for c, label in NBA_RATE_TOP],
+        "secondary": (
+            [_rate_box(row, c, label, games, BOX_WEIGHTS[c])
+             for c, label in NBA_RATE_REST]
+            + [_tally_box(row, c, label, tally_weights[c])
+               for c, label in NBA_TALLY_REST]
+        ),
+    }
+
+
+def _nhl_panel(row: dict) -> dict | None:
+    """A hockey season as a tally, which is how the feed reports it.
+
+    No team games: the NHL's own endpoint serves one row per skater for the
+    whole season rather than one per game, so nothing on the row says which
+    club he was on or how often it played. A box reading his own games again
+    under another name would be worse than the heading not being there.
+    """
+    from whul.scoring.nhl import (
+        PTS_ASSIST, PTS_GOAL, PTS_PLUS_MINUS, PTS_SHOT,
+    )
+
+    weights = {"goals": PTS_GOAL, "assists": PTS_ASSIST, "shots": PTS_SHOT,
+               "plus_minus": PTS_PLUS_MINUS}
+    return {
+        "kind": "boxes",
+        "head": _games_head(row),
+        "top": [_tally_box(row, c, label, weights[c]) for c, label in NHL_BOXES],
+        "secondary": [],
+    }
+
+
 def _outcome_box(label: str, won, settled, points: float,
                  named: str = "") -> dict:
     """A season outcome as a box, carrying what it paid.
@@ -888,8 +1010,11 @@ def _soccer_block(part: dict, shape: str, byes: int = 0,
             made["points"] = round(made["points"] + bye_points, 1)
         return made
 
-    return {"top": [box(c) for c in top],
-            "secondary": [box(c) for c in rest if part.get(c)]}
+    # The second row keeps its zeroes here, unlike a player's. Big wins and
+    # clean sheets are two of the four things a club is scored on, and a
+    # competition where it kept none is a fact about the season rather than a
+    # box with nothing to say.
+    return {"top": [box(c) for c in top], "secondary": [box(c) for c in rest]}
 
 
 def _soccer_head(section: dict, row: dict) -> list[list[str]]:
