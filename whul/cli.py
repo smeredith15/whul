@@ -1454,6 +1454,55 @@ def _gamelog_lines(report: dict) -> list[str]:
     return lines
 
 
+def cmd_probe_cup(args: argparse.Namespace) -> int:
+    """Whether a cup tie's own record says who played in it.
+
+    The gamelog does not return the domestic cups. The cups are scored anyway
+    -- the roster aggregate carries them -- so what is missing is only the
+    attribution, and the club's match list already names the ties. This asks
+    whether their summaries name the players.
+    """
+    from whul.sources import espn_soccer
+
+    found = espn_soccer.probe_cup_lineups(
+        args.league, args.club, int(args.season))
+    lines = [
+        f"ESPN cup-lineup probe -- {found['league']}, {found['club']}, "
+        f"season {found['season']}",
+        "",
+        f"  domestic cups for this league   {', '.join(found['cups']) or '(none)'}",
+        f"  matches found for the club      {found.get('club_matches', 0)}",
+        f"  by competition                  {found.get('by_competition', {})}",
+        f"  of those, cup ties              {found.get('cup_ties', 0)}",
+    ]
+    if found.get("problem"):
+        lines += ["", f"  {found['problem']}"]
+    for tie in found.get("ties", []):
+        lines += ["", f"  event {tie['event_id']} ({tie['competition']})"]
+        if tie.get("refused"):
+            lines.append(f"      refused: {tie['refused']}")
+            continue
+        lines.append(f"      top-level keys: {', '.join(tie['top_level_keys'])}")
+        lines.append(f"      athletes named: {tie['athletes_named']}")
+        for who in tie.get("sample", []):
+            lines.append(f"          {who}")
+    lines += [
+        "",
+        "  What to look for: a tie naming twenty-odd athletes is one whose",
+        "  lineup can be read, and attribution has its route -- a couple of",
+        "  requests a club rather than a season of them. A tie naming none",
+        "  means the summary carries no lineup and the next question is the",
+        "  match's own roster endpoint.",
+        "",
+    ]
+    report = "\n".join(lines)
+    print(report)
+    if args.out:
+        Path(args.out).write_text(report)
+        print(f"  written to {args.out}\n")
+    return 0
+
+
 def cmd_probe_athlete(args: argparse.Namespace) -> int:
     """Ask whether an athlete's own record names the competition.
 
@@ -3332,6 +3381,19 @@ def main(argv: list[str] | None = None) -> int:
              "inferring a shape through a summary is three more than reading "
              "the shape itself")
     athlete.set_defaults(func=cmd_probe_athlete)
+
+    cup = sub.add_parser(
+        "probe-cup",
+        help="ask whether a cup tie's own record says who played in it",
+    )
+    cup.add_argument("--league", default="epl",
+                     help="ESPN league key, e.g. epl")
+    cup.add_argument("--club", required=True,
+                     help="the club as its results name it, e.g. Chelsea")
+    cup.add_argument("--season", default="2027",
+                     help="our season label, e.g. 2027")
+    cup.add_argument("--out", help="write the report to this file too")
+    cup.set_defaults(func=cmd_probe_cup)
 
     check = sub.add_parser(
         "check-attribution",

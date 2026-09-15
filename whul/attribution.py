@@ -234,7 +234,9 @@ VERDICTS = {
         "their club played",
         "      The missing competitions are named. A figure larger than a "
         "gamelog that never fetched the domestic cup is that gamelog's "
-        "silence, not the figure's fault.",
+        "silence, not the figure's fault -- and the cup football itself is "
+        "scored either way, since the roster aggregate carries it. Only the "
+        "attribution is missing.",
     ),
 }
 

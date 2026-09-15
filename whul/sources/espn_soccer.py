@@ -1013,8 +1013,14 @@ def load_gamelog(
     matches and none of Chelsea's two Carabao Cup ties, his `league` filter
     lists eng.league_cup among its values and does not filter on it, and the
     competition in the request path is ignored -- ger.1, ger.dfb_pokal and
-    uefa.champions each return the same four English league matches. A player's
-    cup football cannot be read from this endpoint at all.
+    uefa.champions each return the same four English league matches.
+
+    That is a fact about *this endpoint*, not about the cups. They are scored:
+    the roster aggregate carries them, which is why Palmer's stored figure is
+    six against a gamelog of four. What is missing is only the attribution --
+    which of his club's cup ties he appeared in -- and the club's own match
+    list already holds those ties with their event ids. See
+    `whul.sources.espn`'s summary endpoint, which returns a match's lineups.
     """
     session = session or requests.Session()
     sport, path = LEAGUE_PATHS[league]
@@ -1064,3 +1070,103 @@ def _inside_the_league_year(rows: list[dict], league: str, season) -> list[dict]
     belongs = season_for(dates, pd.Series([named] * len(rows)))
     return [row for row, year in zip(rows, belongs)
             if year != year or int(year) == int(season)]
+
+
+#: Where a match's own record lives. The module header calls this shape
+#: "missing nothing" and passed on it for the benchmark, where it would have
+#: meant 380 requests a league-season. Attribution is not that: the club's
+#: match list already names its cup ties, so the question is two requests for
+#: Chelsea rather than a season of them.
+SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/soccer/{path}/summary"
+
+
+def _named_in(node, found: list, depth: int = 0) -> list:
+    """Every athlete id and display name anywhere in a payload.
+
+    Shape-blind, like `_competition_names`, and for the same reason: the
+    question is whether this response knows who played, and a reader that only
+    looked where the answer was expected would report absence for a payload
+    that had it somewhere else.
+    """
+    if depth > 8:
+        return found
+    if isinstance(node, dict):
+        athlete = node.get("athlete")
+        if isinstance(athlete, dict) and athlete.get("id"):
+            found.append((str(athlete.get("id")),
+                          str(athlete.get("displayName") or "")))
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _named_in(value, found, depth + 1)
+    elif isinstance(node, list):
+        for value in node[:80]:
+            _named_in(value, found, depth + 1)
+    return found
+
+
+def probe_cup_lineups(league: str, club: str, season: int, session=None) -> dict:
+    """Does a cup tie's own record say who played in it?
+
+    The gamelog does not return the domestic cups -- probed three ways and
+    recorded in `load_gamelog`. That is a fact about that endpoint, not about
+    the cups: they are scored, because the roster aggregate carries them, and
+    what is missing is only which of his club's ties a player appeared in.
+
+    The club's match list already holds those ties with ESPN's own event ids.
+    So this asks the one thing left: fetch a tie's summary and report whether
+    it names athletes. If it does, attribution has its route and the count is a
+    couple of requests a club rather than a season of them.
+
+    Nothing here is wired into scoring. It is a question, and the answer
+    decides what to build.
+    """
+    from whul.sources import espn
+
+    session = session or requests.Session()
+    _, path = LEAGUE_PATHS[league]
+    cups = set(espn.DOMESTIC_CUPS.get(league, ()))
+    out: dict = {"league": league, "club": club, "season": season,
+                 "cups": sorted(cups)}
+    try:
+        matches = espn.load_soccer_matches(league, [season], verbose=False)
+    except Exception as exc:  # noqa: BLE001
+        out["problem"] = f"could not read the clubs' results: {type(exc).__name__}: {exc}"
+        return out
+
+    if matches is None or matches.empty:
+        out["problem"] = "the clubs' results came back empty"
+        return out
+    theirs = matches[matches["team"].astype(str) == str(club)]
+    out["club_matches"] = len(theirs)
+    out["by_competition"] = (
+        theirs["competition_key"].astype(str).value_counts().to_dict())
+    ties = theirs[theirs["competition_key"].astype(str).isin(cups)]
+    out["cup_ties"] = len(ties)
+    if ties.empty:
+        out["problem"] = (
+            f"{club} has played no domestic cup tie this season, so there is "
+            f"nothing here to ask about. Its competitions are listed above.")
+        return out
+
+    looked = []
+    for row in ties.itertuples():
+        event = str(getattr(row, "event_id", "") or "")
+        entry: dict = {"event_id": event,
+                       "competition": str(row.competition_key)}
+        try:
+            payload = _get(SUMMARY.format(path=path), {"event": event}, session)
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            entry["refused"] = f"{type(exc).__name__} {status}"
+            looked.append(entry)
+            continue
+        entry["top_level_keys"] = sorted(payload.keys())[:20]
+        named = _named_in(payload, [])
+        seen: dict[str, str] = {}
+        for athlete_id, name in named:
+            seen.setdefault(athlete_id, name)
+        entry["athletes_named"] = len(seen)
+        entry["sample"] = [f"{i}: {n}" for i, n in list(seen.items())[:6]]
+        looked.append(entry)
+    out["ties"] = looked
+    return out
