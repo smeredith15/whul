@@ -1025,3 +1025,22 @@ def test_a_club_whose_squad_cannot_be_read_is_reported_not_swallowed(monkeypatch
 
     assert found is None
     assert failed == [("Bayern Munich", "RuntimeError")]
+
+
+def test_a_failed_squad_carries_its_status_where_there_is_one(monkeypatch):
+    """All thirty MLS clubs came back as "HTTPError", which is the class and
+    not the answer. A 404 for a season nobody has played is the feed being
+    right; a 403 is the feed refusing us, and those want opposite fixes."""
+    import requests
+
+    def refused():
+        response = requests.Response()
+        response.status_code = 404
+        return requests.HTTPError("404", response=response)
+
+    espn_soccer = _squads(monkeypatch, {"Inter Miami CF": refused()})
+    failed: list = []
+
+    espn_soccer.athlete_named("mls", "Lionel Messi", 2027, failed=failed)
+
+    assert failed == [("Inter Miami CF", "HTTPError 404")]

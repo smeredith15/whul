@@ -922,6 +922,11 @@ def athlete_named(league: str, name: str, season: int, session=None,
     reason. That request is caught so one club cannot end the search, and a
     caught exception with nowhere to go made a league that half answered
     indistinguishable from a squad list that simply did not carry the name.
+
+    With its status where there is one. All thirty MLS clubs came back as
+    "HTTPError", which is the class and not the answer: a 404 for a season
+    nobody has played is the feed being right, a 403 is the feed refusing us,
+    and those want opposite fixes.
     """
     from whul import resolve
 
@@ -933,7 +938,13 @@ def athlete_named(league: str, name: str, season: int, session=None,
             squad = load_squad(league, team_id, season, session)
         except Exception as exc:  # noqa: BLE001 -- one club, not the search
             if failed is not None:
-                failed.append((club, type(exc).__name__))
+                status = getattr(
+                    getattr(exc, "response", None), "status_code", None)
+                failed.append((
+                    club,
+                    f"{type(exc).__name__} {status}" if status
+                    else type(exc).__name__,
+                ))
             continue
         for row in squad.itertuples():
             theirs = resolve.split_name(str(row.player))
