@@ -2882,6 +2882,93 @@ def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
     assert [b["label"] for b in block["secondary"]] == ["Big wins", "Clean sheets"]
 
 
+# --- the footballer, as against his club ------------------------------------
+
+def _footballer(**over):
+    """Arda Guler's real line, which is the one the panel was checked against."""
+    row = {"league": "Club Soccer", "player": "Arda Guler", "team": "Real Madrid",
+           "position": "M", "matches": 5.0, "starts": 3.0, "goals": 1.0,
+           "assists": 2.0, "yellow": 1.0, "red": 0.0,
+           "appearance_points": 8.0, "goal_points": 5.0, "regular_points": 18.0}
+    row.update(over)
+    return row
+
+
+def test_a_footballers_boxes_add_up_to_his_domestic_points():
+    """Europe is not in them, and is not in `regular_points` either -- it is
+    paid as a rate in its own section. These two agree or the panel is lying
+    about the half of the season it does show."""
+    from whul.scoring.soccer import PTS_ASSIST, PTS_RED, PTS_YELLOW
+
+    row = _footballer()
+    panel = site_build._soccer_player_panel(row)
+    boxes = panel["top"] + panel["secondary"]
+
+    assert round(sum(b["points"] for b in boxes), 1) == row["regular_points"]
+    assert [b["label"] for b in boxes] == [
+        "Apps / Starts", "Goals", "Assists", "Yellow / Red"]
+    assert [b["value"] for b in boxes] == ["5 / 3", "1", "2", "1 / 0"]
+    # The discipline box carries both cards' points, since it shows both counts.
+    assert boxes[-1]["points"] == round(
+        1.0 * PTS_YELLOW + 0.0 * PTS_RED, 1)
+    assert boxes[2]["points"] == round(2.0 * PTS_ASSIST, 1)
+
+
+def test_a_footballer_with_no_line_reads_as_dashes_not_zeroes():
+    """Eleven MLS players have no feed rows at all. A panel of zeroes would say
+    they turned out and did nothing, which is a claim about matches nobody has
+    played."""
+    panel = site_build._soccer_player_panel(
+        {"league": "Club Soccer", "player": "Nobody", "team": "FC Dallas"})
+    boxes = panel["top"] + panel["secondary"]
+
+    assert [b["value"] for b in boxes] == ["\u2014"] * 4
+    assert all(b["points"] is None for b in boxes)
+    assert panel["head"] == [["Games played", "\u2014"],
+                            ["Team games", "\u2014"]]
+
+
+def test_a_footballers_team_games_come_from_his_club():
+    """Played and out of how many: "4 played" alone cannot say whether the rest
+    were missed or not yet played."""
+    games = {"Real Madrid": 6.0}
+    panel = site_build._soccer_player_panel(_footballer(), games)
+
+    assert panel["head"] == [["Games played", "5"], ["Team games", "6"]]
+
+
+def test_a_club_we_do_not_carry_leaves_team_games_blank():
+    """Six of the thirty-nine play for clubs that are nobody's asset, so the
+    figure is nowhere in the store. Falling back to his own appearances would
+    print every one of them as a player who never missed a match."""
+    panel = site_build._soccer_player_panel(_footballer(), {"Chelsea": 6.0})
+
+    assert panel["head"][1] == ["Team games", "\u2014"]
+
+
+def test_a_club_row_is_not_mistaken_for_a_footballer():
+    """A club's `player` arrives as NaN and NaN is truthy -- the mistake that
+    sent every NFL club down the player path and killed a baseball build."""
+    assert not site_build._is_a_club_soccer_player(
+        {"league": "Premier League", "player": float("nan")})
+    assert not site_build._is_a_club_soccer_player(
+        {"league": "Club Soccer", "player": float("nan")})
+    assert site_build._is_a_club_soccer_player(_footballer())
+
+
+def test_the_club_lookup_reads_every_clubs_matches_played():
+    import pandas as pd
+
+    frame = pd.DataFrame([
+        {"team": "Real Madrid", "matches_played": 6.0},
+        {"team": "Liverpool", "matches_played": 5.0},
+        {"team": "Arda Guler", "matches_played": None},
+    ])
+
+    assert site_build._club_games(frame) == {"Real Madrid": 6.0, "Liverpool": 5.0}
+    assert site_build._club_games(pd.DataFrame()) == {}
+
+
 # --- baseball, at whichever of the two jobs he does -------------------------
 
 def _batter(**over):

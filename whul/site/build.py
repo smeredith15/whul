@@ -377,6 +377,9 @@ def asset_profiles(
     notes: dict[str, list[str]] = {}
     raw_rows: dict[str, dict] = {}
     panels: dict[str, dict] = {}
+    # Built once for the whole day rather than per player: it is a scan of
+    # every club's row, and there are fifty footballers asking.
+    club_games = _club_games(stats)
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
@@ -403,6 +406,11 @@ def asset_profiles(
                 panels[asset_id] = _nba_panel(row)
             elif str(row.get("league")) == "NHL" and row.get("role"):
                 panels[asset_id] = _nhl_panel(row)
+            elif _is_a_club_soccer_player(row):
+                panels[asset_id] = _soccer_player_panel(
+                    row, club_games,
+                    str(meta.loc[asset_id, "league"])
+                    if asset_id in meta.index else "")
             elif row.get("sections"):
                 panel = _soccer_panel(row)
                 if panel:
@@ -998,7 +1006,15 @@ def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | No
     dash, so the page says what will be there rather than that there is no
     page.
     """
-    if asset_type != "Player" or league not in EMPTY_PANELS:
+    if asset_type != "Player":
+        return None
+    # Eleven MLS players have no feed rows at all, so they never reach the loop
+    # that builds a panel from one. Without this they fell back to the "no stat
+    # lines recorded" table, which reads as a broken profile rather than as a
+    # season that has not started.
+    if league in covered_by("Club Soccer"):
+        return _soccer_player_panel({}, {}, league)
+    if league not in EMPTY_PANELS:
         return None
     made = {"NBA": _nba_panel, "NHL": _nhl_panel}[league]
     return made({"league": league, "role": role})
@@ -1408,6 +1424,122 @@ def _soccer_panel(row: dict) -> dict | None:
             block["blocks"].append(made)
         out.append(block)
     return {"kind": "soccer", "sections": out} if out else None
+
+
+#: A club footballer's row says this where his club's row names the
+#: competition he plays in. The two therefore cannot be joined on the league.
+CLUB_SOCCER = "Club Soccer"
+
+
+def _is_a_club_soccer_player(row: dict) -> bool:
+    """A footballer rather than a club.
+
+    On the name being a real string, not on the field being set: a club's
+    ``player`` arrives as NaN, and NaN is truthy -- the mistake that sent every
+    NFL club down the player path and killed a baseball build on ``.get``.
+    """
+    if str(row.get("league")) != CLUB_SOCCER:
+        return False
+    name = row.get("player")
+    return isinstance(name, str) and bool(name.strip())
+
+
+def _club_games(stats) -> dict[str, float]:
+    """How many matches each club has played, by the name a player names it.
+
+    A footballer's row reads "Club Soccer" where his club's reads "Premier
+    League", so the two cannot be joined on the competition -- only on the
+    club's own name, which is unique across the clubs we carry.
+
+    Where his club is not one of ours the figure is nowhere in the store, and
+    the heading says so with a dash. Falling back to his own appearances would
+    be worse than saying nothing: every such player would read as one who had
+    never missed a match.
+    """
+    if stats is None or getattr(stats, "empty", True):
+        return {}
+    if "matches_played" not in stats.columns or "team" not in stats.columns:
+        return {}
+    out: dict[str, float] = {}
+    for team, played in zip(stats["team"], stats["matches_played"]):
+        if not isinstance(team, str) or played is None or played != played:
+            continue
+        out[team.strip()] = float(played)
+    return out
+
+
+def _soccer_player_panel(row: dict, club_games: dict | None = None,
+                         league: str = "") -> dict:
+    """A footballer's domestic season in the boxes the rest of the sport uses.
+
+    Europe and a playoff run are deliberately not here. They are not counted in
+    full but paid as a rate on top, at a share of a season set per competition,
+    and they keep their own collapsible section -- the only place that share,
+    and the wait until the competition finishes, can be explained. See
+    ``_bonus_list`` and ``renderBonus``.
+
+    So the boxes on this panel sum to ``regular_points`` and not to the score
+    beneath them, which also carries the bonus. That is the one panel where
+    those two figures differ, and the bonus section is what accounts for it.
+    """
+    from whul.scoring.soccer import PTS_ASSIST, PTS_RED, PTS_YELLOW
+
+    apps = _stat_number(row, "matches")
+    starts = _stat_number(row, "starts")
+    goals = _stat_number(row, "goals")
+    assists = _stat_number(row, "assists")
+    yellow = _stat_number(row, "yellow")
+    red = _stat_number(row, "red")
+
+    def side(value) -> str:
+        return "—" if value is None else f"{value:,.0f}"
+
+    def pair(first, second) -> str:
+        # Each half says for itself whether it is known. A nothing printed as a
+        # zero beside a real figure is a claim about a match nobody played.
+        if first is None and second is None:
+            return "—"
+        return f"{side(first)} / {side(second)}"
+
+    def worth(*terms):
+        if all(value is None for value, _ in terms):
+            return None
+        return round(sum((value or 0.0) * weight
+                         for value, weight in terms), 1) or 0.0
+
+    def stored(column):
+        value = _stat_number(row, column)
+        return None if value is None else round(value, 1) or 0.0
+
+    team = row.get("team")
+    club = (club_games or {}).get(team.strip()) if isinstance(team, str) else None
+
+    return {
+        "kind": "boxes",
+        "title": league if league and league != CLUB_SOCCER else "",
+        "head": [
+            ["Games played", side(apps)],
+            ["Team games", "—" if not club else f"{club:,.0f}"],
+        ],
+        "top": [
+            # The heading's figure again, against the starts it was made of:
+            # appearance points are paid per outing but at two rates, and a
+            # bare count of matches cannot say which.
+            {"label": "Apps / Starts", "value": pair(apps, starts),
+             "points": stored("appearance_points")},
+            {"label": "Goals", "value": side(goals),
+             "points": stored("goal_points")},
+            {"label": "Assists", "value": side(assists),
+             "points": worth((assists, PTS_ASSIST))},
+        ],
+        # One box rather than two. A red card is rare enough that a card of its
+        # own would spend half a row on a figure that reads zero all season,
+        # and the pair is how discipline is quoted anyway.
+        "secondary": [
+            {"label": "Yellow / Red", "value": pair(yellow, red),
+             "points": worth((yellow, PTS_YELLOW), (red, PTS_RED))},
+        ],
+    }
 
 
 def _stat_lines(row: dict) -> list[tuple[str, str]]:

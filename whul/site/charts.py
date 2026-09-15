@@ -1055,7 +1055,15 @@ SCRIPT = """\
     var head = waiting > 0.05
       ? '+' + pts(waiting) + ' waiting'
       : '+' + pts(total) + ' in the score';
-    return '<details class="body bonus"><summary>Playoffs &amp; Europe ' +
+    // The competitions by name. Only those actually played reach here --
+    // `_bonus_list` drops an entry with no games -- so the label describes
+    // what is inside it rather than what the section is for in general.
+    var named = [];
+    rows.forEach(function (r) {
+      if (named.indexOf(r.competition) < 0) named.push(r.competition);
+    });
+    var title = named.length ? named.join(' \u00b7 ') : 'Playoffs &amp; Europe';
+    return '<details class="body bonus"><summary>' + title + ' ' +
            '<span class="adds">' + head + '</span></summary>' +
            '<table class="finishes"><tbody>' + body + '</tbody></table>' +
            '<p class="note">' + how + '</p></details>';
@@ -1132,6 +1140,7 @@ SCRIPT = """\
              boxRows(panel.post) + '</details>';
     }
     return '<div class="body boxes">' +
+           (panel.title ? '<h3>' + panel.title + '</h3>' : '') +
            (head ? '<div class="games comp">' + head + '</div>' : '') +
            boxRows(panel) + outcomeRow(panel.outcomes) + '</div>' + post;
   }
