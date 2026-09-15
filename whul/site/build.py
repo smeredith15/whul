@@ -948,10 +948,13 @@ def _nba_panel(row: dict) -> dict | None:
 def _nhl_panel(row: dict) -> dict | None:
     """A hockey season as a tally, which is how the feed reports it.
 
-    No team games: the NHL's own endpoint serves one row per skater for the
-    whole season rather than one per game, so nothing on the row says which
-    club he was on or how often it played. A box reading his own games again
-    under another name would be worse than the heading not being there.
+    Team games took three probes to reach. The skater endpoint names his club
+    as "WPG"; the team endpoint calls it "Winnipeg Jets" and carries no
+    abbreviation, so those two cannot be joined at all. The standings payload
+    carries both spellings and the games played on one row, and was already
+    being fetched every run for the division title. Where a club cannot be
+    resolved the heading simply omits it rather than repeating his own games
+    under another name.
     """
     from whul.scoring.nhl import (
         PTS_ASSIST, PTS_GOAL, PTS_PLUS_MINUS, PTS_SHOT,

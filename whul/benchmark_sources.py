@@ -318,10 +318,22 @@ def _nhl_players():
     from whul.scoring import nhl
     from whul.sources import nhl as source
 
-    return (
-        lambda seasons: source.load_skaters(seasons, source.GAME_TYPE_REGULAR),
-        nhl.score_skaters,
-    )
+    # The standings are held in the closure the way the NFL team meta is: the
+    # load/score contract is one frame wide. They cost one request a run, are
+    # already fetched for the division title on the team side, and change no
+    # score -- they carry how many games each club has played, which is what a
+    # games-played figure needs beside it to mean anything.
+    held: dict[str, pd.DataFrame] = {}
+
+    def load(seasons):
+        try:
+            held["standings"] = source.load_divisions(seasons)
+        except Exception:  # noqa: BLE001 -- a heading must not stop the scoring
+            held["standings"] = pd.DataFrame()
+        return source.load_skaters(seasons, source.GAME_TYPE_REGULAR)
+
+    return load, lambda skaters: nhl.score_skaters(
+        skaters, held.get("standings"))
 
 
 def _nhl_teams():

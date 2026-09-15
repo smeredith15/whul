@@ -68,13 +68,21 @@ SKATER_ROLE = "Skater"
 GOALIE_ROLE = "Goalie"
 
 
-def score_skaters(df: pd.DataFrame) -> pd.DataFrame:
-    """Season points per skater. All components are counting stats."""
+def score_skaters(df: pd.DataFrame,
+                  standings: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Season points per skater. All components are counting stats.
+
+    ``standings`` is optional and changes no score. It carries how many games
+    each club has played, which is what turns a games-played figure into a
+    fact: fifty of eighty-two is a season interrupted and fifty of fifty is the
+    league in January, and the first number alone cannot tell them apart.
+    """
     if df is None or df.empty:
         return pd.DataFrame()
 
     work = pd.DataFrame(
         {
+            "team": resolve_str(df, ["teamAbbrevs", "team_abbrevs", "team"]),
             "season": resolve_num(df, ["season", "season_id", "seasonId"], required=True).astype(int),
             "player": resolve_str(
                 df, ["player", "skater_full_name", "skaterFullName", "playerName"], required=True
@@ -95,7 +103,49 @@ def score_skaters(df: pd.DataFrame) -> pd.DataFrame:
     )
     work["league"] = "NHL"
     work["role"] = SKATER_ROLE
+    work["team_games"] = _their_clubs_games(work, standings)
     return work[work["total_points"] > 0].reset_index(drop=True)
+
+
+def _their_clubs_games(work: pd.DataFrame,
+                       standings: pd.DataFrame | None) -> pd.Series:
+    """How many games each skater's club has played.
+
+    The skater endpoint names his club as "WPG" and the team endpoint calls it
+    "Winnipeg Jets" and carries no abbreviation, so those two cannot be joined
+    at all. The standings payload carries both spellings and the games played
+    on one row, and is fetched every run already.
+
+    A traded skater's field holds every club he played for -- "COL,CAR,DAL" --
+    and takes the largest of their counts rather than their sum. Summing says a
+    player traded in October had a hundred and sixty games available to him;
+    the largest is what the season had reached wherever he was, which is the
+    denominator the figure is for. It is still an approximation, and the only
+    one here: nothing in either feed says on which date he moved.
+    """
+    blank = pd.Series(float("nan"), index=work.index)
+    if standings is None or standings.empty:
+        return blank
+    if not {"season", "abbrev", "team_games"} <= set(standings.columns):
+        return blank
+    played = {
+        (int(row.season), str(row.abbrev)): float(row.team_games)
+        for row in standings.itertuples()
+        if str(row.abbrev) and row.team_games == row.team_games
+    }
+    if "team" not in work.columns:
+        return blank
+
+    def most(season, named) -> float:
+        clubs = [c.strip() for c in str(named or "").replace("/", ",").split(",")]
+        counts = [played[(int(season), c)] for c in clubs
+                  if (int(season), c) in played]
+        return max(counts) if counts else float("nan")
+
+    return pd.Series(
+        [most(s, t) for s, t in zip(work["season"], work["team"])],
+        index=work.index,
+    )
 
 
 def score_goalies(df: pd.DataFrame) -> pd.DataFrame:
