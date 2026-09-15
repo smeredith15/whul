@@ -697,7 +697,13 @@ dialog.profile .boxrow.rest {
 dialog.profile .statbox {
   background: var(--surface-1); border: 1px solid var(--grid);
   border-radius: 8px; overflow: hidden; text-align: center;
+  /* A column with the strip pushed to the bottom, so a label that wraps to two
+     lines -- "Rec / Rush TD" does -- cannot drop that box's strip below the
+     others in its row. The grid already gives them equal height; this is what
+     makes them line up inside it. */
+  display: flex; flex-direction: column;
 }
+dialog.profile .statbox .bp { margin-top: auto; }
 dialog.profile .statbox .bn {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--text-secondary); padding: 7px 4px 0;

@@ -2606,9 +2606,15 @@ def test_the_top_row_is_the_role_and_keeps_its_zeroes():
     assert [b["label"] for b in qb["top"]] == [
         "Pass yds", "Pass TD", "INT", "Rush yds"]
 
+    # A receiver leads with receiving and a back with rushing, each in the
+    # order the role is actually used in.
     wr = site_build._nfl_boxes(_nfl_row(role="WR", receptions=10, receiving_yards=67))
     assert [b["label"] for b in wr["top"]] == [
-        "Rush yds", "Rec", "Rec yds", "TD"]
+        "Rec", "Rec yds", "Rush yds", "Rec / Rush TD"]
+
+    rb = site_build._nfl_boxes(_nfl_row(role="RB", rushing_yards=90, receptions=4))
+    assert [b["label"] for b in rb["top"]] == [
+        "Rush yds", "Rec", "Rec yds", "Rush / Rec TD"]
 
 
 def test_the_second_row_drops_what_is_empty_but_keeps_the_two_worth_zero():
@@ -2623,17 +2629,25 @@ def test_the_second_row_drops_what_is_empty_but_keeps_the_two_worth_zero():
     assert labels == ["Fumbles"]
 
     ran = site_build._nfl_boxes(_nfl_row(passing_yards=300, rushing_tds=1))
-    assert [b["label"] for b in ran["secondary"]] == ["TD", "Fumbles"]
+    assert [b["label"] for b in ran["secondary"]] == ["Rush / Rec TD", "Fumbles"]
 
 
 def test_touchdowns_share_a_box_only_where_they_share_a_price():
     """Rushing and receiving are both six, so one strip under two figures is
     exact. Passing touchdowns are four, which is why they lead the row alone."""
     wr = site_build._nfl_boxes(_nfl_row(role="WR", rushing_tds=1, receiving_tds=2))
-    td = next(b for b in wr["top"] if b["label"] == "TD")
+    td = next(b for b in wr["top"] if b["label"].endswith("TD"))
 
-    assert td["value"] == "1 / 2"
+    # The label names the order rather than leaving two figures either side of
+    # a slash for the reader to assign, and a receiver's receiving comes first.
+    assert td["label"] == "Rec / Rush TD"
+    assert td["value"] == "2 / 1"
     assert td["points"] == 18.0
+
+    rb = site_build._nfl_boxes(_nfl_row(role="RB", rushing_tds=1, receiving_tds=2))
+    td = next(b for b in rb["top"] if b["label"].endswith("TD"))
+    assert td["label"] == "Rush / Rec TD"
+    assert td["value"] == "1 / 2"
 
 
 def test_a_zero_against_a_negative_weight_is_not_printed_as_minus_zero():

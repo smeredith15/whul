@@ -593,9 +593,19 @@ def _label_for(column: str) -> str:
 NFL_TOP_LINE: dict[str, tuple[str, ...]] = {
     "QB": ("passing_yards", "passing_tds", "interceptions", "rushing_yards"),
     "RB": ("rushing_yards", "receptions", "receiving_yards", "TDS"),
-    "WR": ("rushing_yards", "receptions", "receiving_yards", "TDS"),
-    "TE": ("rushing_yards", "receptions", "receiving_yards", "TDS"),
+    "WR": ("receptions", "receiving_yards", "rushing_yards", "TDS"),
+    "TE": ("receptions", "receiving_yards", "rushing_yards", "TDS"),
 }
+
+#: Which touchdown is named first in the shared box, by role -- and the label
+#: says so, rather than leaving two numbers either side of a slash for the
+#: reader to assign. A back's rushing leads; a receiver's receiving does, the
+#: same way round as the rest of his row.
+NFL_TD_ORDER: dict[str, tuple[str, str]] = {
+    "WR": ("receiving_tds", "rushing_tds"),
+    "TE": ("receiving_tds", "rushing_tds"),
+}
+NFL_TD_SHORT = {"rushing_tds": "Rush", "receiving_tds": "Rec"}
 
 #: Shown even at zero, because zero is the good answer and its absence reads as
 #: missing data rather than as a clean season. Everything else empty is dropped:
@@ -612,7 +622,9 @@ NFL_BOX_LABELS = {
 
 
 def _nfl_box(row: dict, column: str, prefix: str = "",
-             keep_zero: bool = False) -> dict | None:
+             keep_zero: bool = False,
+             td_order: tuple[str, str] = ("rushing_tds", "receiving_tds"),
+             ) -> dict | None:
     """One stat, its count, and what the count is worth.
 
     The pair is the point. A flat list put `wins 1` directly above
@@ -633,16 +645,19 @@ def _nfl_box(row: dict, column: str, prefix: str = "",
             return 0.0
 
     if column == "TDS":
-        rushing, receiving = figure("rushing_tds"), figure("receiving_tds")
-        count, points = rushing + receiving, (rushing + receiving) * 6.0
-        text = f"{rushing:,.0f} / {receiving:,.0f}"
+        first, second = (figure(c) for c in td_order)
+        count, points = first + second, (first + second) * 6.0
+        text = f"{first:,.0f} / {second:,.0f}"
+        label = " / ".join(NFL_TD_SHORT[c] for c in td_order) + " TD"
     else:
         count = figure(column)
         points = count * PLAYER_WEIGHTS.get(column, 0.0)
         text = f"{count:,.0f}"
     if not count and not keep_zero and column not in NFL_ALWAYS:
         return None
-    return {"label": NFL_BOX_LABELS.get(column, _label_for(column)),
+    if column != "TDS":
+        label = NFL_BOX_LABELS.get(column, _label_for(column))
+    return {"label": label,
             # `or 0.0` because a zero count against a negative weight rounds to
             # `-0.0`, which renders as "-0.0" and reads as a penalty nobody
             # took. Negative zero is falsy, so this keeps every real figure.
@@ -667,8 +682,10 @@ def _nfl_boxes(row: dict, prefix: str = "") -> dict | None:
     # The top row keeps its zeroes. It is the line that makes one profile
     # comparable with the next, and a receiver who happened not to run the ball
     # would otherwise show three boxes where his team-mate shows four.
+    order = NFL_TD_ORDER.get(role, ("rushing_tds", "receiving_tds"))
     top = [box for box in
-           (_nfl_box(row, c, prefix, keep_zero=True) for c in lead) if box]
+           (_nfl_box(row, c, prefix, keep_zero=True, td_order=order)
+            for c in lead) if box]
     # Whatever the role's own line does not already carry. The touchdowns are
     # folded into one box wherever they land, so a role whose top row has taken
     # them must not be offered them again.
@@ -681,7 +698,8 @@ def _nfl_boxes(row: dict, prefix: str = "") -> dict | None:
                 rest.append("TDS")
             continue
         rest.append(column)
-    secondary = [box for box in (_nfl_box(row, c, prefix) for c in rest) if box]
+    secondary = [box for box in
+                 (_nfl_box(row, c, prefix, td_order=order) for c in rest) if box]
     if not top and not secondary:
         return None
     return {"top": top, "secondary": secondary}
