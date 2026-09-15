@@ -288,6 +288,35 @@ def probe(season: int = 2025) -> dict:
         if "gamesPlayed" in teams.columns:
             result["games_per_team"] = sorted(teams["gamesPlayed"].dropna().unique().tolist())[-3:]
 
+        # The other half of the skater question, which the first run of this
+        # probe did not ask. A skater row carries `teamAbbrevs` -- "CBJ" -- and
+        # the team row is known to carry `teamFullName`, which "CBJ" will never
+        # match. Whether these two endpoints can be joined at all depends on
+        # the team row also carrying an abbreviation, so: every column it
+        # returns, and a live attempt at the join rather than an opinion about
+        # one.
+        result["team_all_columns"] = sorted(str(c) for c in teams.columns)
+        abbrev = next((c for c in ("teamAbbrevs", "teamAbbrev", "triCode",
+                                   "rawTeamAbbrev", "teamId")
+                       if c in teams.columns), "")
+        result["team_abbrev_column"] = abbrev or "NONE -- no abbreviation to join on"
+        if abbrev and skaters is not None and not skaters.empty \
+                and "teamAbbrevs" in skaters.columns:
+            known = {str(v) for v in teams[abbrev].dropna()}
+            # A traded skater may carry more than one club in one field, which
+            # decides whether the join is a lookup or a split first.
+            multi = [str(v) for v in skaters["teamAbbrevs"].dropna().unique()
+                     if not str(v).isalnum()]
+            result["skater_teams_with_a_separator"] = multi[:5]
+            parts = set()
+            for value in skaters["teamAbbrevs"].dropna():
+                parts.update(str(value).replace("/", ",").split(","))
+            missing = sorted(p.strip() for p in parts if p.strip() not in known)
+            result["skater_teams_that_do_not_join"] = missing
+            result["team_games_for_a_skater"] = (
+                "AVAILABLE" if not missing else
+                f"{len(missing)} club(s) on skater rows match no team row")
+
     try:
         from whul.scoring import nhl as scoring
 
