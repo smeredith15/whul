@@ -2880,3 +2880,127 @@ def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
     block = site_build._soccer_block(part, "round-robin")
 
     assert [b["label"] for b in block["secondary"]] == ["Big wins", "Clean sheets"]
+
+
+# --- baseball, at whichever of the two jobs he does -------------------------
+
+def _batter(**over):
+    row = {"league": "MLB", "role": "Batter", "h": 150, "ab": 480, "hr": 44,
+           "doubles": 26, "triples": 6, "bb": 72, "hbp": 4, "sb": 18, "cs": 4,
+           "offense": 38.2, "defense": -6.1, "proration_factor": 1.0}
+    row.update(over)
+    return row
+
+
+def _pitcher_line(**over):
+    row = {"role": "Pitcher", "scaled_score": 41.0, "role_points": 812.0,
+           "ip": 92.0, "so": 124, "h": 62, "bb": 26, "hbp": 3, "hr": 10,
+           "sv": 0, "hld": 0, "war": 3.1}
+    row.update(over)
+    return row
+
+
+def test_a_batters_boxes_add_up_to_what_the_scorer_gave_him():
+    from whul.scoring.mlb import BATTER_WEIGHTS, DEFENSE_FACTOR, OFFENSE_FACTOR
+
+    row = _batter()
+    section = site_build._mlb_panel(row)["sections"][0]
+    shown = sum(b["points"] or 0 for b in section["top"] + section["secondary"])
+    scored = (sum(row[c] * w for c, w in BATTER_WEIGHTS.items())
+              + row["offense"] * OFFENSE_FACTOR + row["defense"] * DEFENSE_FACTOR)
+
+    # To a tenth per box: each is rounded for display before it is summed, and
+    # ten of them can drift half a point off the figure printed underneath.
+    assert shown == pytest.approx(scored, abs=0.5)
+
+
+def test_hits_and_at_bats_share_a_box_because_they_are_one_event():
+    """A hit is worth 5.6 and the at-bat it used costs 1. Split apart, the
+    second box reads as a penalty for playing."""
+    box = site_build._mlb_panel(_batter())["sections"][0]["top"][0]
+
+    assert box["label"] == "H / AB"
+    assert box["value"] == "150 / 480"
+    assert box["points"] == round(150 * 5.6 - 480 * 1.0, 1)
+
+
+def test_the_counting_boxes_carry_the_proration_the_score_does():
+    """Acuna's counting terms come to 167.6 and his role points to 204.2; the
+    difference is the window factor, and without it the panel does not add up
+    to the number printed under it."""
+    plain = site_build._mlb_panel(_batter())["sections"][0]
+    scaled = site_build._mlb_panel(_batter(proration_factor=1.5))["sections"][0]
+
+    assert round(scaled["top"][0]["points"], 1) == round(
+        plain["top"][0]["points"] * 1.5, 1)
+
+
+def test_whip_carries_the_points_of_what_it_is_made_of():
+    """It is not scored itself, and every other box is. The hits and walks are
+    printed small beside it so the rate and the scoring agree in public."""
+    from whul.scoring.mlb import PITCHER_WEIGHTS
+
+    panel = site_build._mlb_panel(
+        {"league": "MLB", "role": "Pitcher", "proration_factor": 1.0,
+         **{k: v for k, v in _pitcher_line().items() if k != "role"}})
+    whip = next(b for b in panel["sections"][0]["top"] if b["label"] == "WHIP")
+
+    assert whip["value"] == "0.96"
+    assert whip["points"] == round(
+        62 * PITCHER_WEIGHTS["h"] + 26 * PITCHER_WEIGHTS["bb"], 1)
+    assert whip["aside"] == "62 H\n26 BB"
+
+    # And the walks are not paid for twice where they appear again as a rate.
+    walks = next(b for b in panel["sections"][0]["secondary"]
+                 if b["label"] == "BB/9")
+    assert walks["points"] is None
+    assert walks["note"] == "in WHIP"
+
+
+def test_saves_and_holds_join_the_top_row_only_where_he_has_them():
+    """A reliever's season is his saves; a starter's line should not carry two
+    zeroes explaining that he is not one."""
+    starter = {"league": "MLB", "role": "Pitcher", "proration_factor": 1.0,
+               **{k: v for k, v in _pitcher_line().items() if k != "role"}}
+    labels = [b["label"] for b in site_build._mlb_panel(starter)["sections"][0]["top"]]
+    assert labels == ["IP", "K", "WHIP"]
+
+    closer = dict(starter, sv=38, hld=2)
+    labels = [b["label"] for b in site_build._mlb_panel(closer)["sections"][0]["top"]]
+    assert labels == ["IP", "K", "WHIP", "SV", "HLD"]
+
+
+def test_a_second_role_worth_showing_gets_a_section():
+    panel = site_build._mlb_panel(
+        _batter(secondary_stats=[_pitcher_line(scaled_score=41.0)]))
+
+    assert [s["label"] for s in panel["sections"]] == ["Batting", "Pitching"]
+    assert panel["note"] == ""
+
+
+def test_a_second_role_worth_little_gets_a_sentence():
+    """A pitcher with four at-bats is not a two-way player, and a section of
+    his batting would say he is."""
+    panel = site_build._mlb_panel(
+        _batter(secondary_stats=[_pitcher_line(scaled_score=4.0,
+                                               role_points=45.0)]))
+
+    assert [s["label"] for s in panel["sections"]] == ["Batting"]
+    # The verb is not the noun plus "ed": nobody has "pitchered".
+    assert panel["note"].startswith("Also pitched: 45.0 points")
+    assert "2.0 after the half" in panel["note"]
+
+
+def test_a_second_role_worth_nothing_is_not_mentioned():
+    panel = site_build._mlb_panel(
+        _batter(secondary_stats=[_pitcher_line(scaled_score=0.0,
+                                               role_points=0.0)]))
+    assert panel["note"] == ""
+
+
+def test_a_player_with_no_second_role_does_not_break_the_build():
+    """Pandas fills the missing list with NaN, and NaN is truthy -- which took
+    the whole site build down with an AttributeError."""
+    assert site_build._mlb_panel(_batter(secondary_stats=float("nan")))
+    assert site_build._mlb_panel(_batter(secondary_stats=[]))
+    assert site_build._mlb_panel(_batter(secondary_stats=None))

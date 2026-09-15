@@ -257,6 +257,42 @@ def score_players(
     return out.reset_index(drop=True)
 
 
+#: The figures a profile shows for a role, beyond the score itself. `first()`
+#: keeps the primary row whole and the other one is discarded, so a two-way
+#: player's second line -- the one a reader opened the profile to see -- never
+#: survived the fold.
+SECOND_LINE_COLUMNS = (
+    "ab", "h", "doubles", "triples", "hr", "bb", "hbp", "sb", "cs",
+    "offense", "defense", "ip", "so", "sv", "hld", "war", "games",
+    "role_points", "scaled_score", "role",
+)
+
+
+def _second_line(ranked: pd.DataFrame, where) -> list:
+    """The secondary role's own figures, kept beside the primary's.
+
+    Not spread into columns, because the two roles share column names -- both
+    have `h`, and a pitcher's is hits allowed. Side by side they would
+    overwrite each other with the wrong sign attached.
+
+    A list holding one dict rather than the dict itself, which looks odd and is
+    the shape that survives: the store reads a payload back through
+    `pd.json_normalize`, which flattens a nested dict into dotted columns and
+    leaves a list alone. Every other nested figure here -- `bonus_detail`,
+    `finishes`, soccer's `sections` -- is a list for the same reason.
+    """
+    rows = ranked.loc[list(where)]
+    if len(rows) < 2:
+        return []
+    second = rows.iloc[1]
+    return [{
+        column: (None if pd.isna(second[column]) else
+                 second[column].item() if hasattr(second[column], "item")
+                 else second[column])
+        for column in SECOND_LINE_COLUMNS if column in rows.columns
+    }]
+
+
 def combine_two_way(scored: pd.DataFrame) -> pd.DataFrame:
     """Fold per-role normalized scores into one row per player.
 
@@ -274,6 +310,8 @@ def combine_two_way(scored: pd.DataFrame) -> pd.DataFrame:
         role_count=("role", "size"),
         secondary_score=("scaled_score", lambda s: s.iloc[1] if len(s) > 1 else 0.0),
         secondary_role=("role", lambda s: s.iloc[1] if len(s) > 1 else ""),
+        secondary_stats=(
+            "role", lambda s: _second_line(ranked, s.index)),
     )
 
     out = primary.merge(extras, on=keys, how="left")

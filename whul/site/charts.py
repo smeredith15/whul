@@ -1077,10 +1077,20 @@ SCRIPT = """\
     // to play, which are worth win points and carry neither bonus.
     var sup = box.sup ? '<sup class="bye" title="rounds skipped by seeding, ' +
                         'credited as wins">' + box.sup + '</sup>' : '';
+    // The counts a derived figure is made of, small beside it: WHIP is the
+    // recognisable number and the hits and walks are what actually scored.
+    var aside = box.aside
+      ? '<div class="aside">' + box.aside.split('\\n').join('<br>') + '</div>'
+      : '';
+    // Where the points are real but counted in another box, the strip says so
+    // rather than repeating them or leaving a blank that reads as free.
+    if (box.note) shown = box.note;
     return '<div class="statbox' + (small ? ' small' : '') + '">' +
            '<div class="bn">' + box.label + '</div>' +
-           '<div class="bv">' + box.value + sup + '</div>' +
-           '<div class="bp' + sign + '">' + shown + '</div></div>';
+           '<div class="bv' + (String(box.value).length > 7 ? ' tight' : '') +
+             '">' + box.value + sup + aside + '</div>' +
+           '<div class="bp' + sign + (box.note ? ' said' : '') + '">' +
+           shown + '</div></div>';
   }
 
   // A club's season, one competition at a time. The grouping is the reason
@@ -1126,6 +1136,18 @@ SCRIPT = """\
            boxRows(panel) + outcomeRow(panel.outcomes) + '</div>' + post;
   }
 
+  // Baseball: one section a job, and a sentence where the second job is worth
+  // something but not a section.
+  function renderMlb(panel) {
+    var body = panel.sections.map(function (s) {
+      return '<div class="body boxes comp">' +
+             '<h3>' + s.label + '</h3>' + boxRows(s) + '</div>';
+    }).join('');
+    return body + (panel.note
+      ? '<div class="body"><p class="note">' + panel.note + '</p></div>'
+      : '');
+  }
+
   function boxRows(part) {
     var top = (part.top || []).map(function (b) { return statBox(b, false); }).join('');
     var rest = (part.secondary || []).map(function (b) { return statBox(b, true); }).join('');
@@ -1141,6 +1163,7 @@ SCRIPT = """\
     if (panel.kind === 'nfl-team') return renderNflTeam(panel);
     // A plain two-row panel with a heading: basketball's rates, hockey's tally.
     if (panel.kind === 'boxes') return renderNflTeam(panel);
+    if (panel.kind === 'mlb') return renderMlb(panel);
     if (!panel.season) return '';
     var head = '';
     if (panel.games) {

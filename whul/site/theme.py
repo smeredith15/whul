@@ -776,6 +776,24 @@ dialog.profile .boxrow.rest.outcome {
 }
 dialog.profile .boxrow.rest.outcome .bv { font-size: 14px; }
 
+/* The counts behind a derived figure, tucked against it. WHIP is what a
+   reader recognises; the hits and walks are what the points came from, and
+   showing both is how the rate and the scoring agree in public. */
+/* A value too long for the box at full size -- "150 / 480" -- shrinks rather
+   than wrapping onto a second line and pushing everything below it down. */
+dialog.profile .statbox .bv.tight { font-size: 15px; white-space: nowrap; }
+dialog.profile .statbox.small .bv.tight { font-size: 12.5px; }
+
+dialog.profile .statbox .bv .aside {
+  display: inline-block; vertical-align: middle; margin-left: 5px;
+  font-size: 9.5px; font-weight: 500; line-height: 1.15; text-align: left;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+/* A strip saying where its points went rather than printing a number. */
+dialog.profile .statbox .bp.said {
+  font-style: italic; color: var(--muted); font-size: 10px;
+}
+
 dialog.profile .statbox .bv sup.bye {
   font-size: 0.5em; font-weight: 600; color: var(--text-secondary);
   margin-left: 1px; vertical-align: super;
