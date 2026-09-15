@@ -105,23 +105,70 @@ def counted_appearances(attributed: pd.DataFrame, league: str) -> tuple:
     return domestic, held, sorted(names)
 
 
+def club_football(matches: pd.DataFrame, league: str) -> tuple:
+    """``(domestic, held, {keys})`` -- what the club itself played.
+
+    The club is the authority this module was written around, and it is the
+    only hard ceiling available: a player cannot appear in more domestic
+    matches than his club played. Counted on distinct events, since a club's
+    match list holds a row per side.
+    """
+    from whul.scoring.competition import classify_key
+    from whul.scoring.postseason import rule_for
+
+    domestic = held = 0.0
+    keys: set[str] = set()
+    if matches is None or matches.empty or "competition_key" not in matches:
+        return domestic, held, keys
+    seen: set[str] = set()
+    for row in matches.itertuples():
+        event = str(getattr(row, "event_id", "") or "")
+        if event and event in seen:
+            continue
+        seen.add(event)
+        key = str(row.competition_key)
+        found = classify_key(key, key)
+        if not found.counts:
+            continue
+        keys.add(key)
+        if rule_for(found.tier.value, league) is not None:
+            held += 1.0
+        else:
+            domestic += 1.0
+    return domestic, held, keys
+
+
 def disagreements(
     attributed: pd.DataFrame, claimed: float, player: str, league: str,
+    matches: pd.DataFrame | None = None,
 ) -> list[dict]:
     """Where the stored figure counts more domestic football than was played.
 
     ``claimed`` is the counted appearance total the pull recorded, which is
-    domestic football alone -- Europe is held, not counted. So it should equal
-    the club's own domestic matches this player appeared in, and anything above
-    that is a European match wearing a domestic figure.
+    domestic football alone -- Europe is held, not counted.
 
-    Only *more*. The gamelog does not return every competition, so what it
-    finds is a floor and not a total, and a claim below it is the ordinary case.
+    Judged against two different things, because they answer differently. The
+    club's own domestic matches are a hard ceiling: nobody appears in more of
+    them than were played, so a claim above that is wrong whatever else is
+    true. The player's gamelog is the sharper instrument -- it is what catches
+    a European match wearing a domestic figure -- but it does not return every
+    competition. It drops the domestic cups, and every player this flagged on
+    first run was flagged by exactly the matches it had not returned: Chelsea's
+    two League Cup ties, Bayern's Pokal tie.
+
+    So a claim above what the gamelog saw, in a competition the gamelog never
+    returned at all, is the gamelog's silence and is reported as unjudged. The
+    alternative is a check that cries wolf, and a check that cries wolf cannot
+    be promoted to one that blocks.
     """
     domestic, held, held_names = counted_appearances(attributed, league)
     if claimed - domestic <= TOLERANCE:
         return []
-    return [{
+
+    club_domestic, club_held, club_keys = club_football(matches, league)
+    seen_keys = ({str(r.competition_key) for r in attributed.itertuples()}
+                 if attributed is not None and not attributed.empty else set())
+    entry = {
         "player": player,
         "league": league,
         "roster": float(claimed),
@@ -129,27 +176,72 @@ def disagreements(
         "excess": round(float(claimed) - domestic, 1),
         "held": held,
         "held_in": held_names,
-    }]
+        "club": club_domestic,
+        "missing": sorted(club_keys - seen_keys),
+    }
+    if club_keys and claimed - club_domestic > TOLERANCE:
+        # More domestic football than the club played. Impossible, so it is a
+        # fault however the gamelog behaved.
+        entry["verdict"] = "impossible"
+    elif club_keys and (club_keys - seen_keys):
+        # A whole competition the gamelog did not return. It cannot say whether
+        # he missed those matches or it simply did not fetch them.
+        entry["verdict"] = "unjudged"
+    else:
+        entry["verdict"] = "excess"
+    return [entry]
+
+
+#: What each verdict is called, and what a reader should do about it.
+VERDICTS = {
+    "impossible": (
+        "counted more domestic football than their club played",
+        "      A season aggregate carries whatever ESPN scoped the request to. "
+        "The club's results carry what was actually played. Nobody appears in "
+        "more of his club's matches than it played, so these are wrong.",
+    ),
+    "excess": (
+        "counted more domestic football than their own gamelog accounts for",
+        "      The gamelog returned every competition the club played, so the "
+        "excess is a match he did not play or one he played in Europe.",
+    ),
+    "unjudged": (
+        "could not be judged: their gamelog did not return every competition "
+        "their club played",
+        "      The missing competitions are named. A figure larger than a "
+        "gamelog that never fetched the domestic cup is that gamelog's "
+        "silence, not the figure's fault.",
+    ),
+}
 
 
 def report(found: list[dict]) -> list[str]:
-    """The disagreements as lines, named."""
+    """The disagreements as lines, named, worst verdict first."""
     if not found:
         return []
-    lines = [
-        f"  {len(found)} player(s) counted more domestic football than their "
-        f"club played:",
-    ]
-    for entry in sorted(found, key=lambda e: -e["excess"])[:20]:
-        where = (f", and {entry['held']:g} in {', '.join(entry['held_in'])}"
-                 if entry.get("held") else "")
-        lines.append(
-            f"      {entry['player']} ({entry['league']}): the figures count "
-            f"{entry['roster']:g}, the club played {entry['played']:g} "
-            f"domestically{where}  ({entry['excess']:+g})"
-        )
-    lines.append(
-        "      A season aggregate carries whatever ESPN scoped the request to. "
-        "The club's results carry what was actually played."
-    )
+    lines: list[str] = []
+    for verdict in ("impossible", "excess", "unjudged"):
+        group = [e for e in found if e.get("verdict", "excess") == verdict]
+        if not group:
+            continue
+        heading, footer = VERDICTS[verdict]
+        lines.append(f"  {len(group)} player(s) {heading}:")
+        for entry in sorted(group, key=lambda e: -e["excess"])[:20]:
+            where = (f", and {entry['held']:g} in {', '.join(entry['held_in'])}"
+                     if entry.get("held") else "")
+            # Only where it is the reason. On an impossible claim the club's
+            # own ceiling decides, and naming a gap the verdict does not rest
+            # on reads as the excuse for it.
+            missing = (f"; its gamelog never returned "
+                       f"{', '.join(entry['missing'])}"
+                       if entry.get("missing") and verdict == "unjudged" else "")
+            club = (f", the club played {entry['club']:g}"
+                    if entry.get("club") else "")
+            lines.append(
+                f"      {entry['player']} ({entry['league']}): the figures "
+                f"count {entry['roster']:g}, his gamelog shows "
+                f"{entry['played']:g}{where}{club}{missing}  "
+                f"({entry['excess']:+g})"
+            )
+        lines.append(footer)
     return lines

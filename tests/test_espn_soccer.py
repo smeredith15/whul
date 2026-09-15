@@ -939,3 +939,89 @@ def test_a_friendly_is_named_as_a_friendly_rather_than_as_an_unknown():
 
     assert "friendly" in classify_gamelog_league("club.friendly")[1]
     assert "never seen" in classify_gamelog_league("zzz.made.up")[1]
+
+
+# --- finding a rostered player in a squad list -----------------------------
+
+def _squads(monkeypatch, squads):
+    """Stand in for the two requests `athlete_named` makes."""
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "team_ids",
+                        lambda league, season, session=None:
+                        {club: str(i) for i, club in enumerate(squads)})
+
+    def load_squad(league, team_id, season, session=None):
+        club = list(squads)[int(team_id)]
+        rows = squads[club]
+        if isinstance(rows, Exception):
+            raise rows
+        return pd.DataFrame([{"player": n, "player_id": f"id-{n}"} for n in rows])
+
+    monkeypatch.setattr(espn_soccer, "load_squad", load_squad)
+    return espn_soccer
+
+
+def test_an_accent_no_longer_decides_whether_a_player_is_found(monkeypatch):
+    """Vinicius Junior was found and Mbappe was not, on the same page of the
+    same feed, because one record carried its accents and the other did not.
+    Matched on the same normalisation every other feed here is matched on."""
+    espn_soccer = _squads(monkeypatch, {"Real Madrid": ["Kylian Mbappe"]})
+
+    found, club = espn_soccer.athlete_named("laliga", "Kylian Mbapp\u00e9", 2027)
+
+    assert (found, club) == ("id-Kylian Mbappe", "Real Madrid")
+
+
+def test_the_accent_works_in_the_other_direction_too(monkeypatch):
+    espn_soccer = _squads(monkeypatch, {"Inter": ["Lautaro Mart\u00ednez"]})
+
+    found, _ = espn_soccer.athlete_named("seriea", "Lautaro Martinez", 2027)
+
+    assert found == "id-Lautaro Mart\u00ednez"
+
+
+def test_a_generational_suffix_still_keeps_two_people_apart(monkeypatch):
+    """The whole reason the normalisation splits it off rather than dropping
+    it. A squad list holding the father must not answer for the son."""
+    espn_soccer = _squads(monkeypatch, {"Anywhere": ["John Daly"]})
+
+    found, _ = espn_soccer.athlete_named("epl", "John Daly II", 2027)
+
+    assert found is None
+
+
+def test_a_name_that_is_not_there_reports_who_was(monkeypatch):
+    """Named, never chosen. A search that picked the closest would eventually
+    pick somebody's brother, so the two spellings are printed and a person
+    decides."""
+    espn_soccer = _squads(monkeypatch, {
+        "Bayern Munich": ["Joshua Kimmich Walter", "Harry Kane"],
+        "Dortmund": ["Serhou Guirassy"],
+    })
+    saw: list = []
+
+    found, _ = espn_soccer.athlete_named(
+        "bundesliga", "Joshua Kimmich", 2027, saw=saw)
+
+    assert found is None
+    assert ("Joshua Kimmich Walter", "Bayern Munich") in saw
+    # Not everybody -- only those sharing the surname being looked for.
+    assert all("Kimmich" in name for name, _ in saw)
+
+
+def test_a_club_whose_squad_cannot_be_read_is_reported_not_swallowed(monkeypatch):
+    """One club must not end the search, so the request is caught -- and a
+    caught exception with nowhere to go made a league that half answered
+    indistinguishable from a squad that did not carry the name."""
+    espn_soccer = _squads(monkeypatch, {
+        "Bayern Munich": RuntimeError("503"),
+        "Dortmund": ["Serhou Guirassy"],
+    })
+    failed: list = []
+
+    found, _ = espn_soccer.athlete_named(
+        "bundesliga", "Joshua Kimmich", 2027, failed=failed)
+
+    assert found is None
+    assert failed == [("Bayern Munich", "RuntimeError")]

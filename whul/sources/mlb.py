@@ -13,10 +13,12 @@ wants: a daily pull of the current season, stored as a daily snapshot, gives bot
 live standings and the history the progression graph needs. Per-game detail is
 only required where accrual has to be split finer than a day.
 
-UNVERIFIED: every host here is blocked from the environment this was written in,
-so nothing below has touched a live response. Run ``python -m whul.cli probe mlb``
-from a machine with access before trusting it; the probe reports which feed and
-which stage fails.
+The hosts are blocked from the environment this is written in, so changes here
+are checked by ``python -m whul.cli probe mlb`` from a machine with access,
+which reports which feed and which stage fails. The Stats API path -- schedule,
+season lines, sabermetrics and the postseason rounds -- was confirmed against
+2025 that way. FanGraphs was not and cannot be: it answers 403 to a datacenter
+address, which is why the default path no longer asks it anything.
 """
 
 from __future__ import annotations
@@ -644,9 +646,12 @@ def load_postseason_players(season: int, group: str = "hitting") -> pd.DataFrame
     a handful of October games would credit a run with production earned in
     May. The counting stats are what a postseason is paid on.
 
-    UNVERIFIED: the host is unreachable from the environment this was written
-    in, so the parameter is checked rather than trusted. Run
-    ``python -m whul.cli probe mlb`` before scoring a season with this.
+    Verified against 2025 by ``python -m whul.cli probe mlb``: the four rounds
+    returned 97, 103, 51 and 27 hitters, narrowing as the field does, for 160
+    distinct players and a longest run of 18 games. An ignored parameter would
+    have answered with the whole season -- 765 players, four times over -- so
+    the counts themselves are the evidence the scoping bit. The check below
+    stays, because it costs nothing and the next season is a fresh request.
     """
     frames = []
     for game_type in POSTSEASON_GAME_TYPES:
@@ -796,9 +801,15 @@ def probe(season: int = 2025) -> dict:
     except Exception as exc:
         result["stats_api"] = f"FAILED: {type(exc).__name__}: {exc}"
 
-    # --- FanGraphs ---
-    # Off, Def and WAR live here and nowhere free; report explicitly whether the
-    # scoring inputs arrived, since a leaderboard can answer 200 with nothing.
+    # --- the scoring lines, from whichever host serves them ---
+    # Reported under the loader's name rather than FanGraphs'. These call
+    # `load_batters`/`load_pitchers`, which default to the Stats API -- so a
+    # run that never contacted FanGraphs was printing "fangraphs_batters ok",
+    # which reads as that host working. It has not been reachable since it
+    # started refusing datacenter addresses.
+    #
+    # Off, Def and WAR are the components a leaderboard can answer 200 without,
+    # so whether they arrived is reported separately from whether the pull did.
     needed = {
         "batters": ["AB", "H", "2B", "3B", "HR", "BB", "HBP", "SB", "CS", "Off", "Def"],
         "pitchers": ["IP", "SO", "H", "BB", "HBP", "HR", "SV", "HLD", "WAR"],
@@ -806,7 +817,7 @@ def probe(season: int = 2025) -> dict:
     for label, loader in (("batters", load_batters), ("pitchers", load_pitchers)):
         try:
             frame = loader([season])
-            result[f"fangraphs_{label}"] = "ok" if not frame.empty else "EMPTY"
+            result[f"scoring_lines_{label}"] = "ok" if not frame.empty else "EMPTY"
             result[f"{label}_rows"] = len(frame)
             if not frame.empty:
                 columns = set(frame.columns)
@@ -816,7 +827,7 @@ def probe(season: int = 2025) -> dict:
                 result[f"{label}_columns"] = sorted(columns)[:40]
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", "?")
-            result[f"fangraphs_{label}"] = f"FAILED ({status}): {type(exc).__name__}: {exc}"
+            result[f"scoring_lines_{label}"] = f"FAILED ({status}): {type(exc).__name__}: {exc}"
 
     # --- the postseason, which is paid as a rate and so must be a postseason ---
     # The endpoint ignores a gameType it does not understand and answers with

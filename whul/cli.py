@@ -1571,6 +1571,7 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
 
     club_results: dict[str, object] = {}
     attributed: dict[str, object] = {}
+    club_matches: dict[str, object] = {}
     unreadable = 0
     for row in mine.itertuples():
         key = PLAYER_LEAGUES[str(row.league)]
@@ -1584,10 +1585,22 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
                 print(f"  {key}: could not read the clubs' results "
                       f"({type(exc).__name__}); its players are skipped")
                 club_results[key] = None
-        athlete, club = espn_soccer.athlete_named(key, str(row.display_name), season)
+        saw: list = []
+        failed: list = []
+        athlete, club = espn_soccer.athlete_named(
+            key, str(row.display_name), season, saw=saw, failed=failed)
         if not athlete:
             unreadable += 1
-            print(f"  {row.display_name}: no athlete id in {key}")
+            # The squad names sharing his surname, so a spelling can be told
+            # from an absence without another run. Named, never chosen.
+            near = ("; nearest in the squads: "
+                    + ", ".join(f"{n!r} ({c})" for n, c in saw[:4])
+                    if saw else "")
+            # And whether the search was even able to look everywhere.
+            broke = (f"; {len(failed)} club squad(s) could not be read ("
+                     + ", ".join(f"{c}: {e}" for c, e in failed[:3]) + ")"
+                     if failed else "")
+            print(f"  {row.display_name}: no athlete id in {key}{near}{broke}")
             continue
         events = espn_soccer.load_gamelog(key, athlete, season)
         if events.empty:
@@ -1599,6 +1612,10 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
             matches = matches[matches["team"].astype(str) == str(club)]
         counted = attribution.attribute(events, matches)
         attributed[str(row.display_name)] = counted
+        # His club's own matches, kept for the judgement below: they are the
+        # only hard ceiling, and they say which competitions his gamelog was
+        # silent about.
+        club_matches[str(row.display_name)] = matches
         print(f"  {row.display_name} ({club or '?'}): "
               + ", ".join(f"{r.competition_key} {r.appearances:g}"
                           for r in counted.itertuples()))
@@ -1613,7 +1630,8 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     for player, counted in attributed.items():
         if player in stated:
             found += attribution.disagreements(
-                counted, stated[player], player, leagues.get(player, ""))
+                counted, stated[player], player, leagues.get(player, ""),
+                club_matches.get(player))
 
     lines = attribution.report(found)
     print()

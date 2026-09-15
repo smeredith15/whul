@@ -897,23 +897,50 @@ def compare_roster_and_overview(
     return out
 
 
-def athlete_named(league: str, name: str, season: int, session=None):
+def athlete_named(league: str, name: str, season: int, session=None,
+                  saw: list | None = None, failed: list | None = None):
     """``(id, club)`` for a player by name, so a probe can ask about a real one.
 
     Picking the first athlete on the first club returned Bayern's goalkeeper,
     whose statistics are saves and clean sheets -- which read as a feed with no
     appearances in it rather than as a probe that had chosen a keeper.
+
+    Matched on ``resolve.split_name``, which is how every other feed in this
+    project is matched to a roster: accents folded, punctuation dropped, and a
+    generational suffix kept apart rather than normalized away. A raw
+    lowercased substring was missing twelve of the fifty rostered players and
+    missing them inconsistently -- Vinicius Junior found and Mbappe not, on the
+    same page of the same feed, because one record carried its accents and the
+    other did not.
+
+    Nothing is matched on nearness. Where the name is not found, the squad
+    names that share a surname with it are appended to ``saw`` for the caller
+    to print, so a person can read the two spellings and decide. A resolver
+    that picked the closest would eventually pick somebody's brother.
+
+    A club whose squad cannot be read is appended to ``failed`` for the same
+    reason. That request is caught so one club cannot end the search, and a
+    caught exception with nowhere to go made a league that half answered
+    indistinguishable from a squad list that simply did not carry the name.
     """
+    from whul import resolve
+
     session = session or requests.Session()
-    wanted = name.strip().casefold()
+    wanted = resolve.split_name(name)
+    surname = wanted[0].split()[-1] if wanted[0] else ""
     for club, team_id in (team_ids(league, season, session) or {}).items():
         try:
             squad = load_squad(league, team_id, season, session)
-        except Exception:  # noqa: BLE001 -- one club, not the search
+        except Exception as exc:  # noqa: BLE001 -- one club, not the search
+            if failed is not None:
+                failed.append((club, type(exc).__name__))
             continue
         for row in squad.itertuples():
-            if wanted in str(row.player).casefold():
+            theirs = resolve.split_name(str(row.player))
+            if theirs == wanted and wanted[0]:
                 return str(row.player_id), club
+            if saw is not None and surname and surname in theirs[0].split():
+                saw.append((str(row.player), club))
     return None, None
 
 

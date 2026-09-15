@@ -1170,21 +1170,69 @@ def _note_the_unmatched(store: Store, source, as_of: date,
     nothing, and neither this nor the feed can tell that apart from a name
     spelled differently. What it can do is stop the two looking identical to
     anybody reading the database afterwards.
+
+    Every reason, not just the missing ones. A rostered player can also go
+    unscored because the feed spells him with a generational suffix and the
+    roster does not, or because two feed rows answer to his name -- and both of
+    those were reaching the log and nothing else, so the database showed a
+    league where everybody matched. Those two are the cases a person can
+    actually settle, which makes them the ones worth surfacing: the resolver
+    holds them back deliberately rather than guessing, and says so here with
+    the command that settles it.
     """
-    if report.resolution is None or not report.resolution.unmatched:
+    found = report.resolution
+    if found is None:
         return
-    missing = report.resolution.unmatched
-    named = ", ".join(f"{name} ({league})" for name, league in missing[:8])
-    if len(missing) > 8:
-        named += f", and {len(missing) - 8} more"
+    parts = _why_unscored(found)
+    if not parts:
+        return
     store.record_source_status(
         source.key, source.league, ok=True, rows=report.recorded,
         last_data_date=as_of.isoformat(),
         message=(
-            f"{len(report.resolution.matched)} of {report.resolution.rostered} "
-            f"rostered matched; no feed row for {named}"
+            f"{len(found.matched)} of {found.rostered} rostered matched; "
+            + "; ".join(parts)
         ),
     )
+
+
+def _why_unscored(found) -> list[str]:
+    """Every reason a rostered asset came out of this run with no row.
+
+    Three, and they are not the same kind of thing. A feed that never named him
+    may simply be right -- an injured player scores nothing, correctly, and no
+    feed can say whether the silence is that or a spelling. The other two are
+    decisions the resolver deliberately declined to make, which means a person
+    can make them, which is what makes them worth carrying out of the log.
+    """
+    parts = []
+    if found.unmatched:
+        parts.append("no feed row for " + _first_few(
+            f"{name} ({league})" for name, league in found.unmatched))
+    if found.suffix_mismatch:
+        # The remedy is named because there is one. Still not linked: the
+        # suffix is the whole difference between a man and his father, and a
+        # resolver that guessed would credit one manager with the other's
+        # score with nothing downstream able to tell.
+        parts.append(
+            _first_few(f"{name} ({league}) is listed as {feed!r}"
+                       for name, league, feed in found.suffix_mismatch)
+            + " -- link with `whul alias` if they are the same person")
+    if found.ambiguous:
+        parts.append(_first_few(
+            f"{name} ({league}) matches {count} feed rows"
+            for name, league, count in found.ambiguous)
+            + " -- left unlinked rather than guessed")
+    return parts
+
+
+def _first_few(items, limit: int = 8) -> str:
+    """The first few, and how many were not named."""
+    listed = list(items)
+    named = ", ".join(listed[:limit])
+    if len(listed) > limit:
+        named += f", and {len(listed) - limit} more"
+    return named
 
 
 def _record_nothing(store: Store, source, as_of: date, report: IngestReport) -> None:
@@ -1196,10 +1244,18 @@ def _record_nothing(store: Store, source, as_of: date, report: IngestReport) -> 
     came back with nothing -- left no row at all, and "ran and found nothing"
     could not be told from "never ran". Eight NCAAF teams sat on zero for a
     fortnight with nothing in the database to say the league had been tried.
+
+    Carries the resolver's reasons where there are any. "No rostered asset
+    matched a feed row" is the least informative true sentence available about
+    a run where the feed answered and the names did not line up, and that is
+    exactly the run where the reason is worth having.
     """
+    problems = list(report.problems)
+    if report.resolution is not None:
+        problems += _why_unscored(report.resolution)
     store.record_source_status(
         source.key, source.league, ok=False, rows=0,
-        message="; ".join(report.problems)[:500],
+        message="; ".join(problems)[:500],
     )
 
 
