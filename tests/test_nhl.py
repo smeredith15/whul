@@ -406,3 +406,61 @@ def test_a_covid_season_is_judged_complete_at_its_own_length():
         divisions=divisions("Alpha", "Beta", season=2021),
     ).set_index("team")
     assert out.loc["Alpha", "is_division_champ"] == 1
+
+
+# --- a skater beside the season his club has played ------------------------
+
+def _skater(**over):
+    row = {"seasonId": 20242025, "skaterFullName": "Test Skater",
+           "playerId": "1", "teamAbbrevs": "WPG", "gamesPlayed": 50,
+           "goals": 20, "assists": 30, "shots": 150, "plusMinus": 10}
+    row.update(over)
+    return row
+
+
+def _standings():
+    return pd.DataFrame([
+        {"season": 20242025, "team": "Winnipeg Jets", "division": "Central",
+         "abbrev": "WPG", "team_games": 62.0},
+        {"season": 20242025, "team": "Colorado Avalanche", "division": "Central",
+         "abbrev": "COL", "team_games": 61.0},
+        {"season": 20242025, "team": "Carolina Hurricanes", "division": "Metro",
+         "abbrev": "CAR", "team_games": 63.0},
+        {"season": 20242025, "team": "Dallas Stars", "division": "Central",
+         "abbrev": "DAL", "team_games": 60.0},
+    ])
+
+
+def test_a_skater_is_counted_against_the_games_his_club_played():
+    """Fifty of sixty-two is an interrupted season; fifty of fifty is the
+    league in January, and the first figure alone cannot tell them apart."""
+    out = score_skaters(pd.DataFrame([_skater()]), _standings())
+
+    assert out.iloc[0]["games_played"] == 50
+    assert out.iloc[0]["team_games"] == 62.0
+
+
+def test_a_traded_skater_takes_the_largest_of_his_clubs_not_their_sum():
+    """Summing says a player traded in October had a hundred and sixty games
+    available to him."""
+    out = score_skaters(
+        pd.DataFrame([_skater(teamAbbrevs="COL,CAR,DAL", gamesPlayed=48)]),
+        _standings())
+
+    assert out.iloc[0]["team_games"] == 63.0
+
+
+def test_a_club_the_standings_do_not_name_leaves_the_figure_blank():
+    out = score_skaters(pd.DataFrame([_skater(teamAbbrevs="XXX")]), _standings())
+    assert pd.isna(out.iloc[0]["team_games"])
+
+
+def test_the_standings_are_optional_and_move_no_score():
+    """They are a heading, and a heading must never be able to break scoring."""
+    rows = pd.DataFrame([_skater(), _skater(playerId="2", teamAbbrevs="COL",
+                                            skaterFullName="Other")])
+    with_them = score_skaters(rows, _standings())
+    without = score_skaters(rows)
+
+    assert list(without["total_points"]) == list(with_them["total_points"])
+    assert without["team_games"].isna().all()

@@ -194,10 +194,26 @@ def load_divisions(seasons: list[int]) -> pd.DataFrame:
                 "season": season,
                 "team": str(name),
                 "division": str(division),
+                # The two the division title never needed and a profile does.
+                # A skater row names his club as "WPG" and the team summary
+                # calls it "Winnipeg Jets" and carries no abbreviation at all,
+                # so these endpoints cannot be joined to each other -- but this
+                # payload has the abbreviation and the games played on the same
+                # row, and is already fetched every run for the division.
+                "abbrev": str((row.get("teamAbbrev") or {}).get("default") or ""),
+                "team_games": _number(row.get("gamesPlayed")),
             })
     if not rows:
-        return pd.DataFrame(columns=["season", "team", "division"])
+        return pd.DataFrame(
+            columns=["season", "team", "division", "abbrev", "team_games"])
     return pd.DataFrame(rows).drop_duplicates(subset=["season", "team"])
+
+
+def _number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def daily_update_cost(season: int | None = None) -> float:
@@ -324,6 +340,24 @@ def probe(season: int = 2025) -> dict:
                     k: str(shaped[k])[:24] for k in sorted(shaped)
                     if "team" in k.lower() or "abbrev" in k.lower()
                 }
+                # The join the profile actually uses, which is this payload
+                # against the skater rows -- not the team summary, which has
+                # no abbreviation and never could be joined.
+                if skaters is not None and "teamAbbrevs" in skaters.columns:
+                    known = {
+                        str((r.get("teamAbbrev") or {}).get("default") or "")
+                        for r in standings
+                    }
+                    parts = set()
+                    for value in skaters["teamAbbrevs"].dropna():
+                        parts.update(str(value).replace("/", ",").split(","))
+                    absent = sorted(c.strip() for c in parts
+                                    if c.strip() and c.strip() not in known)
+                    result["team_games_for_a_skater"] = (
+                        "AVAILABLE from the standings"
+                        if not absent else
+                        f"{len(absent)} club(s) absent from the standings: "
+                        f"{', '.join(absent[:6])}")
             else:
                 result["standings_row_keys"] = "EMPTY -- no standings rows"
         except Exception as exc:  # noqa: BLE001 -- a probe reports, never raises
@@ -341,9 +375,6 @@ def probe(season: int = 2025) -> dict:
                 parts.update(str(value).replace("/", ",").split(","))
             missing = sorted(p.strip() for p in parts if p.strip() not in known)
             result["skater_teams_that_do_not_join"] = missing
-            result["team_games_for_a_skater"] = (
-                "AVAILABLE" if not missing else
-                f"{len(missing)} club(s) on skater rows match no team row")
 
     try:
         from whul.scoring import nhl as scoring
