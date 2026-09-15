@@ -245,6 +245,26 @@ def probe(season: int = 2025) -> dict:
         result["skater_columns_present"] = [c for c in wanted if c in skaters.columns]
         result["skater_columns_missing"] = [c for c in wanted if c not in skaters.columns]
 
+        # Whether a skater row says which club he was on. A profile shows games
+        # played beside the games his club played -- fifty of eighty-two is an
+        # interrupted season and fifty of fifty is the league in January -- and
+        # the second figure lives on the *team* endpoint, which has
+        # `gamesPlayed` already. All that is missing is the join, and nothing in
+        # the sandbox this was written in can reach the host to see whether the
+        # skater row carries one. So: every column it returns, and a sample of
+        # whatever looks like a club, rather than a guess at the name.
+        teamish = [c for c in skaters.columns if "team" in c.lower()]
+        result["skater_team_columns"] = teamish
+        for column in teamish[:3]:
+            sample = [str(v) for v in skaters[column].dropna().unique()[:5]]
+            result[f"skater_{column}_sample"] = sample
+        result["skater_all_columns"] = sorted(str(c) for c in skaters.columns)
+        if not teamish:
+            result["team_games_for_a_skater"] = (
+                "NOT AVAILABLE -- no column here names a club, so a skater "
+                "cannot be joined to his team's games played"
+            )
+
     divisions = frames.get("divisions")
     if divisions is not None and not divisions.empty:
         # The shape matters as much as the row count: four divisions of eight
