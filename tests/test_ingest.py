@@ -1488,6 +1488,51 @@ def test_an_unmatched_asset_reaches_the_status_row_not_only_the_log(store):
     assert status.loc[0, "last_ok"] == 1
     assert status.loc[0, "rows_last_run"] == 1
 
+def test_a_generational_suffix_reaches_the_status_row_with_its_remedy(store):
+    """ESPN lists him as "Patrick Mahomes II" and the roster says "Patrick
+    Mahomes". The resolver holds that back on purpose -- the suffix is the
+    whole difference between a man and his father -- but it was saying so to
+    the log alone, so the database showed a league where everybody matched and
+    a rostered quarterback scored nothing.
+
+    Held back still. What changes is that the note names the feed's spelling
+    and the command that settles it, which is a thing a person can act on."""
+    rostered(store, "Patrick Mahomes")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Patrick Mahomes II", "league": "NFL", "role": "QB",
+         "total_points": 200.0},
+    ])
+
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+
+    message = store.query(
+        "SELECT * FROM source_status WHERE source = 'nfl'").loc[0, "message"]
+    assert "Patrick Mahomes (NFL) is listed as 'Patrick Mahomes II'" in message
+    assert "whul alias" in message
+    # Named, not linked: nothing was scored for him on a guess.
+    assert store.query(
+        "SELECT * FROM raw_stats WHERE asset_id LIKE '%mahomes%'").empty
+
+
+def test_an_ambiguous_name_reaches_the_status_row_too(store):
+    """Two feed rows answer to the name. Left unlinked rather than guessed,
+    and said out loud for the same reason."""
+    rostered(store, "Josh Allen")
+    frozen_benchmark(store)
+    source = source_over([
+        {"player": "Josh Allen", "league": "NFL", "role": "QB", "total_points": 200.0},
+        {"player": "Josh Allen", "league": "NFL", "role": "LB", "total_points": 90.0},
+    ])
+
+    ingest.ingest(store, source, "2026-27", date(2026, 9, 4), verbose=False)
+
+    message = store.query(
+        "SELECT * FROM source_status WHERE source = 'nfl'").loc[0, "message"]
+    assert "Josh Allen (NFL) matches 2 feed rows" in message
+    assert "left unlinked rather than guessed" in message
+
+
 
 def test_a_feed_that_names_nobody_we_hold_is_not_left_reading_yesterdays_ok(store):
     rostered(store, "Josh Allen")
