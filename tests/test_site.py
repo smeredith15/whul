@@ -2808,6 +2808,122 @@ def test_a_triple_double_counts_in_both_boxes_because_it_earns_both():
     assert by["Triple-doubles"]["points"] == 14 * 3.0
 
 
+# --- a playoff run, in whichever sport ran it -------------------------------
+
+def _run(**over):
+    """One postseason in the breakdown, as `apply_bonus` writes it."""
+    entry = {"competition": "NBA", "games": 12.0, "points": 480.0,
+             "share": 0.10, "scalar": 8.2, "adds": 328.0, "credited": False,
+             "finishes": "2027-06-20"}
+    entry.update(over)
+    return entry
+
+
+def _nhl_row(**over):
+    row = {"league": "NHL", "role": "Skater", "games_played": 70, "goals": 30,
+           "assists": 45, "shots": 210, "plus_minus": 12}
+    row.update(over)
+    return row
+
+
+def _nba_playoffs(**over):
+    row = _nba_row()
+    row.update({f"post_{c}": v / 5.0 for c, v in row.items()
+                if isinstance(v, (int, float)) and not c.startswith("post_")})
+    row.update({"postseason_games": 12, "bonus_detail": [_run()]}, **over)
+    return row
+
+
+def test_a_playoff_section_is_the_same_boxes_as_the_season():
+    """The figures were collected and dropped in aggregation, so these boxes
+    had nothing to hold. They are built by the same call now, so a box that
+    appears in one appears in the other."""
+    panel = site_build._nba_panel(_nba_playoffs())
+    season = [b["label"] for b in panel["top"] + panel["secondary"]]
+    post = [b["label"] for b in
+            panel["posts"][0]["top"] + panel["posts"][0]["secondary"]]
+
+    assert season == post
+    assert panel["posts"][0]["games"] == "12"
+
+
+def test_a_playoff_rate_is_over_the_playoff_games():
+    """Dividing April's figures by the regular season's game count would
+    report a run at a twentieth of what was actually averaged."""
+    row = _nba_playoffs()
+    panel = site_build._nba_panel(row)
+    ppg = next(b for b in panel["posts"][0]["top"] if b["label"] == "PPG")
+
+    assert ppg["value"] == f"{row['post_points'] / 12:,.1f}"
+
+
+def test_a_playoff_section_carries_what_the_run_pays():
+    """Its boxes sum to what the run scored; this is what it is worth, which
+    is a different number -- the rate credited over a share of a season. Held,
+    and greyed, until the competition stops moving."""
+    panel = site_build._nba_panel(_nba_playoffs())
+    total = panel["posts"][0]["total"]
+
+    assert total["points"] == 328.0
+    assert total["value"] == "\u00d78.2"
+    assert total["muted"] is True
+    assert "held to 2027-06-20" in total["aside"]
+    assert "not a tally" in panel["posts"][0]["note"]
+
+
+def test_a_finished_competition_is_no_longer_greyed():
+    panel = site_build._nba_panel(
+        _nba_playoffs(bonus_detail=[_run(credited=True)]))
+
+    assert panel["posts"][0]["total"]["muted"] is False
+
+
+def test_no_playoff_games_means_no_playoff_section():
+    """Everyone carries a breakdown entry. A section for a run nobody made
+    would read as a player who turned out and did nothing."""
+    assert "posts" not in site_build._nba_panel(_nba_row())
+    assert "posts" not in site_build._nhl_panel(_nhl_row())
+
+
+def test_hockey_gets_the_same_treatment():
+    row = _nhl_row()
+    row.update({"post_goals": 8, "post_assists": 9, "post_shots": 50,
+                "post_plus_minus": 4, "postseason_games": 14,
+                "bonus_detail": [_run(competition="NHL", games=14.0,
+                                      scalar=8.4, adds=72.0)]})
+    panel = site_build._nhl_panel(row)
+
+    assert [b["label"] for b in panel["top"]] == \
+        [b["label"] for b in panel["posts"][0]["top"]]
+    assert [b["value"] for b in panel["posts"][0]["top"]] == \
+        ["8", "9", "50", "4"]
+
+
+def test_a_playoff_section_is_the_same_shape_even_where_one_phase_is_empty():
+    """The secondary row drops its empty boxes, which it should -- but making
+    that call twice, once per phase, gave the two sections different shapes and
+    left the reader checking which boxes were present before reading any
+    figure. A box now appears in both or in neither."""
+    row = {"league": "NFL", "role": "QB", "regular_games": 16,
+           "team_games": 17, "postseason_games": 3,
+           "passing_yards": 4200, "passing_tds": 32, "interceptions": 9,
+           "rushing_yards": 310, "rushing_tds": 0, "fumbles_lost": 4,
+           "receptions": 0, "receiving_yards": 0, "receiving_tds": 0,
+           # He scored on the ground in January and not before it.
+           "post_passing_yards": 820, "post_passing_tds": 7,
+           "post_interceptions": 1, "post_rushing_yards": 60,
+           "post_rushing_tds": 1, "post_fumbles_lost": 0,
+           "post_receptions": 0, "post_receiving_yards": 0,
+           "post_receiving_tds": 0}
+    panel = site_build._nfl_panel(row)
+    labels = lambda part: [b["label"] for b in part["top"] + part["secondary"]]
+
+    assert labels(panel["season"]) == labels(panel["post"])
+    season_td = next(b for b in panel["season"]["secondary"]
+                     if b["label"] == "Rush / Rec TD")
+    assert season_td["value"] == "0 / 0"
+
+
 def test_hockey_is_shown_as_a_tally_and_adds_up():
     from whul.scoring.nhl import (
         PTS_ASSIST, PTS_GOAL, PTS_PLUS_MINUS, PTS_SHOT,

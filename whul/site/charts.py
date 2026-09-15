@@ -1224,7 +1224,11 @@ SCRIPT = """\
                ? ' <span class="adds">' + panel.post.games + ' game' +
                  (panel.post.games === '1' ? '' : 's') + '</span>'
                : '') +
-             '</summary>' + boxRows(panel.post) + '</details>';
+             '</summary>' + boxRows(panel.post) +
+             (panel.post.total ? '<div class="boxrow rest outcome">' +
+                                 statBox(panel.post.total, true) + '</div>' : '') +
+             (panel.post.note ? '<p class="note">' + panel.post.note + '</p>' : '') +
+             '</details>';
     }
     return '<div class="body boxes">' + head + boxRows(panel.season) +
            '</div>' + post;
@@ -1250,8 +1254,12 @@ SCRIPT = """\
     var notes = (a.notes || []).map(function (n) {
       return '<p class="note">' + n + '</p>';
     }).join('');
-    var bonus = (a.panel && a.panel.posts && a.panel.posts.length)
-      ? '' : renderBonus(a.bonus || []);
+    // Where the panel prices its own postseason, the breakdown table below
+    // would be the same competitions twice -- once as boxes and once as rows.
+    // Football keeps its section on `post` and everyone else on `posts`.
+    var priced = a.panel && ((a.panel.posts && a.panel.posts.length) ||
+                             (a.panel.post && a.panel.post.total));
+    var bonus = priced ? '' : renderBonus(a.bonus || []);
     // Everything the tables have room for and everything they do not. The
     // tables show a position and a club; this is where the rest of it is, which
     // is what a click on a name is for.

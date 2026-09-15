@@ -704,7 +704,47 @@ def _nfl_box(row: dict, column: str, prefix: str = "",
             "value": text, "points": round(points, 1) or 0.0}
 
 
-def _nfl_boxes(row: dict, prefix: str = "") -> dict | None:
+def _nfl_rest(lead) -> list[str]:
+    """The secondary row's columns: whatever the role's own line does not carry.
+
+    The touchdowns are folded into one box wherever they land, so a role whose
+    top row has taken them must not be offered them again.
+    """
+    from whul.scoring.nfl import PLAYER_WEIGHTS
+
+    rest: list[str] = []
+    for column in PLAYER_WEIGHTS:
+        if column in lead:
+            continue
+        if column in ("rushing_tds", "receiving_tds"):
+            if "TDS" not in lead and "TDS" not in rest:
+                rest.append("TDS")
+            continue
+        rest.append(column)
+    return rest
+
+
+def _nfl_shared_rest(row: dict) -> set[str]:
+    """Secondary columns either phase has a figure for.
+
+    The playoff section is the same boxes as the season, which is what makes
+    January readable against September without first checking which boxes are
+    present. So a box appears in both or in neither, even where one of them is
+    a zero. Asked of `_nfl_box` itself rather than of a second copy of its
+    emptiness rule, which would be one more thing to keep in step.
+    """
+    role = str(row.get("role") or row.get("position") or "").upper()
+    lead = NFL_TOP_LINE.get(role)
+    if lead is None:
+        return set()
+    order = NFL_TD_ORDER.get(role, ("rushing_tds", "receiving_tds"))
+    return {c for c in _nfl_rest(lead)
+            if _nfl_box(row, c, "", td_order=order) is not None
+            or _nfl_box(row, c, "post_", td_order=order) is not None}
+
+
+def _nfl_boxes(row: dict, prefix: str = "",
+               keep: set | None = None) -> dict | None:
     """An NFL player's season as a top row and a smaller one beneath it.
 
     The top row is the role's own line and the second is everything else he
@@ -726,20 +766,12 @@ def _nfl_boxes(row: dict, prefix: str = "") -> dict | None:
     top = [box for box in
            (_nfl_box(row, c, prefix, keep_zero=True, td_order=order)
             for c in lead) if box]
-    # Whatever the role's own line does not already carry. The touchdowns are
-    # folded into one box wherever they land, so a role whose top row has taken
-    # them must not be offered them again.
-    rest: list[str] = []
-    for column in PLAYER_WEIGHTS:
-        if column in lead:
-            continue
-        if column in ("rushing_tds", "receiving_tds"):
-            if "TDS" not in lead and "TDS" not in rest:
-                rest.append("TDS")
-            continue
-        rest.append(column)
-    secondary = [box for box in
-                 (_nfl_box(row, c, prefix, td_order=order) for c in rest) if box]
+    secondary = [
+        box for box in
+        (_nfl_box(row, c, prefix, keep_zero=bool(keep and c in keep),
+                  td_order=order)
+         for c in _nfl_rest(lead)) if box
+    ]
     if not top and not secondary:
         return None
     return {"top": top, "secondary": secondary}
@@ -775,8 +807,12 @@ def _nfl_panel(row: dict) -> dict | None:
         panel["games"] = {"team": f"{team_games:,.0f}",
                           "played": f"{figure('regular_games'):,.0f}"}
     if figure("postseason_games"):
-        post = _nfl_boxes(row, prefix="post_")
+        kept = _nfl_shared_rest(row)
+        panel["season"] = _nfl_boxes(row, keep=kept) or season
+        post = _nfl_boxes(row, prefix="post_", keep=kept)
         if post:
+            priced = _playoff_post(row, post)
+            post = priced if priced else post
             post["games"] = f"{figure('postseason_games'):,.0f}"
             panel["post"] = post
     return panel
@@ -948,22 +984,33 @@ def _nba_panel(row: dict) -> dict | None:
         TRIPLE_DOUBLE_BONUS,
     )
 
-    games = _stat_number(row, "regular_games") or _stat_number(row, "games_played")
     tally_weights = {"double_doubles": DOUBLE_DOUBLE_BONUS,
                      "triple_doubles": TRIPLE_DOUBLE_BONUS,
                      "plus_minus": PLUS_MINUS_WEIGHT}
-    return {
-        "kind": "boxes",
-        "head": _games_head(row),
-        "top": [_rate_box(row, c, label, games, BOX_WEIGHTS[c])
-                for c, label in NBA_RATE_TOP],
-        "secondary": (
-            [_rate_box(row, c, label, games, BOX_WEIGHTS[c])
-             for c, label in NBA_RATE_REST]
-            + [_tally_box(row, c, label, tally_weights[c])
-               for c, label in NBA_TALLY_REST]
-        ),
-    }
+
+    def boxes(games, prefix=""):
+        # Rates over that phase's own games. Dividing April's figures by the
+        # regular season's game count would report a playoff run at a twentieth
+        # of what was actually averaged.
+        return {
+            "top": [_rate_box(row, f"{prefix}{c}", label, games, BOX_WEIGHTS[c])
+                    for c, label in NBA_RATE_TOP],
+            "secondary": (
+                [_rate_box(row, f"{prefix}{c}", label, games, BOX_WEIGHTS[c])
+                 for c, label in NBA_RATE_REST]
+                + [_tally_box(row, f"{prefix}{c}", label, tally_weights[c])
+                   for c, label in NBA_TALLY_REST]
+            ),
+        }
+
+    games = _stat_number(row, "regular_games") or _stat_number(row, "games_played")
+    panel = {"kind": "boxes", "head": _games_head(row), **boxes(games)}
+    post_games = _stat_number(row, "postseason_games")
+    if post_games:
+        post = _playoff_post(row, boxes(post_games, "post_"))
+        if post:
+            panel["posts"] = [post]
+    return panel
 
 
 def _nhl_panel(row: dict) -> dict | None:
@@ -983,12 +1030,18 @@ def _nhl_panel(row: dict) -> dict | None:
 
     weights = {"goals": PTS_GOAL, "assists": PTS_ASSIST, "shots": PTS_SHOT,
                "plus_minus": PTS_PLUS_MINUS}
-    return {
-        "kind": "boxes",
-        "head": _games_head(row),
-        "top": [_tally_box(row, c, label, weights[c]) for c, label in NHL_BOXES],
-        "secondary": [],
-    }
+
+    def boxes(prefix=""):
+        return {"top": [_tally_box(row, f"{prefix}{c}", label, weights[c])
+                        for c, label in NHL_BOXES],
+                "secondary": []}
+
+    panel = {"kind": "boxes", "head": _games_head(row), **boxes()}
+    if _stat_number(row, "postseason_games"):
+        post = _playoff_post(row, boxes("post_"))
+        if post:
+            panel["posts"] = [post]
+    return panel
 
 
 #: Leagues whose profile is a panel built from figures, so that one can be
@@ -1571,6 +1624,27 @@ def _campaign_total(entry: dict) -> dict:
     return box
 
 
+def _playoff_post(row: dict, made: dict, name: str = "Playoffs") -> dict | None:
+    """A league's own playoffs as a section, priced the way Europe is.
+
+    Basketball, hockey and football each run one postseason, so there is one
+    entry in the breakdown rather than soccer's several -- but it is the same
+    arithmetic and the same box. Without it these sections showed figures that
+    were right and a contribution that appeared nowhere on the page.
+    """
+    entries = _bonus_list(row)
+    if not entries:
+        return None
+    entry = entries[0]
+    games = _stat_number(entry, "games")
+    out = dict(made)
+    out["name"] = name
+    out["games"] = "\u2014" if games is None else f"{games:,.0f}"
+    out["total"] = _campaign_total(entry)
+    out["note"] = _campaign_note(entry)
+    return out
+
+
 def _soccer_player_posts(row: dict) -> list[dict]:
     """Each European or playoff competition as its own section.
 
@@ -1585,7 +1659,7 @@ def _soccer_player_posts(row: dict) -> list[dict]:
         made["name"] = str(entry.get("competition") or "")
         made["games"] = "—" if apps is None else f"{apps:,.0f}"
         made["total"] = _campaign_total(entry)
-        made["note"] = _campaign_note(entry)
+        made["note"] = _campaign_note(entry, "match")
         out.append(made)
     return out
 
@@ -1595,7 +1669,7 @@ def _trim(value: float) -> str:
     return f"{value:,.2f}".rstrip("0").rstrip(".")
 
 
-def _campaign_note(entry: dict) -> str:
+def _campaign_note(entry: dict, unit: str = "game") -> str:
     """Why the section's boxes and its total are different numbers.
 
     They read as an arithmetic error otherwise, and the reader who checks is
@@ -1608,7 +1682,7 @@ def _campaign_note(entry: dict) -> str:
     finishes = str(entry.get("finishes") or "").strip()
     if not games or not scalar:
         return ""
-    over = f"{games:,.0f} game" + ("" if games == 1 else "s")
+    over = f"{games:,.0f} {unit}" + ("" if games == 1 else "s")
     note = (
         f"Credited as a rate, not a tally: {points:,.1f} points over {over} is "
         f"paid as though it had been played over {_trim(scalar)} more of them "
@@ -1617,7 +1691,7 @@ def _campaign_note(entry: dict) -> str:
     ).replace(".0%", "%")
     if not entry.get("credited"):
         note += (
-            " None of it is in the score yet: a rate off one or two matches "
+            f" None of it is in the score yet: a rate off one or two {unit}s "
             "moves a long way on the next one, and it can fall, so it is held "
             + (f"until the competition finishes ({finishes})." if finishes
                else "until the competition finishes.")
