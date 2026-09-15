@@ -49,6 +49,50 @@ CONTINENTAL_TIERS: tuple[tuple["Tier", str], ...] = (
 )
 
 
+#: What a domestic cup is called, for a profile that groups a season by the
+#: competition it was played in. The key is the feed's, which we chose when
+#: making the request, so unlike a display name it cannot arrive worded
+#: unexpectedly.
+CUP_NAMES: dict[str, str] = {
+    "facup": "FA Cup", "efl_cup": "EFL Cup", "copadelrey": "Copa del Rey",
+    "dfbpokal": "DFB-Pokal", "coppaitalia": "Coppa Italia",
+    "coupedefrance": "Coupe de France", "usopencup": "US Open Cup",
+}
+
+#: UEFA's league phase, as distinct from the knockout rounds after it.
+#:
+#: UNVERIFIED. The round text reaches the scorer inside the competition label,
+#: which is the feed's league name, its own note headline and the season-type
+#: slug joined together -- and no cached match row exists here to read, nor any
+#: way to fetch one from this sandbox. `probe-soccer-rounds` exists to settle
+#: it and has not been run.
+#:
+#: Until it has, a European section that matches neither pattern is shown
+#: undivided rather than split. Guessing costs more than not splitting: a
+#: quarter-final filed under "League phase" is a real figure in the wrong
+#: place, the section still sums correctly, and nothing about it looks wrong.
+LEAGUE_PHASE_PATTERN = re.compile(
+    r"league phase|group stage|group phase|matchday", re.IGNORECASE)
+ELIMINATION_PATTERN = re.compile(
+    r"round of \d+|quarter-?final|semi-?final|\bfinal\b|last 16|"
+    r"knockout (phase )?play-?off|round of sixteen", re.IGNORECASE)
+
+
+def european_phase(label: str | None) -> str:
+    """Which half of a European campaign a match belongs to, or "" if unknown.
+
+    The empty string is a real answer and the safe one: it collapses the
+    competition to a single block instead of inventing a division the feed did
+    not describe.
+    """
+    text = label or ""
+    if ELIMINATION_PATTERN.search(text):
+        return "Knockout"
+    if LEAGUE_PHASE_PATTERN.search(text):
+        return "League phase"
+    return ""
+
+
 def continental_name(tier: "Tier | str") -> str:
     """What to call a continental tier, or "" for one that is not."""
     value = tier.value if isinstance(tier, Tier) else str(tier)

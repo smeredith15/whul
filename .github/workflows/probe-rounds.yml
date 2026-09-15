@@ -1,0 +1,57 @@
+# What the feed's round text says, so a European phase split can be real.
+#
+# A club soccer profile groups a European campaign into a league phase and a
+# knockout phase. The only thing that can tell them apart is the competition
+# label ESPN assembles from its league name, its own note headline and its
+# season-type slug -- and the agent sandbox this project is developed in cannot
+# reach that feed at all. So the patterns in `whul.scoring.competition` are a
+# guess until this runs somewhere that can.
+#
+# Until then a section whose matches the patterns cannot place is shown
+# undivided. That is the deliberate choice: a quarter-final filed under "League
+# phase" is a real figure in the wrong place, the section still adds up, and
+# nothing about it looks wrong -- which is this project's whole failure mode.
+
+name: Probe rounds
+
+on:
+  workflow_dispatch:
+    inputs:
+      competition:
+        description: "League key whose European matches to read, e.g. epl"
+        default: "epl"
+      seasons:
+        description: "Seasons, space separated. One is enough to answer it."
+        default: "2025"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Read the labels
+        # pipefail because a pipeline exits with its last command's status and
+        # the default shell is `bash -e`: without it `tee` reports success
+        # however the command exited.
+        run: |
+          set -o pipefail
+          python -m whul.cli probe-rounds "${{ inputs.competition }}" \
+            --seasons "${{ inputs.seasons }}" | tee rounds.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rounds
+          path: rounds.txt
+          if-no-files-found: ignore

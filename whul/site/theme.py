@@ -741,6 +741,25 @@ dialog.profile details.boxes.post .adds {
   }
 }
 
+/* One competition per block, headed by its own name, so the figures line up
+   with what any other site reports for that competition. */
+dialog.profile .boxes.comp { padding-top: 2px; padding-bottom: 10px; }
+dialog.profile .boxes.comp h3 { margin: 0 0 4px; }
+dialog.profile .games.comp { padding-bottom: 8px; text-transform: none;
+  letter-spacing: 0; font-size: 12.5px; gap: 16px; flex-wrap: wrap; }
+dialog.profile .games.comp i {
+  font-style: normal; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.04em; font-size: 10.5px;
+}
+dialog.profile .boxes .phase {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin: 2px 0 5px;
+}
+dialog.profile .statbox .bv sup.bye {
+  font-size: 0.5em; font-weight: 600; color: var(--text-secondary);
+  margin-left: 1px; vertical-align: super;
+}
+
 dialog.profile .scoreline {
   display: flex; gap: 20px; padding: 12px 18px; border-top: 1px solid var(--grid);
 }
