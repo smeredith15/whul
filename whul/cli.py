@@ -2559,28 +2559,53 @@ def cmd_probe_rounds(args: argparse.Namespace) -> int:
     from whul.scoring.competition import european_phase
     from whul.sources import espn
 
+    from whul.scoring.competition import CONTINENTAL_TIERS, classify_key
+
     seasons = [int(s) for s in (args.seasons or "").split()] or [args.season]
     print(f"\nRound labels for {args.competition} {seasons}\n")
+    # Cups included, which is what carries the European competitions: the
+    # first version of this asked for the league alone and then reported every
+    # league row as "unplaced", which is both alarming and meaningless -- a
+    # league has no rounds and the phase split never looks at one.
     matches = espn.load_soccer_matches(
-        args.competition, seasons, include_cups=False, verbose=True)
+        args.competition, seasons, include_cups=True, verbose=True)
     if matches.empty:
         print("  the feed returned nothing\n", file=sys.stderr)
         return 1
 
-    seen: dict[str, int] = {}
-    for label in matches["competition"]:
-        seen[str(label)] = seen.get(str(label), 0) + 1
+    continental = {tier.value for tier, _ in CONTINENTAL_TIERS}
+    seen: dict[tuple[str, str], int] = {}
+    for key, label in zip(matches["competition_key"], matches["competition"]):
+        tier = classify_key(str(key), str(label)).tier.value
+        seen[(tier, str(label))] = seen.get((tier, str(label)), 0) + 1
+
+    europe = {k: v for k, v in seen.items() if k[0] in continental}
+    if not europe:
+        print("\n  No European matches in this pull, so nothing here can "
+              "answer the\n  phase question. Try a league whose clubs were in "
+              "Europe that season.\n", file=sys.stderr)
+        return 1
+
     unplaced = 0
-    for label, count in sorted(seen.items(), key=lambda kv: -kv[1]):
+    print("\n  European rows, which are the only ones the split reads:\n")
+    for (tier, label), count in sorted(europe.items(), key=lambda kv: -kv[1]):
         phase = european_phase(label) or "(unplaced)"
         if phase == "(unplaced)":
             unplaced += count
-        print(f"  {count:>5}  {phase:<13}  {label}")
-    print(f"\n  {len(seen)} distinct label(s); {unplaced:,} of {len(matches):,} "
-          f"row(s) unplaced.")
+        print(f"  {count:>5}  {phase:<13}  [{tier}] {label}")
+    total = sum(europe.values())
+    print(f"\n  {len(europe)} distinct European label(s); {unplaced:,} of "
+          f"{total:,} row(s) unplaced.")
     print("  Unplaced rows are shown undivided rather than guessed at, so a "
           "non-zero\n  number here is the patterns needing a word this feed "
           "uses and they do not.\n")
+
+    other = sorted(k for k in seen if k[0] not in continental)
+    if other:
+        print("  Everything else, for context only -- these are never split:\n")
+        for tier, label in other[:12]:
+            print(f"  {seen[(tier, label)]:>5}  [{tier}] {label}")
+        print()
     return 0
 
 

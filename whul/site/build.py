@@ -150,7 +150,12 @@ def _under_a_team(asset_type: str, league: str, stats: dict,
         return otherwise
     if league not in fixtures.SOCCER:
         return "", ""
-    return league, str(stats.get("continental") or "").strip()
+    # The whole European season rather than the competition it reached
+    # furthest in: a club knocked out of the Champions League and into the
+    # Europa League played in both, and naming one of them says its Tuesdays
+    # were something they were not.
+    return league, str(
+        stats.get("continental_path") or stats.get("continental") or "").strip()
 
 
 #: Leagues whose "role" is the same word for everyone in them, and whose tour
@@ -424,7 +429,13 @@ def asset_profiles(
         )
         out[asset_id] = {
             "name": escape(marked_name(name, league)),
-            "meta": escape(f"{league} · {info['asset_type']}"),
+            # The league only where the identity line above it does not
+            # already say so. A club read "Premier League · Champions League ·
+            # Premier League · Team", the league twice because this repeated
+            # what `_under_a_team` had just said.
+            "meta": escape(
+                str(info["asset_type"]) if first == league
+                else f"{league} · {info['asset_type']}"),
             # Each on its own, as well as in the line the window prints. A
             # table cell shows the position and the club and not the rest, and
             # splitting a formatted string back up to get at them is how the
@@ -480,7 +491,7 @@ STAT_SKIP = {
     # Shown as identity, above the figures. Left here as well they read as a
     # statistic -- "Position  F" in a column of goals and assists, and
     # "Continental  Champions League" under the club's own line saying so.
-    "position", "role", "continental",
+    "position", "role", "continental", "continental_path",
     # An identifier, not a statistic. ESPN's conference is a number, so a
     # college team's line read "Conference 5" beside its wins and point
     # differential, which is neither a figure anyone can check nor one that
