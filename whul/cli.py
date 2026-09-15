@@ -1648,10 +1648,14 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     print(f"\nChecking {len(mine)} rostered club-soccer player(s) against their "
           f"clubs' results.\n")
 
+    # Read before the loop, because an empty gamelog means different things
+    # depending on what the figures claim.
+    stated = _rostered_player_figures(store, args.season, mine)
     club_results: dict[str, object] = {}
     attributed: dict[str, object] = {}
     club_matches: dict[str, object] = {}
     unreadable = 0
+    nothing_claimed = 0
     unopened: dict[str, bool] = {}
     # One parsed lineup per tie, shared across every rostered player at that
     # club. Chelsea's two ties are two requests whether one player is rostered
@@ -1702,8 +1706,21 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
             continue
         events = espn_soccer.load_gamelog(key, athlete, season)
         if events.empty:
-            unreadable += 1
-            print(f"  {row.display_name}: the gamelog returned no matches")
+            # An empty gamelog and a figure of nothing agree. Balogun has not
+            # played this season, his figures say none, and there is no
+            # disagreement to find -- counting him as unreadable overstated
+            # what was actually unknown. A figure claiming appearances against
+            # an empty gamelog is the case that cannot be checked.
+            claims = float(stated.get(str(row.display_name)) or 0.0)
+            if claims <= attribution.TOLERANCE:
+                nothing_claimed += 1
+                print(f"  {row.display_name}: no matches this season, and the "
+                      f"figures claim none either")
+            else:
+                unreadable += 1
+                print(f"  {row.display_name}: the gamelog returned no matches "
+                      f"for this season, so the {claims:g} its figures claim "
+                      f"cannot be checked")
             continue
         matches = club_results[key]
         if matches is not None and not matches.empty and club:
@@ -1733,7 +1750,6 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     # `raw_stats` rather than re-pulled: the question is whether what was
     # recorded agrees with what the clubs played, and re-fetching would ask a
     # different night's answer.
-    stated = _rostered_player_figures(store, args.season, mine)
     leagues = {str(r.display_name): str(r.league) for r in mine.itertuples()}
     found: list[dict] = []
     for player, counted in attributed.items():
@@ -1747,8 +1763,11 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     for line in lines or ["  Nothing claims more than its club played."]:
         print(line)
     if unreadable:
-        print(f"\n  {unreadable} player(s) could not be read, so they were "
-              f"neither confirmed nor faulted.")
+        print(f"\n  {unreadable} player(s) claim appearances that could not be "
+              f"read, so they were neither confirmed nor faulted.")
+    if nothing_claimed:
+        print(f"  {nothing_claimed} player(s) have played nothing this season "
+              f"and claim nothing, which agrees.")
     print()
     return 0
 
