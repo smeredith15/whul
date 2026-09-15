@@ -910,6 +910,13 @@ def compare_roster_and_overview(
     try:
         team_id = str(((overview.get("athlete") or {}).get("team") or {}).get("id") or "")
         squad = load_squad(league, team_id, season, session)
+        # A youth player's overview names several teams and selects none, so
+        # the id read from it can be an under-21 side this league path has no
+        # squad for. That comes back as an empty frame, which has no columns
+        # at all -- and asking one for `player_id` raised rather than reporting.
+        if squad is None or squad.empty or "player_id" not in squad.columns:
+            raise LookupError(
+                f"no squad for team {team_id or '(none named)'} in {league}")
         mine = squad[squad["player_id"].astype(str) == str(athlete_id)]
         out["roster"] = ({} if mine.empty else {
             "player": str(mine.iloc[0]["player"]),

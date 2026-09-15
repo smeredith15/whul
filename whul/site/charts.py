@@ -1156,10 +1156,19 @@ SCRIPT = """\
              (s.note ? '<p class="note">' + s.note + '</p>' : '') +
              '</details>';
     }).join('');
+    // One section a competition, where the panel splits itself that way: a
+    // footballer's league and the cups that count alongside it, as a club's
+    // own panel already shows them. Everyone else passes none and is drawn
+    // exactly as before.
+    var split = (panel.sections || []).map(function (s) {
+      return '<div class="body boxes comp"><h3>' + s.name + '</h3>' +
+             boxRows(s) + '</div>';
+    }).join('');
     return '<div class="body boxes">' +
            (panel.title ? '<h3>' + panel.title + '</h3>' : '') +
            (head ? '<div class="games comp">' + head + '</div>' : '') +
-           boxRows(panel) + outcomeRow(panel.outcomes) + '</div>' + post + posts;
+           (split ? '' : boxRows(panel)) +
+           outcomeRow(panel.outcomes) + '</div>' + split + post + posts;
   }
 
   // Baseball: one section a job, and a sentence where the second job is worth

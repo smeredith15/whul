@@ -1697,6 +1697,43 @@ def _playoff_post(row: dict, made: dict, name: str = "Playoffs") -> dict | None:
     return out
 
 
+def _detail_list(row: dict, column: str) -> list:
+    """A stored list-of-dicts column, however the store handed it back."""
+    value = row.get(column)
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+    return [e for e in value if isinstance(e, dict)] if isinstance(value, list) else []
+
+
+def _soccer_domestic_sections(row: dict, league: str = "") -> list[dict]:
+    """Domestic football, one section a competition, as a club's panel shows it.
+
+    The cups count in full and are summed into the base score, which is right
+    and is what the benchmark is drawn from. What the sum cannot say is where
+    it came from: one Premier League section held four league matches and two
+    League Cup ties, on a page whose whole point is that a figure says which
+    competition it is from.
+
+    His own league leads, then the cups by name, because that is the order a
+    reader looks for them in.
+    """
+    detail = _detail_list(row, "domestic_detail")
+    if not detail:
+        return []
+    out = []
+    for entry in detail:
+        made = _soccer_campaign_boxes(entry)
+        made.pop("apps", None)
+        made["name"] = str(entry.get("competition") or "")
+        out.append(made)
+    wanted = str(league or "").strip().casefold()
+    out.sort(key=lambda s: (s["name"].strip().casefold() != wanted, s["name"]))
+    return out
+
+
 def _soccer_player_posts(row: dict) -> list[dict]:
     """Each European or playoff competition as its own section.
 
@@ -1721,6 +1758,12 @@ def _trim(value: float) -> str:
     return f"{value:,.2f}".rstrip("0").rstrip(".")
 
 
+def _plural(unit: str) -> str:
+    """"match" does not take a bare s, and "one or two matchs" was on the
+    page of every footballer with a European tie."""
+    return f"{unit}es" if unit.endswith(("h", "s", "x")) else f"{unit}s"
+
+
 def _campaign_note(entry: dict, unit: str = "game") -> str:
     """Why the section's boxes and its total are different numbers.
 
@@ -1734,7 +1777,7 @@ def _campaign_note(entry: dict, unit: str = "game") -> str:
     finishes = str(entry.get("finishes") or "").strip()
     if not games or not scalar:
         return ""
-    over = f"{games:,.0f} {unit}" + ("" if games == 1 else "s")
+    over = f"{games:,.0f} {unit if games == 1 else _plural(unit)}"
     note = (
         f"Credited as a rate, not a tally: {points:,.1f} points over {over} is "
         f"paid as though it had been played over {_trim(scalar)} more of them "
@@ -1743,7 +1786,8 @@ def _campaign_note(entry: dict, unit: str = "game") -> str:
     ).replace(".0%", "%")
     if not entry.get("credited"):
         note += (
-            f" None of it is in the score yet: a rate off one or two {unit}s "
+            f" None of it is in the score yet: a rate off one or two "
+            f"{_plural(unit)} "
             "moves a long way on the next one, and it can fall, so it is held "
             + (f"until the competition finishes ({finishes})." if finishes
                else "until the competition finishes.")
@@ -1765,15 +1809,26 @@ def _soccer_player_panel(row: dict, club_games: dict | None = None,
     team = row.get("team")
     club = (club_games or {}).get(team.strip()) if isinstance(team, str) else None
 
-    panel = {
-        "kind": "boxes",
-        "title": league if league and league != CLUB_SOCCER else "",
-        "head": [
-            ["Games played", "—" if apps is None else f"{apps:,.0f}"],
-            ["Team games", "—" if not club else f"{club:,.0f}"],
-        ],
-        **made,
-    }
+    head = [
+        ["Games played", "—" if apps is None else f"{apps:,.0f}"],
+        ["Team games", "—" if not club else f"{club:,.0f}"],
+    ]
+    sections = _soccer_domestic_sections(row, league)
+    if sections:
+        # Each section carries its competition, so a panel heading would be the
+        # first one's name printed twice.
+        panel = {"kind": "boxes", "title": "", "head": head,
+                 "sections": sections}
+    else:
+        # A row stored before the breakdown was carried. One set of boxes, as
+        # it has always been, rather than a section named for a league that may
+        # not be all of it.
+        panel = {
+            "kind": "boxes",
+            "title": league if league and league != CLUB_SOCCER else "",
+            "head": head,
+            **made,
+        }
     posts = _soccer_player_posts(row)
     if posts:
         panel["posts"] = posts

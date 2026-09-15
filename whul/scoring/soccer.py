@@ -920,12 +920,45 @@ def score_players(
 #: absent: a player is one asset however many competitions they appeared in.
 PLAYER_KEYS = ["player", "league", "season", "position"]
 
+#: The column carrying domestic football's own per-competition breakdown, as
+#: a list of dicts -- the shape that survives ``raw_stats`` as JSON, the same
+#: way ``bonus_detail`` does.
+#:
+#: Domestic football is summed into one figure because that is what the
+#: benchmark and the base score are drawn from, and the sum is right. What it
+#: cannot say is where it came from: a profile showed one Premier League
+#: section holding four league matches and two League Cup ties, against a club
+#: panel that separates them, and the cups were invisible on a page whose whole
+#: point is that a figure says which competition it is from.
+DOMESTIC_COLUMN = "domestic_detail"
+
 #: What each European or playoff competition carries into its own breakdown.
 #: The same figures the domestic section is built from, and the two points
 #: columns with them, so a run shows the boxes a league campaign shows rather
 #: than a game count and a total with nothing behind it.
 BONUS_COUNTS = ("starts", "goals", "assists", "yellow", "red",
                 "appearance_points", "goal_points")
+
+
+def _domestic_detail(counted: pd.DataFrame) -> pd.DataFrame:
+    """Each domestic competition on its own line, per player.
+
+    The totals above are the score and the benchmark and are not changed by
+    this: it is the same rows, kept apart instead of added up, so a profile can
+    show a league campaign and a cup run as the two things they are.
+    """
+    if counted is None or counted.empty:
+        return pd.DataFrame(columns=PLAYER_KEYS + [DOMESTIC_COLUMN])
+    lines = [
+        {"competition": str(row.get("competition") or ""),
+         "games": float(row.get("matches") or 0.0),
+         "points": float(row.get("points") or 0.0),
+         **{c: float(row.get(c) or 0.0) for c in BONUS_COUNTS}}
+        for row in counted.to_dict("records")
+    ]
+    return (counted.assign(_line=lines)
+            .groupby(PLAYER_KEYS, as_index=False)
+            .agg(**{DOMESTIC_COLUMN: ("_line", list)}))
 
 
 def _fold_competitions(
@@ -965,6 +998,11 @@ def _fold_competitions(
         red=("red", "sum"), appearance_points=("appearance_points", "sum"),
         goal_points=("goal_points", "sum"), regular_points=("points", "sum"),
     )
+    totals = totals.merge(_domestic_detail(counted), on=PLAYER_KEYS, how="left")
+    totals[DOMESTIC_COLUMN] = [
+        value if isinstance(value, list) else []
+        for value in totals[DOMESTIC_COLUMN]
+    ]
 
     extra = work[work["_bonus"]].assign(
         _rule=[r for r, keep in zip(rules, work["_bonus"]) if keep])
