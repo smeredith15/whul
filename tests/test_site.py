@@ -3269,6 +3269,55 @@ def test_a_league_year_inside_one_calendar_year_gets_no_toggle(monkeypatch):
     assert "years" not in site_build._mlb_panel(_batter())
 
 
+def test_a_baseball_playoff_section_is_the_same_boxes_and_adds_up():
+    """The Scoring page has always promised MLB players 7.5% of a season for
+    October, and the scorer paid zero because the postseason was never asked
+    for. It is now, and the section reconciles to what the scorer priced."""
+    row = _batter(**{
+        "post_h": 18, "post_ab": 55, "post_hr": 6, "post_doubles": 4,
+        "post_triples": 0, "post_bb": 8, "post_hbp": 1, "post_sb": 1,
+        "post_cs": 0, "post_games": 14,
+        "bonus_detail": [{"competition": "MLB", "games": 14.0, "points": 142.7,
+                          "share": 0.075, "scalar": 12.15, "adds": 123.8,
+                          "credited": False, "finishes": "2026-11-20"}],
+    })
+    panel = site_build._mlb_panel(row)
+    season, post = panel["sections"][0], panel["posts"][0]
+
+    assert [b["label"] for b in season["top"]] == [b["label"] for b in post["top"]]
+    assert [b["label"] for b in season["secondary"]] == \
+        [b["label"] for b in post["secondary"]]
+    # The home-run box says its points are counted in the average beside it, so
+    # it is excluded here exactly as it is in the season section.
+    scored = sum(b["points"] or 0 for b in post["top"] + post["secondary"]
+                 if not b.get("note"))
+    assert round(scored, 1) == 142.7
+    assert post["total"]["points"] == 123.8
+    assert post["total"]["muted"] is True
+
+
+def test_a_baseball_playoff_section_is_not_prorated():
+    """Proration scales `role_points` and nothing else, so the postseason line
+    the scorer carries is the raw one. Scaling it here would stop the section
+    adding up to the figure the scorer priced it at."""
+    entry = [{"competition": "MLB", "games": 14.0, "points": 142.7,
+              "share": 0.075, "scalar": 12.15, "adds": 123.8,
+              "credited": False, "finishes": "2026-11-20"}]
+    figures = {"post_h": 18, "post_ab": 55, "post_hr": 6, "post_doubles": 4,
+               "post_triples": 0, "post_bb": 8, "post_hbp": 1, "post_sb": 1,
+               "post_cs": 0, "bonus_detail": entry}
+    plain = site_build._mlb_panel(_batter(**figures))["posts"][0]
+    scaled = site_build._mlb_panel(
+        _batter(proration_factor=1.5, **figures))["posts"][0]
+
+    assert [b["points"] for b in plain["top"]] == \
+        [b["points"] for b in scaled["top"]]
+
+
+def test_a_batter_with_no_october_gets_no_playoff_section():
+    assert "posts" not in site_build._mlb_panel(_batter())
+
+
 def test_the_counting_boxes_carry_the_proration_the_score_does():
     """Acuna's counting terms come to 167.6 and his role points to 204.2; the
     difference is the window factor, and without it the panel does not add up

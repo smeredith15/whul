@@ -431,26 +431,71 @@ def _spec(league: str):
         from whul.scoring import mlb
         from whul.sources import mlb as source
 
+        #: What a batter's and a pitcher's October must show, so the playoff
+        #: section is the same boxes as the season. Named as the scorer names
+        #: them, since that is the frame they are read back off.
+        counted = ("h", "ab", "hr", "doubles", "triples", "bb", "hbp", "sb",
+                   "cs", "ip", "so", "sv", "hld", "games")
+
         def load(seasons):
             batters = source.load_batters(seasons)
             pitchers = source.load_pitchers(seasons)
             batters["_phase"] = "bat"
             pitchers["_phase"] = "pit"
-            return pd.concat([batters, pitchers], ignore_index=True)
+            frames = [batters, pitchers]
+            # October, asked for separately and checked before it is used --
+            # the endpoint ignores a gameType it does not understand and
+            # answers with the whole year. See `_check_postseason_applied`.
+            post_batters = source.load_batters(seasons, postseason=True)
+            post_pitchers = source.load_pitchers(seasons, postseason=True)
+            for frame, role in ((post_batters, "bat"), (post_pitchers, "pit")):
+                if frame is not None and not frame.empty:
+                    frame["_phase"] = role
+                    frame["_season_phase"] = "post"
+                    frames.append(frame)
+            return pd.concat(frames, ignore_index=True)
 
         def score(raw, postseason):
-            batters = raw[raw["_phase"] == "bat"]
-            pitchers = raw[raw["_phase"] == "pit"]
-            scored = mlb.score_players(batters, pitchers)
-            # MLB leaderboards are season aggregates, so there is no separate
-            # postseason phase to bonus here -- the contract weighting is what
-            # handles the split.
+            from whul.scoring.postseason import RULES, apply_bonus
+
+            phase = (raw["_season_phase"] if "_season_phase" in raw.columns
+                     else pd.Series("reg", index=raw.index)).fillna("reg")
+
+            def scored_for(want):
+                part = raw[phase == want]
+                if part.empty:
+                    return None
+                return mlb.score_players(part[part["_phase"] == "bat"],
+                                         part[part["_phase"] == "pit"])
+
+            scored = scored_for("reg")
+            if scored is None or scored.empty:
+                scored = mlb.score_players(raw.iloc[0:0], raw.iloc[0:0])
             scored["regular_points"] = scored["total_points"]
             scored["regular_games"] = scored.get("games", 0)
             scored["postseason_points"] = 0.0
             scored["postseason_games"] = 0.0
-            scored["postseason_bonus"] = 0.0
-            return scored
+
+            october = scored_for("post")
+            if october is not None and not october.empty:
+                # On the role as well as the player: a two-way player is two
+                # rows here, and crediting his pitching with his batting's
+                # October would pay the same run twice.
+                keys = ["season", "player", "role"]
+                by = october.set_index(keys)
+                where = pd.MultiIndex.from_frame(scored[keys])
+                scored["postseason_points"] = (
+                    by["role_points"].reindex(where).to_numpy())
+                scored["postseason_games"] = (
+                    by["games"].reindex(where).to_numpy())
+                for column in counted:
+                    if column in october.columns:
+                        scored[f"post_{column}"] = (
+                            by[column].reindex(where).to_numpy())
+            for column in ("postseason_points", "postseason_games"):
+                scored[column] = pd.to_numeric(
+                    scored[column], errors="coerce").fillna(0.0)
+            return apply_bonus(scored, RULES["MLB"] if postseason else None)
 
         return LeagueSpec(
             name="MLB",
@@ -458,7 +503,7 @@ def _spec(league: str):
             score=score,
             id_col="player",
             week_col="season",
-            source="MLB Stats API (schedule) + FanGraphs (leaderboards)",
+            source="MLB Stats API (schedule, season and postseason lines)",
             daily_cost=source.daily_update_cost,
             post_normalize=mlb.combine_two_way,
         )

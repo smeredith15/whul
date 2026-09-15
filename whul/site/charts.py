@@ -1174,8 +1174,20 @@ SCRIPT = """\
   function renderMlb(panel) {
     var note = panel.note
       ? '<div class="body"><p class="note">' + panel.note + '</p></div>' : '';
+    // October in the same boxes as the summer, collapsed, and priced by the
+    // same box every other sport's postseason carries.
+    var posts = (panel.posts || []).map(function (s) {
+      return '<details class="body boxes post"><summary>' + s.name +
+             (s.games ? ' <span class="adds">' + s.games + ' game' +
+                        (s.games === '1' ? '' : 's') + '</span>' : '') +
+             '</summary>' + boxRows(s) +
+             (s.total ? '<div class="boxrow rest outcome">' +
+                        statBox(s.total, true) + '</div>' : '') +
+             (s.note ? '<p class="note">' + s.note + '</p>' : '') +
+             '</details>';
+    }).join('');
     if (!panel.years || panel.years.length < 2) {
-      return mlbSections(panel.sections) + note;
+      return mlbSections(panel.sections) + posts + note;
     }
     // A league year spans two calendar seasons and they are summed, so the
     // total is the figure that is scored and neither season is. Total leads,
@@ -1191,7 +1203,7 @@ SCRIPT = """\
              mlbSections(v.sections) + '</div>';
     }).join('');
     return '<div class="body years"><div class="yrtabs">' + tabs +
-           '</div></div>' + panes + note;
+           '</div></div>' + panes + posts + note;
   }
 
   function boxRows(part) {

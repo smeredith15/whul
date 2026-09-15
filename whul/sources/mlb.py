@@ -353,17 +353,24 @@ def _merge_counting_and_advanced(
 
 
 def load_batters(
-    seasons: list[int], use_fangraphs: bool = False, since: date | None = None
+    seasons: list[int], use_fangraphs: bool = False, since: date | None = None,
+    postseason: bool = False,
 ) -> pd.DataFrame:
     """Batting lines with Offense and Defense attached.
 
     ``use_fangraphs`` is retained for the case where its leaderboard becomes
     reachable again; the default path needs only the Stats API.
+
+    ``postseason`` asks for October instead, without the advanced components --
+    see `load_postseason_players`.
     """
     if use_fangraphs:
         return pd.concat([_fangraphs(y, "bat", BATTER_QUAL) for y in seasons], ignore_index=True)
 
-    frames = [_merge_counting_and_advanced(y, "hitting", since) for y in seasons]
+    frames = ([load_postseason_players(y, "hitting") for y in seasons]
+              if postseason
+              else [_merge_counting_and_advanced(y, "hitting", since)
+                    for y in seasons])
     frames = [f for f in frames if not f.empty]
     if not frames:
         return pd.DataFrame()
@@ -378,19 +385,25 @@ def load_batters(
 
 
 def load_pitchers(
-    seasons: list[int], use_fangraphs: bool = False, since: date | None = None
+    seasons: list[int], use_fangraphs: bool = False, since: date | None = None,
+    postseason: bool = False,
 ) -> pd.DataFrame:
     """Pitching lines with WAR attached, and innings converted from outs notation."""
     if use_fangraphs:
         return pd.concat([_fangraphs(y, "pit", PITCHER_QUAL) for y in seasons], ignore_index=True)
 
-    frames = [_merge_counting_and_advanced(y, "pitching", since) for y in seasons]
+    frames = ([load_postseason_players(y, "pitching") for y in seasons]
+              if postseason
+              else [_merge_counting_and_advanced(y, "pitching", since)
+                    for y in seasons])
     frames = [f for f in frames if not f.empty]
     if not frames:
         return pd.DataFrame()
 
     out = pd.concat(frames, ignore_index=True)
-    if "inningsPitched" in out.columns:
+    # Already converted where the rounds were summed, and converting twice
+    # would read the fractional innings back as outs -- see `_sum_the_rounds`.
+    if "inningsPitched" in out.columns and "IP" not in out.columns:
         out["IP"] = out["inningsPitched"].map(innings_to_float)
     return out.rename(columns={
         "strikeOuts": "SO", "hits": "H", "baseOnBalls": "BB", "hitByPitch": "HBP",
@@ -558,6 +571,7 @@ def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:
 def load_stats_api_players(
     season: int, group: str = "hitting",
     since: date | None = None, until: date | None = None,
+    game_type: str = "R",
 ) -> pd.DataFrame:
     """Counting stats from the MLB Stats API, for a season or a span of it.
 
@@ -576,18 +590,21 @@ def load_stats_api_players(
         # playerPool=All matters: the default returns qualified players only
         # (~145), where the R script's thresholds admit several hundred.
         "group": group, "season": season,
-        "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
+        "sportId": 1, "limit": 2000, "gameType": game_type,
+        "playerPool": "All",
     }
+    suffix = "" if game_type == "R" else f"_{game_type}"
     if since is None:
         params = {"stats": "season", **common}
-        cache_key = f"statsapi/{group}_{season}"
+        cache_key = f"statsapi/{group}_{season}{suffix}"
     else:
         end = until or date.today()
         params = {
             "stats": "byDateRange", **common,
             "startDate": since.isoformat(), "endDate": end.isoformat(),
         }
-        cache_key = f"statsapi/{group}_{season}_{since.isoformat()}_{end.isoformat()}"
+        cache_key = (f"statsapi/{group}_{season}{suffix}_"
+                     f"{since.isoformat()}_{end.isoformat()}")
     payload = _get(f"{STATS_API}/stats", params, cache_key=cache_key)
     rows: list[dict] = []
     for split_group in payload.get("stats", []):
@@ -602,6 +619,106 @@ def load_stats_api_players(
 
 #: Below this the two pulls are the same numbers and the range did nothing.
 RANGE_DIFFERENCE = 0.02
+
+#: The four postseason rounds, as the Stats API names them: wild card,
+#: division series, league championship, World Series. Asked for one at a time
+#: rather than as a list -- the schedule endpoint takes a comma-separated
+#: `gameTypes` and this one takes a singular `gameType`, and a list it does not
+#: understand is a parameter it ignores rather than rejects.
+POSTSEASON_GAME_TYPES = ("F", "D", "L", "W")
+
+#: The longest postseason anybody can play: three wild-card games, five in the
+#: division series, seven in each of the championship and the World Series. A
+#: pull that returns more than this for any player is not a postseason -- it is
+#: a regular season with the parameter ignored, which is this endpoint's
+#: documented behaviour. See `_check_postseason_applied`.
+MAX_POSTSEASON_GAMES = 25
+
+
+def load_postseason_players(season: int, group: str = "hitting") -> pd.DataFrame:
+    """Every postseason round, summed into one line a player.
+
+    Deliberately without the sabermetric components. Offense, Defense and WAR
+    have no postseason form -- the `sabermetrics` stat type answers with the
+    season to date whatever it is asked -- and sharing a season of them across
+    a handful of October games would credit a run with production earned in
+    May. The counting stats are what a postseason is paid on.
+
+    UNVERIFIED: the host is unreachable from the environment this was written
+    in, so the parameter is checked rather than trusted. Run
+    ``python -m whul.cli probe mlb`` before scoring a season with this.
+    """
+    frames = []
+    for game_type in POSTSEASON_GAME_TYPES:
+        frame = load_stats_api_players(season, group, game_type=game_type)
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        # Nobody has played one yet, which is the answer for most of the year.
+        # Distinct from the parameter being ignored, which comes back full.
+        return pd.DataFrame()
+    out = _sum_the_rounds(pd.concat(frames, ignore_index=True), group)
+    _check_postseason_applied(out, group, season)
+    return out
+
+
+def _sum_the_rounds(rounds: pd.DataFrame, group: str) -> pd.DataFrame:
+    """One line a player, from up to four of them.
+
+    A postseason is played in rounds and the endpoint reports each separately,
+    so a player who reached the World Series has four rows. They are summed,
+    not taken from the last, which would score a seven-game series as whatever
+    he did in the final game of it.
+
+    Innings are converted before they are added. "5.2" is five and two thirds,
+    and adding it to "7.1" as decimals gives 12.3 -- which the converter then
+    reads back as twelve and one third, losing two thirds of an inning and the
+    five points it is worth.
+    """
+    keys = [c for c in ("player_id", "player", "season") if c in rounds.columns]
+    if not keys:
+        return rounds
+    work = rounds.copy()
+    if group == "pitching" and "inningsPitched" in work.columns:
+        work["IP"] = work["inningsPitched"].map(innings_to_float)
+        work = work.drop(columns=["inningsPitched"])
+    numeric = []
+    for column in work.columns:
+        if column in keys:
+            continue
+        converted = pd.to_numeric(work[column], errors="coerce")
+        if converted.notna().any():
+            work[column] = converted.fillna(0.0)
+            numeric.append(column)
+    if not numeric:
+        return work.drop_duplicates(subset=keys)
+    return work.groupby(keys, as_index=False)[numeric].sum()
+
+
+def _check_postseason_applied(
+    post: pd.DataFrame, group: str, season: int
+) -> None:
+    """Refuse a "postseason" that is really the regular season.
+
+    The Stats API ignores parameters it does not recognise rather than
+    rejecting them -- the same trap `_check_range_applied` exists for. An
+    ignored `gameType` returns every player's whole year, four times over, and
+    nothing downstream could tell: the players exist, the lines parse, the
+    totals are real. They would then be paid as a postseason rate, which is
+    the largest overstatement this scoring system can produce.
+    """
+    column = "gamesPlayed" if "gamesPlayed" in post.columns else None
+    if post.empty or column is None:
+        return
+    most = pd.to_numeric(post[column], errors="coerce").max()
+    if most is not None and most == most and most > MAX_POSTSEASON_GAMES:
+        raise RuntimeError(
+            f"the Stats API returned {most:,.0f} {group} games for a single "
+            f"player in the {season} postseason, and the longest possible is "
+            f"{MAX_POSTSEASON_GAMES}. It ignores parameters it does not "
+            f"recognise, so gameType is not being applied and a whole regular "
+            f"season would be paid as a postseason rate."
+        )
 
 
 def load_players_since(
@@ -700,6 +817,26 @@ def probe(season: int = 2025) -> dict:
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", "?")
             result[f"fangraphs_{label}"] = f"FAILED ({status}): {type(exc).__name__}: {exc}"
+
+    # --- the postseason, which is paid as a rate and so must be a postseason ---
+    # The endpoint ignores a gameType it does not understand and answers with
+    # the whole year, which would be credited at twelve times its weight. The
+    # per-round counts are reported so a reader can see the parameter bit.
+    for group in ("hitting", "pitching"):
+        try:
+            rounds = {}
+            for game_type in POSTSEASON_GAME_TYPES:
+                frame = load_stats_api_players(season, group, game_type=game_type)
+                rounds[game_type] = len(frame)
+            result[f"postseason_rounds_{group}"] = rounds
+            summed = load_postseason_players(season, group)
+            result[f"postseason_{group}"] = (
+                f"ok ({len(summed)} players)" if len(summed) else "EMPTY")
+            if len(summed) and "gamesPlayed" in summed.columns:
+                most = pd.to_numeric(summed["gamesPlayed"], errors="coerce").max()
+                result[f"postseason_{group}_most_games"] = float(most)
+        except Exception as exc:
+            result[f"postseason_{group}"] = f"FAILED: {type(exc).__name__}: {exc}"
 
     # --- do the scoring inputs actually resolve? ---
     # Can the working host supply the advanced metrics FanGraphs is withholding?

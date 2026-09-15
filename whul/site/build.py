@@ -1283,10 +1283,39 @@ def _mlb_panel(row: dict) -> dict | None:
                 f"{worth * 0.5:,.1f} after the half a second role is taxed."
             )
     panel = {"kind": "mlb", "sections": sections, "note": note}
+    posts = _mlb_posts(row, role, build)
+    if posts:
+        panel["posts"] = posts
     years = _mlb_by_year(row, second, role, other, scale, build)
     if years:
         panel["years"] = years
     return panel
+
+
+def _mlb_posts(row: dict, role: str, build: dict) -> list[dict]:
+    """October, in the same boxes as the summer.
+
+    Unscaled, unlike the season above it. Proration scales `role_points` and
+    nothing else, so the postseason line the scorer carries is the raw one --
+    and a section scaled here would stop adding up to the figure the scorer
+    priced it at.
+    """
+    entries = _bonus_list(row)
+    if not entries or role not in build:
+        return []
+    figures = {name[len("post_"):]: value for name, value in row.items()
+               if isinstance(name, str) and name.startswith("post_")}
+    if not figures:
+        return []
+    entry = entries[0]
+    made = build[role](figures, 1.0)
+    made.pop("label", None)
+    games = _stat_number(entry, "games")
+    made["name"] = "Playoffs"
+    made["games"] = "\u2014" if games is None else f"{games:,.0f}"
+    made["total"] = _campaign_total(entry)
+    made["note"] = _campaign_note(entry)
+    return [made]
 
 
 def _season_lines(figures) -> dict:
