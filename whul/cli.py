@@ -2543,6 +2543,47 @@ def cmd_benchmarks_discard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_probe_rounds(args: argparse.Namespace) -> int:
+    """What the feed's round text actually says, so a phase split can be real.
+
+    The profile groups a European campaign into a league phase and a knockout
+    phase, and the only thing that can tell them apart is the competition label
+    ESPN builds out of its league name, its note headline and its season-type
+    slug. Nothing in the agent sandbox can reach that feed, so the patterns in
+    `whul.scoring.competition` are a guess until this has run somewhere that
+    can. Every distinct label is printed with how many matches carry it and
+    which phase the patterns place it in -- `(unplaced)` being the answer that
+    matters, since those are the matches a section would have to leave
+    undivided.
+    """
+    from whul.scoring.competition import european_phase
+    from whul.sources import espn
+
+    seasons = [int(s) for s in (args.seasons or "").split()] or [args.season]
+    print(f"\nRound labels for {args.competition} {seasons}\n")
+    matches = espn.load_soccer_matches(
+        args.competition, seasons, include_cups=False, verbose=True)
+    if matches.empty:
+        print("  the feed returned nothing\n", file=sys.stderr)
+        return 1
+
+    seen: dict[str, int] = {}
+    for label in matches["competition"]:
+        seen[str(label)] = seen.get(str(label), 0) + 1
+    unplaced = 0
+    for label, count in sorted(seen.items(), key=lambda kv: -kv[1]):
+        phase = european_phase(label) or "(unplaced)"
+        if phase == "(unplaced)":
+            unplaced += count
+        print(f"  {count:>5}  {phase:<13}  {label}")
+    print(f"\n  {len(seen)} distinct label(s); {unplaced:,} of {len(matches):,} "
+          f"row(s) unplaced.")
+    print("  Unplaced rows are shown undivided rather than guessed at, so a "
+          "non-zero\n  number here is the patterns needing a word this feed "
+          "uses and they do not.\n")
+    return 0
+
+
 #: How many of a list the terminal shows. The file gets all of them: "eleven
 #: matches missing" is a fact and *which* eleven is the diagnosis, and a
 #: diagnosis that scrolls off the top of a terminal is one nobody sends on.
@@ -3328,6 +3369,13 @@ def main(argv: list[str] | None = None) -> int:
         help="actually delete; without this the versions are only described",
     )
     bench_discard.set_defaults(func=cmd_benchmarks_discard)
+
+    rounds = sub.add_parser(
+        "probe-rounds", help="what a competition's round labels say, for the phase split")
+    rounds.add_argument("competition", help="a league key, e.g. epl")
+    rounds.add_argument("--season", type=int, default=2025, help="season to read")
+    rounds.add_argument("--seasons", default="", help="several, space separated")
+    rounds.set_defaults(func=cmd_probe_rounds)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     # Cups and European competitions are probeable even though they are not

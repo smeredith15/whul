@@ -384,6 +384,10 @@ def asset_profiles(
                 panel = _nfl_panel(row)
                 if panel:
                     panels[asset_id] = panel
+            elif row.get("sections"):
+                panel = _soccer_panel(row)
+                if panel:
+                    panels[asset_id] = panel
 
     out: dict[str, dict] = {}
     for asset_id in sorted(wanted):
@@ -489,6 +493,9 @@ STAT_SKIP = {
     "bonus_detail", "bonus_matches", "bonus_points", "postseason_bonus",
     "postseason_pending", "postseason_points", "postseason_games",
     "postseason_rate", "regular_games",
+    # The club soccer panel's own. `sections` is a list and is skipped anyway;
+    # the other two are read as its heading rather than shown as figures.
+    "sections", "league_settled",
     # The NFL panel's own figures. On the fallback table they would read
     # "Post passing yards 0" in a column of season totals.
     "team_games", "post_passing_yards", "post_passing_tds", "post_interceptions",
@@ -715,6 +722,129 @@ def _nfl_panel(row: dict) -> dict | None:
             post["games"] = f"{figure('postseason_games'):,.0f}"
             panel["post"] = post
     return panel
+
+
+#: Which boxes a section shows, by the shape of the competition. A knockout
+#: cannot be drawn, so it reports its shootouts where a league reports its
+#: draws -- and a league has no shootouts to report at all.
+SOCCER_ROWS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "round-robin": (("wins", "draws", "losses"),
+                    ("big_margins", "clean_sheets")),
+    "knockout": (("wins", "shootout_wins", "losses", "shootout_losses"),
+                 ("big_margins", "clean_sheets")),
+}
+
+SOCCER_BOX_LABELS = {
+    "wins": "W", "draws": "D", "losses": "L", "shootout_wins": "SO W",
+    "shootout_losses": "SO L", "big_margins": "Big wins",
+    "clean_sheets": "Clean sheets",
+}
+
+
+def _soccer_block(part: dict, shape: str, byes: int = 0,
+                  bye_points: float = 0.0) -> dict:
+    """One competition, or one phase of one, as two rows of boxes."""
+    top, rest = SOCCER_ROWS[shape]
+
+    def box(name: str) -> dict:
+        made = {"label": SOCCER_BOX_LABELS[name],
+                "value": f"{int(part.get(name) or 0):,}",
+                "points": round(float(part.get(f"pts_{name}") or 0), 1) or 0.0}
+        # A bye is win points and nothing else -- no margin bonus and no clean
+        # sheet, because no match happened to have either. So it rides on the
+        # wins box alone, as the rounds it stood for.
+        if name == "wins" and byes:
+            made["sup"] = f"+{byes}"
+            # Folded into the figure beside it, not left beside the total. A
+            # section whose boxes do not add up to what it paid is the fault
+            # this layout exists to make visible.
+            made["points"] = round(made["points"] + bye_points, 1)
+        return made
+
+    return {"top": [box(c) for c in top],
+            "secondary": [box(c) for c in rest if part.get(c)]}
+
+
+def _soccer_head(section: dict, row: dict) -> list[list[str]]:
+    """The three season outcomes that are not counts of anything.
+
+    Each is three-state on purpose. A club that has not won its league in
+    September has not lost it either, and printing "No" would say it had.
+    """
+    settled = bool(row.get("league_settled"))
+    out = []
+    if section.get("position"):
+        out.append(["Position", f"{section['position']} of {section['of']}"])
+    if row.get("league_champion"):
+        title = "Yes"
+    else:
+        title = "No" if settled else "\u2014"
+    out.append(["League title", title])
+    entry = str(row.get("continental_entry") or "").strip()
+    out.append(["Europe next year",
+                entry or ("No" if settled else "\u2014")])
+    return out
+
+
+def _soccer_panel(row: dict) -> dict | None:
+    """A club's season grouped by the competition it was played in.
+
+    A season total cannot say where it came from, and a manager checking four
+    league wins against the league table on any other site found figures that
+    were right and were not the ones anybody else reports. These are.
+    """
+    sections = row.get("sections")
+    if isinstance(sections, str):
+        try:
+            sections = json.loads(sections)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(sections, list) or not sections:
+        return None
+
+    # A league year spanning two feed seasons arrives as two lists joined, so
+    # the same competition can appear twice. Merged on the name it is shown
+    # under, which is the grouping the reader sees.
+    merged: dict[str, dict] = {}
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        key = str(section.get("name") or "")
+        if key not in merged:
+            merged[key] = dict(section)
+            continue
+        into = merged[key]
+        for field, value in section.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                into[field] = round(into.get(field, 0) + value, 1)
+
+    out = []
+    for section in merged.values():
+        kind = str(section.get("kind") or "")
+        shape = "round-robin" if kind == "league" else "knockout"
+        block = {"name": str(section.get("name") or ""), "blocks": []}
+        if kind == "league":
+            block["head"] = _soccer_head(section, row)
+        phases = section.get("phases")
+        if isinstance(phases, list) and phases:
+            for phase in phases:
+                label = str(phase.get("label") or "")
+                knockout = label != "League phase"
+                made = _soccer_block(
+                    phase, "round-robin" if not knockout else "knockout",
+                    byes=int(section.get("bye_wins") or 0) if knockout else 0,
+                    bye_points=float(section.get("bye_points") or 0) if knockout else 0.0,
+                )
+                made["label"] = label
+                block["blocks"].append(made)
+        else:
+            made = _soccer_block(section, shape,
+                                 byes=int(section.get("bye_wins") or 0),
+                                 bye_points=float(section.get("bye_points") or 0))
+            made["label"] = ""
+            block["blocks"].append(made)
+        out.append(block)
+    return {"kind": "soccer", "sections": out} if out else None
 
 
 def _stat_lines(row: dict) -> list[tuple[str, str]]:

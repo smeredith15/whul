@@ -27,8 +27,9 @@ import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
 from whul.scoring.competition import (
-    CONTINENTAL_TIERS, LEAGUE_TITLE_POINTS, Outcome, Tier, bye_credit, classify,
-    classify_key, continental_entry_points, outcome_points,
+    CONTINENTAL_TIERS, CUP_NAMES, LEGS_PER_KNOCKOUT_TIE, LEAGUE_TITLE_POINTS,
+    Outcome, Tier, bye_credit, classify, classify_key,
+    continental_entry_points, european_phase, outcome_points,
 )
 from whul.scoring.completion import is_complete
 from whul.scoring.postseason import (
@@ -291,6 +292,13 @@ def score_teams(
         totals[column] = totals[column].fillna(0).astype(int)
 
     totals["continental"] = _continental_played(scored, totals)
+    # Whether the season it belongs to is over. Without it a profile cannot
+    # tell "did not win the league" from "nobody has won anything yet", and
+    # those are the same blank in September.
+    totals["league_settled"] = [
+        bool(is_complete(str(lg), int(sn), as_of))
+        for lg, sn in zip(totals["league"], totals["season"])
+    ]
     totals["league_champion"] = _league_champions(scored, totals, as_of)
     totals["pts_league_title"] = totals["league_champion"] * LEAGUE_TITLE_POINTS
     totals["total_points"] = totals["total_points"] + totals["pts_league_title"]
@@ -311,6 +319,16 @@ def score_teams(
 
     totals = _with_continental_entry(totals, continental_entry)
 
+    # The same season, grouped as the competitions themselves are. Carried as
+    # detail beside the totals rather than replacing them: the totals are what
+    # the benchmark is drawn from and what every other league's profile still
+    # shows, and two derivations of one season would drift.
+    sections = season_sections(scored, byes)
+    totals["sections"] = [
+        sections.get((str(l), str(tm), int(s)), [])
+        for l, tm, s in zip(totals["league"], totals["team"], totals["season"])
+    ]
+
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)
@@ -325,6 +343,181 @@ TABLE_POINTS = {
     Outcome.DRAW.value: 1, Outcome.SHOOTOUT_LOSS.value: 1,
     Outcome.LOSS.value: 0,
 }
+
+
+#: The counts a section of a profile carries, and the column each comes from.
+#: One list so a section, a phase and a sum of both cannot drift apart.
+SECTION_COUNTS: tuple[tuple[str, str], ...] = (
+    ("matches", "counts"), ("wins", "win"), ("draws", "draw"),
+    ("losses", "loss"), ("shootout_wins", "shootout_win"),
+    ("shootout_losses", "shootout_loss"), ("big_margins", "big_margin"),
+    ("clean_sheets", "clean_sheet"),
+)
+
+
+def _counted(block: pd.DataFrame) -> dict:
+    """One block of matches reduced to the figures a profile shows.
+
+    Each count carries what it was worth, so a box on the page can print the
+    pair and a section can be checked against the sum of its own boxes. The
+    two bonuses are priced here rather than inferred on the page: they are the
+    same multiplication the scorer already did, and doing it twice is how the
+    two come to disagree.
+    """
+    out: dict = {}
+    for name, column in SECTION_COUNTS:
+        if name == "matches":
+            out[name] = int(len(block))
+        else:
+            out[name] = int(block[column].sum()) if column in block else 0
+    for name, outcome in (("wins", Outcome.WIN), ("draws", Outcome.DRAW),
+                          ("losses", Outcome.LOSS),
+                          ("shootout_wins", Outcome.SHOOTOUT_WIN),
+                          ("shootout_losses", Outcome.SHOOTOUT_LOSS)):
+        here = block[block["outcome"] == outcome.value]
+        out[f"pts_{name}"] = round(float(here["outcome_points"].sum()), 1)
+    out["pts_big_margins"] = round(out["big_margins"] * PTS_BIG_MARGIN, 1)
+    out["pts_clean_sheets"] = round(out["clean_sheets"] * PTS_CLEAN_SHEET, 1)
+    out["points"] = round(float(block["match_points"].sum()), 1)
+    return out
+
+
+def _league_places(scored: pd.DataFrame) -> dict:
+    """Where each club sits in its own league, and how many are in it.
+
+    The same table `_league_champions` awards the title from -- points, then
+    goal difference, then goals scored, over league matches alone. Built here
+    rather than shared with it because that one answers a yes/no on the top row
+    and this one has to place everybody.
+    """
+    table = scored[scored["tier"] == Tier.LEAGUE.value]
+    if table.empty:
+        return {}
+    work = table.assign(
+        table_points=table["outcome"].map(TABLE_POINTS).fillna(0),
+        goal_diff=table["goals_for"] - table["goals_against"],
+    )
+    standing = work.groupby(["league", "team", "season"], as_index=False).agg(
+        table_points=("table_points", "sum"),
+        goal_diff=("goal_diff", "sum"),
+        goals_for=("goals_for", "sum"),
+    )
+    places: dict = {}
+    for (league, season), block in standing.groupby(["league", "season"]):
+        ordered = block.sort_values(
+            ["table_points", "goal_diff", "goals_for"], ascending=False
+        ).reset_index(drop=True)
+        for place, row in enumerate(ordered.itertuples(), start=1):
+            places[(str(league), str(row.team), int(season))] = (
+                place, len(ordered))
+    return places
+
+
+def _bye_wins(byes: pd.DataFrame | None) -> dict:
+    """Notional wins credited for a round a club never had to play.
+
+    A bye pays `win points x legs` and nothing else -- no margin bonus, no
+    clean sheet, because no match happened to have either. So it belongs on the
+    wins figure alone, as the legs it stood for, and nowhere else.
+    """
+    if byes is None or byes.empty:
+        return {}
+    work = byes.copy()
+    if "legs" not in work.columns:
+        work["legs"] = LEGS_PER_KNOCKOUT_TIE
+    work["legs"] = work["legs"].fillna(LEGS_PER_KNOCKOUT_TIE)
+    out: dict = {}
+    for row in work.itertuples():
+        key = (str(row.team), int(row.season), str(row.tier))
+        legs, points = out.get(key, (0, 0.0))
+        out[key] = (legs + int(row.legs),
+                    points + bye_credit(Tier(str(row.tier)), int(row.legs)))
+    return out
+
+
+def season_sections(
+    scored: pd.DataFrame, byes: pd.DataFrame | None = None,
+) -> dict:
+    """A club's season grouped the way the competitions themselves are.
+
+    A season total answers "how much" and cannot answer "where". Four league
+    wins and a cup run reach a profile as one number, and a manager checking it
+    against the league table on any other site finds it does not match -- the
+    figures are right and they are not the figures anybody else reports.
+
+    The grouping is the competition's own: the domestic league, the domestic
+    cups together, the domestic postseason where a league has one, and each
+    European competition separately -- a club knocked out of the Champions
+    League and into the Europa League played in both, and showing only the one
+    it went furthest in loses the other outright.
+
+    European sections split into a league phase and a knockout phase where the
+    feed's round text says so, and stay undivided where it does not. See
+    `european_phase`: the split is unverified, and an unverified split is worse
+    than none, because a quarter-final filed under "League phase" is a real
+    figure in the wrong place and nothing about it looks wrong.
+    """
+    if scored.empty:
+        return {}
+    places = _league_places(scored)
+    byes_by = _bye_wins(byes)
+    out: dict = {}
+
+    for (league, team, season), rows in scored.groupby(
+            ["league", "team", "season"]):
+        sections: list[dict] = []
+        key = (str(league), str(team), int(season))
+
+        league_rows = rows[rows["tier"] == Tier.LEAGUE.value]
+        if len(league_rows):
+            place = places.get(key)
+            section = {"kind": "league", "name": str(league),
+                       **_counted(league_rows)}
+            if place:
+                section["position"], section["of"] = place
+            sections.append(section)
+
+        cup_rows = rows[rows["tier"] == Tier.DOMESTIC_CUP.value]
+        if len(cup_rows):
+            named = [CUP_NAMES[k] for k in dict.fromkeys(cup_rows["competition_key"])
+                     if k in CUP_NAMES]
+            sections.append({
+                "kind": "cup",
+                "name": " & ".join(named) if named else "Domestic cup",
+                **_counted(cup_rows),
+            })
+
+        post_rows = rows[rows["tier"] == Tier.DOMESTIC_POSTSEASON.value]
+        if len(post_rows):
+            sections.append({"kind": "postseason", "name": "Playoffs",
+                             **_counted(post_rows)})
+
+        for tier, name in CONTINENTAL_TIERS:
+            euro = rows[rows["tier"] == tier.value]
+            if not len(euro):
+                continue
+            section = {"kind": "continental", "name": name, **_counted(euro)}
+            phases = []
+            for label in ("League phase", "Knockout"):
+                block = euro[[european_phase(c) == label
+                              for c in euro["competition"]]]
+                if len(block):
+                    phases.append({"label": label, **_counted(block)})
+            # Only where every match was placed. A campaign half split is a
+            # section whose phases do not add up to it, which is worse than one
+            # that was never divided.
+            if phases and sum(p["matches"] for p in phases) == section["matches"]:
+                section["phases"] = phases
+            byes_here = byes_by.get((str(team), int(season), tier.value))
+            if byes_here:
+                # The count and what it paid. Without the points the section's
+                # boxes stop adding up to what the club earned in it, which is
+                # the one thing this layout is for.
+                section["bye_wins"], section["bye_points"] = byes_here
+            sections.append(section)
+
+        out[key] = sections
+    return out
 
 
 def _league_champions(scored: pd.DataFrame, totals: pd.DataFrame,

@@ -1173,3 +1173,128 @@ def test_a_dropped_club_whose_name_matches_one_of_ours_is_named(monkeypatch, cap
     printed = capsys.readouterr().out
     assert "whose names match one that is" in printed
     assert "Some Fourth Division Side" not in printed
+
+
+# --- the profile's competition breakdown, which must cost the score nothing --
+
+def _match(team, opp, comp, key, gf, ga, date="2026-09-20", **kw):
+    row = {"team": team, "opponent": opp, "league": "Premier League",
+           "date": date, "competition": comp, "competition_key": key,
+           "goals_for": gf, "goals_against": ga}
+    row.update(kw)
+    return row
+
+
+def _arsenal_season():
+    rows = []
+    for a, b, ga_, gb in [("Arsenal", "Chelsea", 3, 0), ("Arsenal", "Everton", 2, 1),
+                          ("Chelsea", "Everton", 1, 1)]:
+        rows += [_match(a, b, "Premier League", "epl", ga_, gb),
+                 _match(b, a, "Premier League", "epl", gb, ga_)]
+    rows += [_match("Arsenal", "Leeds", "FA Cup", "facup", 4, 0),
+             _match("Leeds", "Arsenal", "FA Cup", "facup", 0, 4),
+             _match("Arsenal", "Luton", "EFL Cup", "efl_cup", 1, 1,
+                    shootout_for=4, shootout_against=3),
+             _match("Luton", "Arsenal", "EFL Cup", "efl_cup", 1, 1,
+                    shootout_for=3, shootout_against=4),
+             _match("Arsenal", "Bayern", "UEFA Champions League League Phase",
+                    "ucl", 2, 0),
+             _match("Bayern", "Arsenal", "UEFA Champions League League Phase",
+                    "ucl", 0, 2),
+             _match("Arsenal", "Madrid", "UEFA Champions League Quarterfinals",
+                    "ucl", 1, 0),
+             _match("Madrid", "Arsenal", "UEFA Champions League Quarterfinals",
+                    "ucl", 0, 1)]
+    return pd.DataFrame(rows)
+
+
+def _sections_of(out, team="Arsenal"):
+    return {s["name"]: s for s in out[out["team"] == team].iloc[0]["sections"]}
+
+
+def test_a_season_is_grouped_by_the_competition_it_was_played_in():
+    """Four league wins and a cup run reach a total as one number, which is
+    right and is not the number any other site reports."""
+    sections = _sections_of(score_teams(_arsenal_season()))
+
+    assert set(sections) == {"Premier League", "FA Cup & EFL Cup",
+                             "Champions League"}
+    assert sections["Premier League"]["wins"] == 2
+    assert sections["FA Cup & EFL Cup"]["shootout_wins"] == 1
+    assert sections["Champions League"]["matches"] == 2
+
+
+def test_each_sections_boxes_add_up_to_the_section():
+    for section in _sections_of(score_teams(_arsenal_season())).values():
+        priced = sum(v for k, v in section.items() if k.startswith("pts_"))
+        assert round(priced, 1) == section["points"], section["name"]
+
+
+def test_the_sections_add_up_to_the_score():
+    out = score_teams(_arsenal_season())
+    row = out[out["team"] == "Arsenal"].iloc[0]
+
+    assert round(sum(s["points"] for s in row["sections"]), 1) == pytest.approx(
+        row["total_points"], abs=0.05)
+
+
+def test_a_european_campaign_splits_into_its_two_phases():
+    ucl = _sections_of(score_teams(_arsenal_season()))["Champions League"]
+
+    assert [p["label"] for p in ucl["phases"]] == ["League phase", "Knockout"]
+    assert sum(p["matches"] for p in ucl["phases"]) == ucl["matches"]
+    assert round(sum(p["points"] for p in ucl["phases"]), 1) == ucl["points"]
+
+
+def test_a_campaign_the_feed_does_not_describe_is_left_undivided():
+    """An unverified split is worse than none: a quarter-final filed under the
+    league phase is a real figure in the wrong place, the section still adds
+    up, and nothing about it looks wrong."""
+    rows = _arsenal_season()
+    rows["competition"] = rows["competition"].str.replace(
+        " League Phase", "", regex=False).str.replace(
+        " Quarterfinals", "", regex=False)
+
+    assert "phases" not in _sections_of(score_teams(rows))["Champions League"]
+
+
+def test_a_club_in_two_european_competitions_gets_two_sections():
+    """Knocked out of one and into the other: showing only the furthest loses
+    the rest of the season outright."""
+    rows = pd.concat([_arsenal_season(), pd.DataFrame([
+        _match("Arsenal", "Porto", "UEFA Europa League Round of 16", "uel", 3, 0),
+        _match("Porto", "Arsenal", "UEFA Europa League Round of 16", "uel", 0, 3),
+    ])], ignore_index=True)
+    sections = _sections_of(score_teams(rows))
+
+    assert "Champions League" in sections and "Europa League" in sections
+
+
+def test_a_league_position_is_the_table_the_title_is_awarded_from():
+    sections = _sections_of(score_teams(_arsenal_season()))
+    league = sections["Premier League"]
+
+    assert league["position"] == 1
+    assert league["of"] == 3
+
+
+def test_a_bye_carries_its_rounds_and_what_they_paid():
+    """A bye is win points and nothing else -- no margin bonus, no clean
+    sheet, because no match happened to have either."""
+    byes = pd.DataFrame([{"team": "Arsenal", "season": 2027,
+                          "tier": "champions_league", "legs": 2}])
+    ucl = _sections_of(score_teams(_arsenal_season(), byes=byes))["Champions League"]
+
+    assert ucl["bye_wins"] == 2
+    assert ucl["bye_points"] == 10.0    # two Champions League wins at five
+
+
+def test_the_breakdown_moves_no_score():
+    """Checked against the previous scorer on this input before it existed."""
+    out = score_teams(_arsenal_season())
+    row = out[out["team"] == "Arsenal"].iloc[0]
+
+    # 2 league wins (3+3) + 2 big margins + 2 clean sheets in the league, the
+    # cup run, and two Champions League wins at five apiece.
+    assert row["wins"] == 5
+    assert row["total_points"] == pytest.approx(29.67, abs=0.01)

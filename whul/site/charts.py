@@ -1069,10 +1069,33 @@ SCRIPT = """\
     var value = box.points;
     var sign = value < 0 ? ' down' : (value > 0 ? ' up' : '');
     var shown = (value > 0 ? '+' : '') + (Math.round(value * 10) / 10).toFixed(1);
+    // A bye rides on the wins box as a superscript: rounds the club never had
+    // to play, which are worth win points and carry neither bonus.
+    var sup = box.sup ? '<sup class="bye" title="rounds skipped by seeding, ' +
+                        'credited as wins">' + box.sup + '</sup>' : '';
     return '<div class="statbox' + (small ? ' small' : '') + '">' +
            '<div class="bn">' + box.label + '</div>' +
-           '<div class="bv">' + box.value + '</div>' +
+           '<div class="bv">' + box.value + sup + '</div>' +
            '<div class="bp' + sign + '">' + shown + '</div></div>';
+  }
+
+  // A club's season, one competition at a time. The grouping is the reason
+  // the panel exists: four league wins and a cup run reach a total as one
+  // number, and nobody else on the internet reports that number.
+  function renderSoccer(panel) {
+    return panel.sections.map(function (s) {
+      var head = (s.head || []).map(function (h) {
+        return '<span><i>' + h[0] + '</i> ' + h[1] + '</span>';
+      }).join('');
+      var blocks = s.blocks.map(function (b) {
+        return (b.label ? '<div class="phase">' + b.label + '</div>' : '') +
+               boxRows(b);
+      }).join('');
+      return '<div class="body boxes comp">' +
+             '<h3>' + s.name + '</h3>' +
+             (head ? '<div class="games comp">' + head + '</div>' : '') +
+             blocks + '</div>';
+    }).join('');
   }
 
   function boxRows(part) {
@@ -1085,7 +1108,9 @@ SCRIPT = """\
   // January in the same boxes as September, collapsed. Asking the same
   // question two different ways means reading the layout before the figures.
   function renderPanel(panel) {
-    if (!panel || !panel.season) return '';
+    if (!panel) return '';
+    if (panel.kind === 'soccer') return renderSoccer(panel);
+    if (!panel.season) return '';
     var head = '';
     if (panel.games) {
       head = '<div class="games">' +
