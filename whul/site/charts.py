@@ -1067,16 +1067,30 @@ SCRIPT = """\
   // that the second is the first, priced.
   function statBox(box, small) {
     var value = box.points;
-    var sign = value < 0 ? ' down' : (value > 0 ? ' up' : '');
-    var shown = (value > 0 ? '+' : '') + (Math.round(value * 10) / 10).toFixed(1);
+    // Null is not zero: nothing has been played, so nothing is known about
+    // what it earned. "0.0" under a dash would be a claim rather than a blank.
+    var blank = value === null || value === undefined;
+    var sign = blank ? '' : (value < 0 ? ' down' : (value > 0 ? ' up' : ''));
+    var shown = blank ? '\u2014'
+      : (value > 0 ? '+' : '') + (Math.round(value * 10) / 10).toFixed(1);
     // A bye rides on the wins box as a superscript: rounds the club never had
     // to play, which are worth win points and carry neither bonus.
     var sup = box.sup ? '<sup class="bye" title="rounds skipped by seeding, ' +
                         'credited as wins">' + box.sup + '</sup>' : '';
+    // The counts a derived figure is made of, small beside it: WHIP is the
+    // recognisable number and the hits and walks are what actually scored.
+    var aside = box.aside
+      ? '<div class="aside">' + box.aside.split('\\n').join('<br>') + '</div>'
+      : '';
+    // Where the points are real but counted in another box, the strip says so
+    // rather than repeating them or leaving a blank that reads as free.
+    if (box.note) shown = box.note;
     return '<div class="statbox' + (small ? ' small' : '') + '">' +
            '<div class="bn">' + box.label + '</div>' +
-           '<div class="bv">' + box.value + sup + '</div>' +
-           '<div class="bp' + sign + '">' + shown + '</div></div>';
+           '<div class="bv' + (String(box.value).length > 7 ? ' tight' : '') +
+             '">' + box.value + sup + aside + '</div>' +
+           '<div class="bp' + sign + (box.note ? ' said' : '') + '">' +
+           shown + '</div></div>';
   }
 
   // A club's season, one competition at a time. The grouping is the reason
@@ -1122,6 +1136,38 @@ SCRIPT = """\
            boxRows(panel) + outcomeRow(panel.outcomes) + '</div>' + post;
   }
 
+  // Baseball: one section a job, and a sentence where the second job is worth
+  // something but not a section.
+  function mlbSections(list) {
+    return list.map(function (s) {
+      return '<div class="body boxes comp">' +
+             '<h3>' + s.label + '</h3>' + boxRows(s) + '</div>';
+    }).join('');
+  }
+
+  function renderMlb(panel) {
+    var note = panel.note
+      ? '<div class="body"><p class="note">' + panel.note + '</p></div>' : '';
+    if (!panel.years || panel.years.length < 2) {
+      return mlbSections(panel.sections) + note;
+    }
+    // A league year spans two calendar seasons and they are summed, so the
+    // total is the figure that is scored and neither season is. Total leads,
+    // because it is what the score under the boxes was built from; the years
+    // answer which half of it was last summer.
+    var views = [{ year: 'Total', sections: panel.sections }].concat(panel.years);
+    var tabs = views.map(function (v, i) {
+      return '<button class="yr' + (i === 0 ? ' on' : '') +
+             '" data-year="' + i + '">' + v.year + '</button>';
+    }).join('');
+    var panes = views.map(function (v, i) {
+      return '<div class="yrpane"' + (i === 0 ? '' : ' hidden') + '>' +
+             mlbSections(v.sections) + '</div>';
+    }).join('');
+    return '<div class="body years"><div class="yrtabs">' + tabs +
+           '</div></div>' + panes + note;
+  }
+
   function boxRows(part) {
     var top = (part.top || []).map(function (b) { return statBox(b, false); }).join('');
     var rest = (part.secondary || []).map(function (b) { return statBox(b, true); }).join('');
@@ -1137,6 +1183,7 @@ SCRIPT = """\
     if (panel.kind === 'nfl-team') return renderNflTeam(panel);
     // A plain two-row panel with a heading: basketball's rates, hockey's tally.
     if (panel.kind === 'boxes') return renderNflTeam(panel);
+    if (panel.kind === 'mlb') return renderMlb(panel);
     if (!panel.season) return '';
     var head = '';
     if (panel.games) {
@@ -1204,6 +1251,16 @@ SCRIPT = """\
         '<div><div class="label">Raw score</div><div class="value">' + a.raw + '</div></div>' +
         '<div><div class="label">Normalized</div><div class="value">' + a.scaled + '</div></div>' +
       '</div>';
+    dialog.querySelectorAll('button.yr').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        dialog.querySelectorAll('button.yr').forEach(function (other) {
+          other.classList.toggle('on', other === tab);
+        });
+        dialog.querySelectorAll('.yrpane').forEach(function (pane, i) {
+          pane.hidden = String(i) !== tab.dataset.year;
+        });
+      });
+    });
     dialog.querySelector('.close').addEventListener('click', function () {
       dialog.close();
     });

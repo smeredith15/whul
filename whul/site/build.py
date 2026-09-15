@@ -395,6 +395,10 @@ def asset_profiles(
                          else _nfl_team_panel(row))
                 if panel:
                     panels[asset_id] = panel
+            elif str(row.get("league")) == "MLB" and row.get("role"):
+                panel = _mlb_panel(row)
+                if panel:
+                    panels[asset_id] = panel
             elif str(row.get("league")) == "NBA" and row.get("role"):
                 panels[asset_id] = _nba_panel(row)
             elif str(row.get("league")) == "NHL" and row.get("role"):
@@ -412,6 +416,11 @@ def asset_profiles(
         name = str(info["display_name"])
         league = str(info["league"])
         badge = images.find("badge", _slug(league))
+        if asset_id not in panels:
+            empty = _panel_before_a_season(
+                league, str(info["asset_type"]), str(info["role"] or ""))
+            if empty:
+                panels[asset_id] = empty
         who = _identity(
             raw_rows.get(asset_id, {}), league, str(info["norm_key"] or ""),
             str(info["affiliation"] or ""),
@@ -518,7 +527,7 @@ STAT_SKIP = {
     # the other two are read as its heading rather than shown as figures.
     "sections", "league_settled", "season_settled", "div_rank", "team_division",
     # Read as the NBA and NHL panels' own figures rather than as stat rows.
-    "double_doubles", "triple_doubles",
+    "double_doubles", "triple_doubles", "secondary_stats",
     # The NFL panel's own figures. On the fallback table they would read
     # "Post passing yards 0" in a column of season totals.
     "team_games", "post_passing_yards", "post_passing_tds", "post_interceptions",
@@ -893,15 +902,19 @@ def _rate_box(row: dict, column: str, label: str, games: float | None,
         value = "\u2014"
     else:
         value = f"{total / games:,.1f}"
+    # None, not zero, where the feed gave nothing. A strip reading "0.0" under
+    # a dash says the player earned none, which is a claim; we do not know.
     return {"label": label, "value": value,
-            "points": round((total or 0) * weight, 1) or 0.0}
+            "points": None if total is None
+            else (round(total * weight, 1) or 0.0)}
 
 
 def _tally_box(row: dict, column: str, label: str, weight: float) -> dict:
     total = _stat_number(row, column)
     return {"label": label,
             "value": "\u2014" if total is None else f"{total:,.0f}",
-            "points": round((total or 0) * weight, 1) or 0.0}
+            "points": None if total is None
+            else (round(total * weight, 1) or 0.0)}
 
 
 def _games_head(row: dict) -> list[list[str]]:
@@ -914,10 +927,10 @@ def _games_head(row: dict) -> list[list[str]]:
     if played is None:
         played = _stat_number(row, "games_played")
     team = _stat_number(row, "team_games")
-    out = [["Games played", "\u2014" if played is None else f"{played:,.0f}"]]
-    if team:
-        out.append(["Team games", f"{team:,.0f}"])
-    return out
+    return [
+        ["Games played", "\u2014" if played is None else f"{played:,.0f}"],
+        ["Team games", "\u2014" if not team else f"{team:,.0f}"],
+    ]
 
 
 def _nba_panel(row: dict) -> dict | None:
@@ -968,6 +981,290 @@ def _nhl_panel(row: dict) -> dict | None:
         "top": [_tally_box(row, c, label, weights[c]) for c, label in NHL_BOXES],
         "secondary": [],
     }
+
+
+#: Leagues whose profile is a panel built from figures, so that one can be
+#: drawn before the figures exist.
+EMPTY_PANELS = {"NBA": "_nba_panel", "NHL": "_nhl_panel"}
+
+
+def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | None:
+    """The panel a rostered asset gets before its league has played.
+
+    Built from nothing at all, which is the point: a club drafted in August
+    into a league that opens in October has a profile from the day it is
+    drafted, and until this it fell back to a table reading "No stat lines
+    recorded for this day yet". The boxes are the same boxes, every figure a
+    dash, so the page says what will be there rather than that there is no
+    page.
+    """
+    if asset_type != "Player" or league not in EMPTY_PANELS:
+        return None
+    made = {"NBA": _nba_panel, "NHL": _nhl_panel}[league]
+    return made({"league": league, "role": role})
+
+
+#: What a batter's line leads with, and what sits under it.
+MLB_BATTER_REST = (("doubles", "2B"), ("triples", "3B"), ("bb", "BB"),
+                   ("hbp", "HBP"), ("sb", "SB"), ("cs", "CS"))
+#: A pitcher's, with saves and holds joining the top row only if he has any.
+MLB_PITCHER_REST = (("hbp", "HBP"),)
+
+
+def _mlb_box(figures: dict, column: str, label: str, weight: float,
+             scale: float, **extra) -> dict:
+    count = _stat_number(figures, column)
+    box = {"label": label,
+           "value": "\u2014" if count is None else f"{count:,.0f}",
+           "points": None if count is None
+           else (round(count * weight * scale, 1) or 0.0)}
+    box.update(extra)
+    return box
+
+
+def _mlb_batter_section(figures: dict, scale: float) -> dict:
+    """A batting line, led by the number a hitter is known by.
+
+    The average is not scored and the four things behind it are, so it carries
+    their points and lists them down its side -- the same trade WHIP makes. Home
+    runs then get a box of their own because that is the figure everybody looks
+    for, and its strip says where its points already went rather than counting
+    them a second time.
+    """
+    from whul.scoring.mlb import (
+        BATTER_WEIGHTS, DEFENSE_FACTOR, OFFENSE_FACTOR,
+    )
+
+    def count(column):
+        return _stat_number(figures, column)
+
+    hits, at_bats = count("h"), count("ab")
+    behind = ("h", "ab", "doubles", "triples", "hr")
+    average = None if not at_bats or hits is None else hits / at_bats
+    top = [{
+        "label": "AVG",
+        "value": "\u2014" if average is None else f"{average:.3f}".lstrip("0"),
+        "points": None if hits is None else round(
+            sum((count(c) or 0) * BATTER_WEIGHTS[c] for c in behind) * scale,
+            1) or 0.0,
+        "aside": None if hits is None else "\n".join([
+            f"{hits:,.0f}/{at_bats:,.0f}" if at_bats else f"{hits:,.0f} H",
+            f"{count('doubles') or 0:,.0f} 2B",
+            f"{count('triples') or 0:,.0f} 3B",
+            f"{count('hr') or 0:,.0f} HR",
+        ]),
+    }]
+    # The count again, because it is the one every reader looks for. Not the
+    # points again: those are in the box above, and the strip says so.
+    home_runs = count("hr")
+    top.append({"label": "HR",
+                "value": "\u2014" if home_runs is None else f"{home_runs:,.0f}",
+                "points": None, "note": "in AVG"})
+    for column, label, weight in (("offense", "Off RV", OFFENSE_FACTOR),
+                                  ("defense", "Def RV", DEFENSE_FACTOR)):
+        run_value = count(column)
+        top.append({
+            "label": label,
+            "value": "\u2014" if run_value is None else f"{run_value:,.1f}",
+            "points": None if run_value is None
+            else round(run_value * weight * scale, 1) or 0.0,
+        })
+
+    # Each paired with the thing that undoes it, so the cost of being caught
+    # sits against the steal it cost and not in a box of its own.
+    def paired(first, second, label, unit) -> dict:
+        lead, other = count(first), count(second)
+        return {
+            "label": label,
+            "value": "\u2014" if lead is None else f"{lead:,.0f}",
+            "points": None if lead is None else round(
+                (lead * BATTER_WEIGHTS[first]
+                 + (other or 0) * BATTER_WEIGHTS[second]) * scale, 1) or 0.0,
+            "aside": None if other is None else f"{other:,.0f} {unit}",
+        }
+
+    return {
+        "label": "Batting",
+        "top": top,
+        "secondary": [paired("sb", "cs", "SB", "CS"),
+                      paired("bb", "hbp", "BB", "HBP")],
+    }
+
+
+def _mlb_pitcher_section(figures: dict, scale: float) -> dict:
+    """A pitching line, every figure at full size.
+
+    Rates ride alongside the counts they come from rather than taking boxes of
+    their own: K/9 beside the strikeouts, HR/9 beside the home runs. Hit
+    batsmen carry no rate -- per nine innings it is a number too small to read.
+    """
+    from whul.scoring.mlb import PITCHER_WEIGHTS, WAR_FACTOR
+
+    def count(column):
+        return _stat_number(figures, column)
+
+    innings = count("ip")
+
+    def per_nine(value) -> str | None:
+        if not innings or value is None:
+            return None
+        return f"{value / innings * 9:,.2f}"
+
+    def box(column, label, aside=None) -> dict:
+        value = count(column)
+        return {
+            "label": label,
+            "value": "\u2014" if value is None else f"{value:,.0f}",
+            "points": None if value is None
+            else round(value * PITCHER_WEIGHTS[column] * scale, 1) or 0.0,
+            "aside": aside,
+        }
+
+    hits, walks = count("h"), count("bb")
+    whip = None if not innings or hits is None or walks is None \
+        else (hits + walks) / innings
+    strikeouts = count("so")
+    top = [
+        {"label": "IP",
+         "value": "\u2014" if innings is None else f"{innings:,.1f}",
+         "points": None if innings is None
+         else round(innings * PITCHER_WEIGHTS["ip"] * scale, 1) or 0.0},
+        box("so", "K", aside=(
+            None if per_nine(strikeouts) is None
+            else f"{per_nine(strikeouts)} K/9")),
+        {"label": "WHIP",
+         "value": "\u2014" if whip is None else f"{whip:,.2f}",
+         "points": None if whip is None else round(
+             (hits * PITCHER_WEIGHTS["h"] + walks * PITCHER_WEIGHTS["bb"])
+             * scale, 1) or 0.0,
+         "aside": None if whip is None else f"{hits:,.0f} H\n{walks:,.0f} BB"},
+        box("hr", "HR", aside=(
+            None if per_nine(count("hr")) is None
+            else f"{per_nine(count('hr'))} HR/9")),
+        box("hbp", "HBP"),
+    ]
+    war = count("war")
+    top.append({"label": "WAR",
+                "value": "\u2014" if war is None else f"{war:,.1f}",
+                "points": None if war is None
+                else round(war * WAR_FACTOR * 10 * scale, 1) or 0.0})
+    # A reliever's season is his saves, so they are not tucked underneath --
+    # and a starter's line should not carry two zeroes saying he is not one.
+    for column, label in (("sv", "SV"), ("hld", "HLD")):
+        if count(column):
+            top.append(box(column, label))
+    return {"label": "Pitching", "top": top, "secondary": []}
+
+
+#: Written out, because the verb is not the noun plus "ed": a player who also
+#: pitches has not "pitchered", and one who also bats has not "battered".
+MLB_ALSO = {"Batter": "batted", "Pitcher": "pitched"}
+
+#: A secondary role worth this much on the 0-100 scale, before the half it is
+#: taxed by, earns a section of its own rather than a line of prose.
+MLB_SECOND_SECTION_AT = 10.0
+
+
+def _mlb_panel(row: dict) -> dict | None:
+    """A baseball player, at whichever of the two jobs he does -- or both.
+
+    Both only where the second is worth showing. A pitcher with four at-bats
+    has a batting line, and a section of it would say he is a two-way player,
+    which he is not; a sentence saying what those at-bats were worth says the
+    true thing in the space it deserves.
+    """
+    role = str(row.get("role") or "").strip()
+    if role not in ("Batter", "Pitcher"):
+        return None
+    scale = _stat_number(row, "proration_factor")
+    scale = 1.0 if not scale else scale
+
+    build = {"Batter": _mlb_batter_section, "Pitcher": _mlb_pitcher_section}
+    sections = [build[role](row, scale)]
+
+    second = row.get("secondary_stats")
+    if isinstance(second, str):
+        try:
+            second = json.loads(second)
+        except (TypeError, ValueError):
+            second = None
+    # A list of one, which is the shape that survives the store's own
+    # `json_normalize` -- see `whul.scoring.mlb._second_line`.
+    if isinstance(second, list):
+        second = second[0] if second else None
+    # Anything else is a player with no second role, which pandas fills with
+    # NaN -- and NaN is truthy, so `second or {}` kept it and the build died
+    # on `.get`. The second time that has caught me here; the first was a
+    # club's `role`.
+    if not isinstance(second, dict):
+        second = None
+    other = str((second or {}).get("role") or "").strip()
+    note = ""
+    if isinstance(second, dict) and other in build:
+        worth = _stat_number(second, "scaled_score") or 0.0
+        if worth >= MLB_SECOND_SECTION_AT:
+            sections.append(build[other](second, scale))
+        elif _stat_number(second, "role_points"):
+            # Worth something and not worth a section. The half it is taxed by
+            # is the number that reaches the standings, so both are named.
+            note = (
+                f"Also {MLB_ALSO[other]}: "
+                f"{_stat_number(second, 'role_points'):,.1f} points, "
+                f"{worth:,.1f} normalized, worth "
+                f"{worth * 0.5:,.1f} after the half a second role is taxed."
+            )
+    panel = {"kind": "mlb", "sections": sections, "note": note}
+    years = _mlb_by_year(row, second, role, other, scale, build)
+    if years:
+        panel["years"] = years
+    return panel
+
+
+def _season_lines(figures) -> dict:
+    """Each feed season's own line, by the year it belongs to."""
+    lines = figures.get("season_lines") if isinstance(figures, dict) else None
+    if isinstance(lines, str):
+        try:
+            lines = json.loads(lines)
+        except (TypeError, ValueError):
+            lines = None
+    if not isinstance(lines, list):
+        return {}
+    out = {}
+    for line in lines:
+        if isinstance(line, dict) and line.get("season") is not None:
+            out[f"{int(line['season'])}"] = line
+    return out
+
+
+def _mlb_by_year(row: dict, second, role: str, other: str, scale: float,
+                 build: dict) -> list[dict]:
+    """The same boxes, one set a calendar season, where there is more than one.
+
+    A league year opening in August spans two of them and they are summed, so
+    from April a profile shows a line that is neither season and no way to ask
+    which half was last year. This is that question, with the boxes staying
+    where they are and only the figures inside them changing.
+
+    Absent entirely where the league year has only reached one season, which is
+    every baseball profile until next spring: a toggle with one position is a
+    control that does nothing.
+    """
+    primary = _season_lines(row)
+    secondary = _season_lines(second) if isinstance(second, dict) else {}
+    years = sorted(set(primary) | set(secondary))
+    if len(years) < 2:
+        return []
+    out = []
+    for year in years:
+        sections = []
+        if year in primary:
+            sections.append(build[role](primary[year], scale))
+        if other in build and year in secondary \
+                and (_stat_number(second, "scaled_score") or 0.0) >= MLB_SECOND_SECTION_AT:
+            sections.append(build[other](secondary[year], scale))
+        out.append({"year": year, "sections": sections})
+    return out
 
 
 def _outcome_box(label: str, won, settled, points: float,

@@ -319,14 +319,25 @@ def _mlb_players() -> Rules:
         "rewards reaching base, not swinging.",
         [Heading("Batting")]
         + weights(mlb.BATTER_WEIGHTS, MLB_BATTER_LABELS)
+        # The run values, itemised. They were described in a note below and
+        # left out of the table, so a reader totting up the scored terms found
+        # every one except the two that are not counting stats -- and those are
+        # the ones nobody would guess at.
+        + [item("Each run of FanGraphs Offense", mlb.OFFENSE_FACTOR),
+           item("Each run of FanGraphs Defense", mlb.DEFENSE_FACTOR)]
         + [Heading("Pitching")]
-        + weights(mlb.PITCHER_WEIGHTS, MLB_PITCHER_LABELS),
+        + weights(mlb.PITCHER_WEIGHTS, MLB_PITCHER_LABELS)
+        + [item("Each win above replacement (FanGraphs)", mlb.WAR_FACTOR)],
         [
             "A player who both bats and pitches is scored at their better role in "
             f"full plus {num(mlb.SECONDARY_ROLE_WEIGHT * 100)}% of the other one.",
             "Fielding and overall value are folded in from FanGraphs' run "
             "estimates, which are worth roughly 1–5% of a score — most to a "
             "glove-first player, least to a slugger.",
+            "Those three are a share of a whole season, apportioned by the "
+            "games played since the draft, so they will not match the figure "
+            "FanGraphs shows for the year. The counting stats above are the "
+            "window's own.",
             "Baseball straddles the draft, so a season is valued across the "
             "twelve months either side of the All-Star break rather than by "
             "calendar year.",

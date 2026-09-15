@@ -2829,19 +2829,44 @@ def test_nothing_played_reads_as_nothing_rather_than_as_zero():
     panel = site_build._nba_panel({"league": "NBA", "role": "C"})
 
     assert [b["value"] for b in panel["top"]] == ["—"] * 3
-    assert panel["head"] == [["Games played", "—"]]
+    assert panel["head"] == [["Games played", "—"],
+                             ["Team games", "—"]]
+    # And the strip beneath is blank too. "0.0" under a dash says the player
+    # earned none, which is a claim; nothing has been played.
+    assert [b["points"] for b in panel["top"]] == [None] * 3
 
     played = site_build._nba_panel(_nba_row(blocks=0))
     assert next(b for b in played["secondary"] if b["label"] == "BPG")["value"] == "0.0"
 
 
-def test_hockey_claims_no_team_games_it_cannot_know():
-    """The NHL endpoint serves one row per skater for the whole season, so
-    nothing on the row says how often his club played."""
+def test_hockey_says_it_does_not_know_rather_than_hiding_the_row():
+    """A club the standings do not name leaves the figure blank. The row stays,
+    because "we do not know" and "there is nothing to know" are different and
+    an omitted row says the second."""
     panel = site_build._nhl_panel(
         {"league": "NHL", "role": "Skater", "games_played": 70})
 
-    assert [h[0] for h in panel["head"]] == ["Games played"]
+    assert panel["head"] == [["Games played", "70"], ["Team games", "—"]]
+
+    known = site_build._nhl_panel(
+        {"league": "NHL", "role": "Skater", "games_played": 50,
+         "team_games": 62})
+    assert known["head"] == [["Games played", "50"], ["Team games", "62"]]
+
+
+def test_a_league_that_has_not_played_still_gets_its_panel():
+    """A club drafted in August into a league that opens in October has a
+    profile from the day it is drafted. Before this it fell back to a table
+    reading "No stat lines recorded for this day yet"."""
+    panel = site_build._panel_before_a_season("NBA", "Player", "C")
+
+    assert [b["label"] for b in panel["top"]] == ["PPG", "RPG", "APG"]
+    assert [b["value"] for b in panel["top"]] == ["—"] * 3
+
+    assert site_build._panel_before_a_season("NHL", "Player", "Skater")
+    # Not a team, and not a league whose profile is not a panel.
+    assert site_build._panel_before_a_season("NBA", "Team", "") is None
+    assert site_build._panel_before_a_season("PGA", "Player", "") is None
 
 
 def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
@@ -2855,3 +2880,177 @@ def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
     block = site_build._soccer_block(part, "round-robin")
 
     assert [b["label"] for b in block["secondary"]] == ["Big wins", "Clean sheets"]
+
+
+# --- baseball, at whichever of the two jobs he does -------------------------
+
+def _batter(**over):
+    row = {"league": "MLB", "role": "Batter", "h": 150, "ab": 480, "hr": 44,
+           "doubles": 26, "triples": 6, "bb": 72, "hbp": 4, "sb": 18, "cs": 4,
+           "offense": 38.2, "defense": -6.1, "proration_factor": 1.0}
+    row.update(over)
+    return row
+
+
+def _pitcher_line(**over):
+    row = {"role": "Pitcher", "scaled_score": 41.0, "role_points": 812.0,
+           "ip": 92.0, "so": 124, "h": 62, "bb": 26, "hbp": 3, "hr": 10,
+           "sv": 0, "hld": 0, "war": 3.1}
+    row.update(over)
+    return row
+
+
+def test_a_batters_boxes_add_up_to_what_the_scorer_gave_him():
+    from whul.scoring.mlb import BATTER_WEIGHTS, DEFENSE_FACTOR, OFFENSE_FACTOR
+
+    row = _batter()
+    section = site_build._mlb_panel(row)["sections"][0]
+    shown = sum(b["points"] or 0 for b in section["top"] + section["secondary"])
+    scored = (sum(row[c] * w for c, w in BATTER_WEIGHTS.items())
+              + row["offense"] * OFFENSE_FACTOR + row["defense"] * DEFENSE_FACTOR)
+
+    # To a tenth per box: each is rounded for display before it is summed, and
+    # ten of them can drift half a point off the figure printed underneath.
+    assert shown == pytest.approx(scored, abs=0.5)
+
+
+def test_the_average_carries_the_points_of_what_is_behind_it():
+    """The figure a hitter is known by is not scored and the five things behind
+    it are, so it carries theirs and lists them down its side."""
+    from whul.scoring.mlb import BATTER_WEIGHTS
+
+    box = site_build._mlb_panel(_batter())["sections"][0]["top"][0]
+
+    assert box["label"] == "AVG"
+    assert box["value"] == ".312"
+    assert box["aside"] == "150/480\n26 2B\n6 3B\n44 HR"
+    assert box["points"] == round(
+        150 * BATTER_WEIGHTS["h"] + 480 * BATTER_WEIGHTS["ab"]
+        + 26 * BATTER_WEIGHTS["doubles"] + 6 * BATTER_WEIGHTS["triples"]
+        + 44 * BATTER_WEIGHTS["hr"], 1)
+
+
+def test_home_runs_are_shown_twice_and_counted_once():
+    """It is the figure every reader looks for, so it gets a box -- but its
+    points are in the average above and the strip says so."""
+    top = site_build._mlb_panel(_batter())["sections"][0]["top"]
+    box = next(b for b in top if b["label"] == "HR")
+
+    assert box["value"] == "44"
+    assert box["points"] is None
+    assert box["note"] == "in AVG"
+
+
+def test_a_steal_is_shown_against_what_it_cost():
+    from whul.scoring.mlb import BATTER_WEIGHTS
+
+    rest = site_build._mlb_panel(_batter())["sections"][0]["secondary"]
+    steals = next(b for b in rest if b["label"] == "SB")
+
+    assert steals["value"] == "18"
+    assert steals["aside"] == "4 CS"
+    assert steals["points"] == round(
+        18 * BATTER_WEIGHTS["sb"] + 4 * BATTER_WEIGHTS["cs"], 1)
+
+
+def test_a_league_year_spanning_two_seasons_can_be_read_a_season_at_a_time():
+    """Summed, the line is neither season and there is no way to ask which
+    half was last year."""
+    row = _batter(season_lines=[
+        {"season": 2026, "h": 40, "ab": 130, "hr": 6, "doubles": 8,
+         "triples": 1, "bb": 20, "hbp": 1, "sb": 5, "cs": 1,
+         "offense": 2.0, "defense": -1.0},
+        {"season": 2027, "h": 110, "ab": 350, "hr": 38, "doubles": 18,
+         "triples": 5, "bb": 52, "hbp": 3, "sb": 13, "cs": 3,
+         "offense": 36.2, "defense": -5.1},
+    ])
+    panel = site_build._mlb_panel(row)
+
+    assert [y["year"] for y in panel["years"]] == ["2026", "2027"]
+    halves = [y["sections"][0]["top"][0]["points"] for y in panel["years"]]
+    whole = panel["sections"][0]["top"][0]["points"]
+    assert round(sum(halves), 1) == round(whole, 1)
+
+
+def test_one_season_gets_no_toggle():
+    """A control with one position does nothing, which is every baseball
+    profile until next spring."""
+    assert "years" not in site_build._mlb_panel(_batter())
+    assert "years" not in site_build._mlb_panel(
+        _batter(season_lines=[{"season": 2026, "h": 150, "ab": 480}]))
+
+
+def test_the_counting_boxes_carry_the_proration_the_score_does():
+    """Acuna's counting terms come to 167.6 and his role points to 204.2; the
+    difference is the window factor, and without it the panel does not add up
+    to the number printed under it."""
+    plain = site_build._mlb_panel(_batter())["sections"][0]
+    scaled = site_build._mlb_panel(_batter(proration_factor=1.5))["sections"][0]
+
+    assert round(scaled["top"][0]["points"], 1) == round(
+        plain["top"][0]["points"] * 1.5, 1)
+
+
+def test_whip_carries_the_points_of_what_it_is_made_of():
+    """It is not scored itself, and every other box is. The hits and walks are
+    printed small beside it so the rate and the scoring agree in public."""
+    from whul.scoring.mlb import PITCHER_WEIGHTS
+
+    panel = site_build._mlb_panel(
+        {"league": "MLB", "role": "Pitcher", "proration_factor": 1.0,
+         **{k: v for k, v in _pitcher_line().items() if k != "role"}})
+    whip = next(b for b in panel["sections"][0]["top"] if b["label"] == "WHIP")
+
+    assert whip["value"] == "0.96"
+    assert whip["points"] == round(
+        62 * PITCHER_WEIGHTS["h"] + 26 * PITCHER_WEIGHTS["bb"], 1)
+    assert whip["aside"] == "62 H\n26 BB"
+
+
+def test_saves_and_holds_join_the_top_row_only_where_he_has_them():
+    """A reliever's season is his saves; a starter's line should not carry two
+    zeroes explaining that he is not one."""
+    starter = {"league": "MLB", "role": "Pitcher", "proration_factor": 1.0,
+               **{k: v for k, v in _pitcher_line().items() if k != "role"}}
+    labels = [b["label"] for b in site_build._mlb_panel(starter)["sections"][0]["top"]]
+    assert labels == ["IP", "K", "WHIP", "HR", "HBP", "WAR"]
+
+    closer = dict(starter, sv=38, hld=2)
+    labels = [b["label"] for b in site_build._mlb_panel(closer)["sections"][0]["top"]]
+    assert labels == ["IP", "K", "WHIP", "HR", "HBP", "WAR", "SV", "HLD"]
+
+
+def test_a_second_role_worth_showing_gets_a_section():
+    panel = site_build._mlb_panel(
+        _batter(secondary_stats=[_pitcher_line(scaled_score=41.0)]))
+
+    assert [s["label"] for s in panel["sections"]] == ["Batting", "Pitching"]
+    assert panel["note"] == ""
+
+
+def test_a_second_role_worth_little_gets_a_sentence():
+    """A pitcher with four at-bats is not a two-way player, and a section of
+    his batting would say he is."""
+    panel = site_build._mlb_panel(
+        _batter(secondary_stats=[_pitcher_line(scaled_score=4.0,
+                                               role_points=45.0)]))
+
+    assert [s["label"] for s in panel["sections"]] == ["Batting"]
+    # The verb is not the noun plus "ed": nobody has "pitchered".
+    assert panel["note"].startswith("Also pitched: 45.0 points")
+    assert "2.0 after the half" in panel["note"]
+
+
+def test_a_second_role_worth_nothing_is_not_mentioned():
+    panel = site_build._mlb_panel(
+        _batter(secondary_stats=[_pitcher_line(scaled_score=0.0,
+                                               role_points=0.0)]))
+    assert panel["note"] == ""
+
+
+def test_a_player_with_no_second_role_does_not_break_the_build():
+    """Pandas fills the missing list with NaN, and NaN is truthy -- which took
+    the whole site build down with an AttributeError."""
+    assert site_build._mlb_panel(_batter(secondary_stats=float("nan")))
+    assert site_build._mlb_panel(_batter(secondary_stats=[]))
+    assert site_build._mlb_panel(_batter(secondary_stats=None))

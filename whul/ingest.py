@@ -421,7 +421,54 @@ def _against_the_league_year(
             f"figures are still season-to-date for that stretch"
         )
 
-    return baseline_store.combine_seasons(mine, ["asset_id", "role"])
+    return baseline_store.combine_seasons(
+        _kept_season_by_season(mine), ["asset_id", "role"])
+
+
+#: Columns that name the row rather than measure it, so a per-season line does
+#: not repeat the player's name back at itself four times.
+SEASON_LINE_SKIP = frozenset({
+    "asset_id", "league", "as_of", "source", "phase", "fetched_at",
+    "player", "player_id", "team", "display_name", "role", "norm_key",
+    "asset_type", "season_lines",
+})
+
+
+def _kept_season_by_season(mine: pd.DataFrame) -> pd.DataFrame:
+    """Each feed season's own figures, kept before the seasons are added up.
+
+    A league year opening in August spans two calendar seasons, and they are
+    summed so a player held across the turn of the year is scored once. The sum
+    is the right number to score and the wrong one to read: from April a
+    profile would show one line that is neither season, and no way to ask which
+    half of it was last year.
+
+    Attached after the differencing, so each line is what was earned inside the
+    league year rather than the feed's season to date. A list, because
+    ``combine_seasons`` joins those and sums everything else -- the same shape
+    every other nested figure here already uses, and for the same reason.
+    """
+    if mine.empty or "season" not in mine.columns:
+        return mine
+    wanted = [
+        column for column in mine.columns
+        if column not in SEASON_LINE_SKIP
+        and not _holds_a_list(mine[column])
+    ]
+    out = mine.copy()
+    out["season_lines"] = [
+        [{
+            column: (None if value != value else
+                     value.item() if hasattr(value, "item") else value)
+            for column, value in row.items() if column in wanted
+        }]
+        for row in out[wanted].to_dict("records")
+    ]
+    return out
+
+
+def _holds_a_list(values) -> bool:
+    return any(isinstance(value, list) for value in values)
 
 
 def _replace_block(frame: pd.DataFrame, feed_season, replacement: pd.DataFrame):
