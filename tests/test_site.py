@@ -2914,14 +2914,70 @@ def test_a_batters_boxes_add_up_to_what_the_scorer_gave_him():
     assert shown == pytest.approx(scored, abs=0.5)
 
 
-def test_hits_and_at_bats_share_a_box_because_they_are_one_event():
-    """A hit is worth 5.6 and the at-bat it used costs 1. Split apart, the
-    second box reads as a penalty for playing."""
+def test_the_average_carries_the_points_of_what_is_behind_it():
+    """The figure a hitter is known by is not scored and the five things behind
+    it are, so it carries theirs and lists them down its side."""
+    from whul.scoring.mlb import BATTER_WEIGHTS
+
     box = site_build._mlb_panel(_batter())["sections"][0]["top"][0]
 
-    assert box["label"] == "H / AB"
-    assert box["value"] == "150 / 480"
-    assert box["points"] == round(150 * 5.6 - 480 * 1.0, 1)
+    assert box["label"] == "AVG"
+    assert box["value"] == ".312"
+    assert box["aside"] == "150/480\n26 2B\n6 3B\n44 HR"
+    assert box["points"] == round(
+        150 * BATTER_WEIGHTS["h"] + 480 * BATTER_WEIGHTS["ab"]
+        + 26 * BATTER_WEIGHTS["doubles"] + 6 * BATTER_WEIGHTS["triples"]
+        + 44 * BATTER_WEIGHTS["hr"], 1)
+
+
+def test_home_runs_are_shown_twice_and_counted_once():
+    """It is the figure every reader looks for, so it gets a box -- but its
+    points are in the average above and the strip says so."""
+    top = site_build._mlb_panel(_batter())["sections"][0]["top"]
+    box = next(b for b in top if b["label"] == "HR")
+
+    assert box["value"] == "44"
+    assert box["points"] is None
+    assert box["note"] == "in AVG"
+
+
+def test_a_steal_is_shown_against_what_it_cost():
+    from whul.scoring.mlb import BATTER_WEIGHTS
+
+    rest = site_build._mlb_panel(_batter())["sections"][0]["secondary"]
+    steals = next(b for b in rest if b["label"] == "SB")
+
+    assert steals["value"] == "18"
+    assert steals["aside"] == "4 CS"
+    assert steals["points"] == round(
+        18 * BATTER_WEIGHTS["sb"] + 4 * BATTER_WEIGHTS["cs"], 1)
+
+
+def test_a_league_year_spanning_two_seasons_can_be_read_a_season_at_a_time():
+    """Summed, the line is neither season and there is no way to ask which
+    half was last year."""
+    row = _batter(season_lines=[
+        {"season": 2026, "h": 40, "ab": 130, "hr": 6, "doubles": 8,
+         "triples": 1, "bb": 20, "hbp": 1, "sb": 5, "cs": 1,
+         "offense": 2.0, "defense": -1.0},
+        {"season": 2027, "h": 110, "ab": 350, "hr": 38, "doubles": 18,
+         "triples": 5, "bb": 52, "hbp": 3, "sb": 13, "cs": 3,
+         "offense": 36.2, "defense": -5.1},
+    ])
+    panel = site_build._mlb_panel(row)
+
+    assert [y["year"] for y in panel["years"]] == ["2026", "2027"]
+    halves = [y["sections"][0]["top"][0]["points"] for y in panel["years"]]
+    whole = panel["sections"][0]["top"][0]["points"]
+    assert round(sum(halves), 1) == round(whole, 1)
+
+
+def test_one_season_gets_no_toggle():
+    """A control with one position does nothing, which is every baseball
+    profile until next spring."""
+    assert "years" not in site_build._mlb_panel(_batter())
+    assert "years" not in site_build._mlb_panel(
+        _batter(season_lines=[{"season": 2026, "h": 150, "ab": 480}]))
 
 
 def test_the_counting_boxes_carry_the_proration_the_score_does():
@@ -2950,12 +3006,6 @@ def test_whip_carries_the_points_of_what_it_is_made_of():
         62 * PITCHER_WEIGHTS["h"] + 26 * PITCHER_WEIGHTS["bb"], 1)
     assert whip["aside"] == "62 H\n26 BB"
 
-    # And the walks are not paid for twice where they appear again as a rate.
-    walks = next(b for b in panel["sections"][0]["secondary"]
-                 if b["label"] == "BB/9")
-    assert walks["points"] is None
-    assert walks["note"] == "in WHIP"
-
 
 def test_saves_and_holds_join_the_top_row_only_where_he_has_them():
     """A reliever's season is his saves; a starter's line should not carry two
@@ -2963,11 +3013,11 @@ def test_saves_and_holds_join_the_top_row_only_where_he_has_them():
     starter = {"league": "MLB", "role": "Pitcher", "proration_factor": 1.0,
                **{k: v for k, v in _pitcher_line().items() if k != "role"}}
     labels = [b["label"] for b in site_build._mlb_panel(starter)["sections"][0]["top"]]
-    assert labels == ["IP", "K", "WHIP"]
+    assert labels == ["IP", "K", "WHIP", "HR", "HBP", "WAR"]
 
     closer = dict(starter, sv=38, hld=2)
     labels = [b["label"] for b in site_build._mlb_panel(closer)["sections"][0]["top"]]
-    assert labels == ["IP", "K", "WHIP", "SV", "HLD"]
+    assert labels == ["IP", "K", "WHIP", "HR", "HBP", "WAR", "SV", "HLD"]
 
 
 def test_a_second_role_worth_showing_gets_a_section():

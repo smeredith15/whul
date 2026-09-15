@@ -1023,102 +1023,137 @@ def _mlb_box(figures: dict, column: str, label: str, weight: float,
 
 
 def _mlb_batter_section(figures: dict, scale: float) -> dict:
-    """A batting line: what he did at the plate, then on the bases.
+    """A batting line, led by the number a hitter is known by.
 
-    The hits box carries the at-bats with it, because they are the same plate
-    appearances priced twice -- a hit is worth 5.6 and the at-bat it used costs
-    1 -- and split into two boxes the second reads as a penalty for playing.
+    The average is not scored and the four things behind it are, so it carries
+    their points and lists them down its side -- the same trade WHIP makes. Home
+    runs then get a box of their own because that is the figure everybody looks
+    for, and its strip says where its points already went rather than counting
+    them a second time.
     """
     from whul.scoring.mlb import (
         BATTER_WEIGHTS, DEFENSE_FACTOR, OFFENSE_FACTOR,
     )
 
-    hits, at_bats = _stat_number(figures, "h"), _stat_number(figures, "ab")
-    combined = ((hits or 0) * BATTER_WEIGHTS["h"]
-                + (at_bats or 0) * BATTER_WEIGHTS["ab"]) * scale
+    def count(column):
+        return _stat_number(figures, column)
+
+    hits, at_bats = count("h"), count("ab")
+    behind = ("h", "ab", "doubles", "triples", "hr")
+    average = None if not at_bats or hits is None else hits / at_bats
     top = [{
-        "label": "H / AB",
-        "value": "\u2014" if hits is None else
-                 f"{hits:,.0f} / {at_bats:,.0f}" if at_bats is not None
-                 else f"{hits:,.0f}",
-        "points": None if hits is None else round(combined, 1) or 0.0,
+        "label": "AVG",
+        "value": "\u2014" if average is None else f"{average:.3f}".lstrip("0"),
+        "points": None if hits is None else round(
+            sum((count(c) or 0) * BATTER_WEIGHTS[c] for c in behind) * scale,
+            1) or 0.0,
+        "aside": None if hits is None else "\n".join([
+            f"{hits:,.0f}/{at_bats:,.0f}" if at_bats else f"{hits:,.0f} H",
+            f"{count('doubles') or 0:,.0f} 2B",
+            f"{count('triples') or 0:,.0f} 3B",
+            f"{count('hr') or 0:,.0f} HR",
+        ]),
     }]
-    top.append(_mlb_box(figures, "hr", "HR", BATTER_WEIGHTS["hr"], scale))
+    # The count again, because it is the one every reader looks for. Not the
+    # points again: those are in the box above, and the strip says so.
+    home_runs = count("hr")
+    top.append({"label": "HR",
+                "value": "\u2014" if home_runs is None else f"{home_runs:,.0f}",
+                "points": None, "note": "in AVG"})
     for column, label, weight in (("offense", "Off RV", OFFENSE_FACTOR),
                                   ("defense", "Def RV", DEFENSE_FACTOR)):
-        run_value = _stat_number(figures, column)
+        run_value = count(column)
         top.append({
             "label": label,
             "value": "\u2014" if run_value is None else f"{run_value:,.1f}",
             "points": None if run_value is None
             else round(run_value * weight * scale, 1) or 0.0,
         })
+
+    # Each paired with the thing that undoes it, so the cost of being caught
+    # sits against the steal it cost and not in a box of its own.
+    def paired(first, second, label, unit) -> dict:
+        lead, other = count(first), count(second)
+        return {
+            "label": label,
+            "value": "\u2014" if lead is None else f"{lead:,.0f}",
+            "points": None if lead is None else round(
+                (lead * BATTER_WEIGHTS[first]
+                 + (other or 0) * BATTER_WEIGHTS[second]) * scale, 1) or 0.0,
+            "aside": None if other is None else f"{other:,.0f} {unit}",
+        }
+
     return {
         "label": "Batting",
         "top": top,
-        "secondary": [_mlb_box(figures, c, label, BATTER_WEIGHTS[c], scale)
-                      for c, label in MLB_BATTER_REST],
+        "secondary": [paired("sb", "cs", "SB", "CS"),
+                      paired("bb", "hbp", "BB", "HBP")],
     }
 
 
 def _mlb_pitcher_section(figures: dict, scale: float) -> dict:
-    """A pitching line, read the way a pitcher is read: innings, strikeouts,
-    and what he let on base.
+    """A pitching line, every figure at full size.
 
-    WHIP is not scored and every other box is, so it carries the points of the
-    two things it is made of -- hits and walks allowed -- and prints their
-    counts small beside it so the rate and the scoring agree in public. The
-    walks then appear again as a rate below, where the strip says where their
-    points went rather than counting them twice.
+    Rates ride alongside the counts they come from rather than taking boxes of
+    their own: K/9 beside the strikeouts, HR/9 beside the home runs. Hit
+    batsmen carry no rate -- per nine innings it is a number too small to read.
     """
     from whul.scoring.mlb import PITCHER_WEIGHTS, WAR_FACTOR
 
-    innings = _stat_number(figures, "ip")
-    hits, walks = _stat_number(figures, "h"), _stat_number(figures, "bb")
-    top = [
-        _mlb_box(figures, "ip", "IP", PITCHER_WEIGHTS["ip"], scale),
-        _mlb_box(figures, "so", "K", PITCHER_WEIGHTS["so"], scale),
-    ]
+    def count(column):
+        return _stat_number(figures, column)
+
+    innings = count("ip")
+
+    def per_nine(value) -> str | None:
+        if not innings or value is None:
+            return None
+        return f"{value / innings * 9:,.2f}"
+
+    def box(column, label, aside=None) -> dict:
+        value = count(column)
+        return {
+            "label": label,
+            "value": "\u2014" if value is None else f"{value:,.0f}",
+            "points": None if value is None
+            else round(value * PITCHER_WEIGHTS[column] * scale, 1) or 0.0,
+            "aside": aside,
+        }
+
+    hits, walks = count("h"), count("bb")
     whip = None if not innings or hits is None or walks is None \
         else (hits + walks) / innings
-    top.append({
-        "label": "WHIP",
-        "value": "\u2014" if whip is None else f"{whip:,.2f}",
-        "points": None if whip is None else round(
-            (hits * PITCHER_WEIGHTS["h"] + walks * PITCHER_WEIGHTS["bb"])
-            * scale, 1) or 0.0,
-        "aside": None if whip is None else f"{hits:,.0f} H\n{walks:,.0f} BB",
-    })
-    # Only where he has them, and in the top row when he does: a reliever's
-    # season is his saves, and a starter's line should not carry two zeroes
-    # explaining that he is not one.
+    strikeouts = count("so")
+    top = [
+        {"label": "IP",
+         "value": "\u2014" if innings is None else f"{innings:,.1f}",
+         "points": None if innings is None
+         else round(innings * PITCHER_WEIGHTS["ip"] * scale, 1) or 0.0},
+        box("so", "K", aside=(
+            None if per_nine(strikeouts) is None
+            else f"{per_nine(strikeouts)} K/9")),
+        {"label": "WHIP",
+         "value": "\u2014" if whip is None else f"{whip:,.2f}",
+         "points": None if whip is None else round(
+             (hits * PITCHER_WEIGHTS["h"] + walks * PITCHER_WEIGHTS["bb"])
+             * scale, 1) or 0.0,
+         "aside": None if whip is None else f"{hits:,.0f} H\n{walks:,.0f} BB"},
+        box("hr", "HR", aside=(
+            None if per_nine(count("hr")) is None
+            else f"{per_nine(count('hr'))} HR/9")),
+        box("hbp", "HBP"),
+    ]
+    war = count("war")
+    top.append({"label": "WAR",
+                "value": "\u2014" if war is None else f"{war:,.1f}",
+                "points": None if war is None
+                else round(war * WAR_FACTOR * 10 * scale, 1) or 0.0})
+    # A reliever's season is his saves, so they are not tucked underneath --
+    # and a starter's line should not carry two zeroes saying he is not one.
     for column, label in (("sv", "SV"), ("hld", "HLD")):
-        if _stat_number(figures, column):
-            top.append(_mlb_box(figures, column, label,
-                                PITCHER_WEIGHTS[column], scale))
-
-    rest = []
-    for column, label, weight in (("hr", "HR/9", PITCHER_WEIGHTS["hr"]),
-                                  ("bb", "BB/9", PITCHER_WEIGHTS["bb"])):
-        count = _stat_number(figures, column)
-        rate = None if not innings or count is None else count / innings * 9
-        box = {"label": label,
-               "value": "\u2014" if rate is None else f"{rate:,.2f}",
-               "points": None if count is None
-               else round(count * weight * scale, 1) or 0.0}
-        if column == "bb":
-            # Already paid for in WHIP above. Printing the figure again would
-            # double it, and printing a blank would read as free.
-            box["points"] = None
-            box["note"] = "in WHIP"
-        rest.append(box)
-    rest += [_mlb_box(figures, c, label, PITCHER_WEIGHTS[c], scale)
-             for c, label in MLB_PITCHER_REST]
-    war = _stat_number(figures, "war")
-    if war is not None:
-        rest.append({"label": "WAR", "value": f"{war:,.1f}",
-                     "points": round(war * WAR_FACTOR * 10 * scale, 1) or 0.0})
-    return {"label": "Pitching", "top": top, "secondary": rest}
+        if count(column):
+            top.append(box(column, label))
+    return {"label": "Pitching", "top": top, "secondary": []}
 
 
 #: Written out, because the verb is not the noun plus "ed": a player who also
@@ -1178,7 +1213,58 @@ def _mlb_panel(row: dict) -> dict | None:
                 f"{worth:,.1f} normalized, worth "
                 f"{worth * 0.5:,.1f} after the half a second role is taxed."
             )
-    return {"kind": "mlb", "sections": sections, "note": note}
+    panel = {"kind": "mlb", "sections": sections, "note": note}
+    years = _mlb_by_year(row, second, role, other, scale, build)
+    if years:
+        panel["years"] = years
+    return panel
+
+
+def _season_lines(figures) -> dict:
+    """Each feed season's own line, by the year it belongs to."""
+    lines = figures.get("season_lines") if isinstance(figures, dict) else None
+    if isinstance(lines, str):
+        try:
+            lines = json.loads(lines)
+        except (TypeError, ValueError):
+            lines = None
+    if not isinstance(lines, list):
+        return {}
+    out = {}
+    for line in lines:
+        if isinstance(line, dict) and line.get("season") is not None:
+            out[f"{int(line['season'])}"] = line
+    return out
+
+
+def _mlb_by_year(row: dict, second, role: str, other: str, scale: float,
+                 build: dict) -> list[dict]:
+    """The same boxes, one set a calendar season, where there is more than one.
+
+    A league year opening in August spans two of them and they are summed, so
+    from April a profile shows a line that is neither season and no way to ask
+    which half was last year. This is that question, with the boxes staying
+    where they are and only the figures inside them changing.
+
+    Absent entirely where the league year has only reached one season, which is
+    every baseball profile until next spring: a toggle with one position is a
+    control that does nothing.
+    """
+    primary = _season_lines(row)
+    secondary = _season_lines(second) if isinstance(second, dict) else {}
+    years = sorted(set(primary) | set(secondary))
+    if len(years) < 2:
+        return []
+    out = []
+    for year in years:
+        sections = []
+        if year in primary:
+            sections.append(build[role](primary[year], scale))
+        if other in build and year in secondary \
+                and (_stat_number(second, "scaled_score") or 0.0) >= MLB_SECOND_SECTION_AT:
+            sections.append(build[other](secondary[year], scale))
+        out.append({"year": year, "sections": sections})
+    return out
 
 
 def _outcome_box(label: str, won, settled, points: float,

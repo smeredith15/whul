@@ -265,6 +265,9 @@ SECOND_LINE_COLUMNS = (
     "ab", "h", "doubles", "triples", "hr", "bb", "hbp", "sb", "cs",
     "offense", "defense", "ip", "so", "sv", "hld", "war", "games",
     "role_points", "scaled_score", "role",
+    # Its own seasons as well as its totals, so a two-way player's second
+    # section follows the year toggle rather than sitting frozen beside it.
+    "season_lines",
 )
 
 

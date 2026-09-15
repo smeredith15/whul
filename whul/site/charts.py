@@ -1138,14 +1138,34 @@ SCRIPT = """\
 
   // Baseball: one section a job, and a sentence where the second job is worth
   // something but not a section.
-  function renderMlb(panel) {
-    var body = panel.sections.map(function (s) {
+  function mlbSections(list) {
+    return list.map(function (s) {
       return '<div class="body boxes comp">' +
              '<h3>' + s.label + '</h3>' + boxRows(s) + '</div>';
     }).join('');
-    return body + (panel.note
-      ? '<div class="body"><p class="note">' + panel.note + '</p></div>'
-      : '');
+  }
+
+  function renderMlb(panel) {
+    var note = panel.note
+      ? '<div class="body"><p class="note">' + panel.note + '</p></div>' : '';
+    if (!panel.years || panel.years.length < 2) {
+      return mlbSections(panel.sections) + note;
+    }
+    // A league year spans two calendar seasons and they are summed, so the
+    // total is the figure that is scored and neither season is. Total leads,
+    // because it is what the score under the boxes was built from; the years
+    // answer which half of it was last summer.
+    var views = [{ year: 'Total', sections: panel.sections }].concat(panel.years);
+    var tabs = views.map(function (v, i) {
+      return '<button class="yr' + (i === 0 ? ' on' : '') +
+             '" data-year="' + i + '">' + v.year + '</button>';
+    }).join('');
+    var panes = views.map(function (v, i) {
+      return '<div class="yrpane"' + (i === 0 ? '' : ' hidden') + '>' +
+             mlbSections(v.sections) + '</div>';
+    }).join('');
+    return '<div class="body years"><div class="yrtabs">' + tabs +
+           '</div></div>' + panes + note;
   }
 
   function boxRows(part) {
@@ -1231,6 +1251,16 @@ SCRIPT = """\
         '<div><div class="label">Raw score</div><div class="value">' + a.raw + '</div></div>' +
         '<div><div class="label">Normalized</div><div class="value">' + a.scaled + '</div></div>' +
       '</div>';
+    dialog.querySelectorAll('button.yr').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        dialog.querySelectorAll('button.yr').forEach(function (other) {
+          other.classList.toggle('on', other === tab);
+        });
+        dialog.querySelectorAll('.yrpane').forEach(function (pane, i) {
+          pane.hidden = String(i) !== tab.dataset.year;
+        });
+      });
+    });
     dialog.querySelector('.close').addEventListener('click', function () {
       dialog.close();
     });
