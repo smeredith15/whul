@@ -59,40 +59,6 @@ CUP_NAMES: dict[str, str] = {
     "coupedefrance": "Coupe de France", "usopencup": "US Open Cup",
 }
 
-#: UEFA's league phase, as distinct from the knockout rounds after it.
-#:
-#: UNVERIFIED. The round text reaches the scorer inside the competition label,
-#: which is the feed's league name, its own note headline and the season-type
-#: slug joined together -- and no cached match row exists here to read, nor any
-#: way to fetch one from this sandbox. `probe-soccer-rounds` exists to settle
-#: it and has not been run.
-#:
-#: Until it has, a European section that matches neither pattern is shown
-#: undivided rather than split. Guessing costs more than not splitting: a
-#: quarter-final filed under "League phase" is a real figure in the wrong
-#: place, the section still sums correctly, and nothing about it looks wrong.
-LEAGUE_PHASE_PATTERN = re.compile(
-    r"league phase|group stage|group phase|matchday", re.IGNORECASE)
-ELIMINATION_PATTERN = re.compile(
-    r"round of \d+|quarter-?final|semi-?final|\bfinal\b|last 16|"
-    r"knockout (phase )?play-?off|round of sixteen", re.IGNORECASE)
-
-
-def european_phase(label: str | None) -> str:
-    """Which half of a European campaign a match belongs to, or "" if unknown.
-
-    The empty string is a real answer and the safe one: it collapses the
-    competition to a single block instead of inventing a division the feed did
-    not describe.
-    """
-    text = label or ""
-    if ELIMINATION_PATTERN.search(text):
-        return "Knockout"
-    if LEAGUE_PHASE_PATTERN.search(text):
-        return "League phase"
-    return ""
-
-
 def continental_name(tier: "Tier | str") -> str:
     """What to call a continental tier, or "" for one that is not."""
     value = tier.value if isinstance(tier, Tier) else str(tier)
@@ -179,6 +145,48 @@ POSTSEASON_PATTERN = re.compile(r"play-?offs?\b|postseason", re.IGNORECASE)
 KNOCKOUT_PLAYOFF_PATTERN = re.compile(
     r"knockout (phase )?play-?off|knockout round play-?off", re.IGNORECASE
 )
+
+#: UEFA's league phase, as distinct from the knockout rounds after it.
+#:
+#: Read from the feed rather than guessed: `probe-rounds epl --seasons 2025`
+#: returned 1,062 European rows across the three UEFA competitions under 84
+#: distinct labels, and every one of them now places -- 792 league phase, 270
+#: knockout. The wording is the feed's own and is odd enough to be worth
+#: seeing: "league phase" in lower case, and a second leg carrying its own
+#: aggregate scoreline, as in "2nd Leg - Arsenal advance 9-3 on aggregate
+#: round of 16".
+#:
+#: A label matching neither is still shown undivided rather than split, which
+#: is what the first run of that probe was for and what a future change to the
+#: feed's wording will land in. Guessing costs more than not splitting: a
+#: quarter-final filed under "League phase" is a real figure in the wrong
+#: place, the section still sums correctly, and nothing about it looks wrong.
+LEAGUE_PHASE_PATTERN = re.compile(
+    r"league phase|group stage|group phase|matchday", re.IGNORECASE)
+#: The rounds after it. `KNOCKOUT_PLAYOFF_PATTERN` is reused rather than
+#: restated: an earlier version of this line copied half of it and dropped the
+#: `knockout round play-off` alternative, which is the exact wording the feed
+#: uses -- ninety-six ties a season went unplaced for want of one word that
+#: was already written down six lines above.
+ELIMINATION_PATTERN = re.compile(
+    r"round of \d+|round of sixteen|quarter-?final|semi-?final|\bfinal\b|"
+    r"last 16|" + KNOCKOUT_PLAYOFF_PATTERN.pattern, re.IGNORECASE)
+
+
+def european_phase(label: str | None) -> str:
+    """Which half of a European campaign a match belongs to, or "" if unknown.
+
+    The empty string is a real answer and the safe one: it collapses the
+    competition to a single block instead of inventing a division the feed did
+    not describe.
+    """
+    text = label or ""
+    if ELIMINATION_PATTERN.search(text):
+        return "Knockout"
+    if LEAGUE_PHASE_PATTERN.search(text):
+        return "League phase"
+    return ""
+
 
 #: Order matters and mirrors the R script's `case_when`, which tests
 #: "Champions League|Play-off|Playoff" before the cup line. "MLS Cup Playoffs"

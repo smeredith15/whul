@@ -5,7 +5,11 @@ is worth to a club, and whether a player's appearance in it belongs in the
 benchmark. One reading, not two.
 """
 
-from whul.scoring.competition import WIN_POINTS, Tier, classify, classify_key
+import pytest
+
+from whul.scoring.competition import (
+    WIN_POINTS, Tier, classify, classify_key, european_phase,
+)
 
 # --- MLS plays two competitions the European leagues do not ----------------
 
@@ -38,3 +42,57 @@ def test_an_mls_playoff_tie_outranks_its_own_regular_season():
 
 def test_the_us_open_cup_is_a_domestic_cup():
     assert classify_key("usopencup").tier is Tier.DOMESTIC_CUP
+
+
+# --- UEFA's phases, from the labels the feed actually returns ---------------
+
+#: Verbatim from `probe-rounds epl --seasons 2025`, which read 1,062 European
+#: rows across the three UEFA competitions. Kept as the feed wrote them,
+#: aggregate scorelines and all, because the wording is the whole question: the
+#: patterns were a guess until this ran, and every one of these is the shape a
+#: guess has to survive.
+REAL_LABELS = [
+    ("League phase", "UEFA Champions League league phase"),
+    ("League phase", "UEFA Europa League league phase"),
+    ("League phase", "UEFA Conference League league phase"),
+    ("Knockout", "UEFA Champions League 1st Leg round of 16"),
+    ("Knockout", "UEFA Champions League 1st Leg quarterfinals"),
+    ("Knockout", "UEFA Champions League 1st Leg semifinals"),
+    ("Knockout", "UEFA Champions League final"),
+    # The one the first pattern missed, ninety-six ties a season: the feed says
+    # "knockout round playoffs" and the copy that was meant to catch it had
+    # dropped that alternative.
+    ("Knockout", "UEFA Champions League 1st Leg knockout round playoffs"),
+    ("Knockout",
+     "UEFA Europa League 2nd Leg - AS Roma advance 4-3 on aggregate "
+     "knockout round playoffs"),
+    ("Knockout",
+     "UEFA Conference League 2nd Leg - Tied on aggregate - Molde advance "
+     "5-4 on penalties knockout round playoffs"),
+    ("Knockout",
+     "UEFA Champions League 2nd Leg - Arsenal advance 9-3 on aggregate "
+     "round of 16"),
+    ("Knockout",
+     "UEFA Europa League 2nd Leg - Tottenham Hotspur advance 2-1 on "
+     "aggregate quarterfinals"),
+    ("Knockout",
+     "UEFA Champions League 2nd Leg - Internazionale advance 7-6 on "
+     "aggregate semifinals"),
+]
+
+
+@pytest.mark.parametrize("expected,label", REAL_LABELS)
+def test_a_real_uefa_label_lands_in_the_phase_it_belongs_to(expected, label):
+    assert european_phase(label) == expected
+
+
+def test_a_label_with_no_round_in_it_is_left_unplaced():
+    """The safe answer, and a real one: it collapses the competition to a
+    single block rather than inventing a division the feed did not describe."""
+    assert european_phase("UEFA Champions League") == ""
+    assert european_phase("") == ""
+
+
+def test_the_league_phase_is_not_matched_by_the_competitions_own_name():
+    """"Champions League" contains the word and is not a phase."""
+    assert european_phase("UEFA Champions League 2024 25") == ""
