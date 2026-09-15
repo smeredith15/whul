@@ -464,3 +464,27 @@ def test_the_standings_are_optional_and_move_no_score():
 
     assert list(without["total_points"]) == list(with_them["total_points"])
     assert without["team_games"].isna().all()
+
+
+def test_a_scoreless_skater_does_not_shift_everyone_elses_phase():
+    """The scorer drops skaters who earned nothing and renumbers, so matching
+    the phase label back by position gave every row after the first such
+    skater its neighbour's phase -- counting somebody's playoffs as regular
+    season. The label is carried through the scorer instead."""
+    rows = pd.DataFrame([
+        _skater(skaterFullName="A", _phase="reg"),
+        # Nothing at all: no goals, no assists, no shots, level plus-minus.
+        _skater(skaterFullName="Nobody", playerId="9", goals=0, assists=0,
+                shots=0, plusMinus=0, _phase="reg"),
+        _skater(skaterFullName="A", gamesPlayed=14, _phase="post"),
+    ])
+    out = score_skaters(rows, _standings())
+
+    assert list(out["skaterFullName"] if "skaterFullName" in out.columns
+                else out["player"]) == ["A", "A"]
+    assert list(out["_phase"]) == ["reg", "post"]
+
+
+def test_the_phase_label_is_left_alone_when_the_caller_sends_none():
+    out = score_skaters(pd.DataFrame([_skater()]), _standings())
+    assert "_phase" not in out.columns

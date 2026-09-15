@@ -104,6 +104,13 @@ def score_skaters(df: pd.DataFrame,
     work["league"] = "NHL"
     work["role"] = SKATER_ROLE
     work["team_games"] = _their_clubs_games(work, standings)
+    # The caller's phase label, carried rather than matched back afterwards.
+    # The frame is filtered and renumbered on the next line, so a caller
+    # reindexing `_phase` onto the result would take the wrong rows the moment
+    # one skater scores nothing -- and every row after him would have his
+    # neighbour's phase, counting playoff production as regular season.
+    if "_phase" in df.columns:
+        work["_phase"] = df["_phase"].to_numpy()
     return work[work["total_points"] > 0].reset_index(drop=True)
 
 

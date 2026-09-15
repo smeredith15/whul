@@ -744,3 +744,80 @@ def test_a_benchmark_is_unmoved_by_the_rows_that_used_to_be_dropped():
     )
     assert without.loc[0, "benchmark"] == with_them.loc[0, "benchmark"]
     assert without.loc[0, "n_in_pool"] == with_them.loc[0, "n_in_pool"]
+
+
+# --- October, which is paid as a rate and so must really be October ---------
+
+def test_the_rounds_of_a_postseason_are_summed_not_taken_from_the_last():
+    """A seven-game World Series after a five-game division series is two rows,
+    and keeping one of them would score the run as whatever he did in it."""
+    rounds = pd.DataFrame([
+        {"player_id": "1", "player": "A", "season": 2026, "gamesPlayed": 3,
+         "hits": 4, "homeRuns": 1},
+        {"player_id": "1", "player": "A", "season": 2026, "gamesPlayed": 5,
+         "hits": 7, "homeRuns": 2},
+        {"player_id": "2", "player": "B", "season": 2026, "gamesPlayed": 4,
+         "hits": 2, "homeRuns": 0},
+    ])
+    out = mlb._sum_the_rounds(rounds, "hitting").set_index("player")
+
+    assert out.loc["A", "gamesPlayed"] == 8
+    assert out.loc["A", "hits"] == 11
+    assert out.loc["A", "homeRuns"] == 3
+    assert out.loc["B", "gamesPlayed"] == 4
+
+
+def test_innings_are_converted_before_the_rounds_are_added():
+    """"5.2" is five and two thirds. Added to "7.1" as decimals it gives 12.3,
+    which the converter then reads back as twelve and one third -- two thirds
+    of an inning gone, and five points with it."""
+    rounds = pd.DataFrame([
+        {"player_id": "1", "player": "A", "season": 2026, "inningsPitched": "5.2"},
+        {"player_id": "1", "player": "A", "season": 2026, "inningsPitched": "7.1"},
+    ])
+    out = mlb._sum_the_rounds(rounds, "pitching")
+
+    assert out.iloc[0]["IP"] == pytest.approx(13.0)
+    assert "inningsPitched" not in out.columns
+
+
+def test_a_regular_season_wearing_a_postseasons_name_is_refused():
+    """The Stats API ignores parameters it does not recognise and answers with
+    the whole year. Paid as a postseason rate that is twelve times its weight,
+    which is the largest overstatement this scoring system can produce."""
+    whole_season = pd.DataFrame([
+        {"player_id": "1", "player": "A", "season": 2026, "gamesPlayed": 150},
+    ])
+    with pytest.raises(RuntimeError, match="gameType is not being applied"):
+        mlb._check_postseason_applied(whole_season, "hitting", 2026)
+
+
+def test_a_real_postseason_passes_the_check():
+    october = pd.DataFrame([
+        {"player_id": "1", "player": "A", "season": 2026, "gamesPlayed": 17},
+    ])
+    mlb._check_postseason_applied(october, "hitting", 2026)
+
+
+def test_no_postseason_yet_is_not_a_failure():
+    """Most of the year there is none, and an empty frame is the right answer.
+    An ignored parameter comes back full, not empty, so the two cannot be
+    confused."""
+    mlb._check_postseason_applied(pd.DataFrame(), "hitting", 2026)
+
+
+def test_the_postseason_pull_asks_for_each_round_separately():
+    """The schedule endpoint takes a comma-separated `gameTypes` and this one
+    takes a singular `gameType`; a list it does not understand is a parameter
+    it ignores rather than rejects."""
+    asked = []
+
+    def fake(season, group, since=None, until=None, game_type="R"):
+        asked.append(game_type)
+        return pd.DataFrame()
+
+    with mock.patch.object(mlb, "load_stats_api_players", fake):
+        out = mlb.load_postseason_players(2026, "hitting")
+
+    assert asked == list(mlb.POSTSEASON_GAME_TYPES)
+    assert out.empty

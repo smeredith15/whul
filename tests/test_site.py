@@ -2808,6 +2808,122 @@ def test_a_triple_double_counts_in_both_boxes_because_it_earns_both():
     assert by["Triple-doubles"]["points"] == 14 * 3.0
 
 
+# --- a playoff run, in whichever sport ran it -------------------------------
+
+def _run(**over):
+    """One postseason in the breakdown, as `apply_bonus` writes it."""
+    entry = {"competition": "NBA", "games": 12.0, "points": 480.0,
+             "share": 0.10, "scalar": 8.2, "adds": 328.0, "credited": False,
+             "finishes": "2027-06-20"}
+    entry.update(over)
+    return entry
+
+
+def _nhl_row(**over):
+    row = {"league": "NHL", "role": "Skater", "games_played": 70, "goals": 30,
+           "assists": 45, "shots": 210, "plus_minus": 12}
+    row.update(over)
+    return row
+
+
+def _nba_playoffs(**over):
+    row = _nba_row()
+    row.update({f"post_{c}": v / 5.0 for c, v in row.items()
+                if isinstance(v, (int, float)) and not c.startswith("post_")})
+    row.update({"postseason_games": 12, "bonus_detail": [_run()]}, **over)
+    return row
+
+
+def test_a_playoff_section_is_the_same_boxes_as_the_season():
+    """The figures were collected and dropped in aggregation, so these boxes
+    had nothing to hold. They are built by the same call now, so a box that
+    appears in one appears in the other."""
+    panel = site_build._nba_panel(_nba_playoffs())
+    season = [b["label"] for b in panel["top"] + panel["secondary"]]
+    post = [b["label"] for b in
+            panel["posts"][0]["top"] + panel["posts"][0]["secondary"]]
+
+    assert season == post
+    assert panel["posts"][0]["games"] == "12"
+
+
+def test_a_playoff_rate_is_over_the_playoff_games():
+    """Dividing April's figures by the regular season's game count would
+    report a run at a twentieth of what was actually averaged."""
+    row = _nba_playoffs()
+    panel = site_build._nba_panel(row)
+    ppg = next(b for b in panel["posts"][0]["top"] if b["label"] == "PPG")
+
+    assert ppg["value"] == f"{row['post_points'] / 12:,.1f}"
+
+
+def test_a_playoff_section_carries_what_the_run_pays():
+    """Its boxes sum to what the run scored; this is what it is worth, which
+    is a different number -- the rate credited over a share of a season. Held,
+    and greyed, until the competition stops moving."""
+    panel = site_build._nba_panel(_nba_playoffs())
+    total = panel["posts"][0]["total"]
+
+    assert total["points"] == 328.0
+    assert total["value"] == "\u00d78.2"
+    assert total["muted"] is True
+    assert "held to 2027-06-20" in total["aside"]
+    assert "not a tally" in panel["posts"][0]["note"]
+
+
+def test_a_finished_competition_is_no_longer_greyed():
+    panel = site_build._nba_panel(
+        _nba_playoffs(bonus_detail=[_run(credited=True)]))
+
+    assert panel["posts"][0]["total"]["muted"] is False
+
+
+def test_no_playoff_games_means_no_playoff_section():
+    """Everyone carries a breakdown entry. A section for a run nobody made
+    would read as a player who turned out and did nothing."""
+    assert "posts" not in site_build._nba_panel(_nba_row())
+    assert "posts" not in site_build._nhl_panel(_nhl_row())
+
+
+def test_hockey_gets_the_same_treatment():
+    row = _nhl_row()
+    row.update({"post_goals": 8, "post_assists": 9, "post_shots": 50,
+                "post_plus_minus": 4, "postseason_games": 14,
+                "bonus_detail": [_run(competition="NHL", games=14.0,
+                                      scalar=8.4, adds=72.0)]})
+    panel = site_build._nhl_panel(row)
+
+    assert [b["label"] for b in panel["top"]] == \
+        [b["label"] for b in panel["posts"][0]["top"]]
+    assert [b["value"] for b in panel["posts"][0]["top"]] == \
+        ["8", "9", "50", "4"]
+
+
+def test_a_playoff_section_is_the_same_shape_even_where_one_phase_is_empty():
+    """The secondary row drops its empty boxes, which it should -- but making
+    that call twice, once per phase, gave the two sections different shapes and
+    left the reader checking which boxes were present before reading any
+    figure. A box now appears in both or in neither."""
+    row = {"league": "NFL", "role": "QB", "regular_games": 16,
+           "team_games": 17, "postseason_games": 3,
+           "passing_yards": 4200, "passing_tds": 32, "interceptions": 9,
+           "rushing_yards": 310, "rushing_tds": 0, "fumbles_lost": 4,
+           "receptions": 0, "receiving_yards": 0, "receiving_tds": 0,
+           # He scored on the ground in January and not before it.
+           "post_passing_yards": 820, "post_passing_tds": 7,
+           "post_interceptions": 1, "post_rushing_yards": 60,
+           "post_rushing_tds": 1, "post_fumbles_lost": 0,
+           "post_receptions": 0, "post_receiving_yards": 0,
+           "post_receiving_tds": 0}
+    panel = site_build._nfl_panel(row)
+    labels = lambda part: [b["label"] for b in part["top"] + part["secondary"]]
+
+    assert labels(panel["season"]) == labels(panel["post"])
+    season_td = next(b for b in panel["season"]["secondary"]
+                     if b["label"] == "Rush / Rec TD")
+    assert season_td["value"] == "0 / 0"
+
+
 def test_hockey_is_shown_as_a_tally_and_adds_up():
     from whul.scoring.nhl import (
         PTS_ASSIST, PTS_GOAL, PTS_PLUS_MINUS, PTS_SHOT,
@@ -2880,6 +2996,161 @@ def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
     block = site_build._soccer_block(part, "round-robin")
 
     assert [b["label"] for b in block["secondary"]] == ["Big wins", "Clean sheets"]
+
+
+# --- the footballer, as against his club ------------------------------------
+
+def _footballer(**over):
+    """Arda Guler's real line, which is the one the panel was checked against."""
+    row = {"league": "Club Soccer", "player": "Arda Guler", "team": "Real Madrid",
+           "position": "M", "matches": 5.0, "starts": 3.0, "goals": 1.0,
+           "assists": 2.0, "yellow": 1.0, "red": 0.0,
+           "appearance_points": 8.0, "goal_points": 5.0, "regular_points": 18.0}
+    row.update(over)
+    return row
+
+
+def test_a_footballers_boxes_add_up_to_his_domestic_points():
+    """Europe is not in them, and is not in `regular_points` either -- it is
+    paid as a rate in its own section. These two agree or the panel is lying
+    about the half of the season it does show."""
+    from whul.scoring.soccer import PTS_ASSIST, PTS_RED, PTS_YELLOW
+
+    row = _footballer()
+    panel = site_build._soccer_player_panel(row)
+    boxes = panel["top"] + panel["secondary"]
+
+    assert round(sum(b["points"] for b in boxes), 1) == row["regular_points"]
+    assert [b["label"] for b in boxes] == [
+        "Apps / Starts", "Goals", "Assists", "Yellow / Red"]
+    assert [b["value"] for b in boxes] == ["5 / 3", "1", "2", "1 / 0"]
+    # The discipline box carries both cards' points, since it shows both counts.
+    assert boxes[-1]["points"] == round(
+        1.0 * PTS_YELLOW + 0.0 * PTS_RED, 1)
+    assert boxes[2]["points"] == round(2.0 * PTS_ASSIST, 1)
+
+
+def test_a_footballer_with_no_line_reads_as_dashes_not_zeroes():
+    """Eleven MLS players have no feed rows at all. A panel of zeroes would say
+    they turned out and did nothing, which is a claim about matches nobody has
+    played."""
+    panel = site_build._soccer_player_panel(
+        {"league": "Club Soccer", "player": "Nobody", "team": "FC Dallas"})
+    boxes = panel["top"] + panel["secondary"]
+
+    assert [b["value"] for b in boxes] == ["\u2014"] * 4
+    assert all(b["points"] is None for b in boxes)
+    assert panel["head"] == [["Games played", "\u2014"],
+                            ["Team games", "\u2014"]]
+
+
+def test_a_footballers_team_games_come_from_his_club():
+    """Played and out of how many: "4 played" alone cannot say whether the rest
+    were missed or not yet played."""
+    games = {"Real Madrid": 6.0}
+    panel = site_build._soccer_player_panel(_footballer(), games)
+
+    assert panel["head"] == [["Games played", "5"], ["Team games", "6"]]
+
+
+def test_a_club_we_do_not_carry_leaves_team_games_blank():
+    """Six of the thirty-nine play for clubs that are nobody's asset, so the
+    figure is nowhere in the store. Falling back to his own appearances would
+    print every one of them as a player who never missed a match."""
+    panel = site_build._soccer_player_panel(_footballer(), {"Chelsea": 6.0})
+
+    assert panel["head"][1] == ["Team games", "\u2014"]
+
+
+def test_a_club_row_is_not_mistaken_for_a_footballer():
+    """A club's `player` arrives as NaN and NaN is truthy -- the mistake that
+    sent every NFL club down the player path and killed a baseball build."""
+    assert not site_build._is_a_club_soccer_player(
+        {"league": "Premier League", "player": float("nan")})
+    assert not site_build._is_a_club_soccer_player(
+        {"league": "Club Soccer", "player": float("nan")})
+    assert site_build._is_a_club_soccer_player(_footballer())
+
+
+def test_the_club_lookup_reads_every_clubs_matches_played():
+    import pandas as pd
+
+    frame = pd.DataFrame([
+        {"team": "Real Madrid", "matches_played": 6.0},
+        {"team": "Liverpool", "matches_played": 5.0},
+        {"team": "Arda Guler", "matches_played": None},
+    ])
+
+    assert site_build._club_games(frame) == {"Real Madrid": 6.0, "Liverpool": 5.0}
+    assert site_build._club_games(pd.DataFrame()) == {}
+
+
+def _euro(**over):
+    entry = {"competition": "UEFA Champions League", "games": 1.0,
+             "points": 9.0, "share": 0.05, "scalar": 1.9, "adds": 17.1,
+             "credited": False, "finishes": "2027-06-30", "starts": 1.0,
+             "goals": 1.0, "assists": 1.0, "yellow": 1.0, "red": 0.0,
+             "appearance_points": 2.0, "goal_points": 5.0}
+    entry.update(over)
+    return entry
+
+
+def test_a_european_section_is_the_same_boxes_as_the_league():
+    """Not similar -- the same. Both are built by one function, because a
+    second builder for the second competition is how the two drift apart."""
+    panel = site_build._soccer_player_panel(_footballer(bonus_detail=[_euro()]))
+    league = [b["label"] for b in panel["top"] + panel["secondary"]]
+    europe = [b["label"] for b in
+              panel["posts"][0]["top"] + panel["posts"][0]["secondary"]]
+
+    assert league == europe
+    assert panel["posts"][0]["name"] == "UEFA Champions League"
+    assert panel["posts"][0]["games"] == "1"
+
+
+def test_a_european_sections_boxes_add_up_to_what_the_run_scored():
+    """Its own figures, on its own terms. What the run *pays* is a different
+    number and lives in its own box -- see the next test."""
+    panel = site_build._soccer_player_panel(_footballer(bonus_detail=[_euro()]))
+    post = panel["posts"][0]
+
+    assert round(sum(b["points"] for b in post["top"] + post["secondary"]), 1) \
+        == _euro()["points"]
+
+
+def test_a_european_sections_total_is_held_until_the_competition_ends():
+    """A rate off one match projects most of a share of a season and falls on
+    the next one, so it is greyed and dated rather than shown as earned."""
+    pending = site_build._soccer_player_panel(
+        _footballer(bonus_detail=[_euro()]))["posts"][0]["total"]
+
+    assert pending["points"] == 17.1
+    assert pending["muted"] is True
+    assert "held to 2027-06-30" in pending["aside"]
+
+    done = site_build._soccer_player_panel(
+        _footballer(bonus_detail=[_euro(credited=True)]))["posts"][0]["total"]
+    assert done["muted"] is False
+    assert "held" not in (done.get("aside") or "")
+
+
+def test_a_footballer_in_two_competitions_gets_a_section_each():
+    """A Champions League run and a domestic cup pay different shares, so one
+    section carrying both would have no single total to show."""
+    panel = site_build._soccer_player_panel(_footballer(bonus_detail=[
+        _euro(), _euro(competition="MLS Cup Playoffs", share=0.10, scalar=3.4)]))
+
+    assert [s["name"] for s in panel["posts"]] == [
+        "UEFA Champions League", "MLS Cup Playoffs"]
+
+
+def test_a_competition_nobody_played_gets_no_section():
+    """Every La Liga player carries a Champions League entry reading zero
+    games. A section for it would say he turned out and did nothing."""
+    panel = site_build._soccer_player_panel(
+        _footballer(bonus_detail=[_euro(games=0.0, points=0.0, adds=0.0)]))
+
+    assert "posts" not in panel
 
 
 # --- baseball, at whichever of the two jobs he does -------------------------
@@ -2972,12 +3243,79 @@ def test_a_league_year_spanning_two_seasons_can_be_read_a_season_at_a_time():
     assert round(sum(halves), 1) == round(whole, 1)
 
 
-def test_one_season_gets_no_toggle():
-    """A control with one position does nothing, which is every baseball
-    profile until next spring."""
-    assert "years" not in site_build._mlb_panel(_batter())
-    assert "years" not in site_build._mlb_panel(
+def test_a_season_nobody_has_played_yet_is_a_tab_of_dashes():
+    """The years come from the league year, not from whichever have been
+    played. Gating the tab on data present would have said, all winter, that
+    the question could not be asked -- when the answer is that nothing has
+    happened yet, which is what every other sport's empty panel says."""
+    panel = site_build._mlb_panel(
         _batter(season_lines=[{"season": 2026, "h": 150, "ab": 480}]))
+
+    assert [y["year"] for y in panel["years"]] == ["2026", "2027"]
+    ahead = next(y for y in panel["years"] if y["year"] == "2027")
+    assert [box["value"] for box in ahead["sections"][0]["top"]] == ["\u2014"] * 4
+    assert all(box["points"] is None for box in ahead["sections"][0]["top"])
+
+
+def test_a_league_year_inside_one_calendar_year_gets_no_toggle(monkeypatch):
+    """A control with one position does nothing."""
+    from dataclasses import replace
+
+    import whul.config.league as league
+
+    monkeypatch.setattr(league, "SEASON", replace(
+        league.SEASON, start=date(2027, 4, 1), end=date(2027, 10, 1)))
+
+    assert "years" not in site_build._mlb_panel(_batter())
+
+
+def test_a_baseball_playoff_section_is_the_same_boxes_and_adds_up():
+    """The Scoring page has always promised MLB players 7.5% of a season for
+    October, and the scorer paid zero because the postseason was never asked
+    for. It is now, and the section reconciles to what the scorer priced."""
+    row = _batter(**{
+        "post_h": 18, "post_ab": 55, "post_hr": 6, "post_doubles": 4,
+        "post_triples": 0, "post_bb": 8, "post_hbp": 1, "post_sb": 1,
+        "post_cs": 0, "post_games": 14,
+        "bonus_detail": [{"competition": "MLB", "games": 14.0, "points": 142.7,
+                          "share": 0.075, "scalar": 12.15, "adds": 123.8,
+                          "credited": False, "finishes": "2026-11-20"}],
+    })
+    panel = site_build._mlb_panel(row)
+    season, post = panel["sections"][0], panel["posts"][0]
+
+    assert [b["label"] for b in season["top"]] == [b["label"] for b in post["top"]]
+    assert [b["label"] for b in season["secondary"]] == \
+        [b["label"] for b in post["secondary"]]
+    # The home-run box says its points are counted in the average beside it, so
+    # it is excluded here exactly as it is in the season section.
+    scored = sum(b["points"] or 0 for b in post["top"] + post["secondary"]
+                 if not b.get("note"))
+    assert round(scored, 1) == 142.7
+    assert post["total"]["points"] == 123.8
+    assert post["total"]["muted"] is True
+
+
+def test_a_baseball_playoff_section_is_not_prorated():
+    """Proration scales `role_points` and nothing else, so the postseason line
+    the scorer carries is the raw one. Scaling it here would stop the section
+    adding up to the figure the scorer priced it at."""
+    entry = [{"competition": "MLB", "games": 14.0, "points": 142.7,
+              "share": 0.075, "scalar": 12.15, "adds": 123.8,
+              "credited": False, "finishes": "2026-11-20"}]
+    figures = {"post_h": 18, "post_ab": 55, "post_hr": 6, "post_doubles": 4,
+               "post_triples": 0, "post_bb": 8, "post_hbp": 1, "post_sb": 1,
+               "post_cs": 0, "bonus_detail": entry}
+    plain = site_build._mlb_panel(_batter(**figures))["posts"][0]
+    scaled = site_build._mlb_panel(
+        _batter(proration_factor=1.5, **figures))["posts"][0]
+
+    assert [b["points"] for b in plain["top"]] == \
+        [b["points"] for b in scaled["top"]]
+
+
+def test_a_batter_with_no_october_gets_no_playoff_section():
+    assert "posts" not in site_build._mlb_panel(_batter())
 
 
 def test_the_counting_boxes_carry_the_proration_the_score_does():

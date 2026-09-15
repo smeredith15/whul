@@ -262,6 +262,40 @@ def test_a_player_in_two_competitions_gets_a_row_for_each():
     assert scored["postseason_bonus"] == 0.0
 
 
+def test_a_breakdown_carries_the_run_s_own_counting_stats():
+    """Games and points alone left the profile's playoff boxes with nothing to
+    hold, so the section could not be the same boxes as the league. The figures
+    were collected all along -- one row a competition -- and dropped by the
+    groupby that folds them."""
+    from whul.scoring import soccer
+
+    def row(**kw):
+        return dict(player="A", league="Premier League", season=2027,
+                    position="M", yellow=0, red=0, **kw)
+
+    scored = soccer.score_players(pd.DataFrame([
+        row(competition_key="", competition="Premier League", matches=4,
+            starts=4, goals=3, assists=1),
+        row(competition_key="UCL", competition="UEFA Champions League",
+            matches=1, starts=1, goals=1, assists=1),
+    ]), postseason=True).iloc[0]
+
+    entry, = scored["bonus_detail"]
+    assert entry["starts"] == 1.0
+    assert entry["goals"] == 1.0
+    assert entry["assists"] == 1.0
+    assert entry["appearance_points"] == 2.0
+    # A midfielder's goal, priced as one -- not the forward default, which is
+    # what a section rebuilding the figure from a position it did not carry
+    # would have shown.
+    assert entry["goal_points"] == 5.0
+    # And they add up to what the section reports, which is the whole point.
+    assert (entry["appearance_points"] + entry["goal_points"]
+            + entry["assists"] * soccer.PTS_ASSIST
+            + entry["yellow"] * soccer.PTS_YELLOW
+            + entry["red"] * soccer.PTS_RED) == entry["points"]
+
+
 def test_a_domestic_cup_is_not_in_the_breakdown():
     """It counts in full, like a league match, so it is not a bonus at all."""
     import pandas as pd

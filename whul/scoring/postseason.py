@@ -258,7 +258,7 @@ DETAIL_COLUMN = "bonus_detail"
 
 def detail_for(
     competition: str, games: float, points: float, rule: PostseasonRule | None,
-    season: int | None = None, as_of=None,
+    season: int | None = None, as_of=None, counts: dict | None = None,
 ) -> dict:
     """One competition's postseason line, for the profile window.
 
@@ -279,6 +279,13 @@ def detail_for(
         if season is not None else False
     )
     return {
+        # The counting stats behind the run, flat rather than nested: this
+        # entry lives inside a list, and a dict inside one survives the store
+        # whole, but flat keys read the same from every caller. Without them
+        # the section had a game count and a points total and nothing a
+        # manager could check, which is the gap `phase_totals` closes for the
+        # sports whose phases are columns rather than competitions.
+        **{k: float(v or 0.0) for k, v in (counts or {}).items()},
         "competition": competition,
         "games": games,
         "points": points,

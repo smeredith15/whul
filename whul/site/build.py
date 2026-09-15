@@ -377,6 +377,9 @@ def asset_profiles(
     notes: dict[str, list[str]] = {}
     raw_rows: dict[str, dict] = {}
     panels: dict[str, dict] = {}
+    # Built once for the whole day rather than per player: it is a scan of
+    # every club's row, and there are fifty footballers asking.
+    club_games = _club_games(stats)
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
@@ -403,6 +406,11 @@ def asset_profiles(
                 panels[asset_id] = _nba_panel(row)
             elif str(row.get("league")) == "NHL" and row.get("role"):
                 panels[asset_id] = _nhl_panel(row)
+            elif _is_a_club_soccer_player(row):
+                panels[asset_id] = _soccer_player_panel(
+                    row, club_games,
+                    str(meta.loc[asset_id, "league"])
+                    if asset_id in meta.index else "")
             elif row.get("sections"):
                 panel = _soccer_panel(row)
                 if panel:
@@ -696,7 +704,47 @@ def _nfl_box(row: dict, column: str, prefix: str = "",
             "value": text, "points": round(points, 1) or 0.0}
 
 
-def _nfl_boxes(row: dict, prefix: str = "") -> dict | None:
+def _nfl_rest(lead) -> list[str]:
+    """The secondary row's columns: whatever the role's own line does not carry.
+
+    The touchdowns are folded into one box wherever they land, so a role whose
+    top row has taken them must not be offered them again.
+    """
+    from whul.scoring.nfl import PLAYER_WEIGHTS
+
+    rest: list[str] = []
+    for column in PLAYER_WEIGHTS:
+        if column in lead:
+            continue
+        if column in ("rushing_tds", "receiving_tds"):
+            if "TDS" not in lead and "TDS" not in rest:
+                rest.append("TDS")
+            continue
+        rest.append(column)
+    return rest
+
+
+def _nfl_shared_rest(row: dict) -> set[str]:
+    """Secondary columns either phase has a figure for.
+
+    The playoff section is the same boxes as the season, which is what makes
+    January readable against September without first checking which boxes are
+    present. So a box appears in both or in neither, even where one of them is
+    a zero. Asked of `_nfl_box` itself rather than of a second copy of its
+    emptiness rule, which would be one more thing to keep in step.
+    """
+    role = str(row.get("role") or row.get("position") or "").upper()
+    lead = NFL_TOP_LINE.get(role)
+    if lead is None:
+        return set()
+    order = NFL_TD_ORDER.get(role, ("rushing_tds", "receiving_tds"))
+    return {c for c in _nfl_rest(lead)
+            if _nfl_box(row, c, "", td_order=order) is not None
+            or _nfl_box(row, c, "post_", td_order=order) is not None}
+
+
+def _nfl_boxes(row: dict, prefix: str = "",
+               keep: set | None = None) -> dict | None:
     """An NFL player's season as a top row and a smaller one beneath it.
 
     The top row is the role's own line and the second is everything else he
@@ -718,20 +766,12 @@ def _nfl_boxes(row: dict, prefix: str = "") -> dict | None:
     top = [box for box in
            (_nfl_box(row, c, prefix, keep_zero=True, td_order=order)
             for c in lead) if box]
-    # Whatever the role's own line does not already carry. The touchdowns are
-    # folded into one box wherever they land, so a role whose top row has taken
-    # them must not be offered them again.
-    rest: list[str] = []
-    for column in PLAYER_WEIGHTS:
-        if column in lead:
-            continue
-        if column in ("rushing_tds", "receiving_tds"):
-            if "TDS" not in lead and "TDS" not in rest:
-                rest.append("TDS")
-            continue
-        rest.append(column)
-    secondary = [box for box in
-                 (_nfl_box(row, c, prefix, td_order=order) for c in rest) if box]
+    secondary = [
+        box for box in
+        (_nfl_box(row, c, prefix, keep_zero=bool(keep and c in keep),
+                  td_order=order)
+         for c in _nfl_rest(lead)) if box
+    ]
     if not top and not secondary:
         return None
     return {"top": top, "secondary": secondary}
@@ -767,8 +807,12 @@ def _nfl_panel(row: dict) -> dict | None:
         panel["games"] = {"team": f"{team_games:,.0f}",
                           "played": f"{figure('regular_games'):,.0f}"}
     if figure("postseason_games"):
-        post = _nfl_boxes(row, prefix="post_")
+        kept = _nfl_shared_rest(row)
+        panel["season"] = _nfl_boxes(row, keep=kept) or season
+        post = _nfl_boxes(row, prefix="post_", keep=kept)
         if post:
+            priced = _playoff_post(row, post)
+            post = priced if priced else post
             post["games"] = f"{figure('postseason_games'):,.0f}"
             panel["post"] = post
     return panel
@@ -940,22 +984,33 @@ def _nba_panel(row: dict) -> dict | None:
         TRIPLE_DOUBLE_BONUS,
     )
 
-    games = _stat_number(row, "regular_games") or _stat_number(row, "games_played")
     tally_weights = {"double_doubles": DOUBLE_DOUBLE_BONUS,
                      "triple_doubles": TRIPLE_DOUBLE_BONUS,
                      "plus_minus": PLUS_MINUS_WEIGHT}
-    return {
-        "kind": "boxes",
-        "head": _games_head(row),
-        "top": [_rate_box(row, c, label, games, BOX_WEIGHTS[c])
-                for c, label in NBA_RATE_TOP],
-        "secondary": (
-            [_rate_box(row, c, label, games, BOX_WEIGHTS[c])
-             for c, label in NBA_RATE_REST]
-            + [_tally_box(row, c, label, tally_weights[c])
-               for c, label in NBA_TALLY_REST]
-        ),
-    }
+
+    def boxes(games, prefix=""):
+        # Rates over that phase's own games. Dividing April's figures by the
+        # regular season's game count would report a playoff run at a twentieth
+        # of what was actually averaged.
+        return {
+            "top": [_rate_box(row, f"{prefix}{c}", label, games, BOX_WEIGHTS[c])
+                    for c, label in NBA_RATE_TOP],
+            "secondary": (
+                [_rate_box(row, f"{prefix}{c}", label, games, BOX_WEIGHTS[c])
+                 for c, label in NBA_RATE_REST]
+                + [_tally_box(row, f"{prefix}{c}", label, tally_weights[c])
+                   for c, label in NBA_TALLY_REST]
+            ),
+        }
+
+    games = _stat_number(row, "regular_games") or _stat_number(row, "games_played")
+    panel = {"kind": "boxes", "head": _games_head(row), **boxes(games)}
+    post_games = _stat_number(row, "postseason_games")
+    if post_games:
+        post = _playoff_post(row, boxes(post_games, "post_"))
+        if post:
+            panel["posts"] = [post]
+    return panel
 
 
 def _nhl_panel(row: dict) -> dict | None:
@@ -975,12 +1030,18 @@ def _nhl_panel(row: dict) -> dict | None:
 
     weights = {"goals": PTS_GOAL, "assists": PTS_ASSIST, "shots": PTS_SHOT,
                "plus_minus": PTS_PLUS_MINUS}
-    return {
-        "kind": "boxes",
-        "head": _games_head(row),
-        "top": [_tally_box(row, c, label, weights[c]) for c, label in NHL_BOXES],
-        "secondary": [],
-    }
+
+    def boxes(prefix=""):
+        return {"top": [_tally_box(row, f"{prefix}{c}", label, weights[c])
+                        for c, label in NHL_BOXES],
+                "secondary": []}
+
+    panel = {"kind": "boxes", "head": _games_head(row), **boxes()}
+    if _stat_number(row, "postseason_games"):
+        post = _playoff_post(row, boxes("post_"))
+        if post:
+            panel["posts"] = [post]
+    return panel
 
 
 #: Leagues whose profile is a panel built from figures, so that one can be
@@ -998,7 +1059,15 @@ def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | No
     dash, so the page says what will be there rather than that there is no
     page.
     """
-    if asset_type != "Player" or league not in EMPTY_PANELS:
+    if asset_type != "Player":
+        return None
+    # Eleven MLS players have no feed rows at all, so they never reach the loop
+    # that builds a panel from one. Without this they fell back to the "no stat
+    # lines recorded" table, which reads as a broken profile rather than as a
+    # season that has not started.
+    if league in covered_by("Club Soccer"):
+        return _soccer_player_panel({}, {}, league)
+    if league not in EMPTY_PANELS:
         return None
     made = {"NBA": _nba_panel, "NHL": _nhl_panel}[league]
     return made({"league": league, "role": role})
@@ -1214,10 +1283,39 @@ def _mlb_panel(row: dict) -> dict | None:
                 f"{worth * 0.5:,.1f} after the half a second role is taxed."
             )
     panel = {"kind": "mlb", "sections": sections, "note": note}
+    posts = _mlb_posts(row, role, build)
+    if posts:
+        panel["posts"] = posts
     years = _mlb_by_year(row, second, role, other, scale, build)
     if years:
         panel["years"] = years
     return panel
+
+
+def _mlb_posts(row: dict, role: str, build: dict) -> list[dict]:
+    """October, in the same boxes as the summer.
+
+    Unscaled, unlike the season above it. Proration scales `role_points` and
+    nothing else, so the postseason line the scorer carries is the raw one --
+    and a section scaled here would stop adding up to the figure the scorer
+    priced it at.
+    """
+    entries = _bonus_list(row)
+    if not entries or role not in build:
+        return []
+    figures = {name[len("post_"):]: value for name, value in row.items()
+               if isinstance(name, str) and name.startswith("post_")}
+    if not figures:
+        return []
+    entry = entries[0]
+    made = build[role](figures, 1.0)
+    made.pop("label", None)
+    games = _stat_number(entry, "games")
+    made["name"] = "Playoffs"
+    made["games"] = "\u2014" if games is None else f"{games:,.0f}"
+    made["total"] = _campaign_total(entry)
+    made["note"] = _campaign_note(entry)
+    return [made]
 
 
 def _season_lines(figures) -> dict:
@@ -1246,23 +1344,30 @@ def _mlb_by_year(row: dict, second, role: str, other: str, scale: float,
     which half was last year. This is that question, with the boxes staying
     where they are and only the figures inside them changing.
 
-    Absent entirely where the league year has only reached one season, which is
-    every baseball profile until next spring: a toggle with one position is a
-    control that does nothing.
+    The years come from the league year itself rather than from whichever have
+    been played, so the season ahead is a tab of dashes rather than a tab that
+    is not there -- the same answer basketball and hockey give before their
+    seasons open. A year nobody has played yet is a fact about the calendar,
+    and a missing tab says instead that the question cannot be asked.
     """
+    from whul.config.league import SEASON
+
     primary = _season_lines(row)
     secondary = _season_lines(second) if isinstance(second, dict) else {}
-    years = sorted(set(primary) | set(secondary))
+    spans = [f"{year}" for year
+             in range(SEASON.start.year, SEASON.end.year + 1)]
+    years = sorted(set(spans) | set(primary) | set(secondary))
     if len(years) < 2:
         return []
+    shows_second = (
+        other in build
+        and (_stat_number(second, "scaled_score") or 0.0) >= MLB_SECOND_SECTION_AT
+    )
     out = []
     for year in years:
-        sections = []
-        if year in primary:
-            sections.append(build[role](primary[year], scale))
-        if other in build and year in secondary \
-                and (_stat_number(second, "scaled_score") or 0.0) >= MLB_SECOND_SECTION_AT:
-            sections.append(build[other](secondary[year], scale))
+        sections = [build[role](primary.get(year, {}), scale)]
+        if shows_second:
+            sections.append(build[other](secondary.get(year, {}), scale))
         out.append({"year": year, "sections": sections})
     return out
 
@@ -1401,6 +1506,256 @@ def _soccer_panel(row: dict) -> dict | None:
             block["blocks"].append(made)
         out.append(block)
     return {"kind": "soccer", "sections": out} if out else None
+
+
+#: A club footballer's row says this where his club's row names the
+#: competition he plays in. The two therefore cannot be joined on the league.
+CLUB_SOCCER = "Club Soccer"
+
+
+def _is_a_club_soccer_player(row: dict) -> bool:
+    """A footballer rather than a club.
+
+    On the name being a real string, not on the field being set: a club's
+    ``player`` arrives as NaN, and NaN is truthy -- the mistake that sent every
+    NFL club down the player path and killed a baseball build on ``.get``.
+    """
+    if str(row.get("league")) != CLUB_SOCCER:
+        return False
+    name = row.get("player")
+    return isinstance(name, str) and bool(name.strip())
+
+
+def _club_games(stats) -> dict[str, float]:
+    """How many matches each club has played, by the name a player names it.
+
+    A footballer's row reads "Club Soccer" where his club's reads "Premier
+    League", so the two cannot be joined on the competition -- only on the
+    club's own name, which is unique across the clubs we carry.
+
+    Where his club is not one of ours the figure is nowhere in the store, and
+    the heading says so with a dash. Falling back to his own appearances would
+    be worse than saying nothing: every such player would read as one who had
+    never missed a match.
+    """
+    if stats is None or getattr(stats, "empty", True):
+        return {}
+    if "matches_played" not in stats.columns or "team" not in stats.columns:
+        return {}
+    out: dict[str, float] = {}
+    for team, played in zip(stats["team"], stats["matches_played"]):
+        if not isinstance(team, str) or played is None or played != played:
+            continue
+        out[team.strip()] = float(played)
+    return out
+
+
+def _soccer_campaign_boxes(figures: dict) -> dict:
+    """The boxes a footballer's campaign shows, wherever it was played.
+
+    One builder for the league and for Europe, because the two must be the same
+    boxes. A separate builder for the second would be a standing invitation to
+    drift, and the whole point of a competition's own section is that it is the
+    same season asked about a different competition.
+
+    ``matches`` is the domestic column and ``games`` is what a bonus breakdown
+    calls it; either is read, so a caller need not rename before asking.
+    """
+    from whul.scoring.soccer import PTS_ASSIST, PTS_RED, PTS_YELLOW
+
+    apps = _stat_number(figures, "matches")
+    if apps is None:
+        apps = _stat_number(figures, "games")
+    starts = _stat_number(figures, "starts")
+    goals = _stat_number(figures, "goals")
+    assists = _stat_number(figures, "assists")
+    yellow = _stat_number(figures, "yellow")
+    red = _stat_number(figures, "red")
+
+    def side(value) -> str:
+        return "—" if value is None else f"{value:,.0f}"
+
+    def pair(first, second) -> str:
+        # Each half says for itself whether it is known. A nothing printed as a
+        # zero beside a real figure is a claim about a match nobody played.
+        if first is None and second is None:
+            return "—"
+        return f"{side(first)} / {side(second)}"
+
+    def worth(*terms):
+        if all(value is None for value, _ in terms):
+            return None
+        return round(sum((value or 0.0) * weight
+                         for value, weight in terms), 1) or 0.0
+
+    def stored(column):
+        value = _stat_number(figures, column)
+        return None if value is None else round(value, 1) or 0.0
+
+    return {
+        "apps": apps,
+        "top": [
+            # The heading's figure again, against the starts it was made of:
+            # appearance points are paid per outing but at two rates, and a
+            # bare count of matches cannot say which.
+            {"label": "Apps / Starts", "value": pair(apps, starts),
+             "points": stored("appearance_points")},
+            {"label": "Goals", "value": side(goals),
+             "points": stored("goal_points")},
+            {"label": "Assists", "value": side(assists),
+             "points": worth((assists, PTS_ASSIST))},
+        ],
+        # One box rather than two. A red card is rare enough that a card of its
+        # own would spend half a row on a figure that reads zero all season,
+        # and the pair is how discipline is quoted anyway.
+        "secondary": [
+            {"label": "Yellow / Red", "value": pair(yellow, red),
+             "points": worth((yellow, PTS_YELLOW), (red, PTS_RED))},
+        ],
+    }
+
+
+def _campaign_total(entry: dict) -> dict:
+    """What a European or playoff run is worth, as its own box.
+
+    The boxes above it sum to what the run scored; this is what it *pays*,
+    which is a different number and always larger: the rate over those games is
+    credited as though it had been played over a share of a league season. The
+    section would otherwise show four honest figures and contribute a fifth
+    that appears nowhere, which is the arithmetic these panels exist to make
+    visible.
+
+    Greyed until the competition is over. A rate off one match projects most of
+    a share of a season, and a second match without a goal lowers it -- so it
+    is held, and a box that looked live would be claiming points the standings
+    have not been given.
+    """
+    adds = _stat_number(entry, "adds")
+    credited = bool(entry.get("credited"))
+    share = _stat_number(entry, "share") or 0.0
+    scalar = _stat_number(entry, "scalar") or 0.0
+    finishes = str(entry.get("finishes") or "").strip()
+    box = {
+        "label": "Adds to score",
+        "value": "—" if adds is None else f"×{_trim(scalar)}",
+        "points": adds,
+        "muted": not credited,
+    }
+    lines = []
+    if share:
+        lines.append(f"{share:.1%} of a season".replace(".0%", "%"))
+    if not credited:
+        # Not a `note`: that replaces the strip, and the figure being withheld
+        # is exactly what a reader needs to see. Greyed and dated instead.
+        lines.append(f"held to {finishes}" if finishes else "held")
+    if lines:
+        box["aside"] = "\n".join(lines)
+    return box
+
+
+def _playoff_post(row: dict, made: dict, name: str = "Playoffs") -> dict | None:
+    """A league's own playoffs as a section, priced the way Europe is.
+
+    Basketball, hockey and football each run one postseason, so there is one
+    entry in the breakdown rather than soccer's several -- but it is the same
+    arithmetic and the same box. Without it these sections showed figures that
+    were right and a contribution that appeared nowhere on the page.
+    """
+    entries = _bonus_list(row)
+    if not entries:
+        return None
+    entry = entries[0]
+    games = _stat_number(entry, "games")
+    out = dict(made)
+    out["name"] = name
+    out["games"] = "\u2014" if games is None else f"{games:,.0f}"
+    out["total"] = _campaign_total(entry)
+    out["note"] = _campaign_note(entry)
+    return out
+
+
+def _soccer_player_posts(row: dict) -> list[dict]:
+    """Each European or playoff competition as its own section.
+
+    The same boxes the league gets -- see `_soccer_campaign_boxes` -- because
+    they are the same figures. What differs is what the section pays, and that
+    is the one box the league has no equivalent of.
+    """
+    out = []
+    for entry in _bonus_list(row):
+        made = _soccer_campaign_boxes(entry)
+        apps = made.pop("apps", None)
+        made["name"] = str(entry.get("competition") or "")
+        made["games"] = "—" if apps is None else f"{apps:,.0f}"
+        made["total"] = _campaign_total(entry)
+        made["note"] = _campaign_note(entry, "match")
+        out.append(made)
+    return out
+
+
+def _trim(value: float) -> str:
+    """1.90 -> 1.9, 2.00 -> 2. A trailing zero reads as precision nobody has."""
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def _campaign_note(entry: dict, unit: str = "game") -> str:
+    """Why the section's boxes and its total are different numbers.
+
+    They read as an arithmetic error otherwise, and the reader who checks is
+    the reader this panel is for.
+    """
+    points = _stat_number(entry, "points") or 0.0
+    games = _stat_number(entry, "games") or 0.0
+    scalar = _stat_number(entry, "scalar") or 0.0
+    share = _stat_number(entry, "share") or 0.0
+    finishes = str(entry.get("finishes") or "").strip()
+    if not games or not scalar:
+        return ""
+    over = f"{games:,.0f} {unit}" + ("" if games == 1 else "s")
+    note = (
+        f"Credited as a rate, not a tally: {points:,.1f} points over {over} is "
+        f"paid as though it had been played over {_trim(scalar)} more of them "
+        f"\u2014 {share:.1%} of a league season \u2014 however few were "
+        f"actually played."
+    ).replace(".0%", "%")
+    if not entry.get("credited"):
+        note += (
+            f" None of it is in the score yet: a rate off one or two {unit}s "
+            "moves a long way on the next one, and it can fall, so it is held "
+            + (f"until the competition finishes ({finishes})." if finishes
+               else "until the competition finishes.")
+        )
+    return note
+
+
+def _soccer_player_panel(row: dict, club_games: dict | None = None,
+                         league: str = "") -> dict:
+    """A footballer's season, his league first and each other competition after.
+
+    Europe and a playoff run are not counted in full but paid as a rate on top,
+    so their sections sum to what they scored and carry a further box for what
+    that is worth. Until the competition finishes that box is greyed and pays
+    nothing, which is why the score beneath can be smaller than the panel.
+    """
+    made = _soccer_campaign_boxes(row)
+    apps = made.pop("apps", None)
+    team = row.get("team")
+    club = (club_games or {}).get(team.strip()) if isinstance(team, str) else None
+
+    panel = {
+        "kind": "boxes",
+        "title": league if league and league != CLUB_SOCCER else "",
+        "head": [
+            ["Games played", "—" if apps is None else f"{apps:,.0f}"],
+            ["Team games", "—" if not club else f"{club:,.0f}"],
+        ],
+        **made,
+    }
+    posts = _soccer_player_posts(row)
+    if posts:
+        panel["posts"] = posts
+    return panel
+
 
 
 def _stat_lines(row: dict) -> list[tuple[str, str]]:

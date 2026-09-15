@@ -920,6 +920,13 @@ def score_players(
 #: absent: a player is one asset however many competitions they appeared in.
 PLAYER_KEYS = ["player", "league", "season", "position"]
 
+#: What each European or playoff competition carries into its own breakdown.
+#: The same figures the domestic section is built from, and the two points
+#: columns with them, so a run shows the boxes a league campaign shows rather
+#: than a game count and a total with nothing behind it.
+BONUS_COUNTS = ("starts", "goals", "assists", "yellow", "red",
+                "appearance_points", "goal_points")
+
 
 def _fold_competitions(
     work: pd.DataFrame, postseason: bool, as_of=None
@@ -984,10 +991,12 @@ def _fold_competitions(
         detail = (
             extra.assign(_detail=[
                 detail_for(str(name), matches, points, rule,
-                           season=int(season), as_of=as_of)
-                for name, matches, points, rule, season in zip(
+                           season=int(season), as_of=as_of,
+                           counts={c: line.get(c) for c in BONUS_COUNTS})
+                for name, matches, points, rule, season, line in zip(
                     extra["competition"], extra["matches"],
-                    extra["points"], extra["_rule"], extra["season"])
+                    extra["points"], extra["_rule"], extra["season"],
+                    extra.to_dict("records"))
             ])
             .groupby(PLAYER_KEYS, as_index=False)
             .agg(**{DETAIL_COLUMN: ("_detail", list)})
