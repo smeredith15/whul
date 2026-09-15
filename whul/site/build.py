@@ -1246,23 +1246,30 @@ def _mlb_by_year(row: dict, second, role: str, other: str, scale: float,
     which half was last year. This is that question, with the boxes staying
     where they are and only the figures inside them changing.
 
-    Absent entirely where the league year has only reached one season, which is
-    every baseball profile until next spring: a toggle with one position is a
-    control that does nothing.
+    The years come from the league year itself rather than from whichever have
+    been played, so the season ahead is a tab of dashes rather than a tab that
+    is not there -- the same answer basketball and hockey give before their
+    seasons open. A year nobody has played yet is a fact about the calendar,
+    and a missing tab says instead that the question cannot be asked.
     """
+    from whul.config.league import SEASON
+
     primary = _season_lines(row)
     secondary = _season_lines(second) if isinstance(second, dict) else {}
-    years = sorted(set(primary) | set(secondary))
+    spans = [f"{year}" for year
+             in range(SEASON.start.year, SEASON.end.year + 1)]
+    years = sorted(set(spans) | set(primary) | set(secondary))
     if len(years) < 2:
         return []
+    shows_second = (
+        other in build
+        and (_stat_number(second, "scaled_score") or 0.0) >= MLB_SECOND_SECTION_AT
+    )
     out = []
     for year in years:
-        sections = []
-        if year in primary:
-            sections.append(build[role](primary[year], scale))
-        if other in build and year in secondary \
-                and (_stat_number(second, "scaled_score") or 0.0) >= MLB_SECOND_SECTION_AT:
-            sections.append(build[other](secondary[year], scale))
+        sections = [build[role](primary.get(year, {}), scale)]
+        if shows_second:
+            sections.append(build[other](secondary.get(year, {}), scale))
         out.append({"year": year, "sections": sections})
     return out
 

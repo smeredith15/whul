@@ -2972,12 +2972,30 @@ def test_a_league_year_spanning_two_seasons_can_be_read_a_season_at_a_time():
     assert round(sum(halves), 1) == round(whole, 1)
 
 
-def test_one_season_gets_no_toggle():
-    """A control with one position does nothing, which is every baseball
-    profile until next spring."""
-    assert "years" not in site_build._mlb_panel(_batter())
-    assert "years" not in site_build._mlb_panel(
+def test_a_season_nobody_has_played_yet_is_a_tab_of_dashes():
+    """The years come from the league year, not from whichever have been
+    played. Gating the tab on data present would have said, all winter, that
+    the question could not be asked -- when the answer is that nothing has
+    happened yet, which is what every other sport's empty panel says."""
+    panel = site_build._mlb_panel(
         _batter(season_lines=[{"season": 2026, "h": 150, "ab": 480}]))
+
+    assert [y["year"] for y in panel["years"]] == ["2026", "2027"]
+    ahead = next(y for y in panel["years"] if y["year"] == "2027")
+    assert [box["value"] for box in ahead["sections"][0]["top"]] == ["\u2014"] * 4
+    assert all(box["points"] is None for box in ahead["sections"][0]["top"])
+
+
+def test_a_league_year_inside_one_calendar_year_gets_no_toggle(monkeypatch):
+    """A control with one position does nothing."""
+    from dataclasses import replace
+
+    import whul.config.league as league
+
+    monkeypatch.setattr(league, "SEASON", replace(
+        league.SEASON, start=date(2027, 4, 1), end=date(2027, 10, 1)))
+
+    assert "years" not in site_build._mlb_panel(_batter())
 
 
 def test_the_counting_boxes_carry_the_proration_the_score_does():
