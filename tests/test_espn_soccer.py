@@ -1044,3 +1044,86 @@ def test_a_failed_squad_carries_its_status_where_there_is_one(monkeypatch):
     espn_soccer.athlete_named("mls", "Lionel Messi", 2027, failed=failed)
 
     assert failed == [("Inter Miami CF", "HTTPError 404")]
+
+
+# --- the gamelog, and which season it answered about ------------------------
+
+def _gamelog_server(monkeypatch, bare, seasoned):
+    from unittest import mock
+    from whul.sources import espn_soccer
+
+    def get(url, params, session=None):
+        return seasoned if params.get("season") else bare
+
+    monkeypatch.setattr(espn_soccer, "_get", get)
+    return espn_soccer
+
+
+def _events(*dated):
+    return {"events": {
+        str(i): {"id": str(i), "gameDate": f"{day}T19:00Z", "leagueName": comp,
+                 "opponent": {"displayName": "Someone"}}
+        for i, (day, comp) in enumerate(dated)
+    }}
+
+
+def test_a_gamelog_does_not_answer_with_last_season(monkeypatch):
+    """Asked with no season the endpoint returns whichever ESPN has figures
+    for, and for a player yet to appear this year that is the last year he
+    played. Balogun's came back with thirty-one Ligue 1 matches against a
+    Monaco side that had played four, while the seasoned request for the same
+    man returned no events at all."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare=_events(*[("2026-03-10", "French Ligue 1")] * 31),
+        seasoned={"filters": []},
+    )
+
+    out = espn_soccer.load_gamelog("ligue1", "282643", season=2027)
+
+    assert out.empty
+
+
+def test_both_request_shapes_still_contribute(monkeypatch):
+    """Which is why both are asked: the bare one gave a player's league
+    matches and the seasoned one his Champions League tie."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare=_events(("2026-09-01", "English Premier League"),
+                     ("2026-09-08", "English Premier League")),
+        seasoned={"events": {"99": {
+            "id": "99", "gameDate": "2026-09-16T19:00Z",
+            "leagueName": "UEFA Champions League"}}},
+    )
+
+    out = espn_soccer.load_gamelog("epl", "296395", season=2027)
+
+    assert len(out) == 3
+    assert set(out["competition"]) == {"English Premier League",
+                                       "UEFA Champions League"}
+
+
+def test_an_undated_event_is_kept_rather_than_guessed_at(monkeypatch):
+    """Only what can be positively placed in another year is dropped.
+    Discarding what we merely cannot read is how a pool ends up smaller than
+    the football that was played."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare={"events": {"1": {"id": "1", "leagueName": "Ligue 1"}}},
+        seasoned={"filters": []},
+    )
+
+    assert len(espn_soccer.load_gamelog("ligue1", "1", season=2027)) == 1
+
+
+def test_a_calendar_year_league_keeps_its_own_convention(monkeypatch):
+    """MLS runs inside a calendar year and the European leagues roll in
+    August, so the same date belongs to different league years in each."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare=_events(("2027-03-10", "MLS")),
+        seasoned={"filters": []},
+    )
+
+    assert len(espn_soccer.load_gamelog("mls", "1", season=2027)) == 1
+    assert espn_soccer.load_gamelog("mls", "1", season=2026).empty

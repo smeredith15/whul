@@ -973,6 +973,22 @@ def load_gamelog(
     matches and the seasoned request gave his Champions League tie. Whichever
     subset comes back, every event in it names itself honestly, which is what
     makes a partial answer still worth having.
+
+    The bare one names its competitions honestly and its *season* not at all.
+    Asked with no season it answers with whichever ESPN has figures for, and
+    for a player yet to appear this year that is the last year he played:
+    Balogun's came back with thirty-one Ligue 1 matches against a Monaco side
+    that had played four, while the seasoned request for the same man returned
+    no events at all. So the union is filtered afterwards, on each event's own
+    date, which is the one thing about it that cannot be ambiguous.
+
+    What neither shape returns is the domestic cup. Probed and recorded so the
+    ground is not covered again: Palmer's gamelog gives four Premier League
+    matches and none of Chelsea's two Carabao Cup ties, his `league` filter
+    lists eng.league_cup among its values and does not filter on it, and the
+    competition in the request path is ignored -- ger.1, ger.dfb_pokal and
+    uefa.champions each return the same four English league matches. A player's
+    cup football cannot be read from this endpoint at all.
     """
     session = session or requests.Session()
     sport, path = LEAGUE_PATHS[league]
@@ -1000,4 +1016,25 @@ def load_gamelog(
                                 if isinstance(event.get("opponent"), dict)
                                 else event.get("opponent") or ""),
             }
-    return pd.DataFrame(list(rows.values()))
+    return pd.DataFrame(_inside_the_league_year(
+        list(rows.values()), league, season))
+
+
+def _inside_the_league_year(rows: list[dict], league: str, season) -> list[dict]:
+    """Events this league year, by the same rule the scorer uses.
+
+    Only what can be positively placed in another year is dropped. An event the
+    feed gave no date is kept: it cannot be shown to belong elsewhere, and
+    silently discarding what we merely cannot read is how a pool ends up
+    smaller than the football that was played.
+    """
+    if not rows or not season:
+        return rows
+    from whul.benchmark_sources import SOCCER_CATEGORIES
+    from whul.scoring.soccer import season_for
+
+    named = SOCCER_CATEGORIES.get(league, league)
+    dates = pd.Series([row["date"] for row in rows])
+    belongs = season_for(dates, pd.Series([named] * len(rows)))
+    return [row for row, year in zip(rows, belongs)
+            if year != year or int(year) == int(season)]
