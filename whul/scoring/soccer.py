@@ -458,10 +458,12 @@ def season_sections(
     it went furthest in loses the other outright.
 
     European sections split into a league phase and a knockout phase where the
-    feed's round text says so, and stay undivided where it does not. See
-    `european_phase`: the split is unverified, and an unverified split is worse
-    than none, because a quarter-final filed under "League phase" is a real
-    figure in the wrong place and nothing about it looks wrong.
+    feed's round text says so, and stay undivided where it does not -- see
+    `european_phase`, whose patterns were read off a season of real labels
+    rather than guessed. The undivided case remains for the wording that
+    changes next: a quarter-final filed under "League phase" is a real figure
+    in the wrong place, the section still adds up, and nothing about it looks
+    wrong.
     """
     if scored.empty:
         return {}
