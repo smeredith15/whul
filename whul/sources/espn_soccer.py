@@ -86,6 +86,32 @@ def roster_season(league: str, season: int) -> int:
     return season - 1 if numbering == "ends" else season
 
 
+def season_has_begun(league: str, season: int, today=None) -> bool:
+    """Has the season we are about to ask about actually started?
+
+    ESPN answers for a season nobody has played with a 404 on every club, and
+    a search that catches those reports thirty failures where the truth is
+    that there was nothing to fail at. MLS is the live case: it runs inside a
+    calendar year, so our 2026-27 asks ESPN for 2027 -- a season that opens on
+    20 February 2027, five months after the league year it belongs to did.
+
+    Read off ``SEASON_WINDOWS``, which already carries the month and day each
+    league opens, rather than from a second list of dates that would drift
+    from the first one.
+    """
+    from datetime import date
+
+    window = SEASON_WINDOWS.get(league)
+    if not window:
+        return True
+    (month, day), _, _ = window
+    try:
+        opens = date(roster_season(league, season), month, day)
+    except (TypeError, ValueError):
+        return True
+    return (today or date.today()) >= opens
+
+
 def season_matches(league: str, season: int, said: str) -> bool:
     """Does the label the feed returned describe the season we meant?
 
@@ -922,6 +948,11 @@ def athlete_named(league: str, name: str, season: int, session=None,
     reason. That request is caught so one club cannot end the search, and a
     caught exception with nowhere to go made a league that half answered
     indistinguishable from a squad list that simply did not carry the name.
+
+    With its status where there is one. All thirty MLS clubs came back as
+    "HTTPError", which is the class and not the answer: a 404 for a season
+    nobody has played is the feed being right, a 403 is the feed refusing us,
+    and those want opposite fixes.
     """
     from whul import resolve
 
@@ -933,7 +964,13 @@ def athlete_named(league: str, name: str, season: int, session=None,
             squad = load_squad(league, team_id, season, session)
         except Exception as exc:  # noqa: BLE001 -- one club, not the search
             if failed is not None:
-                failed.append((club, type(exc).__name__))
+                status = getattr(
+                    getattr(exc, "response", None), "status_code", None)
+                failed.append((
+                    club,
+                    f"{type(exc).__name__} {status}" if status
+                    else type(exc).__name__,
+                ))
             continue
         for row in squad.itertuples():
             theirs = resolve.split_name(str(row.player))
@@ -962,6 +999,28 @@ def load_gamelog(
     matches and the seasoned request gave his Champions League tie. Whichever
     subset comes back, every event in it names itself honestly, which is what
     makes a partial answer still worth having.
+
+    The bare one names its competitions honestly and its *season* not at all.
+    Asked with no season it answers with whichever ESPN has figures for, and
+    for a player yet to appear this year that is the last year he played:
+    Balogun's came back with thirty-one Ligue 1 matches against a Monaco side
+    that had played four, while the seasoned request for the same man returned
+    no events at all. So the union is filtered afterwards, on each event's own
+    date, which is the one thing about it that cannot be ambiguous.
+
+    What neither shape returns is the domestic cup. Probed and recorded so the
+    ground is not covered again: Palmer's gamelog gives four Premier League
+    matches and none of Chelsea's two Carabao Cup ties, his `league` filter
+    lists eng.league_cup among its values and does not filter on it, and the
+    competition in the request path is ignored -- ger.1, ger.dfb_pokal and
+    uefa.champions each return the same four English league matches.
+
+    That is a fact about *this endpoint*, not about the cups. They are scored:
+    the roster aggregate carries them, which is why Palmer's stored figure is
+    six against a gamelog of four. What is missing is only the attribution --
+    which of his club's cup ties he appeared in -- and the club's own match
+    list already holds those ties with their event ids. See
+    `whul.sources.espn`'s summary endpoint, which returns a match's lineups.
     """
     session = session or requests.Session()
     sport, path = LEAGUE_PATHS[league]
@@ -989,4 +1048,251 @@ def load_gamelog(
                                 if isinstance(event.get("opponent"), dict)
                                 else event.get("opponent") or ""),
             }
-    return pd.DataFrame(list(rows.values()))
+    return pd.DataFrame(_inside_the_league_year(
+        list(rows.values()), league, season))
+
+
+def _inside_the_league_year(rows: list[dict], league: str, season) -> list[dict]:
+    """Events this league year, by the same rule the scorer uses.
+
+    Only what can be positively placed in another year is dropped. An event the
+    feed gave no date is kept: it cannot be shown to belong elsewhere, and
+    silently discarding what we merely cannot read is how a pool ends up
+    smaller than the football that was played.
+    """
+    if not rows or not season:
+        return rows
+    from whul.benchmark_sources import SOCCER_CATEGORIES
+    from whul.scoring.soccer import season_for
+
+    named = SOCCER_CATEGORIES.get(league, league)
+    dates = pd.Series([row["date"] for row in rows])
+    belongs = season_for(dates, pd.Series([named] * len(rows)))
+    return [row for row, year in zip(rows, belongs)
+            if year != year or int(year) == int(season)]
+
+
+#: Where a match's own record lives. The module header calls this shape
+#: "missing nothing" and passed on it for the benchmark, where it would have
+#: meant 380 requests a league-season. Attribution is not that: the club's
+#: match list already names its cup ties, so the question is two requests for
+#: Chelsea rather than a season of them.
+SUMMARY = "https://site.api.espn.com/apis/site/v2/sports/soccer/{path}/summary"
+
+
+def _named_in(node, found: list, depth: int = 0) -> list:
+    """Every athlete id and display name anywhere in a payload.
+
+    Shape-blind, like `_competition_names`, and for the same reason: the
+    question is whether this response knows who played, and a reader that only
+    looked where the answer was expected would report absence for a payload
+    that had it somewhere else.
+    """
+    if depth > 8:
+        return found
+    if isinstance(node, dict):
+        athlete = node.get("athlete")
+        if isinstance(athlete, dict) and athlete.get("id"):
+            found.append((str(athlete.get("id")),
+                          str(athlete.get("displayName") or "")))
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _named_in(value, found, depth + 1)
+    elif isinstance(node, list):
+        for value in node[:80]:
+            _named_in(value, found, depth + 1)
+    return found
+
+
+#: What might mark a roster entry as somebody who actually played. Asked as a
+#: set rather than assumed, because crediting the bench is as wrong as missing
+#: the starters and nothing in the payload is documented.
+PLAYED_HINTS = ("starter", "didNotPlay", "subbedIn", "subbedOut", "active",
+                "playerParticipation", "appearances", "stats", "subbedInFor",
+                "subbedOutFor", "formationPlace", "jersey")
+
+
+def _roster_shape(payload: dict, club: str) -> list[str]:
+    """How a match's roster block is built, in enough detail to read it.
+
+    Reports the keys on each side's block and on one athlete entry, and how
+    many entries carry each of the fields that might mean "played". The point
+    is to be able to write the extraction against what is there rather than
+    against what it ought to be.
+    """
+    blocks = payload.get("rosters")
+    if not isinstance(blocks, list) or not blocks:
+        return ["rosters: absent or not a list"]
+    out = [f"rosters: {len(blocks)} block(s)"]
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        named = str((block.get("team") or {}).get("displayName") or "?")
+        people = block.get("roster")
+        people = people if isinstance(people, list) else []
+        out.append(f"    {named} -- block keys: "
+                   f"{', '.join(sorted(k for k in block))}")
+        out.append(f"        {len(people)} entr(ies)")
+        if not people:
+            continue
+        first = people[0] if isinstance(people[0], dict) else {}
+        out.append(f"        entry keys: {', '.join(sorted(first))}")
+        for hint in PLAYED_HINTS:
+            present = [p for p in people
+                       if isinstance(p, dict) and hint in p]
+            if not present:
+                continue
+            values = {str(p.get(hint))[:24] for p in present}
+            out.append(f"        {hint}: on {len(present)}/{len(people)}, "
+                       f"values {sorted(values)[:5]}")
+    return out
+
+
+def lineup_of(league: str, event_id: str, session=None) -> set | None:
+    """The athletes who actually played in one match, by the match's own record.
+
+    Twenty entries a side is the matchday squad, not the eleven. ``active`` is
+    True for all twenty and means *named*, not used; what separates a player
+    from a spectator is ``starter`` or ``subbedIn`` -- eleven and five of
+    Chelsea's twenty against Luton, with the four unused substitutes carrying
+    neither, and ``subbedInFor`` present on exactly those five.
+
+    Crediting the four would be the same overstatement as missing the eleven,
+    pointed the other way, which is why this reads the flags rather than the
+    length of the list.
+
+    ``None`` where the match could not be read at all, so a caller can tell
+    that from a match somebody sat out.
+    """
+    session = session or requests.Session()
+    _, path = LEAGUE_PATHS[league]
+    try:
+        payload = _get(SUMMARY.format(path=path), {"event": event_id}, session)
+    except Exception:  # noqa: BLE001 -- one match, not the run
+        return None
+    blocks = payload.get("rosters")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    played = set()
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get("roster") or []:
+            if not isinstance(entry, dict):
+                continue
+            if not (entry.get("starter") or entry.get("subbedIn")):
+                continue
+            athlete = entry.get("athlete")
+            if isinstance(athlete, dict) and athlete.get("id"):
+                played.add(str(athlete["id"]))
+    return played
+
+
+def matches_he_played(
+    league: str, athlete_id: str, ties, season: int | None = None,
+    session=None, seen: dict | None = None,
+) -> list[dict]:
+    """Gamelog-shaped rows for ties the gamelog would not return.
+
+    The domestic cups are scored -- the roster aggregate carries them -- and
+    the gamelog will not say which of his club's ties he was in. The tie itself
+    will. ``ties`` are his club's matches in the competitions his gamelog never
+    mentioned, and each is asked once however many rostered players share the
+    club, which is what ``seen`` is for.
+    """
+    session = session or requests.Session()
+    out = []
+    for tie in ties.itertuples() if hasattr(ties, "itertuples") else ties:
+        event = str(getattr(tie, "event_id", "") or "")
+        if not event:
+            continue
+        if seen is None or event not in seen:
+            found = lineup_of(league, event, session)
+            if seen is not None:
+                seen[event] = found
+        else:
+            found = seen[event]
+        if not found or str(athlete_id) not in found:
+            continue
+        out.append({
+            "event_id": event,
+            "date": str(getattr(tie, "date", "") or "")[:10],
+            "competition": str(getattr(tie, "competition_key", "") or ""),
+            "opponent": str(getattr(tie, "opponent", "") or ""),
+        })
+    return out
+
+
+def probe_cup_lineups(league: str, club: str, season: int, session=None) -> dict:
+    """Does a cup tie's own record say who played in it?
+
+    The gamelog does not return the domestic cups -- probed three ways and
+    recorded in `load_gamelog`. That is a fact about that endpoint, not about
+    the cups: they are scored, because the roster aggregate carries them, and
+    what is missing is only which of his club's ties a player appeared in.
+
+    The club's match list already holds those ties with ESPN's own event ids.
+    So this asks the one thing left: fetch a tie's summary and report whether
+    it names athletes. If it does, attribution has its route and the count is a
+    couple of requests a club rather than a season of them.
+
+    Nothing here is wired into scoring. It is a question, and the answer
+    decides what to build.
+    """
+    from whul.sources import espn
+
+    session = session or requests.Session()
+    _, path = LEAGUE_PATHS[league]
+    cups = set(espn.DOMESTIC_CUPS.get(league, ()))
+    out: dict = {"league": league, "club": club, "season": season,
+                 "cups": sorted(cups)}
+    try:
+        matches = espn.load_soccer_matches(league, [season], verbose=False)
+    except Exception as exc:  # noqa: BLE001
+        out["problem"] = f"could not read the clubs' results: {type(exc).__name__}: {exc}"
+        return out
+
+    if matches is None or matches.empty:
+        out["problem"] = "the clubs' results came back empty"
+        return out
+    theirs = matches[matches["team"].astype(str) == str(club)]
+    out["club_matches"] = len(theirs)
+    out["by_competition"] = (
+        theirs["competition_key"].astype(str).value_counts().to_dict())
+    ties = theirs[theirs["competition_key"].astype(str).isin(cups)]
+    out["cup_ties"] = len(ties)
+    if ties.empty:
+        out["problem"] = (
+            f"{club} has played no domestic cup tie this season, so there is "
+            f"nothing here to ask about. Its competitions are listed above.")
+        return out
+
+    looked = []
+    for row in ties.itertuples():
+        event = str(getattr(row, "event_id", "") or "")
+        entry: dict = {"event_id": event,
+                       "competition": str(row.competition_key)}
+        try:
+            payload = _get(SUMMARY.format(path=path), {"event": event}, session)
+        except Exception as exc:  # noqa: BLE001
+            status = getattr(getattr(exc, "response", None), "status_code", "?")
+            entry["refused"] = f"{type(exc).__name__} {status}"
+            looked.append(entry)
+            continue
+        entry["top_level_keys"] = sorted(payload.keys())[:20]
+        named = _named_in(payload, [])
+        seen: dict[str, str] = {}
+        for athlete_id, name in named:
+            seen.setdefault(athlete_id, name)
+        entry["athletes_named"] = len(seen)
+        entry["sample"] = [f"{i}: {n}" for i, n in list(seen.items())[:6]]
+        # Named is not the same as appeared. Forty-three athletes is both
+        # squads including everyone who sat on the bench all evening, and
+        # crediting an unused substitute with an appearance is the same
+        # overstatement in the other direction. So the shape of a roster entry
+        # is reported too: whatever field separates a player from a spectator
+        # is the field attribution has to read.
+        entry["shape"] = _roster_shape(payload, club)
+        looked.append(entry)
+    out["ties"] = looked
+    return out

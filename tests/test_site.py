@@ -3318,6 +3318,41 @@ def test_a_batter_with_no_october_gets_no_playoff_section():
     assert "posts" not in site_build._mlb_panel(_batter())
 
 
+def test_each_year_carries_what_it_is_worth():
+    """The toggle changes the score beneath it, so each year has to know its
+    own. Summed from the boxes rather than scored a second time: the live
+    player path prorates by one factor and does not carry the bisection
+    weights, which govern the historical team path where a whole season really
+    is split into two shares. So the years add to the total."""
+    row = _batter(season_lines=[
+        {"season": 2026, "h": 40, "ab": 130, "hr": 6, "doubles": 8,
+         "triples": 1, "bb": 20, "hbp": 1, "sb": 5, "cs": 1,
+         "offense": 2.0, "defense": -1.0},
+        {"season": 2027, "h": 110, "ab": 350, "hr": 38, "doubles": 18,
+         "triples": 5, "bb": 52, "hbp": 3, "sb": 13, "cs": 3,
+         "offense": 36.2, "defense": -5.1},
+    ])
+    panel = site_build._mlb_panel(row)
+    whole = site_build._section_points(panel["sections"])
+    years = [y["raw"] for y in panel["years"]]
+
+    assert all(isinstance(r, float) for r in years)
+    assert round(sum(years), 1) == whole
+
+
+def test_a_box_counted_elsewhere_is_not_counted_again():
+    """Home runs sit in the average above them and say so. Adding the strip
+    that says "in AVG" would double them in the year's figure."""
+    panel = site_build._mlb_panel(_batter())
+    section = panel["sections"][0]
+    noted = [b for b in section["top"] if b.get("note")]
+
+    assert noted, "the fixture no longer exercises a carried box"
+    assert site_build._section_points([section]) == round(sum(
+        b["points"] or 0.0 for b in section["top"] + section["secondary"]
+        if not b.get("note")), 1)
+
+
 def test_the_counting_boxes_carry_the_proration_the_score_does():
     """Acuna's counting terms come to 167.6 and his role points to 204.2; the
     difference is the window factor, and without it the panel does not add up

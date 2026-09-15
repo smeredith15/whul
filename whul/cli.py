@@ -1454,6 +1454,85 @@ def _gamelog_lines(report: dict) -> list[str]:
     return lines
 
 
+def _cup_appearances(league, athlete, counted, matches, season, lineups):
+    """His club's ties in competitions his gamelog never named, that he played.
+
+    Deliberately narrow. Where the gamelog returned a competition it is the
+    authority on which of its matches he was in, and second-guessing it would
+    be a request per match for an answer already given. This asks only about
+    the competitions it is silent on, which is the whole of the gap.
+    """
+    from whul.sources import espn_soccer
+
+    if matches is None or getattr(matches, "empty", True):
+        return []
+    if "competition_key" not in matches.columns:
+        return []
+    seen = ({str(r.competition_key) for r in counted.itertuples()}
+            if counted is not None and not counted.empty else set())
+    keys = {str(k) for k in matches["competition_key"]}
+    missing = keys - seen
+    if not missing:
+        return []
+    ties = matches[matches["competition_key"].astype(str).isin(missing)]
+    return espn_soccer.matches_he_played(
+        league, athlete, ties, season, seen=lineups)
+
+
+def cmd_probe_cup(args: argparse.Namespace) -> int:
+    """Whether a cup tie's own record says who played in it.
+
+    The gamelog does not return the domestic cups. The cups are scored anyway
+    -- the roster aggregate carries them -- so what is missing is only the
+    attribution, and the club's match list already names the ties. This asks
+    whether their summaries name the players.
+    """
+    from whul.sources import espn_soccer
+
+    found = espn_soccer.probe_cup_lineups(
+        args.league, args.club, int(args.season))
+    lines = [
+        f"ESPN cup-lineup probe -- {found['league']}, {found['club']}, "
+        f"season {found['season']}",
+        "",
+        f"  domestic cups for this league   {', '.join(found['cups']) or '(none)'}",
+        f"  matches found for the club      {found.get('club_matches', 0)}",
+        f"  by competition                  {found.get('by_competition', {})}",
+        f"  of those, cup ties              {found.get('cup_ties', 0)}",
+    ]
+    if found.get("problem"):
+        lines += ["", f"  {found['problem']}"]
+    for tie in found.get("ties", []):
+        lines += ["", f"  event {tie['event_id']} ({tie['competition']})"]
+        if tie.get("refused"):
+            lines.append(f"      refused: {tie['refused']}")
+            continue
+        lines.append(f"      top-level keys: {', '.join(tie['top_level_keys'])}")
+        lines.append(f"      athletes named: {tie['athletes_named']}")
+        for who in tie.get("sample", []):
+            lines.append(f"          {who}")
+    lines += [
+        "",
+        "  What to look for: a tie naming twenty-odd athletes is one whose",
+        "  lineup can be read, and attribution has its route -- a couple of",
+        "  requests a club rather than a season of them. A tie naming none",
+        "  means the summary carries no lineup and the next question is the",
+        "  match's own roster endpoint.",
+        "",
+    ]
+    for tie in found.get("ties", []):
+        for line in tie.get("shape", []):
+            lines.append(f"  {line}")
+    report = "\n".join(lines)
+    print(report)
+    if args.out:
+        from pathlib import Path
+
+        Path(args.out).write_text(report + "\n")
+        print(f"  written to {args.out}\n")
+    return 0
+
+
 def cmd_probe_athlete(args: argparse.Namespace) -> int:
     """Ask whether an athlete's own record names the competition.
 
@@ -1569,12 +1648,35 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     print(f"\nChecking {len(mine)} rostered club-soccer player(s) against their "
           f"clubs' results.\n")
 
+    # Read before the loop, because an empty gamelog means different things
+    # depending on what the figures claim.
+    stated = _rostered_player_figures(store, args.season, mine)
     club_results: dict[str, object] = {}
     attributed: dict[str, object] = {}
     club_matches: dict[str, object] = {}
     unreadable = 0
+    nothing_claimed = 0
+    unopened: dict[str, bool] = {}
+    # One parsed lineup per tie, shared across every rostered player at that
+    # club. Chelsea's two ties are two requests whether one player is rostered
+    # there or three.
+    lineups: dict[str, object] = {}
     for row in mine.itertuples():
         key = PLAYER_LEAGUES[str(row.league)]
+        # A league whose season has not opened has no squads to search, and
+        # ESPN says so with a 404 on every club. Thirty of those per player is
+        # three hundred and thirty requests to be told nothing has happened,
+        # and it reads as a broken feed rather than an empty calendar. The
+        # ingest already declines to ask; so does this now.
+        if key not in unopened:
+            unopened[key] = not espn_soccer.season_has_begun(key, season)
+            if unopened[key]:
+                print(f"  {key}: no season inside this league year has opened "
+                      f"yet, so there are no squads to search; its "
+                      f"players are neither confirmed nor faulted")
+        if unopened[key]:
+            unreadable += 1
+            continue
         if key not in club_results:
             # The clubs' results for the whole league, once, however many of
             # its players are rostered.
@@ -1604,13 +1706,37 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
             continue
         events = espn_soccer.load_gamelog(key, athlete, season)
         if events.empty:
-            unreadable += 1
-            print(f"  {row.display_name}: the gamelog returned no matches")
+            # An empty gamelog and a figure of nothing agree. Balogun has not
+            # played this season, his figures say none, and there is no
+            # disagreement to find -- counting him as unreadable overstated
+            # what was actually unknown. A figure claiming appearances against
+            # an empty gamelog is the case that cannot be checked.
+            claims = float(stated.get(str(row.display_name)) or 0.0)
+            if claims <= attribution.TOLERANCE:
+                nothing_claimed += 1
+                print(f"  {row.display_name}: no matches this season, and the "
+                      f"figures claim none either")
+            else:
+                unreadable += 1
+                print(f"  {row.display_name}: the gamelog returned no matches "
+                      f"for this season, so the {claims:g} its figures claim "
+                      f"cannot be checked")
             continue
         matches = club_results[key]
         if matches is not None and not matches.empty and club:
             matches = matches[matches["team"].astype(str) == str(club)]
         counted = attribution.attribute(events, matches)
+        # The gamelog does not return the domestic cups, so a club that plays
+        # one leaves its players unjudgeable -- the figure counts the cup tie
+        # and the gamelog cannot say whether he was in it. The tie itself can.
+        # Asked only for competitions the gamelog never mentioned, and once per
+        # tie however many rostered players share the club.
+        extra = _cup_appearances(key, athlete, counted, matches, season, lineups)
+        if extra:
+            events = pd.concat([events, pd.DataFrame(extra)], ignore_index=True)
+            counted = attribution.attribute(events, matches)
+            print(f"      + {len(extra)} cup appearance(s) read from the ties "
+                  f"themselves, which the gamelog does not return")
         attributed[str(row.display_name)] = counted
         # His club's own matches, kept for the judgement below: they are the
         # only hard ceiling, and they say which competitions his gamelog was
@@ -1624,7 +1750,6 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     # `raw_stats` rather than re-pulled: the question is whether what was
     # recorded agrees with what the clubs played, and re-fetching would ask a
     # different night's answer.
-    stated = _rostered_player_figures(store, args.season, mine)
     leagues = {str(r.display_name): str(r.league) for r in mine.itertuples()}
     found: list[dict] = []
     for player, counted in attributed.items():
@@ -1638,8 +1763,11 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     for line in lines or ["  Nothing claims more than its club played."]:
         print(line)
     if unreadable:
-        print(f"\n  {unreadable} player(s) could not be read, so they were "
-              f"neither confirmed nor faulted.")
+        print(f"\n  {unreadable} player(s) claim appearances that could not be "
+              f"read, so they were neither confirmed nor faulted.")
+    if nothing_claimed:
+        print(f"  {nothing_claimed} player(s) have played nothing this season "
+              f"and claim nothing, which agrees.")
     print()
     return 0
 
@@ -3317,6 +3445,19 @@ def main(argv: list[str] | None = None) -> int:
              "inferring a shape through a summary is three more than reading "
              "the shape itself")
     athlete.set_defaults(func=cmd_probe_athlete)
+
+    cup = sub.add_parser(
+        "probe-cup",
+        help="ask whether a cup tie's own record says who played in it",
+    )
+    cup.add_argument("--league", default="epl",
+                     help="ESPN league key, e.g. epl")
+    cup.add_argument("--club", required=True,
+                     help="the club as its results name it, e.g. Chelsea")
+    cup.add_argument("--season", default="2027",
+                     help="our season label, e.g. 2027")
+    cup.add_argument("--out", help="write the report to this file too")
+    cup.set_defaults(func=cmd_probe_cup)
 
     check = sub.add_parser(
         "check-attribution",

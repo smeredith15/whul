@@ -1025,3 +1025,230 @@ def test_a_club_whose_squad_cannot_be_read_is_reported_not_swallowed(monkeypatch
 
     assert found is None
     assert failed == [("Bayern Munich", "RuntimeError")]
+
+
+def test_a_failed_squad_carries_its_status_where_there_is_one(monkeypatch):
+    """All thirty MLS clubs came back as "HTTPError", which is the class and
+    not the answer. A 404 for a season nobody has played is the feed being
+    right; a 403 is the feed refusing us, and those want opposite fixes."""
+    import requests
+
+    def refused():
+        response = requests.Response()
+        response.status_code = 404
+        return requests.HTTPError("404", response=response)
+
+    espn_soccer = _squads(monkeypatch, {"Inter Miami CF": refused()})
+    failed: list = []
+
+    espn_soccer.athlete_named("mls", "Lionel Messi", 2027, failed=failed)
+
+    assert failed == [("Inter Miami CF", "HTTPError 404")]
+
+
+# --- the gamelog, and which season it answered about ------------------------
+
+def _gamelog_server(monkeypatch, bare, seasoned):
+    from unittest import mock
+    from whul.sources import espn_soccer
+
+    def get(url, params, session=None):
+        return seasoned if params.get("season") else bare
+
+    monkeypatch.setattr(espn_soccer, "_get", get)
+    return espn_soccer
+
+
+def _events(*dated):
+    return {"events": {
+        str(i): {"id": str(i), "gameDate": f"{day}T19:00Z", "leagueName": comp,
+                 "opponent": {"displayName": "Someone"}}
+        for i, (day, comp) in enumerate(dated)
+    }}
+
+
+def test_a_gamelog_does_not_answer_with_last_season(monkeypatch):
+    """Asked with no season the endpoint returns whichever ESPN has figures
+    for, and for a player yet to appear this year that is the last year he
+    played. Balogun's came back with thirty-one Ligue 1 matches against a
+    Monaco side that had played four, while the seasoned request for the same
+    man returned no events at all."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare=_events(*[("2026-03-10", "French Ligue 1")] * 31),
+        seasoned={"filters": []},
+    )
+
+    out = espn_soccer.load_gamelog("ligue1", "282643", season=2027)
+
+    assert out.empty
+
+
+def test_both_request_shapes_still_contribute(monkeypatch):
+    """Which is why both are asked: the bare one gave a player's league
+    matches and the seasoned one his Champions League tie."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare=_events(("2026-09-01", "English Premier League"),
+                     ("2026-09-08", "English Premier League")),
+        seasoned={"events": {"99": {
+            "id": "99", "gameDate": "2026-09-16T19:00Z",
+            "leagueName": "UEFA Champions League"}}},
+    )
+
+    out = espn_soccer.load_gamelog("epl", "296395", season=2027)
+
+    assert len(out) == 3
+    assert set(out["competition"]) == {"English Premier League",
+                                       "UEFA Champions League"}
+
+
+def test_an_undated_event_is_kept_rather_than_guessed_at(monkeypatch):
+    """Only what can be positively placed in another year is dropped.
+    Discarding what we merely cannot read is how a pool ends up smaller than
+    the football that was played."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare={"events": {"1": {"id": "1", "leagueName": "Ligue 1"}}},
+        seasoned={"filters": []},
+    )
+
+    assert len(espn_soccer.load_gamelog("ligue1", "1", season=2027)) == 1
+
+
+def test_a_calendar_year_league_keeps_its_own_convention(monkeypatch):
+    """MLS runs inside a calendar year and the European leagues roll in
+    August, so the same date belongs to different league years in each."""
+    espn_soccer = _gamelog_server(
+        monkeypatch,
+        bare=_events(("2027-03-10", "MLS")),
+        seasoned={"filters": []},
+    )
+
+    assert len(espn_soccer.load_gamelog("mls", "1", season=2027)) == 1
+    assert espn_soccer.load_gamelog("mls", "1", season=2026).empty
+
+
+def test_a_season_that_has_not_opened_is_not_worth_asking_about():
+    """MLS runs inside a calendar year, so our 2026-27 asks ESPN for 2027 --
+    a season that opens on 20 February 2027, five months after the league year
+    it belongs to did. Every club answers 404, and thirty of those per player
+    reads as a broken feed rather than an empty calendar."""
+    from datetime import date
+
+    from whul.sources import espn_soccer
+
+    assert not espn_soccer.season_has_begun("mls", 2027, date(2026, 9, 15))
+    assert espn_soccer.season_has_begun("mls", 2027, date(2027, 3, 1))
+    # The European leagues opened in August, before the league year's own
+    # start, which is why they answer and MLS does not.
+    for key in ("epl", "laliga", "bundesliga", "ligue1", "seriea"):
+        assert espn_soccer.season_has_begun(key, 2027, date(2026, 9, 15)), key
+
+
+def test_a_league_nobody_declared_a_window_for_is_asked_anyway():
+    """A missing window is not evidence the season has not started, and
+    declining to ask would silently drop a league somebody added."""
+    from datetime import date
+
+    from whul.sources import espn_soccer
+
+    assert espn_soccer.season_has_begun("nobody", 2027, date(2026, 9, 15))
+
+
+# --- who actually played in a cup tie ---------------------------------------
+
+def _squad(played):
+    """Twenty entries, as ESPN returns them: the matchday squad, not the XI."""
+    return [
+        {"athlete": {"id": str(i), "displayName": f"P{i}"},
+         # True for all twenty. It means named, not used -- which is exactly
+         # the trap this reads past.
+         "active": True,
+         "starter": i in played[:11],
+         "subbedIn": i in played[11:],
+         "subbedOut": False}
+        for i in range(1, 21)
+    ]
+
+
+def _summary(monkeypatch, blocks):
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "_get",
+                        lambda url, params, session=None: blocks)
+    return espn_soccer
+
+
+def test_a_lineup_is_who_played_not_who_was_named(monkeypatch):
+    """Twenty a side is the squad. `active` is True for all of them; eleven
+    started and five came on, and the four unused substitutes carry neither
+    flag. Crediting those four is the same overstatement as missing the
+    eleven, pointed the other way."""
+    espn_soccer = _summary(monkeypatch, {"rosters": [
+        {"team": {"displayName": "Chelsea"}, "roster": _squad(list(range(1, 17)))},
+    ]})
+
+    played = espn_soccer.lineup_of("epl", "401908127")
+
+    assert len(played) == 16
+    assert "7" in played          # a starter
+    assert "16" in played         # came off the bench
+    assert "19" not in played     # named, never used
+
+
+def test_a_match_that_cannot_be_read_is_not_a_match_nobody_played(monkeypatch):
+    """None, not an empty set, so a caller can tell a refused request from a
+    tie somebody sat out."""
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "_get",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("503")))
+    assert espn_soccer.lineup_of("epl", "1") is None
+
+    monkeypatch.setattr(espn_soccer, "_get", lambda *a, **k: {"boxscore": {}})
+    assert espn_soccer.lineup_of("epl", "1") is None
+
+
+def test_a_tie_is_asked_about_once_however_many_players_share_the_club(monkeypatch):
+    """Chelsea's two ties are two requests whether one rostered player is
+    there or three."""
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    asked = []
+
+    def get(url, params, session=None):
+        asked.append(params["event"])
+        return {"rosters": [{"team": {"displayName": "Chelsea"},
+                             "roster": _squad(list(range(1, 17)))}]}
+
+    monkeypatch.setattr(espn_soccer, "_get", get)
+    ties = pd.DataFrame([
+        {"event_id": "c1", "competition_key": "efl_cup", "date": "2026-09-24",
+         "opponent": "Luton Town"},
+        {"event_id": "c2", "competition_key": "efl_cup", "date": "2026-10-29",
+         "opponent": "Leeds United"},
+    ])
+    shared: dict = {}
+
+    first = espn_soccer.matches_he_played("epl", "7", ties, 2027, seen=shared)
+    second = espn_soccer.matches_he_played("epl", "8", ties, 2027, seen=shared)
+
+    assert len(first) == len(second) == 2
+    assert asked == ["c1", "c2"], "the second player re-fetched the ties"
+    assert first[0]["competition"] == "efl_cup"
+
+
+def test_an_unused_substitute_is_credited_with_nothing(monkeypatch):
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "_get", lambda *a, **k: {"rosters": [
+        {"team": {"displayName": "Chelsea"}, "roster": _squad(list(range(1, 17)))}]})
+    ties = pd.DataFrame([{"event_id": "c1", "competition_key": "efl_cup",
+                          "date": "2026-09-24", "opponent": "Luton Town"}])
+
+    assert espn_soccer.matches_he_played("epl", "19", ties, 2027, seen={}) == []

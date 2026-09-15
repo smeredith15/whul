@@ -162,9 +162,6 @@ def disagreements(
     be promoted to one that blocks.
     """
     domestic, held, held_names = counted_appearances(attributed, league)
-    if claimed - domestic <= TOLERANCE:
-        return []
-
     club_domestic, club_held, club_keys = club_football(matches, league)
     seen_keys = ({str(r.competition_key) for r in attributed.itertuples()}
                  if attributed is not None and not attributed.empty else set())
@@ -178,7 +175,26 @@ def disagreements(
         "held_in": held_names,
         "club": club_domestic,
         "missing": sorted(club_keys - seen_keys),
+        "saw_in": sorted(seen_keys),
     }
+
+    # Before anything is compared against the gamelog, whether the gamelog is
+    # this season's. Monaco had played four league matches and Balogun's came
+    # back with thirty-one, under a competition name the club's own results
+    # never use -- so none of them joined to a match, and all of them counted
+    # as domestic football. He passed: the check reports a figure larger than
+    # its gamelog, and his was smaller than a gamelog holding most of a season
+    # he was not being asked about. A gamelog longer than its club's whole
+    # season is wrong however the competition is spelled, which is why this is
+    # counted rather than read.
+    if club_keys and domestic - club_domestic > TOLERANCE:
+        entry["verdict"] = "stale"
+        entry["excess"] = round(domestic - club_domestic, 1)
+        return [entry]
+
+    if claimed - domestic <= TOLERANCE:
+        return []
+
     if club_keys and claimed - club_domestic > TOLERANCE:
         # More domestic football than the club played. Impossible, so it is a
         # fault however the gamelog behaved.
@@ -205,12 +221,22 @@ VERDICTS = {
         "      The gamelog returned every competition the club played, so the "
         "excess is a match he did not play or one he played in Europe.",
     ),
+    "stale": (
+        "have a gamelog holding more football than their club has played",
+        "      A gamelog longer than its club's whole season is not this "
+        "season's, so nothing is judged against it -- the comparison it exists "
+        "for cannot be made. The competitions it came back under are named: "
+        "where they are not the club's own keys, its events joined to no match "
+        "and were counted on their own authority.",
+    ),
     "unjudged": (
         "could not be judged: their gamelog did not return every competition "
         "their club played",
         "      The missing competitions are named. A figure larger than a "
         "gamelog that never fetched the domestic cup is that gamelog's "
-        "silence, not the figure's fault.",
+        "silence, not the figure's fault -- and the cup football itself is "
+        "scored either way, since the roster aggregate carries it. Only the "
+        "attribution is missing.",
     ),
 }
 
@@ -220,7 +246,7 @@ def report(found: list[dict]) -> list[str]:
     if not found:
         return []
     lines: list[str] = []
-    for verdict in ("impossible", "excess", "unjudged"):
+    for verdict in ("impossible", "stale", "excess", "unjudged"):
         group = [e for e in found if e.get("verdict", "excess") == verdict]
         if not group:
             continue
@@ -237,6 +263,15 @@ def report(found: list[dict]) -> list[str]:
                        if entry.get("missing") and verdict == "unjudged" else "")
             club = (f", the club played {entry['club']:g}"
                     if entry.get("club") else "")
+            if verdict == "stale":
+                lines.append(
+                    f"      {entry['player']} ({entry['league']}): his gamelog "
+                    f"shows {entry['played']:g} domestic, the club has played "
+                    f"{entry['club']:g}; its events came back under "
+                    f"{', '.join(entry['saw_in']) or 'nothing'}  "
+                    f"({entry['excess']:+g})"
+                )
+                continue
             lines.append(
                 f"      {entry['player']} ({entry['league']}): the figures "
                 f"count {entry['roster']:g}, his gamelog shows "

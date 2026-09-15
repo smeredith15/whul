@@ -175,10 +175,42 @@ def test_a_complete_gamelog_short_of_the_claim_is_an_excess():
 
 
 def test_a_claim_at_or_under_the_gamelog_is_never_reported():
+    four = _club("epl", "epl", "epl", "epl")
     assert attribution.disagreements(
-        _gamelog(epl=4), 4.0, "Fine", "Premier League", _club("epl")) == []
+        _gamelog(epl=4), 4.0, "Fine", "Premier League", four) == []
     assert attribution.disagreements(
-        _gamelog(epl=4), 2.0, "Missed some", "Premier League", _club("epl")) == []
+        _gamelog(epl=4), 2.0, "Missed some", "Premier League", four) == []
+
+
+def test_a_gamelog_longer_than_its_clubs_season_is_not_this_season(monkeypatch):
+    """Monaco had played four league matches and Balogun's gamelog came back
+    with thirty-one, under a name the club's own results never use -- so none
+    of them joined to a match and all of them counted as domestic football.
+
+    He passed every check there was. The comparison reports a figure larger
+    than its gamelog, and his figure was smaller than a gamelog holding most
+    of a season nobody had asked about."""
+    out, = attribution.disagreements(
+        _gamelog(**{"French Ligue 1": 31}), 4.0, "Folarin Balogun", "Ligue 1",
+        _club("ligue1", "ligue1", "ligue1", "ligue1"))
+
+    assert out["verdict"] == "stale"
+    assert out["played"] == 31.0
+    assert out["club"] == 4.0
+    assert out["saw_in"] == ["French Ligue 1"]
+
+
+def test_a_stale_gamelog_is_reported_before_anything_is_judged_against_it():
+    """It is the instrument, so a fault found with it is not a fault found
+    with the player."""
+    found = attribution.disagreements(
+        _gamelog(**{"French Ligue 1": 31}), 4.0, "Folarin Balogun", "Ligue 1",
+        _club("ligue1", "ligue1", "ligue1", "ligue1"))
+    text = "\n".join(attribution.report(found))
+
+    assert "more football than their club has played" in text
+    assert "his gamelog shows 31 domestic, the club has played 4" in text
+    assert "French Ligue 1" in text
 
 
 def test_the_clubs_own_football_is_counted_once_an_event():
