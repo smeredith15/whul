@@ -1298,3 +1298,27 @@ def test_the_breakdown_moves_no_score():
     # cup run, and two Champions League wins at five apiece.
     assert row["wins"] == 5
     assert row["total_points"] == pytest.approx(29.67, abs=0.01)
+
+
+def test_a_club_that_fell_out_of_europe_says_so_in_order():
+    """`continental` names the competition it went furthest in, which is the
+    right answer to "which is this club in" and the wrong one to "what was its
+    European season"."""
+    rows = pd.concat([_arsenal_season(), pd.DataFrame([
+        _match("Arsenal", "Porto", "UEFA Europa League Round of 16", "uel", 3, 0),
+        _match("Porto", "Arsenal", "UEFA Europa League Round of 16", "uel", 0, 3),
+    ])], ignore_index=True)
+    row = score_teams(rows).query("team == 'Arsenal'").iloc[0]
+
+    assert row["continental"] == "Champions League"
+    assert row["continental_path"] == "Champions League → Europa League"
+
+
+def test_a_club_in_one_european_competition_gets_no_arrow():
+    row = score_teams(_arsenal_season()).query("team == 'Arsenal'").iloc[0]
+    assert row["continental_path"] == "Champions League"
+
+
+def test_a_club_in_no_european_competition_gets_nothing():
+    row = score_teams(_arsenal_season()).query("team == 'Chelsea'").iloc[0]
+    assert row["continental_path"] == ""

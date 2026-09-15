@@ -292,6 +292,12 @@ def score_teams(
         totals[column] = totals[column].fillna(0).astype(int)
 
     totals["continental"] = _continental_played(scored, totals)
+    # Every European competition the club actually played in, in the order a
+    # club falls through them. A side knocked out of the Champions League and
+    # into the Europa League was in both, and `continental` names only the one
+    # it went furthest in -- which is the right answer to "which competition is
+    # this club in" and the wrong one to "what was its European season".
+    totals["continental_path"] = _continental_path(scored, totals)
     # Whether the season it belongs to is over. Without it a profile cannot
     # tell "did not win the league" from "nobody has won anything yet", and
     # those are the same blank in September.
@@ -569,6 +575,25 @@ def _league_champions(scored: pd.DataFrame, totals: pd.DataFrame,
             if found is not None:
                 champ.iloc[found] = 1
     return champ
+
+
+def _continental_path(scored: pd.DataFrame, totals: pd.DataFrame) -> list[str]:
+    """The European competitions a club played, best first, joined by an arrow.
+
+    The order is `CONTINENTAL_TIERS`, which is the order a club drops through
+    them, so the arrow reads as the fall it was: "Champions League to Europa
+    League" and never the other way round.
+    """
+    played: dict[tuple[str, str, int], list[str]] = {}
+    for tier, name in CONTINENTAL_TIERS:
+        here = scored[scored["tier"] == tier.value]
+        for league, team, season in set(
+                zip(here["league"], here["team"], here["season"])):
+            played.setdefault((str(league), str(team), int(season)), []).append(name)
+    return [
+        " \u2192 ".join(played.get((str(l), str(t), int(s)), []))
+        for l, t, s in zip(totals["league"], totals["team"], totals["season"])
+    ]
 
 
 def _continental_played(scored: pd.DataFrame, totals: pd.DataFrame) -> list[str]:
