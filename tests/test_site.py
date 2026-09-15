@@ -2680,3 +2680,81 @@ def test_no_playoff_section_until_there_is_a_playoff():
 
 def test_a_league_without_a_panel_keeps_the_table():
     assert site_build._nfl_boxes({"league": "MLB", "role": "Batter"}) is None
+
+
+# --- NFL teams, and the outcome boxes both panels share ---------------------
+
+def _nfl_team(**over):
+    row = {"league": "NFL", "team": "SEA", "team_division": "NFC West",
+           "div_rank": 1, "reg_wins": 11.0, "reg_big_wins": 4.0,
+           "reg_shutouts": 1.0, "div_wins": 5.0, "point_diff": 84.0,
+           "playoff_appearance": 1.0, "playoff_wins": 2.0, "div_champ": 1,
+           "season_settled": True}
+    row.update(over)
+    return row
+
+
+def test_every_weighted_column_reaches_a_box_and_they_sum_to_the_score():
+    """The eight columns the scorer multiplies are the eight the page shows,
+    off the same table, so the panel can be checked against itself."""
+    from whul.scoring.nfl import TEAM_WEIGHTS
+
+    row = _nfl_team()
+    panel = site_build._nfl_team_panel(row)
+    boxes = (panel["top"] + panel["secondary"] + panel["outcomes"]
+             + panel["post"]["top"])
+
+    assert round(sum(b["points"] for b in boxes), 1) == round(
+        sum(row[c] * w for c, w in TEAM_WEIGHTS.items()), 1)
+
+
+def test_a_season_outcome_carries_its_points_rather_than_a_bare_yes():
+    """As chips reading "Yes" these were fifteen and ten points in the score
+    and nowhere on the page, and the panel silently stopped adding up."""
+    panel = site_build._nfl_team_panel(_nfl_team())
+    title = next(b for b in panel["outcomes"] if b["label"] == "Division title")
+
+    assert title["value"] == "Yes"
+    assert title["points"] == 15.0
+
+
+def test_an_unsettled_season_says_neither_won_nor_lost():
+    """A club that has not won its division in September has not lost it."""
+    panel = site_build._nfl_team_panel(
+        _nfl_team(div_champ=0, playoff_appearance=0, season_settled=False))
+
+    assert [b["value"] for b in panel["outcomes"]] == ["—", "—"]
+
+    over = site_build._nfl_team_panel(
+        _nfl_team(div_champ=0, playoff_appearance=0, season_settled=True))
+    assert [b["value"] for b in over["outcomes"]] == ["No", "No"]
+
+
+def test_a_division_standing_reads_as_a_place():
+    panel = site_build._nfl_team_panel(_nfl_team(div_rank=3))
+    assert panel["head"] == [["Division", "3rd in NFC West"]]
+
+    assert site_build._ordinal(1) == "1st"
+    assert site_build._ordinal(2) == "2nd"
+    assert site_build._ordinal(4) == "4th"
+    # The teens, which the last-digit rule gets wrong.
+    assert site_build._ordinal(11) == "11th"
+    assert site_build._ordinal(12) == "12th"
+
+
+def test_no_playoff_section_for_a_club_that_won_none():
+    assert "post" not in site_build._nfl_team_panel(_nfl_team(playoff_wins=0))
+
+
+def test_a_soccer_leagues_title_and_europe_are_boxes_that_carry_points():
+    """Same fault as the NFL outcomes: Arsenal's sections summed to 29.7
+    against a total of 39.7 the moment a league title landed."""
+    row = {"league_champion": 1, "pts_league_title": 10.0,
+           "continental_entry": "Champions League",
+           "pts_continental_entry": 12.0, "league_settled": True}
+    outcomes = site_build._soccer_outcomes(row)
+
+    assert [(b["label"], b["value"], b["points"]) for b in outcomes] == [
+        ("League title", "Yes", 10.0),
+        ("Europe next year", "Champions League", 12.0),
+    ]

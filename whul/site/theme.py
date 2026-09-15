@@ -687,6 +687,13 @@ dialog.profile .boxrow {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   gap: 8px; margin-bottom: 8px;
 }
+/* A row holding one box stretched it across the dialog -- a club whose whole
+   postseason was two wins read as a headline rather than as one figure among
+   the four above it. Capped only in that case: a flat cap on every row wrapped
+   a three-box line onto two. */
+dialog.profile .boxrow:has(> .statbox:only-child) {
+  grid-template-columns: 176px; justify-content: start;
+}
 /* Capped rather than stretched. With `1fr` a row holding two of them spread
    each to half the dialog, so the secondary line came out larger than the top
    one it is meant to sit under. */
@@ -761,6 +768,14 @@ dialog.profile .boxes .phase {
   font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
   color: var(--muted); margin: 2px 0 5px;
 }
+/* Outcomes sit apart from the counts above them: a season's verdict, not a
+   week's tally. Wider than a count box because the value is a word. */
+dialog.profile .boxrow.rest.outcome {
+  grid-template-columns: repeat(auto-fit, minmax(96px, 132px));
+  margin-top: 2px;
+}
+dialog.profile .boxrow.rest.outcome .bv { font-size: 14px; }
+
 dialog.profile .statbox .bv sup.bye {
   font-size: 0.5em; font-weight: 600; color: var(--text-secondary);
   margin-left: 1px; vertical-align: super;

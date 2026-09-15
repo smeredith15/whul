@@ -1094,8 +1094,32 @@ SCRIPT = """\
       return '<div class="body boxes comp">' +
              '<h3>' + s.name + '</h3>' +
              (head ? '<div class="games comp">' + head + '</div>' : '') +
-             blocks + '</div>';
+             blocks + outcomeRow(s.outcomes) + '</div>';
     }).join('');
+  }
+
+  // A season outcome has no match behind it -- a division title is not a game
+  // -- but it is worth fifteen points, and as a chip reading "Yes" those
+  // points appeared nowhere on the page while sitting in the score.
+  function outcomeRow(list) {
+    if (!list || !list.length) return '';
+    return '<div class="boxrow rest outcome">' +
+           list.map(function (b) { return statBox(b, true); }).join('') +
+           '</div>';
+  }
+
+  function renderNflTeam(panel) {
+    var head = (panel.head || []).map(function (h) {
+      return '<span><i>' + h[0] + '</i> ' + h[1] + '</span>';
+    }).join('');
+    var post = '';
+    if (panel.post) {
+      post = '<details class="body boxes post"><summary>Playoffs</summary>' +
+             boxRows(panel.post) + '</details>';
+    }
+    return '<div class="body boxes">' +
+           (head ? '<div class="games comp">' + head + '</div>' : '') +
+           boxRows(panel) + outcomeRow(panel.outcomes) + '</div>' + post;
   }
 
   function boxRows(part) {
@@ -1110,6 +1134,7 @@ SCRIPT = """\
   function renderPanel(panel) {
     if (!panel) return '';
     if (panel.kind === 'soccer') return renderSoccer(panel);
+    if (panel.kind === 'nfl-team') return renderNflTeam(panel);
     if (!panel.season) return '';
     var head = '';
     if (panel.games) {
