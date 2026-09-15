@@ -1495,10 +1495,15 @@ def cmd_probe_cup(args: argparse.Namespace) -> int:
         "  match's own roster endpoint.",
         "",
     ]
+    for tie in found.get("ties", []):
+        for line in tie.get("shape", []):
+            lines.append(f"  {line}")
     report = "\n".join(lines)
     print(report)
     if args.out:
-        Path(args.out).write_text(report)
+        from pathlib import Path
+
+        Path(args.out).write_text(report + "\n")
         print(f"  written to {args.out}\n")
     return 0
 

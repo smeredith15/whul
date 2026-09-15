@@ -1104,6 +1104,50 @@ def _named_in(node, found: list, depth: int = 0) -> list:
     return found
 
 
+#: What might mark a roster entry as somebody who actually played. Asked as a
+#: set rather than assumed, because crediting the bench is as wrong as missing
+#: the starters and nothing in the payload is documented.
+PLAYED_HINTS = ("starter", "didNotPlay", "subbedIn", "subbedOut", "active",
+                "playerParticipation", "appearances", "stats", "subbedInFor",
+                "subbedOutFor", "formationPlace", "jersey")
+
+
+def _roster_shape(payload: dict, club: str) -> list[str]:
+    """How a match's roster block is built, in enough detail to read it.
+
+    Reports the keys on each side's block and on one athlete entry, and how
+    many entries carry each of the fields that might mean "played". The point
+    is to be able to write the extraction against what is there rather than
+    against what it ought to be.
+    """
+    blocks = payload.get("rosters")
+    if not isinstance(blocks, list) or not blocks:
+        return ["rosters: absent or not a list"]
+    out = [f"rosters: {len(blocks)} block(s)"]
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        named = str((block.get("team") or {}).get("displayName") or "?")
+        people = block.get("roster")
+        people = people if isinstance(people, list) else []
+        out.append(f"    {named} -- block keys: "
+                   f"{', '.join(sorted(k for k in block))}")
+        out.append(f"        {len(people)} entr(ies)")
+        if not people:
+            continue
+        first = people[0] if isinstance(people[0], dict) else {}
+        out.append(f"        entry keys: {', '.join(sorted(first))}")
+        for hint in PLAYED_HINTS:
+            present = [p for p in people
+                       if isinstance(p, dict) and hint in p]
+            if not present:
+                continue
+            values = {str(p.get(hint))[:24] for p in present}
+            out.append(f"        {hint}: on {len(present)}/{len(people)}, "
+                       f"values {sorted(values)[:5]}")
+    return out
+
+
 def probe_cup_lineups(league: str, club: str, season: int, session=None) -> dict:
     """Does a cup tie's own record say who played in it?
 
@@ -1167,6 +1211,13 @@ def probe_cup_lineups(league: str, club: str, season: int, session=None) -> dict
             seen.setdefault(athlete_id, name)
         entry["athletes_named"] = len(seen)
         entry["sample"] = [f"{i}: {n}" for i, n in list(seen.items())[:6]]
+        # Named is not the same as appeared. Forty-three athletes is both
+        # squads including everyone who sat on the bench all evening, and
+        # crediting an unused substitute with an appearance is the same
+        # overstatement in the other direction. So the shape of a roster entry
+        # is reported too: whatever field separates a player from a spectator
+        # is the field attribution has to read.
+        entry["shape"] = _roster_shape(payload, club)
         looked.append(entry)
     out["ties"] = looked
     return out
