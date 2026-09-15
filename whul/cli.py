@@ -344,12 +344,22 @@ def _spec(league: str):
         from whul.scoring import nhl
         from whul.sources import nhl as source
 
+        # The standings, for how many games each skater's club has played. The
+        # benchmark path has always fetched them; this one never did, so the
+        # figure was blank and "50 played" could not say whether the rest were
+        # missed or not yet played -- which is the only reason it is a heading.
+        held: dict[str, pd.DataFrame] = {}
+
         def load(seasons):
             regular = source.load_skaters(seasons, source.GAME_TYPE_REGULAR)
             playoffs = source.load_skaters(seasons, source.GAME_TYPE_PLAYOFFS)
             regular["_phase"] = "reg"
             if not playoffs.empty:
                 playoffs["_phase"] = "post"
+            try:
+                held["standings"] = source.load_divisions(seasons)
+            except Exception:  # noqa: BLE001 -- a heading must not stop scoring
+                held["standings"] = pd.DataFrame()
             return pd.concat([regular, playoffs], ignore_index=True)
 
         #: What a skater is scored on, and so what his playoffs must also show.
@@ -364,7 +374,7 @@ def _spec(league: str):
                 regular_totals, split_phases,
             )
 
-            scored = nhl.score_skaters(raw)
+            scored = nhl.score_skaters(raw, held.get("standings"))
             # From the scored frame, not reindexed off `raw`: the scorer drops
             # skaters who earned nothing and renumbers, so matching by position
             # afterwards mislabelled the phase of every row after the first
@@ -387,11 +397,19 @@ def _spec(league: str):
             post_counting = phase_totals(
                 scored, keys, counted, scored["phase"], POSTSEASON,
                 prefix="post_")
-            out = apply_bonus(
-                phases.merge(counting, on=keys, how="left")
-                .merge(post_counting, on=keys, how="left"),
-                RULES["NHL"] if postseason else None,
+            # Carried through the groupby rather than left behind by it. It
+            # is a fact about his club, identical on all his rows, so the
+            # largest is the same as any of them -- but a column the aggregate
+            # never mentions is a column the page reads as unknown.
+            clubs = (
+                scored.groupby(keys, as_index=False)["team_games"].max()
+                if "team_games" in scored.columns else None
             )
+            out = phases.merge(counting, on=keys, how="left").merge(
+                post_counting, on=keys, how="left")
+            if clubs is not None:
+                out = out.merge(clubs, on=keys, how="left")
+            out = apply_bonus(out, RULES["NHL"] if postseason else None)
             for column in counted + [f"post_{c}" for c in counted]:
                 if column in out.columns:
                     out[column] = out[column].fillna(0)
