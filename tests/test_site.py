@@ -2758,3 +2758,100 @@ def test_a_soccer_leagues_title_and_europe_are_boxes_that_carry_points():
         ("League title", "Yes", 10.0),
         ("Europe next year", "Champions League", 12.0),
     ]
+
+
+# --- basketball as rates, hockey as a tally --------------------------------
+
+def _nba_row(**over):
+    row = {"league": "NBA", "role": "C", "regular_games": 50, "team_games": 52,
+           "points": 1215, "rebounds": 610, "assists": 510, "steals": 62,
+           "blocks": 38, "turnovers": 151, "three_pt_made": 90,
+           "plus_minus": 212, "double_doubles": 41, "triple_doubles": 14}
+    row.update(over)
+    return row
+
+
+def test_basketball_is_shown_as_the_sport_reports_it():
+    panel = site_build._nba_panel(_nba_row())
+
+    assert [(b["label"], b["value"]) for b in panel["top"]] == [
+        ("PPG", "24.3"), ("RPG", "12.2"), ("APG", "10.2")]
+    # The strip is still the season's total times its weight, so the big
+    # figure and the points are the same season said twice.
+    assert panel["top"][0]["points"] == 1215.0
+
+
+def test_an_nba_panel_adds_up_to_the_score():
+    from whul.scoring.nba import (
+        BOX_WEIGHTS, DOUBLE_DOUBLE_BONUS, PLUS_MINUS_WEIGHT,
+        TRIPLE_DOUBLE_BONUS,
+    )
+
+    row = _nba_row()
+    panel = site_build._nba_panel(row)
+    shown = sum(b["points"] for b in panel["top"] + panel["secondary"])
+    scored = (sum(row[c] * w for c, w in BOX_WEIGHTS.items())
+              + row["double_doubles"] * DOUBLE_DOUBLE_BONUS
+              + row["triple_doubles"] * TRIPLE_DOUBLE_BONUS
+              + row["plus_minus"] * PLUS_MINUS_WEIGHT)
+
+    assert round(shown, 1) == round(scored, 1)
+
+
+def test_a_triple_double_counts_in_both_boxes_because_it_earns_both():
+    """`(doubles >= 2) * 1.5 + (doubles >= 3) * 3.0` -- a triple-double is
+    worth 4.5, so counting it in both is what makes the boxes match."""
+    panel = site_build._nba_panel(_nba_row(double_doubles=41, triple_doubles=14))
+    by = {b["label"]: b for b in panel["secondary"]}
+
+    assert by["Double-doubles"]["points"] == 41 * 1.5
+    assert by["Triple-doubles"]["points"] == 14 * 3.0
+
+
+def test_hockey_is_shown_as_a_tally_and_adds_up():
+    from whul.scoring.nhl import (
+        PTS_ASSIST, PTS_GOAL, PTS_PLUS_MINUS, PTS_SHOT,
+    )
+
+    row = {"league": "NHL", "role": "Skater", "games_played": 70, "goals": 30,
+           "assists": 45, "shots": 210, "plus_minus": 12}
+    panel = site_build._nhl_panel(row)
+
+    assert [b["label"] for b in panel["top"]] == [
+        "Goals", "Assists", "Shots", "+/-"]
+    assert round(sum(b["points"] for b in panel["top"]), 1) == round(
+        30 * PTS_GOAL + 45 * PTS_ASSIST + 210 * PTS_SHOT + 12 * PTS_PLUS_MINUS, 1)
+
+
+def test_nothing_played_reads_as_nothing_rather_than_as_zero():
+    """A club that has not played reports nothing; a player who took no shots
+    reports none. They are different answers and the page says so."""
+    panel = site_build._nba_panel({"league": "NBA", "role": "C"})
+
+    assert [b["value"] for b in panel["top"]] == ["—"] * 3
+    assert panel["head"] == [["Games played", "—"]]
+
+    played = site_build._nba_panel(_nba_row(blocks=0))
+    assert next(b for b in played["secondary"] if b["label"] == "BPG")["value"] == "0.0"
+
+
+def test_hockey_claims_no_team_games_it_cannot_know():
+    """The NHL endpoint serves one row per skater for the whole season, so
+    nothing on the row says how often his club played."""
+    panel = site_build._nhl_panel(
+        {"league": "NHL", "role": "Skater", "games_played": 70})
+
+    assert [h[0] for h in panel["head"]] == ["Games played"]
+
+
+def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
+    """Two of the four things a club is scored on. A competition where it kept
+    none is a fact about the season, not a box with nothing to say."""
+    part = {"wins": 2, "draws": 0, "losses": 0, "shootout_wins": 0,
+            "shootout_losses": 0, "big_margins": 0, "clean_sheets": 0,
+            "pts_wins": 6.0, "pts_draws": 0.0, "pts_losses": 0.0,
+            "pts_shootout_wins": 0.0, "pts_shootout_losses": 0.0,
+            "pts_big_margins": 0.0, "pts_clean_sheets": 0.0}
+    block = site_build._soccer_block(part, "round-robin")
+
+    assert [b["label"] for b in block["secondary"]] == ["Big wins", "Clean sheets"]

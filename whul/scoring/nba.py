@@ -110,7 +110,13 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     # A row with no recorded points is a DNP, not a zero-point performance.
     work = work[resolve_num(box, ["points", "pts"]).notna().to_numpy()]
 
+    # Carried so a profile can show them. The bonus itself is unchanged: a
+    # triple-double satisfies both tests and earns both, which is why the
+    # double-double count includes it -- the count times its weight is then
+    # exactly what the bonus paid, and a page built from it adds up.
     doubles = sum((work[c] >= 10).astype(int) for c in DOUBLE_CATEGORIES)
+    work["double_doubles"] = (doubles >= 2).astype(int)
+    work["triple_doubles"] = (doubles >= 3).astype(int)
     work["game_points"] = (
         sum(work[c] * w for c, w in BOX_WEIGHTS.items())
         + (doubles >= 2).astype(float) * DOUBLE_DOUBLE_BONUS
@@ -130,9 +136,12 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     keys = ["season", "athlete_id", "player", "position"]
     phases = split_phases(work, keys, "game_points", "game_count", work["phase"])
     counting = regular_totals(
-        work, keys, list(BOX_WEIGHTS) + ["plus_minus"], work["phase"])
+        work, keys,
+        list(BOX_WEIGHTS) + ["plus_minus", "double_doubles", "triple_doubles"],
+        work["phase"])
     agg = apply_bonus(phases.merge(counting, on=keys, how="left"),
                       RULES["NBA"] if postseason else None)
+    agg = agg.merge(_games_his_team_played(work, keys, box), on=keys, how="left")
     agg["league"] = "NBA"
     agg["role"] = agg["position"]
     keep = (agg["games_played"] >= MIN_GAMES) & (agg["total_points"] > MIN_SCORE)
@@ -201,6 +210,39 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
         IST_FINAL_PATTERN, case=False, regex=True, na=False
     )
     return games
+
+
+def _games_his_team_played(work: pd.DataFrame, keys: list[str],
+                           box: pd.DataFrame) -> pd.DataFrame:
+    """How many games the player's club played, beside how many he did.
+
+    Fifty of eighty-two is a season interrupted and fifty of fifty is the
+    league in January, and a games-played figure alone cannot tell them apart.
+
+    Counted off the box scores already in hand -- the dates a club appears on
+    are the dates it played -- so nothing is fetched. Returns an empty column
+    where the feed carries no team, which is the honest answer rather than a
+    number that would be the player's own games by another name.
+    """
+    team = resolve_str(box, ["team_abbreviation", "team_abbrev", "team_id",
+                             "team_name", "team"])
+    day = resolve_str(box, ["game_id", "game_date", "date"])
+    if team is None or day is None:
+        return work[keys].drop_duplicates().assign(team_games=pd.NA)
+    held = work.assign(
+        _team=team.reindex(work.index).astype(str),
+        _day=day.reindex(work.index).astype(str),
+    )
+    held = held[held["phase"] == REGULAR]
+    if held.empty:
+        return work[keys].drop_duplicates().assign(team_games=pd.NA)
+    days = held.groupby("_team")["_day"].agg(lambda s: frozenset(s)).to_dict()
+    return (
+        held.groupby(keys)["_team"]
+        .agg(lambda s: len(frozenset().union(
+            *(days.get(t, frozenset()) for t in set(s)))))
+        .reset_index(name="team_games")
+    )
 
 
 def score_teams(schedule: pd.DataFrame) -> pd.DataFrame:

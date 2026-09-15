@@ -1,0 +1,60 @@
+# Ask one source whether it is reachable and still the shape the scoring
+# expects, and print what it answered.
+#
+# `whul.cli probe <league>` has existed all along and nothing could run it: the
+# agent sandbox this project is developed in answers 403 to almost every sports
+# host, and the only workflow that called a probe named one league in its own
+# file. So every source note reading UNVERIFIED stayed that way for want of a
+# dispatch button.
+#
+# It reads and writes nothing. Failing here means the feed moved, not that the
+# standings are wrong -- which is why it is its own workflow rather than a step
+# in the nightly, where a moved feed would take the site down with it.
+
+name: Probe source
+
+on:
+  workflow_dispatch:
+    inputs:
+      league:
+        description: "Source key, e.g. nhl, nba, mlb, ncaaf, tennis2026"
+        default: "nhl"
+      season:
+        description: "Season to ask for. Leave empty for the source's default."
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Probe
+        # pipefail because a pipeline exits with its last command's status and
+        # the default shell is `bash -e`: without it `tee` reports success
+        # however the command exited, and a dead feed would go green.
+        env:
+          SEASON: ${{ inputs.season }}
+        run: |
+          set -o pipefail
+          FLAGS=""
+          if [ -n "$SEASON" ]; then FLAGS="--season $SEASON"; fi
+          echo "probe ${{ inputs.league }} $FLAGS"
+          python -m whul.cli probe "${{ inputs.league }}" $FLAGS | tee probe.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe
+          path: probe.txt
+          if-no-files-found: ignore

@@ -1135,6 +1135,8 @@ SCRIPT = """\
     if (!panel) return '';
     if (panel.kind === 'soccer') return renderSoccer(panel);
     if (panel.kind === 'nfl-team') return renderNflTeam(panel);
+    // A plain two-row panel with a heading: basketball's rates, hockey's tally.
+    if (panel.kind === 'boxes') return renderNflTeam(panel);
     if (!panel.season) return '';
     var head = '';
     if (panel.games) {
