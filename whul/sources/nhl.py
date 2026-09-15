@@ -300,6 +300,34 @@ def probe(season: int = 2025) -> dict:
                                    "rawTeamAbbrev", "teamId")
                        if c in teams.columns), "")
         result["team_abbrev_column"] = abbrev or "NONE -- no abbreviation to join on"
+
+        # The team summary has no abbreviation, so these two endpoints share no
+        # key: a skater says "CBJ" and a team says "Columbus Blue Jackets".
+        # The standings payload is the third endpoint already being fetched for
+        # divisions, and it is the only place both spellings could sit on one
+        # row. Every key it returns, rather than a guess at which one: the last
+        # guess cost a round trip and the one before it cost ninety-six ties.
+        try:
+            ends = _standings_dates()
+            sid = season_id(season)
+            end = ends.get(sid)
+            payload = _web(f"/standings/{end}", cache_key=f"standings/{sid}") \
+                if end else {}
+            standings = payload.get("standings", []) if isinstance(payload, dict) else []
+            if standings:
+                result["standings_row_keys"] = sorted(str(k) for k in standings[0])
+                shaped = {
+                    k: v.get("default") if isinstance(v, dict) else v
+                    for k, v in standings[0].items()
+                }
+                result["standings_row_sample"] = {
+                    k: str(shaped[k])[:24] for k in sorted(shaped)
+                    if "team" in k.lower() or "abbrev" in k.lower()
+                }
+            else:
+                result["standings_row_keys"] = "EMPTY -- no standings rows"
+        except Exception as exc:  # noqa: BLE001 -- a probe reports, never raises
+            result["standings_row_keys"] = f"FAILED: {type(exc).__name__}: {exc}"
         if abbrev and skaters is not None and not skaters.empty \
                 and "teamAbbrevs" in skaters.columns:
             known = {str(v) for v in teams[abbrev].dropna()}
