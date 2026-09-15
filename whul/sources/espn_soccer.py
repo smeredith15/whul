@@ -1148,6 +1148,81 @@ def _roster_shape(payload: dict, club: str) -> list[str]:
     return out
 
 
+def lineup_of(league: str, event_id: str, session=None) -> set | None:
+    """The athletes who actually played in one match, by the match's own record.
+
+    Twenty entries a side is the matchday squad, not the eleven. ``active`` is
+    True for all twenty and means *named*, not used; what separates a player
+    from a spectator is ``starter`` or ``subbedIn`` -- eleven and five of
+    Chelsea's twenty against Luton, with the four unused substitutes carrying
+    neither, and ``subbedInFor`` present on exactly those five.
+
+    Crediting the four would be the same overstatement as missing the eleven,
+    pointed the other way, which is why this reads the flags rather than the
+    length of the list.
+
+    ``None`` where the match could not be read at all, so a caller can tell
+    that from a match somebody sat out.
+    """
+    session = session or requests.Session()
+    _, path = LEAGUE_PATHS[league]
+    try:
+        payload = _get(SUMMARY.format(path=path), {"event": event_id}, session)
+    except Exception:  # noqa: BLE001 -- one match, not the run
+        return None
+    blocks = payload.get("rosters")
+    if not isinstance(blocks, list) or not blocks:
+        return None
+    played = set()
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        for entry in block.get("roster") or []:
+            if not isinstance(entry, dict):
+                continue
+            if not (entry.get("starter") or entry.get("subbedIn")):
+                continue
+            athlete = entry.get("athlete")
+            if isinstance(athlete, dict) and athlete.get("id"):
+                played.add(str(athlete["id"]))
+    return played
+
+
+def matches_he_played(
+    league: str, athlete_id: str, ties, season: int | None = None,
+    session=None, seen: dict | None = None,
+) -> list[dict]:
+    """Gamelog-shaped rows for ties the gamelog would not return.
+
+    The domestic cups are scored -- the roster aggregate carries them -- and
+    the gamelog will not say which of his club's ties he was in. The tie itself
+    will. ``ties`` are his club's matches in the competitions his gamelog never
+    mentioned, and each is asked once however many rostered players share the
+    club, which is what ``seen`` is for.
+    """
+    session = session or requests.Session()
+    out = []
+    for tie in ties.itertuples() if hasattr(ties, "itertuples") else ties:
+        event = str(getattr(tie, "event_id", "") or "")
+        if not event:
+            continue
+        if seen is None or event not in seen:
+            found = lineup_of(league, event, session)
+            if seen is not None:
+                seen[event] = found
+        else:
+            found = seen[event]
+        if not found or str(athlete_id) not in found:
+            continue
+        out.append({
+            "event_id": event,
+            "date": str(getattr(tie, "date", "") or "")[:10],
+            "competition": str(getattr(tie, "competition_key", "") or ""),
+            "opponent": str(getattr(tie, "opponent", "") or ""),
+        })
+    return out
+
+
 def probe_cup_lineups(league: str, club: str, season: int, session=None) -> dict:
     """Does a cup tie's own record say who played in it?
 

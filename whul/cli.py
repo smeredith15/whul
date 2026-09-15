@@ -1454,6 +1454,31 @@ def _gamelog_lines(report: dict) -> list[str]:
     return lines
 
 
+def _cup_appearances(league, athlete, counted, matches, season, lineups):
+    """His club's ties in competitions his gamelog never named, that he played.
+
+    Deliberately narrow. Where the gamelog returned a competition it is the
+    authority on which of its matches he was in, and second-guessing it would
+    be a request per match for an answer already given. This asks only about
+    the competitions it is silent on, which is the whole of the gap.
+    """
+    from whul.sources import espn_soccer
+
+    if matches is None or getattr(matches, "empty", True):
+        return []
+    if "competition_key" not in matches.columns:
+        return []
+    seen = ({str(r.competition_key) for r in counted.itertuples()}
+            if counted is not None and not counted.empty else set())
+    keys = {str(k) for k in matches["competition_key"]}
+    missing = keys - seen
+    if not missing:
+        return []
+    ties = matches[matches["competition_key"].astype(str).isin(missing)]
+    return espn_soccer.matches_he_played(
+        league, athlete, ties, season, seen=lineups)
+
+
 def cmd_probe_cup(args: argparse.Namespace) -> int:
     """Whether a cup tie's own record says who played in it.
 
@@ -1628,6 +1653,10 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     club_matches: dict[str, object] = {}
     unreadable = 0
     unopened: dict[str, bool] = {}
+    # One parsed lineup per tie, shared across every rostered player at that
+    # club. Chelsea's two ties are two requests whether one player is rostered
+    # there or three.
+    lineups: dict[str, object] = {}
     for row in mine.itertuples():
         key = PLAYER_LEAGUES[str(row.league)]
         # A league whose season has not opened has no squads to search, and
@@ -1680,6 +1709,17 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
         if matches is not None and not matches.empty and club:
             matches = matches[matches["team"].astype(str) == str(club)]
         counted = attribution.attribute(events, matches)
+        # The gamelog does not return the domestic cups, so a club that plays
+        # one leaves its players unjudgeable -- the figure counts the cup tie
+        # and the gamelog cannot say whether he was in it. The tie itself can.
+        # Asked only for competitions the gamelog never mentioned, and once per
+        # tie however many rostered players share the club.
+        extra = _cup_appearances(key, athlete, counted, matches, season, lineups)
+        if extra:
+            events = pd.concat([events, pd.DataFrame(extra)], ignore_index=True)
+            counted = attribution.attribute(events, matches)
+            print(f"      + {len(extra)} cup appearance(s) read from the ties "
+                  f"themselves, which the gamelog does not return")
         attributed[str(row.display_name)] = counted
         # His club's own matches, kept for the judgement below: they are the
         # only hard ceiling, and they say which competitions his gamelog was

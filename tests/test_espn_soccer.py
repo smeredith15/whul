@@ -1154,3 +1154,101 @@ def test_a_league_nobody_declared_a_window_for_is_asked_anyway():
     from whul.sources import espn_soccer
 
     assert espn_soccer.season_has_begun("nobody", 2027, date(2026, 9, 15))
+
+
+# --- who actually played in a cup tie ---------------------------------------
+
+def _squad(played):
+    """Twenty entries, as ESPN returns them: the matchday squad, not the XI."""
+    return [
+        {"athlete": {"id": str(i), "displayName": f"P{i}"},
+         # True for all twenty. It means named, not used -- which is exactly
+         # the trap this reads past.
+         "active": True,
+         "starter": i in played[:11],
+         "subbedIn": i in played[11:],
+         "subbedOut": False}
+        for i in range(1, 21)
+    ]
+
+
+def _summary(monkeypatch, blocks):
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "_get",
+                        lambda url, params, session=None: blocks)
+    return espn_soccer
+
+
+def test_a_lineup_is_who_played_not_who_was_named(monkeypatch):
+    """Twenty a side is the squad. `active` is True for all of them; eleven
+    started and five came on, and the four unused substitutes carry neither
+    flag. Crediting those four is the same overstatement as missing the
+    eleven, pointed the other way."""
+    espn_soccer = _summary(monkeypatch, {"rosters": [
+        {"team": {"displayName": "Chelsea"}, "roster": _squad(list(range(1, 17)))},
+    ]})
+
+    played = espn_soccer.lineup_of("epl", "401908127")
+
+    assert len(played) == 16
+    assert "7" in played          # a starter
+    assert "16" in played         # came off the bench
+    assert "19" not in played     # named, never used
+
+
+def test_a_match_that_cannot_be_read_is_not_a_match_nobody_played(monkeypatch):
+    """None, not an empty set, so a caller can tell a refused request from a
+    tie somebody sat out."""
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "_get",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("503")))
+    assert espn_soccer.lineup_of("epl", "1") is None
+
+    monkeypatch.setattr(espn_soccer, "_get", lambda *a, **k: {"boxscore": {}})
+    assert espn_soccer.lineup_of("epl", "1") is None
+
+
+def test_a_tie_is_asked_about_once_however_many_players_share_the_club(monkeypatch):
+    """Chelsea's two ties are two requests whether one rostered player is
+    there or three."""
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    asked = []
+
+    def get(url, params, session=None):
+        asked.append(params["event"])
+        return {"rosters": [{"team": {"displayName": "Chelsea"},
+                             "roster": _squad(list(range(1, 17)))}]}
+
+    monkeypatch.setattr(espn_soccer, "_get", get)
+    ties = pd.DataFrame([
+        {"event_id": "c1", "competition_key": "efl_cup", "date": "2026-09-24",
+         "opponent": "Luton Town"},
+        {"event_id": "c2", "competition_key": "efl_cup", "date": "2026-10-29",
+         "opponent": "Leeds United"},
+    ])
+    shared: dict = {}
+
+    first = espn_soccer.matches_he_played("epl", "7", ties, 2027, seen=shared)
+    second = espn_soccer.matches_he_played("epl", "8", ties, 2027, seen=shared)
+
+    assert len(first) == len(second) == 2
+    assert asked == ["c1", "c2"], "the second player re-fetched the ties"
+    assert first[0]["competition"] == "efl_cup"
+
+
+def test_an_unused_substitute_is_credited_with_nothing(monkeypatch):
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "_get", lambda *a, **k: {"rosters": [
+        {"team": {"displayName": "Chelsea"}, "roster": _squad(list(range(1, 17)))}]})
+    ties = pd.DataFrame([{"event_id": "c1", "competition_key": "efl_cup",
+                          "date": "2026-09-24", "opponent": "Luton Town"}])
+
+    assert espn_soccer.matches_he_played("epl", "19", ties, 2027, seen={}) == []
