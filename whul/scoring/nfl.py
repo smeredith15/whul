@@ -278,6 +278,11 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
         on=on, how="left",
     )
     summary["div_champ"] = _division_champions(summary, schedules)
+    # Whether the season these figures belong to is over. A profile cannot
+    # otherwise tell "did not win the division" from "nobody has won anything
+    # yet", and in September those are the same zero.
+    settled = settled_seasons(schedules)
+    summary["season_settled"] = summary["season"].astype(int).isin(settled or [])
 
     summary["total_points"] = sum(summary[c] * w for c, w in TEAM_WEIGHTS.items())
     summary["league"] = "NFL"

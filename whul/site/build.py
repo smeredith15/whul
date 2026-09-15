@@ -385,8 +385,14 @@ def asset_profiles(
             notes[asset_id] = _scaling_notes(row)
             lines[asset_id] = _stat_lines(row)
             raw_rows[asset_id] = row
-            if str(row.get("league")) == "NFL" and row.get("role"):
-                panel = _nfl_panel(row)
+            if str(row.get("league")) == "NFL":
+                # On whether the role is a position, not on whether the field
+                # is set: a team's `role` arrives as NaN, and NaN is truthy, so
+                # testing it sent every club down the player path, which
+                # returned nothing and left them on the old table.
+                role = str(row.get("role") or "").strip().upper()
+                panel = (_nfl_panel(row) if role in NFL_TOP_LINE
+                         else _nfl_team_panel(row))
                 if panel:
                     panels[asset_id] = panel
             elif row.get("sections"):
@@ -506,7 +512,7 @@ STAT_SKIP = {
     "postseason_rate", "regular_games",
     # The club soccer panel's own. `sections` is a list and is skipped anyway;
     # the other two are read as its heading rather than shown as figures.
-    "sections", "league_settled",
+    "sections", "league_settled", "season_settled", "div_rank", "team_division",
     # The NFL panel's own figures. On the fallback table they would read
     # "Post passing yards 0" in a column of season totals.
     "team_games", "post_passing_yards", "post_passing_tds", "post_interceptions",
@@ -770,6 +776,98 @@ SOCCER_BOX_LABELS = {
 }
 
 
+#: An NFL club's week-by-week figures, and what each is worth. The same weight
+#: table the score is built from, so the boxes cannot be a second opinion.
+NFL_TEAM_TOP = ("reg_wins", "point_diff", "reg_big_wins", "reg_shutouts")
+NFL_TEAM_REST = ("div_wins",)
+
+NFL_TEAM_LABELS = {
+    "reg_wins": "Wins", "point_diff": "Point diff", "reg_big_wins": "Big wins",
+    "reg_shutouts": "Shutouts", "div_wins": "Division wins",
+    "playoff_wins": "Playoff wins",
+}
+
+
+def _nfl_team_box(row: dict, column: str, keep_zero: bool = False) -> dict | None:
+    from whul.scoring.nfl import TEAM_WEIGHTS
+
+    try:
+        count = float(row.get(column) or 0)
+    except (TypeError, ValueError):
+        count = 0.0
+    if not count and not keep_zero:
+        return None
+    return {"label": NFL_TEAM_LABELS.get(column, _label_for(column)),
+            "value": f"{count:,.0f}",
+            "points": round(count * TEAM_WEIGHTS.get(column, 0.0), 1) or 0.0}
+
+
+def _nfl_team_panel(row: dict) -> dict | None:
+    """A club's season: what it did weekly, and what the season came to.
+
+    The same two rows a player gets, plus the outcomes -- a division title and
+    a playoff berth are worth fifteen and ten and are not counts of anything,
+    so they are boxes with a word where the number goes rather than chips with
+    their points left off the page.
+    """
+    if row.get("div_rank") is None and not row.get("team_division"):
+        return None
+    settled = bool(row.get("season_settled"))
+    panel: dict = {
+        "kind": "nfl-team",
+        "top": [b for b in (_nfl_team_box(row, c, keep_zero=True)
+                            for c in NFL_TEAM_TOP) if b],
+        "secondary": [b for b in (_nfl_team_box(row, c) for c in NFL_TEAM_REST) if b],
+        "outcomes": [
+            _outcome_box("Division title", row.get("div_champ"), settled,
+                         float(row.get("div_champ") or 0) * 15.0),
+            _outcome_box("Playoffs", row.get("playoff_appearance"), settled,
+                         float(row.get("playoff_appearance") or 0) * 10.0),
+        ],
+    }
+    rank = row.get("div_rank")
+    division = str(row.get("team_division") or "").strip()
+    if rank and division:
+        panel["head"] = [["Division", f"{_ordinal(int(rank))} in {division}"]]
+
+    wins = _nfl_team_box(row, "playoff_wins")
+    if wins and wins["value"] != "0":
+        panel["post"] = {"top": [wins], "secondary": []}
+    return panel
+
+
+def _ordinal(number: int) -> str:
+    """1 -> 1st. A division standing reads as a place, not a count."""
+    if 10 <= number % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
+
+
+def _outcome_box(label: str, won, settled, points: float,
+                 named: str = "") -> dict:
+    """A season outcome as a box, carrying what it paid.
+
+    Outcomes have no match behind them -- a division title is not a game -- so
+    they were head chips reading "Yes" with the points nowhere. That silently
+    broke the one thing these panels are for: Arsenal's sections summed to 29.7
+    against a total of 39.7 the moment a league title landed, ten points in the
+    score and in no box on the page.
+
+    Three-state, because a club that has not won its league in September has
+    not lost it either and "No" would say it had.
+    """
+    if named:
+        value = named
+    elif won:
+        value = "Yes"
+    else:
+        value = "No" if settled else "\u2014"
+    return {"label": label, "value": value,
+            "points": round(float(points or 0), 1) or 0.0}
+
+
 def _soccer_block(part: dict, shape: str, byes: int = 0,
                   bye_points: float = 0.0) -> dict:
     """One competition, or one phase of one, as two rows of boxes."""
@@ -795,24 +893,27 @@ def _soccer_block(part: dict, shape: str, byes: int = 0,
 
 
 def _soccer_head(section: dict, row: dict) -> list[list[str]]:
-    """The three season outcomes that are not counts of anything.
+    """What the league section says that is not scored: where the club sits.
 
-    Each is three-state on purpose. A club that has not won its league in
-    September has not lost it either, and printing "No" would say it had.
+    The title and next year's Europe were here too, as bare words, which left
+    their points in the total and nowhere on the page. They are boxes now --
+    see `_outcome_box` -- so the section adds up again.
     """
+    if not section.get("position"):
+        return []
+    return [["Position", f"{section['position']} of {section['of']}"]]
+
+
+def _soccer_outcomes(row: dict) -> list[dict]:
+    """The league season's two outcomes, priced."""
     settled = bool(row.get("league_settled"))
-    out = []
-    if section.get("position"):
-        out.append(["Position", f"{section['position']} of {section['of']}"])
-    if row.get("league_champion"):
-        title = "Yes"
-    else:
-        title = "No" if settled else "\u2014"
-    out.append(["League title", title])
     entry = str(row.get("continental_entry") or "").strip()
-    out.append(["Europe next year",
-                entry or ("No" if settled else "\u2014")])
-    return out
+    return [
+        _outcome_box("League title", row.get("league_champion"), settled,
+                     row.get("pts_league_title")),
+        _outcome_box("Europe next year", bool(entry), settled,
+                     row.get("pts_continental_entry"), named=entry),
+    ]
 
 
 def _soccer_panel(row: dict) -> dict | None:
@@ -854,6 +955,7 @@ def _soccer_panel(row: dict) -> dict | None:
         block = {"name": str(section.get("name") or ""), "blocks": []}
         if kind == "league":
             block["head"] = _soccer_head(section, row)
+            block["outcomes"] = _soccer_outcomes(row)
         phases = section.get("phases")
         if isinstance(phases, list) and phases:
             for phase in phases:
