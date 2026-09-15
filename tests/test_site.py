@@ -2969,6 +2969,74 @@ def test_the_club_lookup_reads_every_clubs_matches_played():
     assert site_build._club_games(pd.DataFrame()) == {}
 
 
+def _euro(**over):
+    entry = {"competition": "UEFA Champions League", "games": 1.0,
+             "points": 9.0, "share": 0.05, "scalar": 1.9, "adds": 17.1,
+             "credited": False, "finishes": "2027-06-30", "starts": 1.0,
+             "goals": 1.0, "assists": 1.0, "yellow": 1.0, "red": 0.0,
+             "appearance_points": 2.0, "goal_points": 5.0}
+    entry.update(over)
+    return entry
+
+
+def test_a_european_section_is_the_same_boxes_as_the_league():
+    """Not similar -- the same. Both are built by one function, because a
+    second builder for the second competition is how the two drift apart."""
+    panel = site_build._soccer_player_panel(_footballer(bonus_detail=[_euro()]))
+    league = [b["label"] for b in panel["top"] + panel["secondary"]]
+    europe = [b["label"] for b in
+              panel["posts"][0]["top"] + panel["posts"][0]["secondary"]]
+
+    assert league == europe
+    assert panel["posts"][0]["name"] == "UEFA Champions League"
+    assert panel["posts"][0]["games"] == "1"
+
+
+def test_a_european_sections_boxes_add_up_to_what_the_run_scored():
+    """Its own figures, on its own terms. What the run *pays* is a different
+    number and lives in its own box -- see the next test."""
+    panel = site_build._soccer_player_panel(_footballer(bonus_detail=[_euro()]))
+    post = panel["posts"][0]
+
+    assert round(sum(b["points"] for b in post["top"] + post["secondary"]), 1) \
+        == _euro()["points"]
+
+
+def test_a_european_sections_total_is_held_until_the_competition_ends():
+    """A rate off one match projects most of a share of a season and falls on
+    the next one, so it is greyed and dated rather than shown as earned."""
+    pending = site_build._soccer_player_panel(
+        _footballer(bonus_detail=[_euro()]))["posts"][0]["total"]
+
+    assert pending["points"] == 17.1
+    assert pending["muted"] is True
+    assert "held to 2027-06-30" in pending["aside"]
+
+    done = site_build._soccer_player_panel(
+        _footballer(bonus_detail=[_euro(credited=True)]))["posts"][0]["total"]
+    assert done["muted"] is False
+    assert "held" not in (done.get("aside") or "")
+
+
+def test_a_footballer_in_two_competitions_gets_a_section_each():
+    """A Champions League run and a domestic cup pay different shares, so one
+    section carrying both would have no single total to show."""
+    panel = site_build._soccer_player_panel(_footballer(bonus_detail=[
+        _euro(), _euro(competition="MLS Cup Playoffs", share=0.10, scalar=3.4)]))
+
+    assert [s["name"] for s in panel["posts"]] == [
+        "UEFA Champions League", "MLS Cup Playoffs"]
+
+
+def test_a_competition_nobody_played_gets_no_section():
+    """Every La Liga player carries a Champions League entry reading zero
+    games. A section for it would say he turned out and did nothing."""
+    panel = site_build._soccer_player_panel(
+        _footballer(bonus_detail=[_euro(games=0.0, points=0.0, adds=0.0)]))
+
+    assert "posts" not in panel
+
+
 # --- baseball, at whichever of the two jobs he does -------------------------
 
 def _batter(**over):

@@ -1093,7 +1093,8 @@ SCRIPT = """\
     // Where the points are real but counted in another box, the strip says so
     // rather than repeating them or leaving a blank that reads as free.
     if (box.note) shown = box.note;
-    return '<div class="statbox' + (small ? ' small' : '') + '">' +
+    return '<div class="statbox' + (small ? ' small' : '') +
+             (box.muted ? ' muted' : '') + '">' +
            '<div class="bn">' + box.label + '</div>' +
            '<div class="bv' + (String(box.value).length > 7 ? ' tight' : '') +
              '">' + box.value + sup + aside + '</div>' +
@@ -1139,10 +1140,26 @@ SCRIPT = """\
       post = '<details class="body boxes post"><summary>Playoffs</summary>' +
              boxRows(panel.post) + '</details>';
     }
+    // One section a competition, each the same boxes as the season above it:
+    // a playoff run and a European campaign are the same figures asked about
+    // a different competition, so they are rendered by the same two calls.
+    // What differs is the total, which is what the run *pays* rather than what
+    // it scored -- a rate credited over a share of a season, greyed until the
+    // competition is over and it stops moving.
+    var posts = (panel.posts || []).map(function (s) {
+      return '<details class="body boxes post"><summary>' + s.name +
+             (s.games ? ' <span class="adds">' + s.games + ' game' +
+                        (s.games === '1' ? '' : 's') + '</span>' : '') +
+             '</summary>' + boxRows(s) +
+             (s.total ? '<div class="boxrow rest outcome">' +
+                        statBox(s.total, true) + '</div>' : '') +
+             (s.note ? '<p class="note">' + s.note + '</p>' : '') +
+             '</details>';
+    }).join('');
     return '<div class="body boxes">' +
            (panel.title ? '<h3>' + panel.title + '</h3>' : '') +
            (head ? '<div class="games comp">' + head + '</div>' : '') +
-           boxRows(panel) + outcomeRow(panel.outcomes) + '</div>' + post;
+           boxRows(panel) + outcomeRow(panel.outcomes) + '</div>' + post + posts;
   }
 
   // Baseball: one section a job, and a sentence where the second job is worth
@@ -1233,7 +1250,8 @@ SCRIPT = """\
     var notes = (a.notes || []).map(function (n) {
       return '<p class="note">' + n + '</p>';
     }).join('');
-    var bonus = renderBonus(a.bonus || []);
+    var bonus = (a.panel && a.panel.posts && a.panel.posts.length)
+      ? '' : renderBonus(a.bonus || []);
     // Everything the tables have room for and everything they do not. The
     // tables show a position and a club; this is where the rest of it is, which
     // is what a click on a name is for.

@@ -1468,28 +1468,27 @@ def _club_games(stats) -> dict[str, float]:
     return out
 
 
-def _soccer_player_panel(row: dict, club_games: dict | None = None,
-                         league: str = "") -> dict:
-    """A footballer's domestic season in the boxes the rest of the sport uses.
+def _soccer_campaign_boxes(figures: dict) -> dict:
+    """The boxes a footballer's campaign shows, wherever it was played.
 
-    Europe and a playoff run are deliberately not here. They are not counted in
-    full but paid as a rate on top, at a share of a season set per competition,
-    and they keep their own collapsible section -- the only place that share,
-    and the wait until the competition finishes, can be explained. See
-    ``_bonus_list`` and ``renderBonus``.
+    One builder for the league and for Europe, because the two must be the same
+    boxes. A separate builder for the second would be a standing invitation to
+    drift, and the whole point of a competition's own section is that it is the
+    same season asked about a different competition.
 
-    So the boxes on this panel sum to ``regular_points`` and not to the score
-    beneath them, which also carries the bonus. That is the one panel where
-    those two figures differ, and the bonus section is what accounts for it.
+    ``matches`` is the domestic column and ``games`` is what a bonus breakdown
+    calls it; either is read, so a caller need not rename before asking.
     """
     from whul.scoring.soccer import PTS_ASSIST, PTS_RED, PTS_YELLOW
 
-    apps = _stat_number(row, "matches")
-    starts = _stat_number(row, "starts")
-    goals = _stat_number(row, "goals")
-    assists = _stat_number(row, "assists")
-    yellow = _stat_number(row, "yellow")
-    red = _stat_number(row, "red")
+    apps = _stat_number(figures, "matches")
+    if apps is None:
+        apps = _stat_number(figures, "games")
+    starts = _stat_number(figures, "starts")
+    goals = _stat_number(figures, "goals")
+    assists = _stat_number(figures, "assists")
+    yellow = _stat_number(figures, "yellow")
+    red = _stat_number(figures, "red")
 
     def side(value) -> str:
         return "—" if value is None else f"{value:,.0f}"
@@ -1508,19 +1507,11 @@ def _soccer_player_panel(row: dict, club_games: dict | None = None,
                          for value, weight in terms), 1) or 0.0
 
     def stored(column):
-        value = _stat_number(row, column)
+        value = _stat_number(figures, column)
         return None if value is None else round(value, 1) or 0.0
 
-    team = row.get("team")
-    club = (club_games or {}).get(team.strip()) if isinstance(team, str) else None
-
     return {
-        "kind": "boxes",
-        "title": league if league and league != CLUB_SOCCER else "",
-        "head": [
-            ["Games played", side(apps)],
-            ["Team games", "—" if not club else f"{club:,.0f}"],
-        ],
+        "apps": apps,
         "top": [
             # The heading's figure again, against the starts it was made of:
             # appearance points are paid per outing but at two rates, and a
@@ -1540,6 +1531,128 @@ def _soccer_player_panel(row: dict, club_games: dict | None = None,
              "points": worth((yellow, PTS_YELLOW), (red, PTS_RED))},
         ],
     }
+
+
+def _campaign_total(entry: dict) -> dict:
+    """What a European or playoff run is worth, as its own box.
+
+    The boxes above it sum to what the run scored; this is what it *pays*,
+    which is a different number and always larger: the rate over those games is
+    credited as though it had been played over a share of a league season. The
+    section would otherwise show four honest figures and contribute a fifth
+    that appears nowhere, which is the arithmetic these panels exist to make
+    visible.
+
+    Greyed until the competition is over. A rate off one match projects most of
+    a share of a season, and a second match without a goal lowers it -- so it
+    is held, and a box that looked live would be claiming points the standings
+    have not been given.
+    """
+    adds = _stat_number(entry, "adds")
+    credited = bool(entry.get("credited"))
+    share = _stat_number(entry, "share") or 0.0
+    scalar = _stat_number(entry, "scalar") or 0.0
+    finishes = str(entry.get("finishes") or "").strip()
+    box = {
+        "label": "Adds to score",
+        "value": "—" if adds is None else f"×{_trim(scalar)}",
+        "points": adds,
+        "muted": not credited,
+    }
+    lines = []
+    if share:
+        lines.append(f"{share:.1%} of a season".replace(".0%", "%"))
+    if not credited:
+        # Not a `note`: that replaces the strip, and the figure being withheld
+        # is exactly what a reader needs to see. Greyed and dated instead.
+        lines.append(f"held to {finishes}" if finishes else "held")
+    if lines:
+        box["aside"] = "\n".join(lines)
+    return box
+
+
+def _soccer_player_posts(row: dict) -> list[dict]:
+    """Each European or playoff competition as its own section.
+
+    The same boxes the league gets -- see `_soccer_campaign_boxes` -- because
+    they are the same figures. What differs is what the section pays, and that
+    is the one box the league has no equivalent of.
+    """
+    out = []
+    for entry in _bonus_list(row):
+        made = _soccer_campaign_boxes(entry)
+        apps = made.pop("apps", None)
+        made["name"] = str(entry.get("competition") or "")
+        made["games"] = "—" if apps is None else f"{apps:,.0f}"
+        made["total"] = _campaign_total(entry)
+        made["note"] = _campaign_note(entry)
+        out.append(made)
+    return out
+
+
+def _trim(value: float) -> str:
+    """1.90 -> 1.9, 2.00 -> 2. A trailing zero reads as precision nobody has."""
+    return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def _campaign_note(entry: dict) -> str:
+    """Why the section's boxes and its total are different numbers.
+
+    They read as an arithmetic error otherwise, and the reader who checks is
+    the reader this panel is for.
+    """
+    points = _stat_number(entry, "points") or 0.0
+    games = _stat_number(entry, "games") or 0.0
+    scalar = _stat_number(entry, "scalar") or 0.0
+    share = _stat_number(entry, "share") or 0.0
+    finishes = str(entry.get("finishes") or "").strip()
+    if not games or not scalar:
+        return ""
+    over = f"{games:,.0f} game" + ("" if games == 1 else "s")
+    note = (
+        f"Credited as a rate, not a tally: {points:,.1f} points over {over} is "
+        f"paid as though it had been played over {_trim(scalar)} more of them "
+        f"\u2014 {share:.1%} of a league season \u2014 however few were "
+        f"actually played."
+    ).replace(".0%", "%")
+    if not entry.get("credited"):
+        note += (
+            " None of it is in the score yet: a rate off one or two matches "
+            "moves a long way on the next one, and it can fall, so it is held "
+            + (f"until the competition finishes ({finishes})." if finishes
+               else "until the competition finishes.")
+        )
+    return note
+
+
+def _soccer_player_panel(row: dict, club_games: dict | None = None,
+                         league: str = "") -> dict:
+    """A footballer's season, his league first and each other competition after.
+
+    Europe and a playoff run are not counted in full but paid as a rate on top,
+    so their sections sum to what they scored and carry a further box for what
+    that is worth. Until the competition finishes that box is greyed and pays
+    nothing, which is why the score beneath can be smaller than the panel.
+    """
+    made = _soccer_campaign_boxes(row)
+    apps = made.pop("apps", None)
+    team = row.get("team")
+    club = (club_games or {}).get(team.strip()) if isinstance(team, str) else None
+
+    panel = {
+        "kind": "boxes",
+        "title": league if league and league != CLUB_SOCCER else "",
+        "head": [
+            ["Games played", "—" if apps is None else f"{apps:,.0f}"],
+            ["Team games", "—" if not club else f"{club:,.0f}"],
+        ],
+        **made,
+    }
+    posts = _soccer_player_posts(row)
+    if posts:
+        panel["posts"] = posts
+    return panel
+
 
 
 def _stat_lines(row: dict) -> list[tuple[str, str]]:

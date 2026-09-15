@@ -19,6 +19,7 @@ from whul.scoring.postseason import (
     REGULAR,
     RULES,
     apply_bonus,
+    phase_totals,
     regular_totals,
     split_phases,
 )
@@ -134,13 +135,24 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     ).mask(season_type == SEASON_TYPE_PLAYIN, EXCLUDED)
 
     keys = ["season", "athlete_id", "player", "position"]
+    counted = list(BOX_WEIGHTS) + ["plus_minus", "double_doubles",
+                                   "triple_doubles"]
     phases = split_phases(work, keys, "game_points", "game_count", work["phase"])
-    counting = regular_totals(
-        work, keys,
-        list(BOX_WEIGHTS) + ["plus_minus", "double_doubles", "triple_doubles"],
-        work["phase"])
-    agg = apply_bonus(phases.merge(counting, on=keys, how="left"),
-                      RULES["NBA"] if postseason else None)
+    counting = regular_totals(work, keys, counted, work["phase"])
+    # The playoffs' own figures, kept apart and labelled as such. The box
+    # scores carry `season_type` and always have, so this phase was collected
+    # and then dropped one line later: `split_phases` reduces it to points and
+    # games, and a profile showing the same boxes for the playoffs as for the
+    # season had nothing to put in them. See `phase_totals`.
+    post_counting = phase_totals(
+        work, keys, counted, work["phase"], POSTSEASON, prefix="post_")
+    agg = apply_bonus(
+        phases.merge(counting, on=keys, how="left")
+        .merge(post_counting, on=keys, how="left"),
+        RULES["NBA"] if postseason else None)
+    for column in [f"post_{c}" for c in counted]:
+        if column in agg.columns:
+            agg[column] = agg[column].fillna(0)
     agg = agg.merge(_games_his_team_played(work, keys, box), on=keys, how="left")
     agg["league"] = "NBA"
     agg["role"] = agg["position"]
