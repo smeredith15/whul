@@ -1127,3 +1127,30 @@ def test_a_calendar_year_league_keeps_its_own_convention(monkeypatch):
 
     assert len(espn_soccer.load_gamelog("mls", "1", season=2027)) == 1
     assert espn_soccer.load_gamelog("mls", "1", season=2026).empty
+
+
+def test_a_season_that_has_not_opened_is_not_worth_asking_about():
+    """MLS runs inside a calendar year, so our 2026-27 asks ESPN for 2027 --
+    a season that opens on 20 February 2027, five months after the league year
+    it belongs to did. Every club answers 404, and thirty of those per player
+    reads as a broken feed rather than an empty calendar."""
+    from datetime import date
+
+    from whul.sources import espn_soccer
+
+    assert not espn_soccer.season_has_begun("mls", 2027, date(2026, 9, 15))
+    assert espn_soccer.season_has_begun("mls", 2027, date(2027, 3, 1))
+    # The European leagues opened in August, before the league year's own
+    # start, which is why they answer and MLS does not.
+    for key in ("epl", "laliga", "bundesliga", "ligue1", "seriea"):
+        assert espn_soccer.season_has_begun(key, 2027, date(2026, 9, 15)), key
+
+
+def test_a_league_nobody_declared_a_window_for_is_asked_anyway():
+    """A missing window is not evidence the season has not started, and
+    declining to ask would silently drop a league somebody added."""
+    from datetime import date
+
+    from whul.sources import espn_soccer
+
+    assert espn_soccer.season_has_begun("nobody", 2027, date(2026, 9, 15))

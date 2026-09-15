@@ -1573,8 +1573,23 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
     attributed: dict[str, object] = {}
     club_matches: dict[str, object] = {}
     unreadable = 0
+    unopened: dict[str, bool] = {}
     for row in mine.itertuples():
         key = PLAYER_LEAGUES[str(row.league)]
+        # A league whose season has not opened has no squads to search, and
+        # ESPN says so with a 404 on every club. Thirty of those per player is
+        # three hundred and thirty requests to be told nothing has happened,
+        # and it reads as a broken feed rather than an empty calendar. The
+        # ingest already declines to ask; so does this now.
+        if key not in unopened:
+            unopened[key] = not espn_soccer.season_has_begun(key, season)
+            if unopened[key]:
+                print(f"  {key}: no season inside this league year has opened "
+                      f"yet, so there are no squads to search; its "
+                      f"players are neither confirmed nor faulted")
+        if unopened[key]:
+            unreadable += 1
+            continue
         if key not in club_results:
             # The clubs' results for the whole league, once, however many of
             # its players are rostered.

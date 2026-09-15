@@ -86,6 +86,32 @@ def roster_season(league: str, season: int) -> int:
     return season - 1 if numbering == "ends" else season
 
 
+def season_has_begun(league: str, season: int, today=None) -> bool:
+    """Has the season we are about to ask about actually started?
+
+    ESPN answers for a season nobody has played with a 404 on every club, and
+    a search that catches those reports thirty failures where the truth is
+    that there was nothing to fail at. MLS is the live case: it runs inside a
+    calendar year, so our 2026-27 asks ESPN for 2027 -- a season that opens on
+    20 February 2027, five months after the league year it belongs to did.
+
+    Read off ``SEASON_WINDOWS``, which already carries the month and day each
+    league opens, rather than from a second list of dates that would drift
+    from the first one.
+    """
+    from datetime import date
+
+    window = SEASON_WINDOWS.get(league)
+    if not window:
+        return True
+    (month, day), _, _ = window
+    try:
+        opens = date(roster_season(league, season), month, day)
+    except (TypeError, ValueError):
+        return True
+    return (today or date.today()) >= opens
+
+
 def season_matches(league: str, season: int, said: str) -> bool:
     """Does the label the feed returned describe the season we meant?
 
