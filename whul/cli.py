@@ -1585,10 +1585,22 @@ def cmd_check_attribution(args: argparse.Namespace) -> int:
                 print(f"  {key}: could not read the clubs' results "
                       f"({type(exc).__name__}); its players are skipped")
                 club_results[key] = None
-        athlete, club = espn_soccer.athlete_named(key, str(row.display_name), season)
+        saw: list = []
+        failed: list = []
+        athlete, club = espn_soccer.athlete_named(
+            key, str(row.display_name), season, saw=saw, failed=failed)
         if not athlete:
             unreadable += 1
-            print(f"  {row.display_name}: no athlete id in {key}")
+            # The squad names sharing his surname, so a spelling can be told
+            # from an absence without another run. Named, never chosen.
+            near = ("; nearest in the squads: "
+                    + ", ".join(f"{n!r} ({c})" for n, c in saw[:4])
+                    if saw else "")
+            # And whether the search was even able to look everywhere.
+            broke = (f"; {len(failed)} club squad(s) could not be read ("
+                     + ", ".join(f"{c}: {e}" for c, e in failed[:3]) + ")"
+                     if failed else "")
+            print(f"  {row.display_name}: no athlete id in {key}{near}{broke}")
             continue
         events = espn_soccer.load_gamelog(key, athlete, season)
         if events.empty:
