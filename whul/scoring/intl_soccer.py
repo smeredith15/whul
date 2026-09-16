@@ -79,12 +79,17 @@ def score_teams(matches: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     rows["edition"] = _editions(rows)
     rows = _price(rows, _shape(rows))
-    scored = _fold(rows)
+    scored, shares = _fold(rows)
     # Seasons outside the ask were carried this far only so each tournament's
     # shape could be read off an edition that was played. See `load_matches`.
     if "wanted" in matches.columns:
         keep = set(matches.loc[matches["wanted"].astype(bool), "season"])
         scored = scored[scored["season"].isin(keep)].reset_index(drop=True)
+    sections = season_sections(rows, shares)
+    scored["sections"] = [
+        sections.get((str(l), str(t), int(y)), [])
+        for l, t, y in zip(scored["league"], scored["team"], scored["season"])
+    ]
     return scored
 
 
@@ -113,19 +118,27 @@ def per_team(matches: pd.DataFrame) -> pd.DataFrame:
         ending[drew] = Outcome.DRAW.value
         ending[lost_shootout] = Outcome.SHOOTOUT_LOSS.value
         ending[won_shootout] = Outcome.SHOOTOUT_WIN.value
-        base = ending.map(lambda o: outcome_points(o, LEAGUE_WIN))
+        result = ending.map(lambda o: outcome_points(o, LEAGUE_WIN))
         # A shootout win takes no margin bonus: the match itself was drawn, so
         # there is no margin to be big. The clean sheet is not gated on the
         # result -- a side that conceded nothing cannot have lost in normal
         # time, so it reaches exactly wins to nil and goalless draws.
-        base = base + (won & (mine - theirs >= BIG_MARGIN)) * PTS_BIG_MARGIN
-        base = base + (theirs == 0) * PTS_CLEAN_SHEET
+        big = won & (mine - theirs >= BIG_MARGIN)
+        clean = theirs == 0
 
         sides.append(pd.DataFrame({
             "date": matches["date"], "season": matches["season"],
             "gender": matches["gender"], "team": team,
             "competition": matches["competition"], "rung": matches["rung"],
-            "kind": matches["kind"], "outcome": ending, "base": base,
+            "kind": matches["kind"], "outcome": ending,
+            # The three parts as well as their sum. A panel prints a count and
+            # what that count was worth, and a `base` that has already added
+            # them together cannot say what the clean sheets paid -- which
+            # leaves a section whose boxes do not add up to it.
+            "outcome_points": result,
+            "big_margin": big.astype(int),
+            "clean_sheet": clean.astype(int),
+            "base": result + big * PTS_BIG_MARGIN + clean * PTS_CLEAN_SHEET,
         }))
     rows = pd.concat(sides, ignore_index=True)
     return rows[rows["base"].notna()].reset_index(drop=True)
@@ -237,7 +250,6 @@ def _price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
         "group" if o < g else "knockout"
         for o, g in zip(order[finals], rows.loc[finals, "G"])
     ]
-    rows["units"] = rows["base"] * rows["stage"].map(STAGE)
 
     # The denominator is the champion's whole path: their qualifying, their
     # group, their knockouts. Qualifying length is the team's own, because a
@@ -253,14 +265,123 @@ def _price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
         + rows["K"] * STAGE["knockout"]
     )
     rows["ceiling"] = rows["rung"].map(RUNG) * SCALE
-    rows["points"] = rows["ceiling"] * rows["units"] / rows["path_max"].where(
-        rows["path_max"] > 0)
+    # What one club-scale point is worth in this match. Every part of the match
+    # is multiplied by the same thing, which is what lets a section's boxes be
+    # priced in the currency the section is quoted in.
+    rows["factor"] = rows["ceiling"] * rows["stage"].map(STAGE) / rows[
+        "path_max"].where(rows["path_max"] > 0)
+    rows["points"] = rows["base"] * rows["factor"]
     return rows[rows["points"].notna()]
 
 
-def _fold(rows: pd.DataFrame) -> pd.DataFrame:
+#: What a rung is called on a page. The keys price the competition; these say
+#: what the price is for.
+RUNG_NAMES = {
+    "world": "World", "federation": "Federation",
+    "nations_league": "Nations League",
+}
+
+#: A stage, as a phase heading, with the shape of boxes it wants. Qualifying
+#: and a group are round-robin -- a draw is an ordinary result and there is no
+#: shootout -- and a knockout tie is not.
+STAGE_PHASES: tuple[tuple[str, str, str], ...] = (
+    ("qualifying", "Qualifying", "round-robin"),
+    ("group", "Group stage", "round-robin"),
+    ("knockout", "Knockout", "knockout"),
+)
+
+
+def _counted(block: pd.DataFrame) -> dict:
+    """One block of matches as the figures a section shows.
+
+    Every count carries what it was worth, so the boxes can be checked against
+    the section they sit in. Priced in the section's own currency rather than
+    on the club scale: each part of a match is multiplied by the same `factor`
+    the match itself was, which is the only way a win box and the section total
+    can be the same kind of number.
+    """
+    out: dict = {"matches": int(len(block))}
+    for name, ending in (("wins", Outcome.WIN), ("draws", Outcome.DRAW),
+                         ("losses", Outcome.LOSS),
+                         ("shootout_wins", Outcome.SHOOTOUT_WIN),
+                         ("shootout_losses", Outcome.SHOOTOUT_LOSS)):
+        here = block[block["outcome"] == ending.value]
+        out[name] = int(len(here))
+        out[f"pts_{name}"] = round(
+            float((here["outcome_points"] * here["factor"]).sum()), 1)
+    for name, column, worth in (("big_margins", "big_margin", PTS_BIG_MARGIN),
+                                ("clean_sheets", "clean_sheet", PTS_CLEAN_SHEET)):
+        out[name] = int(block[column].sum())
+        out[f"pts_{name}"] = round(
+            float((block[column] * worth * block["factor"]).sum()), 1)
+    out["points"] = round(float(block["points"].sum()), 1)
+    return out
+
+
+def season_sections(rows: pd.DataFrame, shares: pd.DataFrame) -> dict:
+    """A national team's year grouped by the competition it was played in.
+
+    The club panel's shape, because the question is the same one: a season
+    total says how much and cannot say where. What differs is that a club's
+    competitions add up to its season and a national team's do not -- the best
+    one counts whole, every other at half, and the year is then lifted so its
+    best rung reaches a full ceiling.
+
+    So a section carries two numbers. ``points`` is what the team earned there,
+    which is the sum of the section's own boxes and can be read against its
+    matches. ``counted`` is what that became in the season total, after the
+    halving and the lift. The counted figures are what add up to the score.
+
+    Qualifying and the finals it fed are one section, because that is what the
+    scoring says they are: a World Cup campaign is on the World Cup rung
+    whether or not the team reached the tournament, which is what stops missing
+    it from being worth more than entering it.
+    """
+    if rows is None or rows.empty:
+        return {}
+    share = {
+        (r.gender, r.team, int(r.season), r.competition): (r.share, r.lift)
+        for r in shares.itertuples()
+    }
+    out: dict = {}
+    for (gender, team, season), block in rows.groupby(
+            ["gender", "team", "season"]):
+        sections: list[dict] = []
+        for competition, here in block.groupby("competition", sort=False):
+            got, lift = share.get(
+                (gender, team, int(season), competition), (1.0, 1.0))
+            section = {
+                "kind": "international",
+                "name": str(competition),
+                "rung": RUNG_NAMES.get(str(here["rung"].iloc[0]), ""),
+                "counted": round(float(here["points"].sum()) * got * lift, 1),
+                **_counted(here),
+            }
+            phases = [
+                {"label": label, "shape": shape, **_counted(part)}
+                for stage, label, shape in STAGE_PHASES
+                if len(part := here[here["stage"] == stage])
+            ]
+            # Only where every match was placed. A campaign half split is a
+            # section whose phases do not add up to it, which is worse than one
+            # that was never divided at all.
+            if len(phases) > 1 and sum(
+                    p["matches"] for p in phases) == section["matches"]:
+                section["phases"] = phases
+            sections.append(section)
+        sections.sort(key=lambda s: s["points"], reverse=True)
+        out[(LEAGUES.get(gender, gender), str(team), int(season))] = sections
+    return out
+
+
+def _fold(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Team-seasons: the best competition whole, everything else at half,
-    then lifted so the year's best rung reaches a full ceiling."""
+    then lifted so the year's best rung reaches a full ceiling.
+
+    Returns the seasons and, beside them, what each competition was multiplied
+    by to get there -- which is what a panel needs to say where a score came
+    from without doing the arithmetic a second time and drifting from it.
+    """
     # Every ending counted, not only the winning one. A record is the whole
     # line -- a side that played six and won two drew or lost the other four,
     # and "Wins 2" alone cannot say which. The club vocabulary, so a national
@@ -295,5 +416,10 @@ def _fold(rows: pd.DataFrame) -> pd.DataFrame:
     out["lift"] = max(RUNG.values()) * SCALE / out["top_rung"]
     out["total_points"] = out["folded"] * out["lift"]
     out["league"] = out["gender"].map(LEAGUES)
+    shares = ranked.assign(share=share).merge(
+        out[["gender", "team", "season", "lift"]],
+        on=["gender", "team", "season"], how="left",
+    )[["gender", "team", "season", "competition", "share", "lift"]]
     return out.drop(columns="gender").sort_values(
-        ["season", "total_points"], ascending=[True, False]).reset_index(drop=True)
+        ["season", "total_points"], ascending=[True, False]
+    ).reset_index(drop=True), shares

@@ -1115,7 +1115,7 @@ SCRIPT = """\
   // the panel exists: four league wins and a cup run reach a total as one
   // number, and nobody else on the internet reports that number.
   function renderSoccer(panel) {
-    return panel.sections.map(function (s) {
+    var sections = panel.sections.map(function (s) {
       var head = (s.head || []).map(function (h) {
         return '<span><i>' + h[0] + '</i> ' + h[1] + '</span>';
       }).join('');
@@ -1123,11 +1123,20 @@ SCRIPT = """\
         return (b.label ? '<div class="phase">' + b.label + '</div>' : '') +
                boxRows(b);
       }).join('');
+      // A national team's section carries what it earned and what that became
+      // in the season, which are two different numbers because the best
+      // competition counts whole and every other at half. A club's section has
+      // no such box: its competitions simply add up.
+      var total = s.total ? '<div class="boxrow rest outcome">' +
+                            statBox(s.total, true) + '</div>' : '';
       return '<div class="body boxes comp">' +
              '<h3>' + s.name + '</h3>' +
              (head ? '<div class="games comp">' + head + '</div>' : '') +
-             blocks + outcomeRow(s.outcomes) + '</div>';
+             blocks + total + outcomeRow(s.outcomes) + '</div>';
     }).join('');
+    // The arithmetic between the sections and the score. Without it the
+    // superscripts are numbers to be trusted rather than added up.
+    return sections + (panel.note ? '<p class="note">' + panel.note + '</p>' : '');
   }
 
   // A season outcome has no match behind it -- a division title is not a game
@@ -1138,6 +1147,33 @@ SCRIPT = """\
     return '<div class="boxrow rest outcome">' +
            list.map(function (b) { return statBox(b, true); }).join('') +
            '</div>';
+  }
+
+  // Total first, then each calendar season the league year spans. Total leads
+  // because it is what the score under the boxes was built from; the years
+  // answer which half of it was last summer. `render` draws one view, so a
+  // club's four boxes and a batter's two sections share the machinery and not
+  // the layout.
+  function yearViews(panel, render) {
+    var views = [{ year: 'Total', pane: render(panel) }].concat(
+      (panel.years || []).map(function (v) {
+        return { year: v.year, raw: v.raw, pane: render(v) };
+      }));
+    var tabs = views.map(function (v, i) {
+      // The year carries what it is worth, so the strip beneath can follow the
+      // tab. Total carries none and falls back to the scorer's own figure,
+      // which is the one number here that was not rebuilt from boxes.
+      return '<button class="yr' + (i === 0 ? ' on' : '') +
+             '" data-year="' + i + '"' +
+             (v.raw == null ? '' : ' data-raw="' + pts(v.raw) + '"') +
+             '>' + v.year + '</button>';
+    }).join('');
+    var panes = views.map(function (v, i) {
+      return '<div class="yrpane"' + (i === 0 ? '' : ' hidden') + '>' +
+             v.pane + '</div>';
+    }).join('');
+    return '<div class="body years"><div class="yrtabs">' + tabs +
+           '</div></div>' + panes;
   }
 
   function renderNflTeam(panel) {
@@ -1173,6 +1209,20 @@ SCRIPT = """\
       return '<div class="body boxes comp"><h3>' + s.name + '</h3>' +
              boxRows(s) + '</div>';
     }).join('');
+    // A baseball club's contract year is the tail of one summer and the front
+    // of the next, so it asks the same question its own batters' panels do.
+    // Every other club passes no years and is drawn exactly as before.
+    if (panel.years && panel.years.length) {
+      return '<div class="body boxes">' +
+             (panel.title ? '<h3>' + panel.title + '</h3>' : '') +
+             (head ? '<div class="games comp">' + head + '</div>' : '') +
+             '</div>' +
+             yearViews(panel, function (v) {
+               return '<div class="body boxes">' + boxRows(v) + '</div>';
+             }) +
+             '<div class="body boxes">' + outcomeRow(panel.outcomes) +
+             '</div>' + split + post + posts;
+    }
     return '<div class="body boxes">' +
            (panel.title ? '<h3>' + panel.title + '</h3>' : '') +
            (head ? '<div class="games comp">' + head + '</div>' : '') +
@@ -1216,26 +1266,9 @@ SCRIPT = """\
     if (!panel.years || panel.years.length < 2) {
       return head + mlbSections(panel.sections) + posts + note;
     }
-    // A league year spans two calendar seasons and they are summed, so the
-    // total is the figure that is scored and neither season is. Total leads,
-    // because it is what the score under the boxes was built from; the years
-    // answer which half of it was last summer.
-    var views = [{ year: 'Total', sections: panel.sections }].concat(panel.years);
-    var tabs = views.map(function (v, i) {
-      // The year carries what it is worth, so the strip beneath can follow the
-      // tab. Total carries none and falls back to the scorer's own figure,
-      // which is the one number here that was not rebuilt from boxes.
-      return '<button class="yr' + (i === 0 ? ' on' : '') +
-             '" data-year="' + i + '"' +
-             (v.raw == null ? '' : ' data-raw="' + pts(v.raw) + '"') +
-             '>' + v.year + '</button>';
-    }).join('');
-    var panes = views.map(function (v, i) {
-      return '<div class="yrpane"' + (i === 0 ? '' : ' hidden') + '>' +
-             mlbSections(v.sections) + '</div>';
-    }).join('');
-    return head + '<div class="body years"><div class="yrtabs">' + tabs +
-           '</div></div>' + panes + posts + note;
+    return head + yearViews(panel, function (v) {
+      return mlbSections(v.sections);
+    }) + posts + note;
   }
 
   function boxRows(part) {

@@ -2465,20 +2465,23 @@ def test_the_totals_round_the_way_the_standings_do():
 
 
 def test_a_filter_chip_is_not_escaped_twice():
-    """The league names come off the profiles, which hold HTML because every
-    other place they are used is HTML. Escaping again turned "Men's Intl
-    Soccer" into a chip reading "Men&#x27;s Intl Soccer" -- and the filter went
-    on working, because the row's own attribute was wrong the same way."""
+    """A chip once read "Men&#x27;s Intl Soccer", and the filter went on
+    working because the row's own attribute was wrong the same way. It was
+    fixed by dropping the escape here, on the reasoning that the profiles hold
+    HTML -- which made every other reader of them wrong instead, and put an
+    entity in the middle of a chart label. The profiles hold text now, so this
+    escapes, and once."""
     from whul.site.build import _results_table
 
     frame = pd.DataFrame([
         {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
     ])
-    profiles = {"a1": {"name": "a1", "league": "Men&#x27;s Intl Soccer",
+    profiles = {"a1": {"name": "a1", "league": "Men's Intl Soccer",
                        "kind": "Team"}}
     html = _results_table(frame, profiles, ["SS"])
     assert "&amp;#x27;" not in html
     assert ">Men&#x27;s Intl Soccer</button>" in html
+    assert 'data-league="Men&#x27;s Intl Soccer"' in html
 
 
 # --- an umbrella is not a league --------------------------------------------
@@ -3779,3 +3782,194 @@ def test_a_womens_profile_names_the_tours_she_plays():
         "WTA 250", "WTA 500", "WTA 1000", "Grand Slam", "WTA Finals",
         "Team Events"]
     assert [b["value"] for b in panel["top"]] == ["—"] * 6
+
+
+def test_an_apostrophe_survives_the_whole_way_to_a_chart_label():
+    """St. John's Red Storm reached the results page as "St. John&#x27;s Red
+    Storm" and its bar as "St. John&amp;#x27;s Red..." -- escaped once on the
+    way into the profiles, escaped again by the chart that drew it, and then
+    cut off mid-entity by the label that shortened it. Saint Mary's Gaels and
+    Ja'Marr Chase went the same way."""
+    from html import escape as html_escape
+
+    from whul.site import charts
+    from whul.site.build import _profile_payload, _results_table
+
+    THEM = "St. John's Red Storm"
+    profiles = {"a1": {"name": THEM, "league": "NCAAM", "kind": "Team"}}
+
+    frame = pd.DataFrame([
+        {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
+    ])
+    table = _results_table(frame, profiles, ["SS"])
+    assert "&amp;#x27;" not in table
+    assert html_escape(THEM) in table
+
+    # The chart is handed text and escapes it itself, so the label is the whole
+    # name rather than 22 characters of which five are an entity.
+    bars = charts.slot_sections(
+        [("NCAAM", "NCAAM 1", "#1")], [("Shelby", 1)],
+        {("Shelby", "NCAAM 1"): (1.0, "a1", THEM, "Team")},
+    )
+    assert "&amp;#x27;" not in bars
+    assert f'data-name="{html_escape(THEM)}"' in bars
+    assert "Red Storm" in bars, "the name was truncated inside an entity"
+
+    # And the payload the profile window reads is escaped exactly once, since
+    # the window writes it into innerHTML.
+    payload = _profile_payload(profiles)
+    assert "&amp;#x27;" not in payload
+    assert html_escape(THEM) in payload
+
+
+# --- a national team's panel ------------------------------------------------
+
+def test_a_national_team_is_shown_the_way_a_club_is():
+    """Same panel, same boxes, same grouping by competition. What is added is
+    the one thing that differs: a club's competitions add up to its season and
+    a national team's do not."""
+    from whul.site.build import _soccer_panel
+
+    row = {
+        "lift": 1.3333,
+        "sections": [
+            {"kind": "international", "name": "FIFA World Cup", "rung": "World",
+             "matches": 6, "points": 120.0, "counted": 160.0,
+             "wins": 4, "pts_wins": 100.0, "draws": 1, "pts_draws": 10.0,
+             "losses": 1, "pts_losses": 0.0, "shootout_wins": 0,
+             "pts_shootout_wins": 0.0, "shootout_losses": 0,
+             "pts_shootout_losses": 0.0, "big_margins": 2, "pts_big_margins": 6.0,
+             "clean_sheets": 2, "pts_clean_sheets": 4.0,
+             "phases": [
+                 {"label": "Group stage", "shape": "round-robin", "matches": 3,
+                  "wins": 2, "draws": 1, "losses": 0, "big_margins": 1,
+                  "clean_sheets": 1, "pts_wins": 50.0, "pts_draws": 10.0,
+                  "pts_losses": 0.0, "pts_big_margins": 3.0,
+                  "pts_clean_sheets": 2.0},
+                 {"label": "Knockout", "shape": "knockout", "matches": 3,
+                  "wins": 2, "losses": 1, "shootout_wins": 0,
+                  "shootout_losses": 0, "big_margins": 1, "clean_sheets": 1,
+                  "pts_wins": 50.0, "pts_losses": 0.0, "pts_shootout_wins": 0.0,
+                  "pts_shootout_losses": 0.0, "pts_big_margins": 3.0,
+                  "pts_clean_sheets": 2.0},
+             ]},
+        ],
+    }
+    panel = _soccer_panel(row)
+    assert panel["kind"] == "soccer"
+    section = panel["sections"][0]
+    assert section["head"] == [["Matches", "6"], ["Rung", "World"]]
+
+    # Earned big, counted as the superscript, and no points strip under it --
+    # the strip would be a third number saying one of the first two again.
+    assert section["total"]["value"] == "120.0"
+    assert "160.0" in section["total"]["sup"]
+    assert section["total"]["bare"] is True
+
+    # A group is round-robin and a knockout tie is not, said by the phase
+    # rather than inferred from its wording.
+    group, knockout = section["blocks"]
+    assert [b["label"] for b in group["top"]] == ["W", "D", "L"]
+    assert [b["label"] for b in knockout["top"]] == ["W", "SO W", "L", "SO L"]
+
+    # And the arithmetic between the sections and the score is on the page.
+    assert "half" in panel["note"] and "1.33" in panel["note"]
+
+
+def test_a_club_soccer_panel_gains_nothing_from_the_international_one():
+    """The club panel is the one this was modelled on and must be untouched:
+    no total box, because a club's competitions simply add up, and no note."""
+    from whul.site.build import _soccer_panel
+
+    panel = _soccer_panel({
+        "sections": [{"kind": "league", "name": "La Liga", "matches": 5,
+                      "wins": 2, "draws": 1, "losses": 2, "big_margins": 2,
+                      "clean_sheets": 2, "pts_wins": 6.0, "pts_draws": 1.0,
+                      "pts_losses": 0.0, "pts_big_margins": 2.0,
+                      "pts_clean_sheets": 2.0, "position": 9, "of": 20}],
+    })
+    section = panel["sections"][0]
+    assert "total" not in section
+    assert "note" not in panel
+    assert section["head"] == [["Position", "9 of 20"]]
+
+
+# --- a baseball club's panel ------------------------------------------------
+
+def _mlb_club() -> dict:
+    return {
+        "league": "MLB", "team": "Chicago Cubs", "games_played": 162.0,
+        "reg_wins": 94.0, "reg_losses": 68.0, "reg_big_wins": 31.0,
+        "shutouts": 12.0, "run_diff": 142.0, "playoff_game_wins": 7.0,
+        "series_wc_or_bye": 1.0, "series_lds": 1.0, "series_lcs": 1.0,
+        "series_ws": 0.0, "is_division_champ": 1.0,
+        "pts_reg_wins": 188.0, "pts_big_wins": 31.0, "pts_shutouts": 24.0,
+        "pts_run_diff": 7.1, "pts_div_champ": 5.0, "pts_playoff": 39.0,
+        "total_points": 294.1,
+        "season_lines": [
+            {"season": 2026, "reg_wins": 30.0, "reg_big_wins": 10.0,
+             "shutouts": 4.0, "run_diff": 44.0, "pts_reg_wins": 60.0,
+             "pts_big_wins": 10.0, "pts_shutouts": 8.0, "pts_run_diff": 2.2},
+            {"season": 2027, "reg_wins": 64.0, "reg_big_wins": 21.0,
+             "shutouts": 8.0, "run_diff": 98.0, "pts_reg_wins": 128.0,
+             "pts_big_wins": 21.0, "pts_shutouts": 16.0, "pts_run_diff": 4.9},
+        ],
+    }
+
+
+def test_a_baseball_club_reconciles_with_its_own_score():
+    """The invariant every panel here is built on: the boxes add up to the
+    number printed under them. Four season boxes, the division title, and
+    what October paid."""
+    from whul.site.build import _mlb_team_panel
+
+    row = _mlb_club()
+    panel = _mlb_team_panel(row)
+    assert [b["label"] for b in panel["top"]] == [
+        "Wins", "Run diff", "Big wins", "Shutouts"]
+    season = sum(b["points"] for b in panel["top"])
+    october = panel["posts"][0]
+    assert season + panel["outcomes"][0]["points"] + float(
+        october["total"]["value"]) == pytest.approx(row["total_points"], abs=0.2)
+    # And October's own boxes add up to what October paid.
+    assert sum(b["points"] for b in october["top"] + october["secondary"]) \
+        == pytest.approx(row["pts_playoff"], abs=0.2)
+    assert [b["label"] for b in october["secondary"]] == [
+        "Wild card", "Division series", "Championship series"]
+
+
+def test_a_baseball_club_says_which_summer_a_figure_came_from():
+    """A contract year is the tail of one summer and the front of the next, and
+    a single line across both belongs to neither -- the question its own
+    batters' panels already answer."""
+    from whul.site.build import _mlb_team_panel
+
+    panel = _mlb_team_panel(_mlb_club())
+    assert [y["year"] for y in panel["years"]] == ["2026", "2027"]
+    assert sum(y["raw"] for y in panel["years"]) == pytest.approx(
+        sum(b["points"] for b in panel["top"]), abs=0.2)
+
+
+def test_a_year_nobody_has_played_is_dashes_rather_than_zeroes():
+    """A tab that is not there says the question cannot be asked; a zero says
+    the club played and scored nothing. Neither is true of next summer."""
+    from whul.site.build import _mlb_team_panel
+
+    row = _mlb_club()
+    row["season_lines"] = [row["season_lines"][0]]
+    panel = _mlb_team_panel(row)
+    ahead = next(y for y in panel["years"] if y["year"] == "2027")
+    assert [b["value"] for b in ahead["top"]] == ["—"] * 4
+    assert all(b["points"] is None for b in ahead["top"])
+
+
+def test_a_clubs_nan_role_does_not_send_it_down_the_player_path():
+    """NaN is truthy. `not row.get("role")` reads a club as a player, which is
+    how every NFL club took the player path and how a baseball build died on
+    `.get`."""
+    from whul.site.build import _has_a_role
+
+    assert _has_a_role({"role": "Batter"})
+    assert not _has_a_role({"role": float("nan")})
+    assert not _has_a_role({"role": ""})
+    assert not _has_a_role({})

@@ -584,6 +584,20 @@ def _window_points(summary: pd.DataFrame,
         "games_played": summary["games_played"],
         "reg_wins": summary["reg_wins"],
         "reg_losses": summary["reg_losses"],
+        # Carried for the same reason as the record: a `pts_` figure on its own
+        # cannot say what it was made of. The counts are not prorated and the
+        # points beside them are, so a page must print the scorer's own figure
+        # rather than multiply these by a weight and get a different answer.
+        "reg_big_wins": summary["reg_big_wins"],
+        "shutouts": summary["shutouts"],
+        "run_diff": summary["run_diff"],
+        "playoff_game_wins": summary["playoff_game_wins"],
+        "series_wc_or_bye": summary["series_wc_or_bye"],
+        "series_lds": summary["series_lds"],
+        "series_lcs": summary["series_lcs"],
+        "series_ws": summary["series_ws"],
+        "is_division_champ": summary.get(
+            "is_division_champ", pd.Series(0, index=summary.index)),
         "pts_reg_wins": summary["reg_wins"] * BASE_REG_WIN,
         "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN,
         "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT,

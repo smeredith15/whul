@@ -411,6 +411,13 @@ def asset_profiles(
                          else _nfl_team_panel(row))
                 if panel:
                     panels[asset_id] = panel
+            elif str(row.get("league")) == "MLB" and not _has_a_role(row):
+                # `not row.get("role")` would be wrong here: a club's role
+                # arrives as NaN and NaN is truthy, so every club took the
+                # player path. Third time in this file.
+                panel = _mlb_team_panel(row)
+                if panel:
+                    panels[asset_id] = panel
             elif str(row.get("league")) == "MLB" and row.get("role"):
                 # By the club, which the row does not carry: a batting line has
                 # no team on it, and the roster's own note of who he plays for
@@ -478,22 +485,30 @@ def asset_profiles(
             str(info["asset_type"]), league, raw_rows.get(asset_id, {}),
             (who["position"], who["team"]),
         )
+        # Text, not markup. These used to be escaped here, which read as
+        # defensive and was the opposite: an escaped name went on to be
+        # escaped again by the chart that drew it and truncated by the label
+        # that shortened it, so St. John's Red Storm reached the page as
+        # "St. John&#x27;s Red Storm" and its bar as "St. John&amp;#x27;s
+        # Red...". A value that is sometimes markup and sometimes not cannot
+        # be handled correctly by anything downstream. So this holds what the
+        # thing is called, every use escapes it, and `_profile_payload`
+        # escapes the fields the browser writes into innerHTML.
         out[asset_id] = {
-            "name": escape(marked_name(name, league)),
+            "name": marked_name(name, league),
             # The league only where the identity line above it does not
             # already say so. A club read "Premier League · Champions League ·
             # Premier League · Team", the league twice because this repeated
             # what `_under_a_team` had just said.
-            "meta": escape(
-                str(info["asset_type"]) if first == league
-                else f"{league} · {info['asset_type']}"),
+            "meta": (str(info["asset_type"]) if first == league
+                     else f"{league} · {info['asset_type']}"),
             # Each on its own, as well as in the line the window prints. A
             # table cell shows the position and the club and not the rest, and
             # splitting a formatted string back up to get at them is how the
             # two drift apart.
-            "position": escape(first),
-            "team": escape(second),
-            "group": escape(who["group"]),
+            "position": first,
+            "team": second,
+            "group": who["group"],
             # Carried so the tables can badge a name without working out again
             # what this already knows. Two derivations of one rule drift.
             "corner": list(corner) if corner else None,
@@ -504,8 +519,8 @@ def asset_profiles(
             # Kept apart from `meta` as well as in it: the chart labels a bar
             # with the kind alone, and splitting a formatted string back up to
             # get at it is how the two drift.
-            "kind": escape(str(info["asset_type"])),
-            "league": escape(league),
+            "kind": str(info["asset_type"]),
+            "league": league,
             "avatar": images.avatar("asset", asset_id, name, size=52, depth=depth,
                                     badge=corner,
                                     logo=str(info["asset_type"]) == "Team"),
@@ -1529,6 +1544,157 @@ def _mlb_games_head(row: dict, team_games: float | None) -> list[list[str]]:
     ]
 
 
+def _has_a_role(row: dict) -> bool:
+    """Is this a player rather than a club?
+
+    On the value being a real string, not on the field being set. A club's
+    ``role`` is NaN, and NaN is truthy -- the mistake that sent every NFL club
+    down the player path and killed a baseball build on ``.get``.
+    """
+    role = row.get("role")
+    return isinstance(role, str) and bool(role.strip())
+
+
+#: A baseball club's season, as counts and the points the scorer put on them.
+#: The same four concepts football's clubs are shown by -- wins, run
+#: differential, big wins, shutouts -- because they are the same four things.
+MLB_TEAM_TOP: tuple[tuple[str, str, str], ...] = (
+    ("reg_wins", "pts_reg_wins", "Wins"),
+    ("run_diff", "pts_run_diff", "Run diff"),
+    ("reg_big_wins", "pts_big_wins", "Big wins"),
+    ("shutouts", "pts_shutouts", "Shutouts"),
+)
+
+#: October, by the round a club reached. Each is worth more than the last, so
+#: they are shown as what they are rather than folded into one playoff figure.
+MLB_TEAM_SERIES: tuple[tuple[str, str], ...] = (
+    ("series_wc_or_bye", "Wild card"), ("series_lds", "Division series"),
+    ("series_lcs", "Championship series"), ("series_ws", "World Series"),
+)
+
+
+def _mlb_team_box(row: dict, count: str, points: str, label: str,
+                  keep_zero: bool = False) -> dict | None:
+    """A count and what the scorer said it was worth.
+
+    The scorer's own figure rather than count times weight. A live baseball
+    club's points are prorated to a full season and its counts are not, so a
+    page that multiplied would print a number the score does not contain --
+    thirteen wins at two apiece is twenty-six, and the row says 31.7.
+    """
+    got = _stat_number(row, count)
+    if got is None:
+        # Not a zero. The summer ahead has not been played and an older row
+        # predates the column; both are "not known", and "0" would be a claim.
+        return {"label": label, "value": "\u2014", "points": None}
+    if not got and not keep_zero:
+        return None
+    paid = _stat_number(row, points)
+    return {"label": label, "value": f"{got:,.0f}",
+            "points": round(paid, 1) if paid is not None else None}
+
+
+def _mlb_team_boxes(figures: dict) -> dict:
+    """One calendar season's four boxes, or the league year's."""
+    return {
+        "top": [b for b in (_mlb_team_box(figures, c, p, l, keep_zero=True)
+                            for c, p, l in MLB_TEAM_TOP) if b],
+        "secondary": [],
+    }
+
+
+def _mlb_team_october(row: dict) -> dict | None:
+    """The postseason, in the rounds it was actually played in.
+
+    Its own section rather than an outcome box, because a playoff run is not
+    one thing that happened: it is a number of wins and a number of rounds
+    reached, each priced differently. The total is what the run paid, and the
+    boxes above it are what paid it.
+    """
+    played = _stat_number(row, "playoff_game_wins") or 0.0
+    paid = _stat_number(row, "pts_playoff") or 0.0
+    if not played and not paid:
+        return None
+    from whul.scoring.mlb import BASE_PLAYOFF_WIN, PTS_SERIES
+
+    rounds = []
+    for column, label in MLB_TEAM_SERIES:
+        got = _stat_number(row, column) or 0.0
+        if not got:
+            continue
+        worth = PTS_SERIES[column.replace("series_", "").replace("wc_or_bye", "wc")]
+        rounds.append({"label": label, "value": f"{got:,.0f}",
+                       "points": round(got * worth, 1)})
+    return {
+        "name": "Postseason",
+        "games": f"{played:,.0f}",
+        "top": [{"label": "Playoff wins", "value": f"{played:,.0f}",
+                 "points": round(played * BASE_PLAYOFF_WIN, 1)}],
+        "secondary": rounds,
+        "total": {"label": "Postseason", "value": f"{paid:,.1f}", "bare": True},
+    }
+
+
+def _mlb_team_panel(row: dict) -> dict | None:
+    """A baseball club's season, shown the way a football club's is.
+
+    The same head, the same two rows of boxes and the same outcome strip --
+    they are the same kind of asset and were reading as two different sports.
+    What baseball adds is the question its own players' panels already answer:
+    a contract year is the tail of one summer and the front of the next, and a
+    single line across both is a figure that belongs to neither.
+    """
+    if _stat_number(row, "games_played") is None:
+        return None
+    settled = bool(_stat_number(row, "pts_div_champ"))
+    panel: dict = {"kind": "nfl-team", **_mlb_team_boxes(row)}
+
+    head = []
+    record = _team_record(row)
+    if record:
+        head.append(["Record", record])
+    games = _stat_number(row, "games_played")
+    if games is not None:
+        head.append(["Games played", f"{games:,.0f}"])
+    if head:
+        panel["head"] = head
+
+    champ = _stat_number(row, "is_division_champ")
+    panel["outcomes"] = [
+        _outcome_box("Division title", bool(champ), settled or bool(champ),
+                     _stat_number(row, "pts_div_champ")),
+    ]
+    october = _mlb_team_october(row)
+    if october:
+        panel["posts"] = [october]
+    years = _mlb_team_by_year(row)
+    if years:
+        panel["years"] = years
+    return panel
+
+
+def _mlb_team_by_year(row: dict) -> list[dict]:
+    """The same four boxes, one set a calendar season.
+
+    The years are the league year's own rather than the ones played, so the
+    summer ahead is a tab of dashes instead of a tab that is not there -- a
+    season nobody has played is a fact about the calendar, and a missing tab
+    says instead that the question cannot be asked.
+    """
+    from whul.config.league import SEASON
+
+    lines = _season_lines(row)
+    years = sorted(set(f"{y}" for y in
+                       range(SEASON.start.year, SEASON.end.year + 1)) | set(lines))
+    if len(years) < 2:
+        return []
+    out = []
+    for year in years:
+        boxes = _mlb_team_boxes(lines.get(year, {}))
+        out.append({"year": year, **boxes, "raw": _section_points([boxes])})
+    return out
+
+
 def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
     """A baseball player, at whichever of the two jobs he does -- or both.
 
@@ -1798,20 +1964,30 @@ def _soccer_panel(row: dict) -> dict | None:
                 into[field] = round(into.get(field, 0) + value, 1)
 
     out = []
+    national = False
     for section in merged.values():
         kind = str(section.get("kind") or "")
-        shape = "round-robin" if kind == "league" else "knockout"
+        national = national or kind == "international"
+        shape = "round-robin" if kind in ("league", "international") else "knockout"
         block = {"name": str(section.get("name") or ""), "blocks": []}
         if kind == "league":
             block["head"] = _soccer_head(section, row)
             block["outcomes"] = _soccer_outcomes(row)
+        elif kind == "international":
+            block["head"] = _intl_head(section)
+            block["total"] = _intl_total(section)
         phases = section.get("phases")
         if isinstance(phases, list) and phases:
             for phase in phases:
                 label = str(phase.get("label") or "")
-                knockout = label != "League phase"
+                # The phase says what shape it is where it knows -- a
+                # qualifying group and a knockout tie are not the same set of
+                # boxes, and a national team's campaign is both in turn. Where
+                # it does not, the European wording decides, as it always has.
+                knockout = str(phase.get("shape") or "") == "knockout" \
+                    if phase.get("shape") else label != "League phase"
                 made = _soccer_block(
-                    phase, "round-robin" if not knockout else "knockout",
+                    phase, "knockout" if knockout else "round-robin",
                     byes=int(section.get("bye_wins") or 0) if knockout else 0,
                     bye_points=float(section.get("bye_points") or 0) if knockout else 0.0,
                 )
@@ -1824,7 +2000,65 @@ def _soccer_panel(row: dict) -> dict | None:
             made["label"] = ""
             block["blocks"].append(made)
         out.append(block)
-    return {"kind": "soccer", "sections": out} if out else None
+    if not out:
+        return None
+    panel = {"kind": "soccer", "sections": out}
+    if national:
+        panel["note"] = _intl_note(row)
+    return panel
+
+
+def _intl_head(section: dict) -> list[list[str]]:
+    """What a national team's competition says that its boxes do not.
+
+    The rung, because it is what prices the competition and is the whole reason
+    a Nations League group and a World Cup group are worth different amounts.
+    Where a club's section would say where it finished in the table, a national
+    team has no table -- the ledger does not record which division of the
+    Nations League a match was in -- so the phases below say how far it got
+    instead.
+    """
+    rung = str(section.get("rung") or "")
+    played = int(section.get("matches") or 0)
+    head = [["Matches", f"{played:,}"]]
+    if rung:
+        head.append(["Rung", rung])
+    return head
+
+
+def _intl_total(section: dict) -> dict:
+    """What the competition earned, and what that became in the season.
+
+    Two numbers because they are two things. A club's competitions add up to
+    its season; a national team's do not -- the best one counts whole, every
+    other at half, and the year is then lifted so its best rung reaches a full
+    ceiling. So the big figure is what the team earned here, which is the sum
+    of this section's own boxes and can be read against its matches, and the
+    superscript is what that became. The superscripts are what add up to the
+    score.
+    """
+    earned = float(section.get("points") or 0)
+    counted = float(section.get("counted") or 0)
+    return {
+        "label": "Earned", "value": f"{earned:,.1f}", "bare": True,
+        "sup": f"→{counted:,.1f}",
+        "suptitle": ("what this competition counted for in the season total, "
+                     "after the fold and the lift"),
+    }
+
+
+def _intl_note(row: dict) -> str:
+    """The arithmetic between the sections and the score, in one line.
+
+    Without it the superscripts are three numbers a reader has to trust. With
+    it they are three numbers a reader can add up.
+    """
+    lift = float(row.get("lift") or 0)
+    said = ("Best competition whole, every other at half"
+            + (f", then lifted ×{lift:,.2f} so the year's best rung reaches a "
+               f"full ceiling" if lift and abs(lift - 1.0) > 0.005 else "")
+            + ".")
+    return said
 
 
 #: A club footballer's row says this where his club's row names the
@@ -2300,10 +2534,10 @@ def _identity_lines(profile: dict | None, *tail: str) -> str:
     parts: list[str] = []
     for part in (profile.get("position", ""), profile.get("team", ""), *tail):
         if part and part not in parts:
-            parts.append(part)
+            parts.append(escape(str(part)))
     out = f'<span class="idl">{" · ".join(parts)}</span>' if parts else ""
     group = profile.get("group", "")
-    return out + (f'<em class="grp">{group}</em>' if group else "")
+    return out + (f'<em class="grp">{escape(str(group))}</em>' if group else "")
 
 
 def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0,
@@ -2460,12 +2694,12 @@ def _results_table(
         group = umbrella_for(league)
         groups.add(group)
         rows.append(
-            f'<tr data-league="{league}" data-kind="{kind}" '
-            f'data-group="{group}" '
+            f'<tr data-league="{escape(league)}" data-kind="{escape(kind)}" '
+            f'data-group="{escape(group)}" '
             f'data-manager="{escape(str(row.manager_id))}" '
             f'data-counts="{1 if (not has_counts or row.counts) else 0}">'
             f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
-            f'{profile["name"]}</button>'
+            f'{escape(profile["name"])}</button>'
             f'<span class="rowmeta">{_identity_lines(profile, league, kind)}</span>'
             f'</td>'
             f'<td><span class="who"><i class="swatch" '
@@ -2477,17 +2711,21 @@ def _results_table(
         return '<p class="sub">Nothing scored yet.</p>'
 
     def chips(name: str, values: set[str], umbrellas: set[str] = frozenset()) -> str:
-        # Already escaped: these come off the profiles, which hold HTML because
-        # every other place they are used is HTML. Escaping again turned "Men's
-        # Intl Soccer" into a chip reading "Men&#x27;s Intl Soccer" -- and the
-        # filter went on working, because the row's own attribute was wrong in
-        # exactly the same way.
+        # Escaped here, and here only. A chip once read "Men&#x27;s Intl
+        # Soccer" and the filter went on working, because the row's own
+        # attribute was wrong the same way; it was fixed by dropping the escape
+        # on the reasoning that the profiles hold HTML. They hold text, and
+        # every other reader of them was escaping -- which is how the same
+        # apostrophe reached a chart label as "St. John&amp;#x27;s Red...".
+        # The chip and the row attribute have to agree, so they are escaped
+        # together and the value the filter compares is the escaped one on both
+        # sides.
         buttons = "".join(
             f'<button class="chip{" umbrella" if v in umbrellas else ""}" '
-            f'data-filter="{name}" data-value="{v}" aria-pressed="false"'
-            + (f' title="Everything in {v}: '
+            f'data-filter="{name}" data-value="{escape(v)}" aria-pressed="false"'
+            + (f' title="Everything in {escape(v)}: '
                f'{escape(", ".join(covered_by(v)))}"' if v in umbrellas else "")
-            + f'>{v}</button>'
+            + f'>{escape(v)}</button>'
             for v in sorted(values | umbrellas) if v
         )
         return f'<div class="chips" role="group" aria-label="Filter by {name}">{buttons}</div>'
@@ -2668,9 +2906,29 @@ def _figure_index(items: list[tuple[str, str]]) -> str:
     return f'<nav class="figureindex" aria-label="On this page">{links}</nav>'
 
 
+#: Profile fields the browser writes into innerHTML, and which are therefore
+#: escaped on the way into the payload rather than where they are read. The
+#: rest are markup already (`avatar`, `badge`), numbers, or structures the
+#: renderer walks itself.
+PAYLOAD_TEXT = ("name", "meta", "position", "team", "group", "kind", "league")
+
+
 def _profile_payload(profiles: dict[str, dict]) -> str:
+    """The profiles, as the profile window reads them.
+
+    Escaped here because this is the boundary: the dict holds what an asset is
+    called and the window builds HTML out of it. Doing it at the source instead
+    was what put an entity in the middle of a chart label.
+    """
+    shown = {
+        asset: {
+            key: escape(str(value)) if key in PAYLOAD_TEXT and value else value
+            for key, value in profile.items()
+        }
+        for asset, profile in profiles.items()
+    }
     return (
-        f'<script type="application/json" id="assetdata">{json.dumps(profiles)}</script>'
+        f'<script type="application/json" id="assetdata">{json.dumps(shown)}</script>'
         '<dialog class="profile" id="profile" aria-label="Asset profile"></dialog>'
     )
 
@@ -3407,8 +3665,8 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
             f'<button class="assetlink" type="button" data-asset="{escape(asset_id)}">'
             f'<span class="who">'
             f"{images.avatar('asset', asset_id, name, size=26, badge=corner, logo=is_logo)}"
-            f'<span><span class="nm">{name}</span> '
-            f'<span style="color:var(--muted)">{best["category"]} · '
+            f'<span><span class="nm">{escape(name)}</span> '
+            f'<span style="color:var(--muted)">{escape(str(best["category"]))} · '
             f'{float(best["score"]):,.1f}</span></span></span></button>'
         )
 

@@ -713,3 +713,45 @@ def test_each_season_page_is_filed_under_the_sport_that_serves_it():
     for league, (sport, path, _, _) in feed.SEASON_PAGES.items():
         assert feed.SPORTS[league] == sport, league
         assert path.endswith("/fixtures/"), league
+
+
+def test_a_club_the_feed_calls_something_else_still_gets_its_fixture():
+    """Athletic Club's fixture column was empty while it was being scored
+    perfectly, because the feed writes Athletic Bilbao and neither name
+    contains the other -- so the word rules and the abbreviation rule, which
+    both assume one name is a shortening of the other, could not reach it."""
+    from whul.fixtures import match_team
+    from whul.resolve import normalize_team
+
+    wanted = {
+        normalize_team("Athletic Club"): ("Athletic Club", "La Liga"),
+        normalize_team("Real Madrid"): ("Real Madrid", "La Liga"),
+        normalize_team("LAFC"): ("LAFC", "MLS"),
+    }
+    assert match_team("Athletic Bilbao", wanted, "SPAIN") == "Athletic Club"
+    assert match_team("Ath Bilbao", wanted, "SPAIN") == "Athletic Club"
+    assert match_team("Los Angeles FC", wanted, "USA") == "LAFC"
+    # The country guard still runs first. Brazil's Serie B has an Athletic
+    # Club too, and an alias must not be a way around that.
+    assert match_team("Athletic Bilbao", wanted, "BRAZIL") is None
+    # And an alias for a club nobody holds falls through rather than deciding.
+    assert match_team("Athletic Bilbao", {"real madrid": ("Real Madrid", "La Liga")},
+                      "SPAIN") is None
+
+
+def test_a_club_that_matched_nothing_is_told_what_the_feed_did_show(capsys):
+    """"No fixture found for Athletic Club" is true of a club between
+    competitions and true of a club the feed calls something else, and those
+    want opposite responses. Side by side the second is obvious."""
+    from whul.fixtures import _say_what_the_feed_called_them
+
+    wanted = {"athletic": ("Athletic Club", "La Liga")}
+    spoken = {"SPAIN": {"Athletic Bilbao", "Barcelona", "Real Madrid"}}
+    _say_what_the_feed_called_them(wanted, lambda key: False, spoken)
+
+    said = capsys.readouterr().out
+    assert "Athletic Bilbao" in said and "Athletic Club" in said
+
+    # Nothing said about a club that found its fixture.
+    _say_what_the_feed_called_them(wanted, lambda key: True, spoken)
+    assert capsys.readouterr().out == ""

@@ -291,3 +291,83 @@ def test_a_national_team_carries_its_whole_record_not_only_its_wins():
             out.loc["B", "shootout_wins"], out.loc["B", "shootout_losses"],
             out.loc["B", "losses"]) == (1, 1, 0, 1, 1)
     assert out.loc["A", "matches"] == 4
+
+
+# --- where a score came from ------------------------------------------------
+
+BOX_PARTS = ("wins", "draws", "losses", "shootout_wins", "shootout_losses",
+             "big_margins", "clean_sheets")
+
+
+def _campaign():
+    """One team's year: a World Cup it went far in and a Nations League group."""
+    rows = [
+        # World Cup qualifying, then the finals: one competition, three stages.
+        match("Spain", "Malta", 4, 0, kind="qualifying", day="2025-09-05"),
+        match("Norway", "Spain", 0, 2, kind="qualifying", day="2025-09-08"),
+        match("Spain", "Brazil", 2, 1, day="2026-06-15"),
+        match("Spain", "Japan", 1, 1, day="2026-06-20"),
+        match("Spain", "Mexico", 3, 0, day="2026-06-25"),
+        match("Spain", "France", 1, 1, day="2026-07-01", shootout="Spain"),
+        # A second competition, on a lower rung.
+        match("Spain", "Italy", 2, 0, competition="UEFA Nations League",
+              rung="nations_league", day="2025-10-10"),
+        match("Spain", "Denmark", 0, 1, competition="UEFA Nations League",
+              rung="nations_league", day="2025-10-13"),
+    ]
+    return scorer.score_teams(pd.DataFrame(rows))
+
+
+def test_a_section_adds_up_to_itself_and_the_sections_add_up_to_the_score():
+    """The whole reason the panel is laid out this way. A club's competitions
+    sum to its season and a national team's do not -- the best one counts
+    whole, every other at half, and the year is lifted afterwards -- so a
+    section carries what it earned *and* what that became, and only the second
+    of those adds up to the score."""
+    scored = _campaign()
+    mine = scored[scored["team"] == "Spain"].iloc[0]
+    sections = mine["sections"]
+    assert len(sections) == 2
+
+    for section in sections:
+        boxes = sum(section[f"pts_{part}"] for part in BOX_PARTS)
+        assert round(boxes, 1) == pytest.approx(section["points"], abs=0.2), (
+            f"{section['name']}'s boxes come to {boxes} and the section says "
+            f"{section['points']}")
+
+    counted = sum(s["counted"] for s in sections)
+    assert counted == pytest.approx(mine["total_points"], abs=0.2)
+    # And the two numbers really are different, or the test proves nothing.
+    assert sum(s["points"] for s in sections) != pytest.approx(
+        mine["total_points"], abs=0.2)
+
+
+def test_qualifying_and_the_finals_it_fed_are_one_competition():
+    """Which is what the scoring says they are: a World Cup campaign is on the
+    World Cup rung whether or not the team reached the tournament, and that is
+    what stops missing it from being worth more than entering it."""
+    mine = _campaign()
+    row = mine[mine["team"] == "Spain"].iloc[0]
+    cup = next(s for s in row["sections"] if s["name"] == "FIFA World Cup")
+    assert cup["matches"] == 6
+    labels = [p["label"] for p in cup["phases"]]
+    assert labels == ["Qualifying", "Group stage", "Knockout"]
+    assert sum(p["matches"] for p in cup["phases"]) == cup["matches"]
+    # A shootout is a knockout thing and a draw is a group thing, and the boxes
+    # are shaped by which of those a phase is.
+    shapes = {p["label"]: p["shape"] for p in cup["phases"]}
+    assert shapes["Qualifying"] == shapes["Group stage"] == "round-robin"
+    assert shapes["Knockout"] == "knockout"
+
+
+def test_the_best_competition_is_the_one_shown_first():
+    """A panel is read top down and the year's answer is the first thing on
+    it -- and it is also the one competition counted whole."""
+    row = _campaign()
+    mine = row[row["team"] == "Spain"].iloc[0]
+    names = [s["name"] for s in mine["sections"]]
+    assert names[0] == "FIFA World Cup"
+    best, rest = mine["sections"][0], mine["sections"][1]
+    assert best["counted"] == pytest.approx(best["points"] * mine["lift"], abs=0.2)
+    assert rest["counted"] == pytest.approx(
+        rest["points"] * 0.5 * mine["lift"], abs=0.2)
