@@ -1117,7 +1117,13 @@ def _motorsport_panel(row: dict) -> dict | None:
     wanted = MOTORSPORT_BOXES.get(league)
     if not wanted:
         return None
-    started = _stat_number(row, "events")
+    # Starts, not rows. A Formula 1 weekend with a sprint is two results and
+    # one start, and a driver's own page says three where a count of entries
+    # would say four. `events` is the fallback for a row stored before the
+    # marks were carried, and for NASCAR the two are the same number.
+    started = _stat_number(row, "starts")
+    if started is None:
+        started = _stat_number(row, "events")
     return {
         "kind": "boxes",
         "head": [["Races", "\u2014" if started is None else f"{started:,.0f}"]],

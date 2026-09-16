@@ -27,6 +27,7 @@ from datetime import date
 import pandas as pd
 
 from whul.config.league import SEASON
+from whul.scoring.motorsport import EVENT_COUNTS
 
 #: Leagues benchmarked this way. The team sports keep season aggregates, whose
 #: seasons already align year to year.
@@ -35,6 +36,18 @@ WINDOW_LEAGUES = ("PGA", "Tennis", "Motorsports", "ATP", "WTA", "NASCAR", "F1")
 #: How many prior windows to draw the pool from. Enough to be stable without
 #: reaching back into a materially different competitive era.
 DEFAULT_YEARS = 5
+
+#: Per-event marks a window adds up alongside the points. A scorer writes one
+#: column per mark, one row per event, and the sum is taken here because only
+#: the window knows which events are in it: a league year opening in August
+#: holds part of one season and part of the next, so a season-long count is the
+#: wrong number twice over.
+#:
+#: Named by the scorer that writes them rather than listed again. Everything
+#: else in an event frame is dropped, which is why the marks have to be said
+#: out loud -- a driver's finishing position summed over a season is a number
+#: with no meaning, and a total that appeared on its own would be exactly that.
+COUNTED = EVENT_COUNTS
 
 
 @dataclass(frozen=True)
@@ -132,6 +145,8 @@ def window_totals(
     if labelled.empty:
         return pd.DataFrame(
             columns=["season", id_col, "league", "role", "total_points", "events"]
+            + [c for c in COUNTED if c in (events.columns if events is not None
+                                           and not events.empty else [])]
         )
 
     group = ["window", id_col]
@@ -139,9 +154,11 @@ def window_totals(
         if column in labelled.columns:
             group.append(column)
 
+    counted = [c for c in COUNTED if c in labelled.columns]
     totals = labelled.groupby(group, as_index=False).agg(
         total_points=(points_col, "sum"),
         events=(points_col, "size"),
+        **{name: (name, "sum") for name in counted},
     )
     totals = totals.rename(columns={"window": "season"})
     if league_col not in totals.columns:

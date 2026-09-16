@@ -198,6 +198,12 @@ def score_players(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:
 #: and Formula 1 reports wins, podiums and points finishes.
 FINISH_COUNTS = {1: "wins", 3: "podiums", 5: "top_fives", 10: "top_tens"}
 
+#: Every per-event mark the two series write, for a window to add up. Starts
+#: are one of them and are not the row count: a Formula 1 weekend with a sprint
+#: is two rows and one start, and the sport's own page says three where a count
+#: of entries would say four.
+EVENT_COUNTS = ("starts",) + tuple(FINISH_COUNTS.values())
+
 
 def _count_finishes(work: pd.DataFrame, top: tuple, only=None) -> None:
     """Mark each result so the window can add them up.
@@ -207,8 +213,14 @@ def _count_finishes(work: pd.DataFrame, top: tuple, only=None) -> None:
     of one season and part of the next, and a season-long count would be the
     wrong number twice over. Summing per-race marks gives the right one for
     whatever stretch is being asked about.
+
+    ``only`` narrows what counts as a race at all, and so marks the starts as
+    well as the finishes: a Formula 1 sprint is a row and is not a start, and
+    counting the rows would say a driver had entered four races on a weekend
+    he entered three.
     """
     inside = pd.Series(True, index=work.index) if only is None else only
+    work["starts"] = inside.astype(float)
     for place in top:
         work[FINISH_COUNTS[place]] = (
             (work["finish"] <= place) & (work["finish"] > 0) & inside
