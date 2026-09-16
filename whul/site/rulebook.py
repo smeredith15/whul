@@ -192,9 +192,11 @@ NFL_PLAYER_LABELS = {
 
 NFL_TEAM_LABELS = {
     "reg_wins": "Regular-season win",
+    "reg_ties": "Regular-season tie, at half a win",
     "reg_big_wins": f"Winning by {nfl.BIG_WIN_MARGIN} points or more",
     "reg_shutouts": "Shutout win",
     "div_wins": "Beating a division rival, on top of the win",
+    "div_ties": "Tying a division rival, on top of the tie",
     "div_champ": "Winning the division",
     "playoff_appearance": "Reaching the playoffs",
     "playoff_wins": "Playoff win",

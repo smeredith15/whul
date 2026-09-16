@@ -40,9 +40,9 @@ def test_an_nfl_line_matches_the_scorer():
 
 
 def test_an_nfl_team_season_matches_the_scorer():
-    season = {"reg_wins": 13, "reg_big_wins": 7, "reg_shutouts": 1,
-              "div_wins": 5, "div_champ": 1, "playoff_appearance": 1,
-              "playoff_wins": 2, "point_diff": 140}
+    season = {"reg_wins": 13, "reg_ties": 1, "reg_big_wins": 7,
+              "reg_shutouts": 1, "div_wins": 5, "div_ties": 1, "div_champ": 1,
+              "playoff_appearance": 1, "playoff_wins": 2, "point_diff": 140}
     scored = sum(season[c] * w for c, w in nfl.TEAM_WEIGHTS.items())
     assert total(spec("calc-nfl-teams"), season) == pytest.approx(scored)
 

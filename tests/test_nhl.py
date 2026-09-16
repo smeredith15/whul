@@ -488,3 +488,21 @@ def test_a_scoreless_skater_does_not_shift_everyone_elses_phase():
 def test_the_phase_label_is_left_alone_when_the_caller_sends_none():
     out = score_skaters(pd.DataFrame([_skater()]), _standings())
     assert "_phase" not in out.columns
+
+
+def test_a_team_carries_its_regulation_losses():
+    """Unscored, and counted: the feed serves wins and overtime losses, and a
+    standings line is wins, losses, overtime losses. Without the middle number
+    "Wins 50" cannot say whether the other thirty-two were lost or have not
+    been played."""
+    out = score_teams(pd.DataFrame([team(gamesPlayed=82, wins=50, otLosses=10)]),
+                      scale_regular_season=False).iloc[0]
+    assert out["reg_losses"] == 22
+
+
+def test_a_season_not_yet_played_reports_no_losses_rather_than_a_negative():
+    """Games played can arrive short of the wins already counted while a feed
+    is mid-refresh, and "-3 losses" is worse than none."""
+    out = score_teams(pd.DataFrame([team(gamesPlayed=0, wins=3, otLosses=0)]),
+                      scale_regular_season=False).iloc[0]
+    assert out["reg_losses"] == 0

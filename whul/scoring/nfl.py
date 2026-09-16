@@ -1,7 +1,8 @@
 """NFL scoring -- port of NFL_Players.R and NFL_Teams.R.
 
-Players use half-PPR. Teams score off the schedule: wins, blowouts, shutouts,
-division record and title, playoff appearance and wins, and point differential.
+Players use half-PPR. Teams score off the schedule: wins, ties at half a win,
+blowouts, shutouts, division record and title, playoff appearance and wins,
+and point differential.
 
 Both functions take an already-loaded frame so they stay pure and testable; the
 network lives in ``whul.sources.nflverse``.
@@ -43,6 +44,28 @@ TEAM_WEIGHTS = {
     "playoff_wins": 15.0,
     "point_diff": 0.1,
 }
+
+#: A tie is half a win, wherever a win is paid. The NFL is the only league
+#: here that can draw and not price it -- soccer scores its draws outright --
+#: and until now a tie was paid as a loss, which is the one thing it is not:
+#: a 2022 Washington side that tied the Giants was scored as though it had
+#: lost the game. Half rather than a figure of its own because the sport
+#: treats it as half: the standings count it as half a win and half a loss,
+#: and a tie is the only result both clubs are credited for.
+#:
+#: The frozen benchmark does not know about it, and deliberately is not being
+#: rerun for it. It was drawn over 2021-2025 before ties were paid, so the only
+#: pool seasons that would move are the few containing a tie -- the NFL had one
+#: in 2021, two in 2022 and none at all in 2023 or 2024 -- and each moves by
+#: five points against a bar of 258. Whether that shifts the 99th percentile
+#: depends on whether one of those clubs set it, which is a question for the
+#: next benchmark run rather than a reason to hold the scoring: the run
+#: recomputes the pool from this scorer and picks the ties up on both sides.
+#: Until then a live club with a tie is measured against a bar that did not
+#: count its own, which is worth at most five points out of 258.
+TIE_SHARE = 0.5
+TEAM_WEIGHTS["reg_ties"] = TEAM_WEIGHTS["reg_wins"] * TIE_SHARE
+TEAM_WEIGHTS["div_ties"] = TEAM_WEIGHTS["div_wins"] * TIE_SHARE
 
 BIG_WIN_MARGIN = 9  # a "big win" is a two-possession game or better
 
@@ -176,6 +199,10 @@ def _team_games(schedules: pd.DataFrame) -> pd.DataFrame:
     games = pd.concat(sides, ignore_index=True)
     games["margin"] = games["points_for"] - games["points_against"]
     games["is_win"] = games["margin"] > 0
+    # Three outcomes, not two. `is_win` alone makes a tie a loss, and the
+    # league's own standings do not: they count it half and half.
+    games["is_tie"] = games["margin"] == 0
+    games["is_loss"] = games["margin"] < 0
     games["is_big_win"] = games["margin"] >= BIG_WIN_MARGIN
     games["is_shutout"] = (games["points_against"] == 0) & games["is_win"]
     games["is_reg"] = games["game_type"] == "REG"
@@ -253,9 +280,15 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
         lambda g: pd.Series(
             {
                 "reg_wins": int((g["is_win"] & g["is_reg"]).sum()),
+                "reg_ties": int((g["is_tie"] & g["is_reg"]).sum()),
+                # Unscored, and carried anyway: a record is two numbers, and
+                # "Wins 11" on its own cannot say whether the other six were
+                # lost or have not been played.
+                "reg_losses": int((g["is_loss"] & g["is_reg"]).sum()),
                 "reg_big_wins": int((g["is_big_win"] & g["is_reg"]).sum()),
                 "reg_shutouts": int((g["is_shutout"] & g["is_reg"]).sum()),
                 "div_wins": int((g["is_win"] & g["is_reg"] & g["div_game"]).sum()),
+                "div_ties": int((g["is_tie"] & g["is_reg"] & g["div_game"]).sum()),
                 "point_diff": float(g.loc[g["is_reg"], "margin"].sum()),
                 "playoff_appearance": int(g["is_playoff"].any()),
                 "playoff_wins": int((g["is_win"] & g["is_playoff"]).sum()),

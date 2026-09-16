@@ -433,3 +433,15 @@ def test_an_unsettled_season_wins_nothing():
     got = _split_conference_title(
         conf_summary(("A", 8, 8), ("B", 8, 9)), FB_REG_CHAMP_POOL, set())
     assert list(got) == [0.0, 0.0]
+
+
+def test_a_college_team_carries_what_it_lost_as_well_as_what_it_won():
+    """Unscored, and counted: a win total on its own cannot say whether the
+    rest of the schedule was lost or has not been played."""
+    sched = pd.DataFrame(pad([
+        game("A", "B", 30, 0),
+        game("B", "A", 24, 10),
+    ], 6))
+    out = score_football(sched).set_index("team")
+    assert (out.loc["A", "wins"], out.loc["A", "losses"]) == (1, 1)
+    assert (out.loc["B", "wins"], out.loc["B", "losses"]) == (1, 1)

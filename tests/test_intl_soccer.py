@@ -270,3 +270,24 @@ def test_a_single_season_pull_still_knows_each_tournament_s_shape():
         f"two won qualifiers scored {ghana:.0f} of a {ceiling:.0f} ceiling; the "
         f"finals are missing from the denominator"
     )
+
+
+def test_a_national_team_carries_its_whole_record_not_only_its_wins():
+    """Unscored, and counted. A side that played four and won one drew or lost
+    the other three, and "Wins 1" cannot say which -- nor can it separate a
+    shootout from the draw it came out of, which the club vocabulary already
+    keeps apart because the match itself was drawn."""
+    out = scorer.score_teams(pd.DataFrame([
+        match("A", "B", 2, 0),
+        match("A", "B", 1, 1),
+        match("A", "B", 0, 0, shootout="A"),
+        match("A", "B", 0, 1),
+    ])).set_index("team")
+
+    assert (out.loc["A", "wins"], out.loc["A", "draws"],
+            out.loc["A", "shootout_wins"], out.loc["A", "shootout_losses"],
+            out.loc["A", "losses"]) == (1, 1, 1, 0, 1)
+    assert (out.loc["B", "wins"], out.loc["B", "draws"],
+            out.loc["B", "shootout_wins"], out.loc["B", "shootout_losses"],
+            out.loc["B", "losses"]) == (1, 1, 0, 1, 1)
+    assert out.loc["A", "matches"] == 4

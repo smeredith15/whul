@@ -527,3 +527,23 @@ def test_a_live_window_with_no_divisions_awards_no_title():
     source checks for rather than letting it default quietly."""
     out = mlb.score_teams(pd.DataFrame(PLAYED_OUT), partial=True).set_index("team")
     assert out["pts_div_champ"].sum() == 0.0
+
+
+def test_a_team_carries_what_it_lost_as_well_as_what_it_won():
+    """Unscored, and counted: "Wins 1" cannot say whether the other two were
+    lost or have not been played."""
+    out = summarize_teams(pd.DataFrame([
+        game("NYY", "BOS", 5, 2),
+        game("NYY", "BOS", 1, 4),
+        game("BOS", "NYY", 3, 0),
+    ])).set_index("team")
+    assert (out.loc["NYY", "reg_wins"], out.loc["NYY", "reg_losses"]) == (1, 2)
+    assert (out.loc["BOS", "reg_wins"], out.loc["BOS", "reg_losses"]) == (2, 1)
+
+
+def test_a_game_called_level_is_neither_a_win_nor_a_loss():
+    """Vanishingly rare and not impossible: a game called level and never
+    replayed is on the record as a tie, and counting losses as "not a win"
+    would file it as one."""
+    out = summarize_teams(pd.DataFrame([game("NYY", "BOS", 3, 3)])).set_index("team")
+    assert (out.loc["NYY", "reg_wins"], out.loc["NYY", "reg_losses"]) == (0, 0)

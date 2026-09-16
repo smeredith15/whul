@@ -262,3 +262,15 @@ def test_the_nba_team_source_asks_espn_for_the_right_season():
     from whul.benchmark_sources import SOURCES
 
     assert SOURCES["nba-teams"].seasons_for(date(2026, 12, 1)) == [2027]
+
+
+def test_a_team_carries_what_it_lost_as_well_as_what_it_won():
+    """Unscored, and counted: "Wins 2" cannot say whether the other ten were
+    lost or have not been played."""
+    sched = pd.DataFrame(
+        [game("BOS", "MIL", 120, 90), game("MIL", "BOS", 110, 100)]
+        + [game("BOS", "MIL", 100, 110) for _ in range(10)]
+    )
+    out = score_teams(sched).set_index("team")
+    assert out.loc["BOS", "reg_wins"] == 1
+    assert out.loc["BOS", "reg_losses"] == 11
