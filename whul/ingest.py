@@ -137,6 +137,7 @@ def ingest(
     if getattr(source, "cumulative", False):
         mine = _against_the_league_year(store, mine, source, season, as_of, report)
 
+    _check_against_the_club(store, mine, source, season, as_of, report)
     _settle_umbrella_league(store, mine, report)
     _report_shrinkage(store, mine, source, season, as_of, report)
     mine = _keep_competitions_the_pull_missed(
@@ -183,6 +184,68 @@ def ingest(
         store, placed, season, as_of, version.version
     )
     return report
+
+
+#: What a player's own game count is called, in order of preference.
+PLAYER_GAMES_COLUMNS = ("regular_games", "games_played", "games", "matches")
+
+
+def _check_against_the_club(store: Store, mine: pd.DataFrame, source,
+                            season: str, as_of: date, report: IngestReport) -> None:
+    """Nobody plays more games than his club did.
+
+    The one arithmetic a reader can do in their head, and the figures failed
+    it: twelve of twenty baseball players were recorded with more games than
+    their club had played, by half again. Both numbers looked reasonable on
+    their own -- twenty-eight games, eighteen games -- and the pair is what
+    says one of them is wrong.
+
+    Reported rather than refused, and deliberately not corrected: which figure
+    is the wrong one is a question about the feeds, and clamping the player to
+    his club would hide a club count that is short.
+    """
+    if getattr(source, "asset_type", "") != "Player" or mine is None or mine.empty:
+        return
+    if store is None or "asset_id" not in mine.columns:
+        return
+    column = next((c for c in PLAYER_GAMES_COLUMNS if c in mine.columns), None)
+    if column is None:
+        return
+    club_games = store.read_club_games(season, as_of)
+    if not club_games:
+        return
+
+    ids = [str(a) for a in mine["asset_id"] if str(a)]
+    if not ids:
+        return
+    marks = ",".join("?" for _ in ids)
+    clubs = dict(store.query(
+        f"SELECT asset_id, affiliation FROM assets WHERE asset_id IN ({marks})",
+        tuple(ids),
+    ).itertuples(index=False, name=None))
+
+    impossible = []
+    played = pd.to_numeric(mine[column], errors="coerce")
+    for asset_id, his in zip(mine["asset_id"], played):
+        club = str(clubs.get(str(asset_id)) or "").strip()
+        theirs = club_games.get(club)
+        if theirs is None or pd.isna(his) or his <= theirs:
+            continue
+        impossible.append((club, float(his), float(theirs)))
+    if not impossible:
+        return
+
+    worst = sorted(impossible, key=lambda row: row[2] - row[1])[:4]
+    detail = "; ".join(f"{club} {his:,.0f} of {theirs:,.0f}"
+                       for club, his, theirs in worst)
+    report.problems.append(
+        f"{len(impossible)} player(s) are recorded with more games than their "
+        f"club has played, which cannot be: {detail}"
+        + (f" (and {len(impossible) - len(worst)} more)"
+           if len(impossible) > len(worst) else "")
+        + ". One of the two feeds is wrong about its window and the pair is "
+          "what says so; neither figure is altered here"
+    )
 
 
 #: How many games a club has played, under the names a scorer gives it. In
@@ -786,7 +849,21 @@ def _accumulating(fetch, source, store: Store, verbose: bool = True,
         # restore it is one that eventually is not.
         seeded = feed_ledger.apply_seed(store, source.key, source.accumulates)
         window = fetch(years)
-        held = feed_ledger.merge(store, source.key, window, source.accumulates)
+        try:
+            held = feed_ledger.merge(store, source.key, window, source.accumulates)
+        except KeyError as exc:
+            # A key naming a column the source does not produce. Loud, and not
+            # fatal: this is a guard against a feed forgetting, and losing the
+            # guard is worth one league's pull, which is what happened -- every
+            # club-soccer source failed outright for two days over a column
+            # name.
+            said = (f"{source.key} cannot be accumulated: {exc}. Tonight's "
+                    f"pull is scored as it came, so a match the feed has "
+                    f"stopped returning is lost until this is fixed")
+            if notes is not None:
+                notes.append(said)
+            print(f"  {said}", flush=True)
+            return window if window is not None else pd.DataFrame()
         if verbose:
             fresh = 0 if window is None or window.empty else len(window)
             print(f"  {source.key}: {fresh} row(s) in the feed's window, "
@@ -847,6 +924,23 @@ def _report_forgotten(source, window, held, verbose: bool, notes) -> None:
         notes.append(said)
     if verbose:
         print(f"  {source.key}: {said}", flush=True)
+
+
+def _drain_findings(notes) -> None:
+    """Carry a loader's findings into the run's report.
+
+    A loader is handed a list of seasons and returns a frame, so anything it
+    notices about the *shape* of what came back could only ever be printed.
+    That is where the domestic cups went: every night's log said the League Cup
+    had returned squads with no appearances in them, ten thousand lines in, and
+    a log is not read on the nights it says nothing is wrong.
+    """
+    from whul import benchmark_sources
+
+    if notes is None:
+        benchmark_sources.take_findings()
+        return
+    notes.extend(benchmark_sources.take_findings())
 
 
 def _scored_on(score, kept, as_of: date):
@@ -928,6 +1022,7 @@ def _pull(
         fetch = _accumulating(fetch, source, store, verbose, notes)
     if not source.windowed:
         raw = fetch(seasons)
+        _drain_findings(notes)
         if raw is None or raw.empty:
             # A feed that returns nothing said nothing about why, and an empty
             # frame reaching the report as a bare zero is the shape of fault
@@ -963,6 +1058,7 @@ def _pull(
     # since two series sharing a pull need not start on the same day.
     years = sorted({season_start(source.league).year, as_of.year})
     fetched = fetch(years)
+    _drain_findings(notes)
     events = _carry_identity(
         _scored_on(score, fetched, as_of), fetched, source.asset_type)
     if events is None or events.empty:

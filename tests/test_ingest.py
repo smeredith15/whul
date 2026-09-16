@@ -1688,3 +1688,115 @@ def test_a_frame_with_no_game_count_writes_nothing_rather_than_a_zero():
     assert ing._record_club_games(
         store, pd.DataFrame([{"team": "SEA", "reg_wins": 3}]),
         Source(), "2026-27", _date(2026, 9, 16)) == 0
+
+
+def test_a_key_the_source_cannot_produce_costs_the_ledger_not_the_league():
+    """It cost the league. Every club-soccer source failed outright for two
+    days over one column name -- and the ledger is a guard against a feed
+    forgetting, so losing the guard is worth far less than losing the pull."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    window = pd.DataFrame([{"team": "Arsenal", "date": "2026-09-15",
+                            "goals_for": 2, "goals_against": 0}])
+
+    class Source:
+        key, league, asset_type = "epl", "Premier League", "Team"
+        accumulates = ("nothing_like_this",)
+        windowed = False
+
+    notes: list[str] = []
+    fetch = ing._accumulating(lambda years: window, Source(),
+                              open_store(":memory:"), verbose=False, notes=notes)
+    got = fetch([2026])
+
+    assert list(got["team"]) == ["Arsenal"], "the pull went on"
+    assert notes and "cannot be accumulated" in notes[0]
+
+
+def test_a_competition_that_returned_no_appearances_reaches_the_report():
+    """It has been in every night's log, ten thousand lines in, and a log is
+    not read on the nights it says nothing is wrong. A domestic cup is counted
+    in full rather than paid as a bonus, so one that answers with nothing is
+    points missing from a total."""
+    from whul import benchmark_sources as bs
+
+    bs.take_findings()
+    bs._report_competition_coverage(pd.DataFrame([
+        {"league": "Premier League", "competition_key": "epl",
+         "player": "A", "matches": 4},
+        {"league": "Premier League", "competition_key": "efl_cup",
+         "player": "A", "matches": 0},
+    ]))
+    said = bs.take_findings()
+
+    assert len(said) == 1
+    assert "efl_cup" in said[0]
+    assert bs.take_findings() == [], "a finding is reported once, not every run"
+
+
+def test_a_competition_that_answered_says_nothing():
+    from whul import benchmark_sources as bs
+
+    bs.take_findings()
+    bs._report_competition_coverage(pd.DataFrame([
+        {"league": "Premier League", "competition_key": "epl",
+         "player": "A", "matches": 4},
+        {"league": "Premier League", "competition_key": "efl_cup",
+         "player": "A", "matches": 2},
+    ]))
+    assert bs.take_findings() == []
+
+
+def test_a_player_cannot_have_played_more_games_than_his_club():
+    """The one arithmetic a reader can do in their head, and the figures failed
+    it: twelve of twenty baseball players were recorded with more games than
+    their club had played, by half again. Twenty-eight games and eighteen games
+    both look reasonable alone; the pair is what says one is wrong."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+    store.upsert("assets", [
+        {"asset_id": "p1", "asset_type": "Player", "display_name": "Acuna",
+         "league": "MLB", "role": "Batter", "norm_key": "MLB",
+         "active": 1, "created_at": "x", "affiliation": "Atlanta Braves"},
+        {"asset_id": "p2", "asset_type": "Player", "display_name": "Ohtani",
+         "league": "MLB", "role": "Batter", "norm_key": "MLB",
+         "active": 1, "created_at": "x", "affiliation": "Los Angeles Dodgers"},
+    ], keys=("asset_id",))
+    store.record_club_games({"Atlanta Braves": 18.0, "Los Angeles Dodgers": 17.0},
+                            "2026-27", _date(2026, 9, 16), "MLB")
+
+    class Source:
+        key, league, asset_type = "mlb", "MLB", "Player"
+
+    report = ing.IngestReport(league="MLB", asset_type="Player")
+    ing._check_against_the_club(
+        store, pd.DataFrame([{"asset_id": "p1", "games": 28},
+                             {"asset_id": "p2", "games": 17}]),
+        Source(), "2026-27", _date(2026, 9, 16), report)
+
+    assert len(report.problems) == 1
+    assert "Atlanta Braves 28 of 18" in report.problems[0]
+    assert "Dodgers" not in report.problems[0], "17 of 17 is a full season, not a fault"
+
+
+def test_a_team_pull_is_not_checked_against_itself():
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    class Source:
+        key, league, asset_type = "mlb-teams", "MLB", "Team"
+
+    report = ing.IngestReport(league="MLB", asset_type="Team")
+    ing._check_against_the_club(
+        open_store(":memory:"), pd.DataFrame([{"asset_id": "t1", "games": 99}]),
+        Source(), "2026-27", _date(2026, 9, 16), report)
+    assert report.problems == []

@@ -1515,6 +1515,72 @@ def _cup_appearances(league, athlete, counted, matches, season, lineups):
         league, athlete, ties, season, seen=lineups)
 
 
+def cmd_probe_squad(args: argparse.Namespace) -> int:
+    """What a competition's squad pull actually returns, in three numbers.
+
+    The domestic cups reach a player's total through this request and nothing
+    else, and they are contributing nothing: Cole Palmer's breakdown holds the
+    Premier League and not the two League Cup ties Chelsea played. Three things
+    could be true and they look identical from the outside -- the competition
+    lists no clubs, the clubs answer with no squads, or the squads come back
+    with every appearance at zero -- and only the first two are the feed
+    refusing. The third is the feed answering honestly about a competition it
+    does not keep statistics for, and no amount of retrying fixes it.
+
+    Prints the count at each stage, so the next step is decided by which one
+    is zero rather than by guessing.
+    """
+    from whul.sources import espn_soccer
+
+    league = args.competition
+    season = int(args.season)
+    asked = espn_soccer.roster_season(league, season)
+    print(f"\n  {league}, our {season} -- ESPN's {asked}\n")
+
+    why: list[str] = []
+    clubs = espn_soccer.team_ids(league, season, note=why)
+    for line in why:
+        print(f"      {line}")
+    print(f"  clubs listed: {len(clubs)}")
+    if not clubs:
+        print("\n  Nothing else can be pulled. This competition contributes "
+              "nothing to any player,\n  and will go on doing so until the "
+              "club list answers.\n")
+        return 1
+    shown = ", ".join(sorted(clubs)[:6])
+    print(f"      {shown}{', ...' if len(clubs) > 6 else ''}")
+
+    frame = espn_soccer.load_players(league, [season], verbose=True)
+    rows = 0 if frame is None or frame.empty else len(frame)
+    print(f"  player rows: {rows}")
+    if not rows:
+        print("\n  The clubs are listed and their squads are not. The request "
+              "shape is what to look at:\n  `espn_soccer.load_squad`.\n")
+        return 1
+
+    played = pd.to_numeric(frame.get("matches"), errors="coerce").fillna(0)
+    appeared = int((played > 0).sum())
+    print(f"  rows recording an appearance: {appeared}")
+    if not appeared:
+        print("\n  The feed answered with the squads and no appearances in "
+              "them. That is the feed\n  saying it keeps no statistics for "
+              "this competition, and the appearances have to\n  come from the "
+              "ties themselves -- see `probe-cup`, which reads a match's own "
+              "lineup.\n")
+        return 1
+
+    top = frame.assign(_m=played).sort_values("_m", ascending=False).head(5)
+    print("\n  The most-played, as the feed reports them:")
+    for row in top.to_dict("records"):
+        print(f"      {str(row.get('team'))[:22]:<24}"
+              f"{str(row.get('player'))[:24]:<26}{row['_m']:g}")
+    print("\n  This competition is answering. If it is missing from a "
+          "player's breakdown,\n  the loss is after the pull -- "
+          "`_soccer_players` attributes a cup row by the club's\n  league, and "
+          "a club it cannot place is dropped.\n")
+    return 0
+
+
 def cmd_probe_cup(args: argparse.Namespace) -> int:
     """Whether a cup tie's own record says who played in it.
 
@@ -3587,6 +3653,16 @@ def main(argv: list[str] | None = None) -> int:
                      help="our season label, e.g. 2027")
     cup.add_argument("--out", help="write the report to this file too")
     cup.set_defaults(func=cmd_probe_cup)
+
+    squad = sub.add_parser(
+        "probe-squad",
+        help="what a competition's squad pull returns, stage by stage",
+    )
+    squad.add_argument("--competition", default="efl_cup",
+                       help="ESPN competition key, e.g. efl_cup, dfbpokal")
+    squad.add_argument("--season", default="2027",
+                       help="our season label, e.g. 2027")
+    squad.set_defaults(func=cmd_probe_squad)
 
     check = sub.add_parser(
         "check-attribution",

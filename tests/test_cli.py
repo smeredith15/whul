@@ -488,3 +488,49 @@ def test_asking_to_commit_a_ledger_that_holds_nothing_says_so(tmp_path, capsys):
                      "--db", str(tmp_path / "empty.sqlite3")])
     assert code == 1
     assert "gathered nothing yet" in capsys.readouterr().err
+
+
+def test_a_competition_that_lists_no_clubs_says_the_pull_stops_there(capsys, monkeypatch):
+    """Three things look identical from the outside -- no clubs, no squads, or
+    squads with every appearance at zero -- and only the first two are the feed
+    refusing. Cole Palmer's breakdown holds the Premier League and not the two
+    League Cup ties Chelsea played, and which of the three that is decides
+    whether retrying can ever help."""
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "team_ids", lambda *a, **k: {})
+
+    assert main(["probe-squad", "--competition", "efl_cup"]) == 1
+    out = capsys.readouterr().out
+    assert "clubs listed: 0" in out
+    assert "contributes nothing to any player" in out
+
+
+def test_a_competition_with_squads_and_no_appearances_says_where_to_look(capsys, monkeypatch):
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "team_ids",
+                        lambda *a, **k: {"Chelsea": "363"})
+    monkeypatch.setattr(espn_soccer, "load_players", lambda *a, **k: pd.DataFrame(
+        [{"player": "Cole Palmer", "team": "Chelsea", "matches": 0}]))
+
+    assert main(["probe-squad", "--competition", "efl_cup"]) == 1
+    out = capsys.readouterr().out
+    assert "rows recording an appearance: 0" in out
+    assert "keeps no statistics for this competition" in out
+
+
+def test_a_competition_that_answers_says_the_loss_is_after_the_pull(capsys, monkeypatch):
+    import pandas as pd
+
+    from whul.sources import espn_soccer
+
+    monkeypatch.setattr(espn_soccer, "team_ids",
+                        lambda *a, **k: {"Chelsea": "363"})
+    monkeypatch.setattr(espn_soccer, "load_players", lambda *a, **k: pd.DataFrame(
+        [{"player": "Cole Palmer", "team": "Chelsea", "matches": 2}]))
+
+    assert main(["probe-squad", "--competition", "efl_cup"]) == 0
+    assert "the loss is after the pull" in capsys.readouterr().out

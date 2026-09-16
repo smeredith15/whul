@@ -3657,3 +3657,17 @@ def test_a_batter_whose_club_nobody_drafted_says_so_rather_than_guessing():
     panel = site_build._mlb_panel(
         {"league": "MLB", "role": "Batter", "games": 6}, team_games=None)
     assert panel["head"] == [["Games played", "6"], ["Team games", "—"]]
+
+
+def test_a_league_whose_row_predates_the_counted_figure_still_has_one():
+    """Chosen once for the whole frame, the column a newer league carries left
+    every club in an older league's row with no figure at all -- a heading that
+    read as a club which had not played."""
+    import pandas as pd
+
+    stats = pd.DataFrame([
+        {"team": "Arsenal", "matches_played": 6.0, "counted_matches": 5.0},
+        {"team": "Bayern Munich", "matches_played": 5.0, "counted_matches": None},
+    ])
+    assert site_build._club_games(stats) == {
+        "Arsenal": 5.0, "Bayern Munich": 5.0}

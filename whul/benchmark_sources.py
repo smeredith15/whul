@@ -615,6 +615,26 @@ def _soccer_players(only: tuple[str, ...] = ()):
     return load, lambda raw: soccer.score_players(raw, postseason=False)
 
 
+#: What a pull wants the run to say, beyond what it printed.
+#:
+#: A loader has no way to reach the ingest report -- it is handed a list of
+#: seasons and returns a frame -- so a finding it makes about the *shape* of
+#: what came back could only ever be printed. That is where the domestic cups
+#: went: every nightly run has said, in a grid ten thousand lines into a log,
+#: that the League Cup returned squads and not one appearance among them, and
+#: nobody reads a log that says nothing is wrong on the nights nothing is.
+#:
+#: Drained by `whul.ingest._pull` immediately after the fetch it belongs to, so
+#: one source's finding cannot be reported against the next.
+FINDINGS: list[str] = []
+
+
+def take_findings() -> list[str]:
+    """Everything a pull asked to have said, and clear it."""
+    said, FINDINGS[:] = list(FINDINGS), []
+    return said
+
+
 def _report_competition_coverage(rows: pd.DataFrame) -> None:
     """How many rows each league got from each competition, before scoring.
 
@@ -659,6 +679,20 @@ def _report_competition_coverage(rows: pd.DataFrame) -> None:
               f"{league} row(s) and not one appearance among them, so it adds "
               f"nothing to any total", flush=True)
     print(flush=True)
+
+    # The competitions nobody asked about and nobody got. A domestic cup is
+    # counted in full -- it is not a bonus -- so one that answers with nothing
+    # is points missing from a total, not a competition that was quiet.
+    absent = sorted({str(c) for c in grid.columns
+                     if not int(played[c].sum())})
+    if absent:
+        FINDINGS.append(
+            f"{len(absent)} competition(s) returned squads and not one "
+            f"appearance among them ({', '.join(absent)}), so they add nothing "
+            f"to any player's total. `whul probe-squad --competition "
+            f"{absent[0]}` says whether the feed is refusing or has no "
+            f"statistics to give"
+        )
 
 
 def _soccer_players_live(only: tuple[str, ...] = ()):
@@ -1232,8 +1266,14 @@ SOURCES: dict[str, Source] = _register(
                # unidentified match in a competition to the same row and lose
                # all but the last. The two legs of a tie are the case this has
                # to separate, and they differ by date.
-               accumulates=("season_year", "competition_key", "date",
-                            "team", "opponent"))
+               #
+               # No season: `load_soccer_matches` drops `season_year` on the
+               # way out -- "the feed's season label chose the rows; it is not
+               # for the scorers to read" -- and naming it here took every
+               # club-soccer pull down with a KeyError for two days. The date
+               # carries the year anyway, so nothing is lost by not saying it
+               # twice.
+               accumulates=("competition_key", "date", "team", "opponent"))
         for key, category in SOCCER_CATEGORIES.items()
     ],
     # The seasons asked for are the European shape only. MLS runs inside a
