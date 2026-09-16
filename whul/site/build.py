@@ -20,7 +20,9 @@ also the relief the light-mode palette's contrast warning requires.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import date
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 
@@ -425,10 +427,16 @@ def asset_profiles(
                 panel = _mlb_panel(row, club_games.get(_affiliation(meta, asset_id)))
                 if panel:
                     panels[asset_id] = panel
-            elif str(row.get("league")) == "NBA" and row.get("role"):
+            elif str(row.get("league")) == "NBA" and _has_a_role(row):
                 panels[asset_id] = _nba_panel(row)
-            elif str(row.get("league")) == "NHL" and row.get("role"):
+            elif str(row.get("league")) == "NHL" and _has_a_role(row):
                 panels[asset_id] = _nhl_panel(row)
+            elif asset_league in team_panels():
+                # Basketball, hockey and the five college sports, all scored by
+                # counting things. The same branch answers a club with a season
+                # behind it and one with nothing, because the table it is built
+                # from does not need a row to be read.
+                panels[asset_id] = _counted_team_panel(asset_league, row)
             elif asset_league in MOTORSPORT_BOXES:
                 panel = _motorsport_panel(row, asset_league)
                 if panel:
@@ -1317,6 +1325,277 @@ def _tennis_box(entry: dict) -> dict:
     return box
 
 
+# --- the clubs that are scored by counting things ---------------------------
+#
+# Seven leagues whose team scoring is the same shape: a handful of counts, each
+# worth a fixed number of points, plus outcomes that happen once and a
+# postseason that happens later. Written as a table rather than seven builders
+# because they differ only in which counts and what they are worth -- and
+# because a table can be read from nothing, which is what lets a club drafted
+# in August have the panel it will have in January.
+
+
+@dataclass(frozen=True)
+class TeamBox:
+    """One count and what the scorer pays for it."""
+
+    column: str
+    label: str
+    weight: float = 0.0
+    #: A ``pts_`` column to print instead of count times weight, where the
+    #: scorer has one. It is the better number whenever it exists: a split
+    #: conference title is a pool divided among co-champions and cannot be
+    #: recovered from a count at all.
+    points: str = ""
+    #: Multiply by the row's own scale factor. Hockey's season is scored
+    #: against an 84-game bar the history was 82 games long, and the points are
+    #: lifted where the counts are not -- so a page that multiplied would print
+    #: a figure the score does not contain.
+    scaled: bool = False
+    #: Shown as Yes / No / not yet, rather than as a number.
+    outcome: bool = False
+    #: A column whose value goes beside this one, as "of N". Conference wins
+    #: out of conference games is the pair: the denominator is not scored and
+    #: is most of what the numerator means, so it rides along rather than
+    #: taking a box whose points strip would have to read nought.
+    of: str = ""
+    #: How that value is worded. "of 9" for a denominator; "3 won" for a count
+    #: that decided the box it sits on rather than sitting under it.
+    of_text: str = "of {n:,.0f}"
+
+
+@dataclass(frozen=True)
+class TeamPanel:
+    """One league's clubs, as boxes."""
+
+    top: tuple[TeamBox, ...]
+    rest: tuple[TeamBox, ...] = ()
+    outcomes: tuple[TeamBox, ...] = ()
+    post: tuple[TeamBox, ...] = ()
+    post_rest: tuple[TeamBox, ...] = ()
+    post_name: str = "Postseason"
+    #: Figures for the heading: carried by the scorer, scored by nothing.
+    head: tuple[tuple[str, str], ...] = ()
+    #: The column that says the club's season is over, so an outcome it did not
+    #: win reads "No" rather than "not yet".
+    #:
+    #: None of these leagues has one, and until one does every outcome here
+    #: reads "not yet". That is the lesser of the two wrong answers: a club
+    #: that has not made the playoffs in November has not missed them either,
+    #: and "No" against every college team in week two was on the page. A
+    #: finished season reading "not yet" understates; a season in progress
+    #: reading "No" is false.
+    settled: str = ""
+
+
+def _team_panels() -> dict[str, TeamPanel]:
+    """The table, built once, with the scorers' own weights.
+
+    Their weights, not copies of them. A number written down twice is a number
+    that will disagree with itself the first time one of them is tuned, and the
+    whole point of these panels is that the boxes add up to the score.
+    """
+    from whul.scoring import nba, ncaa, nhl
+
+    fb, bb = ncaa.FB_WEIGHTS, ncaa.BB_WEIGHTS
+    nb = nba.TEAM_WEIGHTS
+
+    hoops = lambda league: TeamPanel(  # noqa: E731 -- one expression, twice
+        top=(
+            TeamBox("reg_wins", "Wins", bb["reg_wins"]),
+            TeamBox("point_diff", "Point diff", bb["point_diff"]),
+            TeamBox("big_wins", "Big wins", bb["big_wins"]),
+            TeamBox("conf_wins", "Conference wins", bb["conf_wins"],
+                    of="conf_games"),
+        ),
+        outcomes=(
+            TeamBox("conf_tourney_champ", "Conference tournament",
+                    bb["conf_tourney_champ"], outcome=True),
+            TeamBox("", "Regular-season title", points="pts_reg_champ",
+                    outcome=True),
+            TeamBox("mm_appearance", "NCAA tournament", bb["mm_appearance"],
+                    outcome=True),
+        ),
+        post=(
+            TeamBox("mm_wins", "Tournament wins", bb["mm_wins"]),
+            TeamBox("conf_tourney_wins", "Conference tournament wins",
+                    bb["conf_tourney_wins"]),
+        ),
+        post_name="March",
+    )
+
+    diamond = lambda league: TeamPanel(  # noqa: E731
+        top=(
+            TeamBox("reg_wins", "Wins", ncaa.DIAMOND_REG_WIN),
+            TeamBox("run_diff", "Run diff", ncaa.DIAMOND_RUN_DIFF),
+        ),
+        # The win counts are what decide the rounds above and are not scored
+        # themselves, so they ride on the rounds as "3 won" rather than taking
+        # boxes whose points strips would all have to read nought.
+        post=(
+            TeamBox("series_regional", "Regional", ncaa.PTS_SERIES_REGIONAL,
+                    outcome=True, of="regional_wins", of_text="{n:,.0f} won"),
+            TeamBox("series_super", "Super Regional", ncaa.PTS_SERIES_SUPER,
+                    outcome=True, of="super_wins", of_text="{n:,.0f} won"),
+            TeamBox("series_cws_champ", "National title", ncaa.PTS_SERIES_CWS,
+                    outcome=True, of="cws_wins", of_text="{n:,.0f} won"),
+        ),
+    )
+
+    return {
+        "NBA": TeamPanel(
+            top=(
+                TeamBox("reg_wins", "Wins", nb["reg_wins"]),
+                TeamBox("point_diff", "Point diff", nb["point_diff"]),
+                TeamBox("reg_big_wins", "Big wins", nb["reg_big_wins"]),
+            ),
+            rest=(TeamBox("ist_wins", "In-Season Tournament wins", nb["ist_wins"]),),
+            outcomes=(
+                TeamBox("playoff_appearance", "Playoffs", nb["playoff_appearance"],
+                        outcome=True),
+                TeamBox("playin_only", "Play-In only", nb["playin_only"],
+                        outcome=True),
+                TeamBox("ist_champ", "In-Season Tournament",
+                        nb["ist_champ"], outcome=True),
+            ),
+            post=(
+                TeamBox("playoff_wins", "Playoff wins", nb["playoff_wins"]),
+                TeamBox("playoff_series_wins", "Series won",
+                        nb["playoff_series_wins"]),
+            ),
+        ),
+        "NHL": TeamPanel(
+            top=(
+                TeamBox("reg_wins", "Wins", nhl.PTS_WIN, scaled=True),
+                TeamBox("goal_diff", "Goal diff", nhl.PTS_GOAL_DIFF, scaled=True),
+                TeamBox("reg_otl", "OT losses", nhl.PTS_OTL, scaled=True),
+            ),
+            outcomes=(
+                TeamBox("is_division_champ", "Division title", nhl.PTS_DIV_CHAMP,
+                        outcome=True),
+                TeamBox("made_playoffs", "Playoffs", nhl.PTS_PLAYOFF_APP,
+                        outcome=True),
+            ),
+            post=(
+                TeamBox("playoff_wins", "Playoff wins", nhl.PTS_PLAYOFF_WIN),
+                TeamBox("series_wins", "Series won", nhl.PTS_SERIES_WIN),
+            ),
+            head=(("standings_points", "Standings points"),),
+        ),
+        "NCAAF": TeamPanel(
+            top=(
+                TeamBox("wins", "Wins", fb["wins"]),
+                TeamBox("point_diff", "Point diff", fb["point_diff"]),
+                TeamBox("big_wins", "Big wins", fb["big_wins"]),
+                TeamBox("conf_wins", "Conference wins", fb["conf_wins"],
+                        of="conf_games"),
+            ),
+            outcomes=(
+                TeamBox("conf_title_win", "Conference title", fb["conf_title_win"],
+                        outcome=True),
+                TeamBox("", "Regular-season title", points="pts_reg_champ",
+                        outcome=True),
+                TeamBox("playoff_app", "Playoff", fb["playoff_app"], outcome=True),
+            ),
+            post=(TeamBox("playoff_wins", "Playoff wins", fb["playoff_wins"]),),
+        ),
+        "NCAAM": hoops("NCAAM"),
+        "NCAAW": hoops("NCAAW"),
+        "NCAA Baseball": diamond("NCAA Baseball"),
+        "NCAA Softball": diamond("NCAA Softball"),
+    }
+
+
+@lru_cache(maxsize=1)
+def team_panels() -> dict[str, TeamPanel]:
+    return _team_panels()
+
+
+#: An em dash: the figure is not known, which is never the same as nought.
+DASH = "\u2014"
+
+
+def _counted_box(row: dict, spec: TeamBox, scale: float,
+                 settled: bool = False) -> dict:
+    """One box: a count, and what the scorer paid for it.
+
+    Never a zero where the answer is not known. A club drafted into a league
+    that opens in October has played nothing, and "0" says it played and did
+    nothing -- the difference the whole empty panel exists to draw.
+    """
+    got = None if not spec.column else _stat_number(row, spec.column)
+    paid = _stat_number(row, spec.points) if spec.points else None
+    if spec.outcome:
+        made = _outcome_box(
+            spec.label, bool(got) or bool(paid), settled,
+            paid if paid is not None else (got or 0) * spec.weight)
+        beside = _stat_number(row, spec.of) if spec.of else None
+        if beside:
+            made["aside"] = spec.of_text.format(n=beside)
+        return made
+    if got is None:
+        return {"label": spec.label, "value": DASH, "points": None}
+    if paid is None:
+        paid = got * spec.weight * (scale if spec.scaled else 1.0)
+    box = {"label": spec.label, "value": f"{got:,.0f}",
+           "points": round(paid, 1) or 0.0}
+    beside = _stat_number(row, spec.of) if spec.of else None
+    if beside is not None:
+        box["aside"] = spec.of_text.format(n=beside)
+    return box
+
+
+def _counted_team_panel(league: str, row: dict) -> dict | None:
+    """A club scored by counting things, in the boxes every other club has.
+
+    Drawn from the table whether or not the club has played. That is the whole
+    difference: before this a club with no figures got no panel at all, so the
+    leagues that open latest -- basketball, hockey, every college sport -- read
+    as broken pages for the first five months of a league year, and a design
+    settled in September could not be looked at until the season it describes
+    had started.
+    """
+    spec = team_panels().get(league)
+    if spec is None:
+        return None
+    scale = _stat_number(row, "schedule_factor") or 1.0
+    settled = bool(spec.settled and _stat_number(row, spec.settled))
+
+    def box(b: TeamBox) -> dict:
+        return _counted_box(row, b, scale, settled)
+
+    panel: dict = {
+        "kind": "nfl-team",
+        "top": [box(b) for b in spec.top],
+        "secondary": [box(b) for b in spec.rest],
+    }
+    head = []
+    record = _team_record(row)
+    if record:
+        head.append(["Record", record])
+    played = _stat_number(row, "games_played")
+    # Only where it says something the record does not. Basketball's scorer
+    # carries no games-played column at all, so a club with a full season
+    # behind it read "Record 50-20  Games played --", which looks like a fault
+    # and is only a column the sport does not report.
+    if played is not None or not record:
+        head.append(["Games played", DASH if played is None else f"{played:,.0f}"])
+    for column, label in spec.head:
+        got = _stat_number(row, column)
+        head.append([label, "\u2014" if got is None else f"{got:,.0f}"])
+    panel["head"] = head
+    if spec.outcomes:
+        panel["outcomes"] = [box(b) for b in spec.outcomes]
+    if spec.post:
+        post = {
+            "name": spec.post_name,
+            "top": [box(b) for b in spec.post],
+            "secondary": [box(b) for b in spec.post_rest],
+        }
+        panel["posts"] = [post]
+    return panel
+
+
 #: Leagues whose profile is a panel built from figures, so that one can be
 #: drawn before the figures exist. The football and motorsport builders take a
 #: second argument and are called by name above.
@@ -1344,6 +1623,13 @@ def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | No
     whose profile had no panel: Brock Bowers, injured, read as a broken page in
     a league four weeks old.
     """
+    # An umbrella is a slot, not a league: nobody's asset is filed under
+    # "Tennis", they are ATP or WTA, and a page asked about the umbrella got no
+    # panel at all. Any member answers -- the panel is the same shape for every
+    # league under one umbrella, which is what makes it an umbrella.
+    league = league if not covered_by(league) else covered_by(league)[0]
+    if asset_type == "Team":
+        return _team_panel_before_a_season(league)
     if asset_type != "Player":
         return None
     # Eleven MLS players have no feed rows at all, so they never reach the loop
@@ -1359,7 +1645,60 @@ def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | No
     if league in TENNIS_TOURS:
         return _tennis_panel({"league": league})
     made = EMPTY_PANELS.get(league)
-    return made({"league": league, "role": role}) if made else None
+    if not made:
+        return None
+    # A role the panel can build from. Baseball's is the only one that decides
+    # which boxes get drawn, and a player whose row has not arrived has no role
+    # on it -- so the panel it would have had if he had batted, which is the
+    # one nine of every ten of them get.
+    role = role or DEFAULT_ROLES.get(league, "")
+    return made({"league": league, "role": role})
+
+
+#: What to assume a player does, where the panel cannot be drawn without
+#: knowing and the roster has not said yet.
+DEFAULT_ROLES = {"MLB": "Batter"}
+
+
+def _team_panel_before_a_season(league: str) -> dict | None:
+    """The panel a club gets before it has played, which is every club in
+    August in every league but two.
+
+    This was the half of the empty panel nobody wrote. A player drafted into a
+    league that has not opened got the boxes with dashes in them; a club got
+    "No stat lines recorded for this day yet", because the builder returned
+    early on anything that was not a player. So a design settled in September
+    could not be looked at until the season it describes had started, which is
+    how two of them shipped without anybody seeing them.
+    """
+    if league in covered_by("Club Soccer"):
+        return _soccer_panel({"sections": [_empty_soccer_section(league, "league")]})
+    if league in INTL_SOCCER:
+        return _soccer_panel({
+            "lift": 0.0,
+            "sections": [_empty_soccer_section("Next tournament", "international")],
+        })
+    if league == "NFL":
+        return _nfl_team_panel({"team_division": " "})
+    if league == "MLB":
+        return _mlb_team_panel({"games_played": None}, force=True)
+    return _counted_team_panel(league, {})
+
+
+#: The two international categories, whose clubs are national teams.
+INTL_SOCCER = ("Men's Intl Soccer", "Women's Intl Soccer")
+
+
+def _empty_soccer_section(name: str, kind: str) -> dict:
+    """A football section with nothing in it, so its boxes can still be drawn.
+
+    Every count absent rather than zero. `_soccer_block` reads a missing count
+    as nought, which is right for a competition a club has played and wrong for
+    one it has not -- so the emptiness is carried by the section being the only
+    one, and the figures read as a season about to start rather than one gone
+    badly.
+    """
+    return {"kind": kind, "name": name}
 
 
 #: What a batter's line leads with, and what sits under it.
@@ -1611,9 +1950,14 @@ def _mlb_team_october(row: dict) -> dict | None:
     reached, each priced differently. The total is what the run paid, and the
     boxes above it are what paid it.
     """
-    played = _stat_number(row, "playoff_game_wins") or 0.0
-    paid = _stat_number(row, "pts_playoff") or 0.0
-    if not played and not paid:
+    played = _stat_number(row, "playoff_game_wins")
+    paid = _stat_number(row, "pts_playoff")
+    if played is None and paid is None:
+        # Not yet known, which is not the same as none. A club before October
+        # gets the section with dashes in it; one that has been eliminated gets
+        # zeroes, which is a different and true thing.
+        played = paid = None
+    elif not played and not paid:
         return None
     from whul.scoring.mlb import BASE_PLAYOFF_WIN, PTS_SERIES
 
@@ -1627,15 +1971,18 @@ def _mlb_team_october(row: dict) -> dict | None:
                        "points": round(got * worth, 1)})
     return {
         "name": "Postseason",
-        "games": f"{played:,.0f}",
-        "top": [{"label": "Playoff wins", "value": f"{played:,.0f}",
-                 "points": round(played * BASE_PLAYOFF_WIN, 1)}],
+        "games": "" if played is None else f"{played:,.0f}",
+        "top": [{"label": "Playoff wins",
+                 "value": "\u2014" if played is None else f"{played:,.0f}",
+                 "points": None if played is None
+                 else round(played * BASE_PLAYOFF_WIN, 1)}],
         "secondary": rounds,
-        "total": {"label": "Postseason", "value": f"{paid:,.1f}", "bare": True},
+        "total": {"label": "Postseason", "bare": True,
+                  "value": "\u2014" if paid is None else f"{paid:,.1f}"},
     }
 
 
-def _mlb_team_panel(row: dict) -> dict | None:
+def _mlb_team_panel(row: dict, force: bool = False) -> dict | None:
     """A baseball club's season, shown the way a football club's is.
 
     The same head, the same two rows of boxes and the same outcome strip --
@@ -1644,7 +1991,7 @@ def _mlb_team_panel(row: dict) -> dict | None:
     a contract year is the tail of one summer and the front of the next, and a
     single line across both is a figure that belongs to neither.
     """
-    if _stat_number(row, "games_played") is None:
+    if not force and _stat_number(row, "games_played") is None:
         return None
     settled = bool(_stat_number(row, "pts_div_champ"))
     panel: dict = {"kind": "nfl-team", **_mlb_team_boxes(row)}
@@ -1886,8 +2233,15 @@ def _soccer_block(part: dict, shape: str, byes: int = 0,
     top, rest = SOCCER_ROWS[shape]
 
     def box(name: str) -> dict:
+        got = part.get(name)
+        if got is None:
+            # Absent, not nought. A club drafted in August into a league that
+            # opens in October has not drawn nought matches, and a panel of
+            # zeroes says it played and got nothing.
+            return {"label": SOCCER_BOX_LABELS[name], "value": "—",
+                    "points": None}
         made = {"label": SOCCER_BOX_LABELS[name],
-                "value": f"{int(part.get(name) or 0):,}",
+                "value": f"{int(got or 0):,}",
                 "points": round(float(part.get(f"pts_{name}") or 0), 1) or 0.0}
         # A bye is win points and nothing else -- no margin bonus and no clean
         # sheet, because no match happened to have either. So it rides on the
@@ -2019,8 +2373,8 @@ def _intl_head(section: dict) -> list[list[str]]:
     instead.
     """
     rung = str(section.get("rung") or "")
-    played = int(section.get("matches") or 0)
-    head = [["Matches", f"{played:,}"]]
+    played = section.get("matches")
+    head = [["Matches", "—" if played is None else f"{int(played):,}"]]
     if rung:
         head.append(["Rung", rung])
     return head
@@ -2037,8 +2391,11 @@ def _intl_total(section: dict) -> dict:
     superscript is what that became. The superscripts are what add up to the
     score.
     """
-    earned = float(section.get("points") or 0)
-    counted = float(section.get("counted") or 0)
+    earned, counted = section.get("points"), section.get("counted")
+    if earned is None:
+        # Nothing played yet, which is not nothing earned.
+        return {"label": "Earned", "value": "—", "bare": True}
+    earned, counted = float(earned), float(counted or 0)
     return {
         "label": "Earned", "value": f"{earned:,.1f}", "bare": True,
         "sup": f"→{counted:,.1f}",
