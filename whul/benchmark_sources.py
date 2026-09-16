@@ -1042,6 +1042,31 @@ def _report_champions(key: str, scored: pd.DataFrame) -> None:
         print(f"      {season}  {who}{shared}", flush=True)
 
 
+def _tour_season_labels(as_of: date) -> list[int]:
+    """Every season label that can carry an event inside this league year.
+
+    A tour's season and a league year are not the same year and do not even
+    turn over together. This league year opened on 21 August 2026; the PGA
+    Tour's 2026 season closed six days later with the TOUR Championship, and
+    its 2027 season opened a fortnight after that with the Procore
+    Championship -- played inside this league year and labelled with next
+    year's number.
+
+    Asked for the calendar year, ESPN returns the first and not the second. So
+    the golf window closed on the twenty-seventh of August and stayed closed,
+    and three weeks of the tour playing looked exactly like three weeks of the
+    tour not playing: the pull succeeded every night, matched thirteen of the
+    fifteen rostered golfers, and reported the same two events.
+
+    Both labels are asked for and the league year decides. An event dated
+    outside it is dropped by the window either way, so asking wide costs one
+    request a night and guessing narrow cost a month.
+    """
+    from whul.config.league import SEASON
+
+    return list(range(SEASON.start.year, SEASON.end.year + 1))
+
+
 def _pga_players():
     from whul.scoring import golf
     from whul.sources import espn_individual
@@ -1293,6 +1318,7 @@ SOURCES: dict[str, Source] = _register(
     Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL",
            seasons_for=_feed_seasons("nhl", "NHL")),
     Source("pga", "PGA", "Player", _pga_players, windowed=True,
+           seasons_for=_tour_season_labels,
            # One row per golfer per tournament, keyed on ESPN's own id for the
            # event: a tournament that has been played cannot be un-played, so a
            # feed that comes back without one is never correcting anything.

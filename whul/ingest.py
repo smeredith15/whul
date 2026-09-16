@@ -1109,7 +1109,14 @@ def _pull(
     # calendar one, so its live total is summed over the same window its
     # benchmark was drawn over -- and over each produced league's own window,
     # since two series sharing a pull need not start on the same day.
-    years = sorted({season_start(source.league).year, as_of.year})
+    # The season labels this league year can carry, which the calendar year is
+    # not: a golf season turns over a fortnight after the league year opens, so
+    # an event played in September is labelled with next year's number. Where a
+    # source knows its own labelling it says so; the default is the pair of
+    # calendar years the league year spans, which is what a series running
+    # February to November needs.
+    years = (source.seasons_for(as_of) if getattr(source, "seasons_for", None)
+             else sorted({season_start(source.league).year, as_of.year}))
     fetched = _up_to(fetch(years), as_of)
     _drain_findings(notes)
     events = _carry_identity(
@@ -1120,6 +1127,7 @@ def _pull(
     # says which series an athlete actually runs in. Before the window totals,
     # so a driver whose league year has produced nothing yet still gets one.
     _harvest_tour(source, events, as_of, years, names, upcoming, verbose)
+    _say_if_nothing_new(source, events, as_of, notes)
 
     frames = []
     for name in source.produces or (source.league,):
@@ -1133,6 +1141,50 @@ def _pull(
         )
         frames.append(_with_finishes(totals.assign(season=current.label), rows, current))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+#: How long a tour may go without an event before the silence is worth saying
+#: out loud. A fortnight: golf had gone twenty days when this was noticed, and
+#: the tours here play most weeks, so two without one is already unusual enough
+#: to be worth a line. It says "if the tour has been playing" rather than
+#: "broken" precisely because a real break of this length exists -- Formula 1
+#: takes four weeks off every August -- and one note a summer is a fair price
+#: for not losing a month of golf again.
+QUIET_TOUR_DAYS = 14
+
+
+def _say_if_nothing_new(source, events, as_of: date, notes) -> None:
+    """A windowed feed that is healthy and has stopped moving.
+
+    Golf's figures stopped on the twenty-seventh of August and held for three
+    weeks. Nothing was wrong with the pull: it succeeded every night, matched
+    thirteen of the fifteen rostered golfers and reported the same two events,
+    because it was asking ESPN about a season that had ended rather than the
+    one being played. There was no error to report and the totals were
+    plausible -- a tour does take weeks off -- so the only thing that could
+    have said so is the gap itself.
+
+    Said, not raised. A genuine three-week break is a real thing and refusing
+    it would cost a league its scores over a quiet September.
+    """
+    if notes is None or events is None or events.empty:
+        return
+    column = next((c for c in ("date",) + DATE_COLUMNS if c in events.columns), None)
+    if column is None:
+        return
+    days = pd.to_datetime(events[column], errors="coerce").dt.date.dropna()
+    if days.empty:
+        return
+    newest = max(days)
+    quiet = (as_of - newest).days
+    if quiet <= QUIET_TOUR_DAYS:
+        return
+    notes.append(
+        f"the newest {source.league} event in this league year is {newest}, "
+        f"{quiet} days before this pull. The feed answered and the figures are "
+        f"plausible, so if the tour has been playing it is being asked about "
+        f"the wrong season rather than failing"
+    )
 
 
 #: What a player is, beyond a name and a total. Carried through from the feed
