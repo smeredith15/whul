@@ -1609,7 +1609,24 @@ def _across_feed_seasons(scored: pd.DataFrame) -> pd.DataFrame:
     keys = [c for c in IDENTITY_COLUMNS if c in scored.columns]
     if not keys:
         return scored
+    if str(scored["league"].iloc[0]) in SPLIT_BY_SEASON:
+        scored = _kept_season_by_season(scored)
     return baseline_store.combine_seasons(scored, keys)
+
+
+#: Leagues whose profile asks which half of the league year a figure came from,
+#: and so need each feed season kept before the two are added.
+#:
+#: Named rather than applied to everything. Every league year that spans a
+#: year's turn has two halves and most of them have a better way of showing it
+#: -- a club's competitions already say where its season came from, and a
+#: footballer's do too -- so carrying a second copy of every figure for all of
+#: them would be paid for by every row in the table. Baseball has neither: a
+#: club's contract year is the tail of one summer and the front of the next,
+#: and nothing else on the page separates them. The cumulative sources do this
+#: for themselves in `_kept_season_by_season`'s other caller, which is where
+#: the batters get it.
+SPLIT_BY_SEASON = frozenset({"MLB"})
 
 
 def _with_finishes(totals: pd.DataFrame, events: pd.DataFrame, current) -> pd.DataFrame:

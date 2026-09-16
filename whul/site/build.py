@@ -411,6 +411,13 @@ def asset_profiles(
                          else _nfl_team_panel(row))
                 if panel:
                     panels[asset_id] = panel
+            elif str(row.get("league")) == "MLB" and not _has_a_role(row):
+                # `not row.get("role")` would be wrong here: a club's role
+                # arrives as NaN and NaN is truthy, so every club took the
+                # player path. Third time in this file.
+                panel = _mlb_team_panel(row)
+                if panel:
+                    panels[asset_id] = panel
             elif str(row.get("league")) == "MLB" and row.get("role"):
                 # By the club, which the row does not carry: a batting line has
                 # no team on it, and the roster's own note of who he plays for
@@ -1537,6 +1544,157 @@ def _mlb_games_head(row: dict, team_games: float | None) -> list[list[str]]:
     ]
 
 
+def _has_a_role(row: dict) -> bool:
+    """Is this a player rather than a club?
+
+    On the value being a real string, not on the field being set. A club's
+    ``role`` is NaN, and NaN is truthy -- the mistake that sent every NFL club
+    down the player path and killed a baseball build on ``.get``.
+    """
+    role = row.get("role")
+    return isinstance(role, str) and bool(role.strip())
+
+
+#: A baseball club's season, as counts and the points the scorer put on them.
+#: The same four concepts football's clubs are shown by -- wins, run
+#: differential, big wins, shutouts -- because they are the same four things.
+MLB_TEAM_TOP: tuple[tuple[str, str, str], ...] = (
+    ("reg_wins", "pts_reg_wins", "Wins"),
+    ("run_diff", "pts_run_diff", "Run diff"),
+    ("reg_big_wins", "pts_big_wins", "Big wins"),
+    ("shutouts", "pts_shutouts", "Shutouts"),
+)
+
+#: October, by the round a club reached. Each is worth more than the last, so
+#: they are shown as what they are rather than folded into one playoff figure.
+MLB_TEAM_SERIES: tuple[tuple[str, str], ...] = (
+    ("series_wc_or_bye", "Wild card"), ("series_lds", "Division series"),
+    ("series_lcs", "Championship series"), ("series_ws", "World Series"),
+)
+
+
+def _mlb_team_box(row: dict, count: str, points: str, label: str,
+                  keep_zero: bool = False) -> dict | None:
+    """A count and what the scorer said it was worth.
+
+    The scorer's own figure rather than count times weight. A live baseball
+    club's points are prorated to a full season and its counts are not, so a
+    page that multiplied would print a number the score does not contain --
+    thirteen wins at two apiece is twenty-six, and the row says 31.7.
+    """
+    got = _stat_number(row, count)
+    if got is None:
+        # Not a zero. The summer ahead has not been played and an older row
+        # predates the column; both are "not known", and "0" would be a claim.
+        return {"label": label, "value": "\u2014", "points": None}
+    if not got and not keep_zero:
+        return None
+    paid = _stat_number(row, points)
+    return {"label": label, "value": f"{got:,.0f}",
+            "points": round(paid, 1) if paid is not None else None}
+
+
+def _mlb_team_boxes(figures: dict) -> dict:
+    """One calendar season's four boxes, or the league year's."""
+    return {
+        "top": [b for b in (_mlb_team_box(figures, c, p, l, keep_zero=True)
+                            for c, p, l in MLB_TEAM_TOP) if b],
+        "secondary": [],
+    }
+
+
+def _mlb_team_october(row: dict) -> dict | None:
+    """The postseason, in the rounds it was actually played in.
+
+    Its own section rather than an outcome box, because a playoff run is not
+    one thing that happened: it is a number of wins and a number of rounds
+    reached, each priced differently. The total is what the run paid, and the
+    boxes above it are what paid it.
+    """
+    played = _stat_number(row, "playoff_game_wins") or 0.0
+    paid = _stat_number(row, "pts_playoff") or 0.0
+    if not played and not paid:
+        return None
+    from whul.scoring.mlb import BASE_PLAYOFF_WIN, PTS_SERIES
+
+    rounds = []
+    for column, label in MLB_TEAM_SERIES:
+        got = _stat_number(row, column) or 0.0
+        if not got:
+            continue
+        worth = PTS_SERIES[column.replace("series_", "").replace("wc_or_bye", "wc")]
+        rounds.append({"label": label, "value": f"{got:,.0f}",
+                       "points": round(got * worth, 1)})
+    return {
+        "name": "Postseason",
+        "games": f"{played:,.0f}",
+        "top": [{"label": "Playoff wins", "value": f"{played:,.0f}",
+                 "points": round(played * BASE_PLAYOFF_WIN, 1)}],
+        "secondary": rounds,
+        "total": {"label": "Postseason", "value": f"{paid:,.1f}", "bare": True},
+    }
+
+
+def _mlb_team_panel(row: dict) -> dict | None:
+    """A baseball club's season, shown the way a football club's is.
+
+    The same head, the same two rows of boxes and the same outcome strip --
+    they are the same kind of asset and were reading as two different sports.
+    What baseball adds is the question its own players' panels already answer:
+    a contract year is the tail of one summer and the front of the next, and a
+    single line across both is a figure that belongs to neither.
+    """
+    if _stat_number(row, "games_played") is None:
+        return None
+    settled = bool(_stat_number(row, "pts_div_champ"))
+    panel: dict = {"kind": "nfl-team", **_mlb_team_boxes(row)}
+
+    head = []
+    record = _team_record(row)
+    if record:
+        head.append(["Record", record])
+    games = _stat_number(row, "games_played")
+    if games is not None:
+        head.append(["Games played", f"{games:,.0f}"])
+    if head:
+        panel["head"] = head
+
+    champ = _stat_number(row, "is_division_champ")
+    panel["outcomes"] = [
+        _outcome_box("Division title", bool(champ), settled or bool(champ),
+                     _stat_number(row, "pts_div_champ")),
+    ]
+    october = _mlb_team_october(row)
+    if october:
+        panel["posts"] = [october]
+    years = _mlb_team_by_year(row)
+    if years:
+        panel["years"] = years
+    return panel
+
+
+def _mlb_team_by_year(row: dict) -> list[dict]:
+    """The same four boxes, one set a calendar season.
+
+    The years are the league year's own rather than the ones played, so the
+    summer ahead is a tab of dashes instead of a tab that is not there -- a
+    season nobody has played is a fact about the calendar, and a missing tab
+    says instead that the question cannot be asked.
+    """
+    from whul.config.league import SEASON
+
+    lines = _season_lines(row)
+    years = sorted(set(f"{y}" for y in
+                       range(SEASON.start.year, SEASON.end.year + 1)) | set(lines))
+    if len(years) < 2:
+        return []
+    out = []
+    for year in years:
+        boxes = _mlb_team_boxes(lines.get(year, {}))
+        out.append({"year": year, **boxes, "raw": _section_points([boxes])})
+    return out
+
+
 def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
     """A baseball player, at whichever of the two jobs he does -- or both.
 
@@ -1806,20 +1964,30 @@ def _soccer_panel(row: dict) -> dict | None:
                 into[field] = round(into.get(field, 0) + value, 1)
 
     out = []
+    national = False
     for section in merged.values():
         kind = str(section.get("kind") or "")
-        shape = "round-robin" if kind == "league" else "knockout"
+        national = national or kind == "international"
+        shape = "round-robin" if kind in ("league", "international") else "knockout"
         block = {"name": str(section.get("name") or ""), "blocks": []}
         if kind == "league":
             block["head"] = _soccer_head(section, row)
             block["outcomes"] = _soccer_outcomes(row)
+        elif kind == "international":
+            block["head"] = _intl_head(section)
+            block["total"] = _intl_total(section)
         phases = section.get("phases")
         if isinstance(phases, list) and phases:
             for phase in phases:
                 label = str(phase.get("label") or "")
-                knockout = label != "League phase"
+                # The phase says what shape it is where it knows -- a
+                # qualifying group and a knockout tie are not the same set of
+                # boxes, and a national team's campaign is both in turn. Where
+                # it does not, the European wording decides, as it always has.
+                knockout = str(phase.get("shape") or "") == "knockout" \
+                    if phase.get("shape") else label != "League phase"
                 made = _soccer_block(
-                    phase, "round-robin" if not knockout else "knockout",
+                    phase, "knockout" if knockout else "round-robin",
                     byes=int(section.get("bye_wins") or 0) if knockout else 0,
                     bye_points=float(section.get("bye_points") or 0) if knockout else 0.0,
                 )
@@ -1832,7 +2000,65 @@ def _soccer_panel(row: dict) -> dict | None:
             made["label"] = ""
             block["blocks"].append(made)
         out.append(block)
-    return {"kind": "soccer", "sections": out} if out else None
+    if not out:
+        return None
+    panel = {"kind": "soccer", "sections": out}
+    if national:
+        panel["note"] = _intl_note(row)
+    return panel
+
+
+def _intl_head(section: dict) -> list[list[str]]:
+    """What a national team's competition says that its boxes do not.
+
+    The rung, because it is what prices the competition and is the whole reason
+    a Nations League group and a World Cup group are worth different amounts.
+    Where a club's section would say where it finished in the table, a national
+    team has no table -- the ledger does not record which division of the
+    Nations League a match was in -- so the phases below say how far it got
+    instead.
+    """
+    rung = str(section.get("rung") or "")
+    played = int(section.get("matches") or 0)
+    head = [["Matches", f"{played:,}"]]
+    if rung:
+        head.append(["Rung", rung])
+    return head
+
+
+def _intl_total(section: dict) -> dict:
+    """What the competition earned, and what that became in the season.
+
+    Two numbers because they are two things. A club's competitions add up to
+    its season; a national team's do not -- the best one counts whole, every
+    other at half, and the year is then lifted so its best rung reaches a full
+    ceiling. So the big figure is what the team earned here, which is the sum
+    of this section's own boxes and can be read against its matches, and the
+    superscript is what that became. The superscripts are what add up to the
+    score.
+    """
+    earned = float(section.get("points") or 0)
+    counted = float(section.get("counted") or 0)
+    return {
+        "label": "Earned", "value": f"{earned:,.1f}", "bare": True,
+        "sup": f"→{counted:,.1f}",
+        "suptitle": ("what this competition counted for in the season total, "
+                     "after the fold and the lift"),
+    }
+
+
+def _intl_note(row: dict) -> str:
+    """The arithmetic between the sections and the score, in one line.
+
+    Without it the superscripts are three numbers a reader has to trust. With
+    it they are three numbers a reader can add up.
+    """
+    lift = float(row.get("lift") or 0)
+    said = ("Best competition whole, every other at half"
+            + (f", then lifted ×{lift:,.2f} so the year's best rung reaches a "
+               f"full ceiling" if lift and abs(lift - 1.0) > 0.005 else "")
+            + ".")
+    return said
 
 
 #: A club footballer's row says this where his club's row names the
