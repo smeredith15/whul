@@ -155,12 +155,15 @@ def window_totals(
             group.append(column)
 
     counted = [c for c in COUNTED if c in labelled.columns]
+    held = _events_held(labelled, date_col)
     totals = labelled.groupby(group, as_index=False).agg(
         total_points=(points_col, "sum"),
         events=(points_col, "size"),
         **{name: (name, "sum") for name in counted},
     )
     totals = totals.rename(columns={"window": "season"})
+    if held is not None:
+        totals["events_held"] = totals["season"].map(held)
     if league_col not in totals.columns:
         totals[league_col] = ""
     if role_col not in totals.columns:
@@ -168,6 +171,34 @@ def window_totals(
     return totals.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)
+
+
+def _events_held(labelled: pd.DataFrame, date_col: str) -> dict[str, int] | None:
+    """How many events the series itself held inside each window.
+
+    Per window, because a benchmark asks for six of them at once and a count
+    spanning all six would be five years too big on every row.
+
+    The counterpart of a team sport's ``team_games``: a start count on its own
+    cannot say whether the rest of the calendar was missed or has not been run,
+    and a part-time entry looks exactly like a full-time one that is having a
+    quiet year.
+
+    Only for a frame that says what a start is. ``starts`` is the mark a
+    motorsport scorer writes and nobody else does, and it is the same mark that
+    settles the question a distinct-event count cannot answer on its own: a
+    Formula 1 sprint is an event and is not a race, and a tennis frame is one
+    row per match, where the distinct days of a tournament are not tournaments.
+    """
+    if "starts" not in labelled.columns:
+        return None
+    name = next((c for c in ("tournament", "event", "race")
+                 if c in labelled.columns), None)
+    if name is None:
+        return None
+    ran = labelled[labelled["starts"] > 0]
+    return (ran.drop_duplicates(["window", date_col, name])
+            .groupby("window").size().to_dict())
 
 
 def describe(windows: list[Window]) -> list[str]:

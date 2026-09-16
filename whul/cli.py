@@ -1255,6 +1255,13 @@ def cmd_feed_seed(args: argparse.Namespace) -> int:
               f"it has no history to keep.\n", file=sys.stderr)
         return 1
 
+    if getattr(args, "from_ledger", False):
+        return _seed_from_the_ledger(args, source, keys)
+    if not args.source_file:
+        print(f"\nGive a file to read, or --from-ledger to write down what "
+              f"{args.source} has already gathered.\n", file=sys.stderr)
+        return 1
+
     path = Path(args.source_file)
     if path.suffix == ".txt":
         return _seed_from_typed_results(args, path, source, keys)
@@ -1289,6 +1296,35 @@ def cmd_feed_seed(args: argparse.Namespace) -> int:
         print(f"  covering {held['date'].min()} to {held['date'].max()}")
     print(f"\n  Commit {seed}. Every pull loads it before the feed's window, "
           f"so\n  the history survives the database being rebuilt.\n")
+    return 0
+
+
+def _seed_from_the_ledger(args: argparse.Namespace, source, keys: tuple) -> int:
+    """Commit what a source has gathered a night at a time.
+
+    A club soccer season is not exported from anywhere -- it is accumulated,
+    one pull at a time, as the guard against a feed forgetting what it showed
+    yesterday. That record lives in a database three workflows rebuild and
+    force-push, so a season held only there is a season one rebuild from being
+    the feed's opinion again.
+    """
+    from whul.store import feed_ledger
+    from whul.store import open_store
+
+    held = feed_ledger.load(open_store(args.db), source.key)
+    if held is None or held.empty:
+        print(f"\n{source.key} has gathered nothing yet.\n", file=sys.stderr)
+        return 1
+
+    before = len(feed_ledger.read_seed(source.key))
+    total = feed_ledger.write_seed(source.key, held, keys)
+    path = feed_ledger.seed_path(source.key)
+    print(f"\n  {len(held):,} row(s) in {source.key}'s ledger")
+    print(f"  {total - before:,} new; {total:,} now in {path}")
+    if "date" in held.columns and not held["date"].isna().all():
+        print(f"  covering {held['date'].min()} to {held['date'].max()}")
+    print(f"\n  Commit {path}. Every pull loads it before the feed's own "
+          f"answer, so\n  the history survives the database being rebuilt.\n")
     return 0
 
 
@@ -3508,7 +3544,15 @@ def main(argv: list[str] | None = None) -> int:
              "TOURNAMENT, TOURNAMENT:ROUND or TOURNAMENT:ROUND:TOUR -- the most "
              "specific given wins, because a round is not always one day for "
              "both tours. Repeatable")
-    seed.add_argument("source_file", metavar="FILE",
+    seed.add_argument("--db", default="data/whul.sqlite3",
+                      help="database path, for --from-ledger")
+    seed.add_argument(
+        "--from-ledger", action="store_true",
+        help="write what this source's ledger already holds, instead of "
+             "reading a file. The ledger lives in a database three workflows "
+             "rebuild and force-push; this is how a season gathered a night "
+             "at a time survives that")
+    seed.add_argument("source_file", metavar="FILE", nargs="?",
                       help="a tennis2026 database (.db), or a .csv/.json/.jsonl "
                            "with one row per match, or a .txt of typed results")
     seed.set_defaults(func=cmd_feed_seed)

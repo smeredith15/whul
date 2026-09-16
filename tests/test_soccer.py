@@ -1322,3 +1322,28 @@ def test_a_club_in_one_european_competition_gets_no_arrow():
 def test_a_club_in_no_european_competition_gets_nothing():
     row = score_teams(_arsenal_season()).query("team == 'Chelsea'").iloc[0]
     assert row["continental_path"] == ""
+
+
+def test_a_club_carries_the_matches_a_players_own_count_is_measured_against():
+    """His European matches are a bonus with a section of their own and are not
+    in his appearance count, so a club figure that counted them reads as a
+    player who missed matches he in fact played."""
+    import pandas as pd
+
+    from whul.scoring import soccer as scorer
+
+    matches = pd.DataFrame([
+        {"team": "Arsenal", "league": "Premier League", "date": "2026-08-23",
+         "competition": "Premier League", "competition_key": "epl",
+         "goals_for": 3, "goals_against": 0},
+        {"team": "Arsenal", "league": "Premier League", "date": "2026-09-15",
+         "competition": "EFL Cup", "competition_key": "efl_cup",
+         "goals_for": 2, "goals_against": 1},
+        {"team": "Arsenal", "league": "Premier League", "date": "2026-09-16",
+         "competition": "Champions League", "competition_key": "ucl",
+         "goals_for": 1, "goals_against": 0},
+    ])
+    out = scorer.score_teams(matches).iloc[0]
+
+    assert out["matches_played"] == 3
+    assert out["counted_matches"] == 2, "the Champions League night is a bonus"

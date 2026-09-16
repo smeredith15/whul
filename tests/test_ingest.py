@@ -1623,3 +1623,68 @@ def test_a_season_that_only_ever_rose_says_so(tmp_path, capsys):
         db=str(path), season="2026-27", tolerance="0.05"))
 
     assert "Every asset's figure only ever rose" in capsys.readouterr().out
+
+
+def test_every_club_in_the_league_is_written_down_not_only_the_drafted_ones():
+    """The team pull reads a whole league and is narrowed to the roster
+    afterwards. Eintracht Frankfurt is on nobody's roster, so its player's
+    heading had no second number at all -- and twenty of the thirty MLB clubs
+    could not have given one either."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+    scored = pd.DataFrame([
+        {"team": "Eintracht Frankfurt", "counted_matches": 3,
+         "matches_played": 3, "league": "Bundesliga"},
+        {"team": "Bayern Munich", "counted_matches": 4,
+         "matches_played": 5, "league": "Bundesliga"},
+    ])
+
+    class Source:
+        key, league, asset_type = "bundesliga", "Bundesliga", "Team"
+
+    written = ing._record_club_games(store, scored, Source(), "2026-27",
+                                     _date(2026, 9, 16))
+
+    assert written == 2
+    assert store.read_club_games("2026-27", "2026-09-16") == {
+        "Eintracht Frankfurt": 3.0, "Bayern Munich": 4.0}, \
+        "counted, not every match: a Champions League night is not one of his"
+
+
+def test_a_player_pull_writes_no_club_counts():
+    """It sees one squad at a time and not the league's calendar."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+
+    class Source:
+        key, league, asset_type = "epl-players", "Premier League", "Player"
+
+    assert ing._record_club_games(
+        store, pd.DataFrame([{"team": "Arsenal", "matches_played": 5}]),
+        Source(), "2026-27", _date(2026, 9, 16)) == 0
+
+
+def test_a_frame_with_no_game_count_writes_nothing_rather_than_a_zero():
+    """An NFL club's row has no games column, and recording every club at zero
+    would read as a league that had not kicked off."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+
+    class Source:
+        key, league, asset_type = "nfl-teams", "NFL", "Team"
+
+    assert ing._record_club_games(
+        store, pd.DataFrame([{"team": "SEA", "reg_wins": 3}]),
+        Source(), "2026-27", _date(2026, 9, 16)) == 0

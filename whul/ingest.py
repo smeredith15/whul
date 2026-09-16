@@ -108,6 +108,14 @@ def ingest(
         _record_nothing(store, source, as_of, report)
         return report
     report.pulled = len(scored)
+    # Before the roster narrows it. Every club in the league is in this frame
+    # and only some of them were drafted, and a player's club need not be one
+    # of the drafted ones.
+    _record_club_games(store, scored, source, season, as_of)
+    # Anything the pull wanted seen. The notes above this line all belong to a
+    # pull that returned nothing and has already gone home; these are the ones
+    # raised by a pull that worked, and without this they went nowhere.
+    report.problems.extend(notes)
 
     mine, resolution = resolver.resolve(
         scored, assets, source.asset_type,
@@ -175,6 +183,52 @@ def ingest(
         store, placed, season, as_of, version.version
     )
     return report
+
+
+#: How many games a club has played, under the names a scorer gives it. In
+#: order of preference, because they are not the same question everywhere: a
+#: footballer's own count stops at the competitions that count toward his
+#: total, so his club's has to as well, and `matches_played` -- every match the
+#: club played, Champions League included -- would read as a player who missed
+#: matches he in fact played.
+CLUB_GAMES_COLUMNS = ("counted_matches", "games_played", "team_games",
+                      "matches_played")
+
+
+def _record_club_games(store: Store, scored: pd.DataFrame, source,
+                       season: str, as_of: date) -> int:
+    """Write down every club's game count, drafted or not.
+
+    A player's games-played figure says nothing on its own -- four matches is a
+    season interrupted or the league in September -- and only his club's count
+    tells them apart. Read off the club's own row it is there for the clubs
+    somebody drafted and missing for the rest, which is why Eintracht
+    Frankfurt's player had no second number at all and why twenty of the thirty
+    MLB clubs could not have given one either.
+
+    Taken from the team pull, which reads a whole league and is narrowed to the
+    roster afterwards, so this is simply the figure before the narrowing.
+    """
+    if store is None or getattr(source, "asset_type", "") != "Team":
+        return 0
+    if scored is None or scored.empty or "team" not in scored.columns:
+        return 0
+    column = next((c for c in CLUB_GAMES_COLUMNS if c in scored.columns), None)
+    if column is None:
+        return 0
+    played = pd.to_numeric(scored[column], errors="coerce")
+    # A source that produces several leagues says which on the row; one that
+    # produces one does not need to.
+    leagues = (scored["league"].astype(str)
+               if "league" in scored.columns
+               else pd.Series(source.league, index=scored.index))
+    written = 0
+    for league, block in scored.assign(_g=played, _l=leagues).groupby("_l"):
+        written += store.record_club_games(
+            dict(zip(block["team"].astype(str), block["_g"])),
+            season, as_of, str(league),
+        )
+    return written
 
 
 #: A windowed total below the last one by more than this is reported. A small
@@ -701,7 +755,8 @@ def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
     return raw[days.isna() | (days.dt.date >= season_start(league))]
 
 
-def _accumulating(fetch, source, store: Store, verbose: bool = True):
+def _accumulating(fetch, source, store: Store, verbose: bool = True,
+                  notes: list[str] | None = None):
     """``fetch``, but keeping what the feed forgets.
 
     Flashscore's tennis feed serves seven days either side of today and has no
@@ -713,6 +768,14 @@ def _accumulating(fetch, source, store: Store, verbose: bool = True):
 
     A wider request cannot fix it. Only a record of what the feed said while it
     was still saying it, which is what this keeps.
+
+    A feed asked for the whole season forgets too, and more quietly. The club
+    soccer walk reads a competition one date at a time, and a date that will
+    not read is a day of matches missing from the pull rather than a day
+    nobody played -- so a club that was on six matches is on five, and its
+    score falls by a win it did play. The same ledger answers it, and for a
+    season-wide feed anything held that tonight's pull did not show is named
+    rather than counted, because for that kind of feed it is a fault.
     """
     from whul.store import feed_ledger
 
@@ -729,9 +792,61 @@ def _accumulating(fetch, source, store: Store, verbose: bool = True):
             print(f"  {source.key}: {fresh} row(s) in the feed's window, "
                   f"{seeded} from the committed history, "
                   f"{len(held)} kept in all", flush=True)
+        _report_forgotten(source, window, held, verbose, notes)
         return held
 
     return fetch_and_keep
+
+
+#: How many forgotten rows to name before the count stands in for the rest.
+FORGOTTEN_SHOWN = 6
+
+
+def _report_forgotten(source, window, held, verbose: bool, notes) -> None:
+    """Rows the feed has shown before and did not show tonight.
+
+    Expected of a windowed feed: a seven-day window forgetting last month is
+    what a seven-day window is. It is a fault in a feed asked for the whole
+    season, and the kind that costs points with nothing raised -- so it is
+    named here, restored by the ledger either way.
+
+    Only rows inside this league year count. The ledger keeps every season it
+    has ever seen, and last August's matches are not missing from tonight's
+    pull, they are simply not what was asked for.
+    """
+    if getattr(source, "windowed", False) or not getattr(source, "accumulates", ()):
+        return
+    if window is None or window.empty or held is None or held.empty:
+        return
+
+    from whul.store.feed_ledger import row_key
+
+    keys = source.accumulates
+    tonight = {row_key(row, keys) for row in window.to_dict("records")}
+    inside = _from_season_start(held, source.league)
+    lost = [row for row in inside.to_dict("records")
+            if row_key(row, keys) not in tonight]
+    if not lost:
+        return
+
+    shown = "; ".join(
+        " ".join(str(row.get(part) or "") for part in
+                 ("date", "competition_key", "team", "opponent")).strip()
+        or row_key(row, keys)
+        for row in lost[:FORGOTTEN_SHOWN]
+    )
+    said = (
+        f"the {source.league} feed is asked for the whole season and did not "
+        f"return {len(lost)} row(s) it has returned before; they are scored "
+        f"from the ledger rather than lost, and a feed dropping what it "
+        f"already showed is worth looking at: {shown}"
+        + (f" (and {len(lost) - FORGOTTEN_SHOWN} more)"
+           if len(lost) > FORGOTTEN_SHOWN else "")
+    )
+    if notes is not None:
+        notes.append(said)
+    if verbose:
+        print(f"  {source.key}: {said}", flush=True)
 
 
 def _scored_on(score, kept, as_of: date):
@@ -810,7 +925,7 @@ def _pull(
     # getattr, as `cumulative` below: a Source is duck-typed at this boundary
     # and a test double need not carry every field to be pulled from.
     if getattr(source, "accumulates", ()) and store is not None:
-        fetch = _accumulating(fetch, source, store, verbose)
+        fetch = _accumulating(fetch, source, store, verbose, notes)
     if not source.windowed:
         raw = fetch(seasons)
         if raw is None or raw.empty:

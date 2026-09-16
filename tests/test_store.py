@@ -385,3 +385,63 @@ def test_a_dry_run_refuses_what_the_real_run_would_refuse(store):
     assert "frozen" in bm.refusal_for(store, version)
     assert bm.refusal_for(store, _bench(store, "spare")) is None
     assert "no benchmark version" in bm.refusal_for(store, "never-existed")
+
+
+def test_a_league_s_club_game_counts_are_kept_for_every_club(store):
+    """Not only the drafted ones. A player's own games-played figure means
+    nothing on its own -- four matches is a season interrupted or the league in
+    September -- and his club need not be a club anybody picked."""
+    store.record_club_games(
+        {"Eintracht Frankfurt": 3.0, "Bayern Munich": 4.0},
+        "2026-27", date(2026, 9, 16), "Bundesliga")
+    store.record_club_games(
+        {"Arsenal": 5.0}, "2026-27", date(2026, 9, 16), "Premier League")
+
+    assert store.read_club_games("2026-27", "2026-09-16") == {
+        "Eintracht Frankfurt": 3.0, "Bayern Munich": 4.0, "Arsenal": 5.0}
+    assert store.read_club_games("2026-27", "2026-09-16", "Premier League") == {
+        "Arsenal": 5.0}
+    assert store.read_club_games("2026-27", "2026-09-15") == {}
+
+
+def test_a_club_count_is_replaced_rather_than_doubled(store):
+    for played in (3.0, 4.0):
+        store.record_club_games({"Bayern Munich": played}, "2026-27",
+                                date(2026, 9, 16), "Bundesliga")
+    assert store.read_club_games("2026-27", "2026-09-16") == {"Bayern Munich": 4.0}
+
+
+def test_a_position_is_kept_on_the_asset_the_first_time_a_row_carries_one(store):
+    """The roster records a name and a league and not what the player does, so
+    a player with no stat row that day had no position at all -- and the
+    profile that needs one most is his: an injured tight end's panel cannot
+    know which four boxes to draw."""
+    add_asset(store, asset_id="nfl-brock-bowers", role="")
+
+    store.record_stats([{"asset_id": "nfl-brock-bowers", "role": "TE",
+                         "receptions": 4}],
+                       source="nfl", season="2026-27", as_of=date(2026, 9, 16),
+                       league="NFL")
+
+    assert store.query("SELECT role FROM assets")["role"].iloc[0] == "TE"
+
+
+def test_a_second_row_does_not_argue_with_the_position_already_held(store):
+    """A two-way baseball player is one asset with two of them, and the one
+    already recorded is as good an answer as the one arriving."""
+    add_asset(store, asset_id="mlb-ohtani", league="MLB", role="")
+    for role in ("Batter", "Pitcher"):
+        store.record_stats([{"asset_id": "mlb-ohtani", "role": role}],
+                           source="mlb", season="2026-27",
+                           as_of=date(2026, 9, 16), league="MLB")
+
+    assert store.query("SELECT role FROM assets")["role"].iloc[0] == "Batter"
+
+
+def test_a_row_with_no_position_leaves_the_asset_alone(store):
+    add_asset(store, asset_id="epl-arsenal", league="Premier League",
+              role="", asset_type="Team")
+    store.record_stats([{"asset_id": "epl-arsenal", "role": float("nan")}],
+                       source="epl", season="2026-27", as_of=date(2026, 9, 16),
+                       league="Premier League")
+    assert store.query("SELECT role FROM assets")["role"].iloc[0] == ""

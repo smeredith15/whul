@@ -24,7 +24,7 @@ from typing import Any, Iterable, Iterator, Sequence
 import pandas as pd
 
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_PATH = Path("data/whul.sqlite3")
 
 
@@ -226,6 +226,9 @@ class Store:
         """
         when = _as_text(as_of)
         fetched = _now()
+        # Read twice -- once for the payload, once for the positions -- and a
+        # generator would be empty the second time.
+        rows = list(rows)
         payload = []
         for row in rows:
             asset_id = row.get("asset_id")
@@ -246,10 +249,77 @@ class Store:
             "raw_stats", payload,
             keys=("asset_id", "season", "as_of", "source", "phase"),
         )
+        self._learn_roles(rows)
         self.record_source_status(
             source, league, ok=True, rows=written, last_data_date=when
         )
         return written
+
+    def record_club_games(
+        self, games: dict[str, float], season: str, as_of: date | str,
+        league: str,
+    ) -> int:
+        """How many games each club in a league has played, drafted or not.
+
+        A player's own games-played figure means nothing on its own -- four
+        matches is a season interrupted or the league in September -- and only
+        his club's count tells the two apart. Read off the club's own row it is
+        there for the ten MLB clubs somebody drafted and missing for the other
+        twenty; the team pull sees all of them, and this is that figure written
+        down before the pull is narrowed to the roster.
+        """
+        when = _as_text(as_of)
+        rows = [
+            {"season": season, "as_of": when, "league": league,
+             "club": str(club), "games": float(played)}
+            for club, played in games.items()
+            if str(club).strip() and played == played
+        ]
+        return self.upsert(
+            "club_games", rows, keys=("season", "as_of", "league", "club"))
+
+    def read_club_games(
+        self, season: str, as_of: date | str, league: str | None = None
+    ) -> dict[str, float]:
+        """One day's club game counts, by the club's own name."""
+        sql = "SELECT club, games FROM club_games WHERE season = ? AND as_of = ?"
+        params: list = [season, _as_text(as_of)]
+        if league:
+            sql += " AND league = ?"
+            params.append(league)
+        return {str(row["club"]): float(row["games"])
+                for _, row in self.query(sql, tuple(params)).iterrows()}
+
+    def _learn_roles(self, rows: Iterable[dict]) -> int:
+        """Keep the position a scored row carries, on the asset itself.
+
+        The roster records a name and a league and not what the player does,
+        and every position on the site was read off that day's stat row. So a
+        player with no row had no position -- and the profile that needs one
+        most is exactly his: an injured tight end's panel cannot know which
+        four boxes to draw, and fell back to "No stat lines recorded for this
+        day yet" in a league four weeks old.
+
+        Filled only where it is empty. A second row for the same player is not
+        worth arguing with -- a two-way baseball player is one asset with two
+        of them, and the one already recorded is as good an answer as the one
+        arriving.
+        """
+        learned = {
+            str(row["asset_id"]): str(row.get("role")).strip()
+            for row in rows
+            if row.get("asset_id") and isinstance(row.get("role"), str)
+            and str(row.get("role")).strip()
+        }
+        if not learned:
+            return 0
+        with self.transaction() as conn:
+            cursor = conn.executemany(
+                "UPDATE assets SET role = ? WHERE asset_id = ? "
+                "AND (role IS NULL OR role = '')",
+                [(role, asset_id) for asset_id, role in learned.items()],
+            )
+        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
 
     #: Every table that names an asset. Pruning one has to clear all of them or
     #: the row comes back as a foreign-key failure on the next write, and a

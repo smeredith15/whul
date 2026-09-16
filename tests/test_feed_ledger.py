@@ -359,3 +359,140 @@ def test_the_feed_may_still_correct_a_row_it_owns(store):
     held = feed_ledger.merge(store, "tennis", pd.DataFrame([
         dict(_match("m1", "Aryna Sabalenka"), score="7-5 2-1 RET")]), KEYS)
     assert held.iloc[0]["score"] == "7-5 2-1 RET"
+
+
+# --- a season-wide feed that forgets --------------------------------------
+
+def _club_match(team, opponent, gf, ga, when, competition="epl", label=""):
+    """One club's side of one match, as the scoreboard walk produces it."""
+    return {
+        "team": team, "opponent": opponent, "league": "Premier League",
+        "date": when, "competition": label or competition,
+        "competition_key": competition,
+        "goals_for": gf, "goals_against": ga,
+        "shootout_for": 0.0, "shootout_against": 0.0, "season_year": 2026,
+    }
+
+
+#: Arsenal's league year to the fifteenth, and the sixteenth's pull, which came
+#: back without the cup tie. The walk reads a competition one date at a time,
+#: and the date that would not read was the one the EFL Cup was played on.
+CLUB_KEYS = ("season_year", "competition_key", "date", "team", "opponent")
+
+_FULL = [
+    _club_match("Arsenal", "Leeds United", 5, 0, "2026-08-23"),
+    _club_match("Arsenal", "Liverpool", 1, 0, "2026-08-31"),
+    _club_match("Arsenal", "Nottingham Forest", 3, 0, "2026-09-13"),
+    _club_match("Arsenal", "Manchester City", 2, 1, "2026-09-20"),
+    _club_match("Arsenal", "Port Vale", 3, 1, "2026-09-15",
+                competition="efl_cup", label="EFL Cup"),
+    _club_match("Arsenal", "Olympiacos", 1, 0, "2026-09-16",
+                competition="ucl", label="Champions League"),
+]
+_SHORT = [m for m in _FULL if m["competition_key"] != "efl_cup"]
+
+
+def _soccer_source(shown: dict, keep: tuple = CLUB_KEYS):
+    from whul.scoring import soccer
+
+    class Club:
+        key, league, asset_type = "windowed", "Premier League", "Team"
+        accumulates = keep
+        windowed = False
+        # As the real source is: the union spans every season the ledger has
+        # ever held, and the league-year filter is what cuts it back to the one
+        # being scored. Bypassing it here would test a path nothing runs.
+        dated_by_source = False
+        cumulative = False
+        produces, roster_scoped, live, seasons_for = (), False, None, None
+        day = None
+
+        @staticmethod
+        def build():
+            return (lambda years: pd.DataFrame(shown[Club.day]),
+                    lambda matches: soccer.score_teams(matches))
+
+    return Club
+
+
+def test_a_club_does_not_lose_a_match_the_feed_stopped_returning(store):
+    """Arsenal's week, replayed. It was on six matches and twenty-eight points
+    on the fifteenth and on five and twenty-three on the sixteenth, having lost
+    nothing: the EFL Cup tie simply was not in the pull. The same night took
+    Liverpool's cup tie and one of Real Madrid's league matches."""
+    from whul import ingest
+
+    shown = {"2026-09-15": _FULL, "2026-09-16": _SHORT}
+
+    def totals(keep):
+        held = open_store(":memory:")
+        source = _soccer_source(shown, keep)
+        out = []
+        for day in shown:
+            source.day = day
+            got = ingest._pull(source, date.fromisoformat(day), verbose=False,
+                               store=held)
+            out.append(float(got["total_points"].iloc[0]))
+        return out
+
+    assert totals(()) == [28.0, 23.0], "the bug, for the record"
+    assert totals(CLUB_KEYS) == [28.0, 28.0]
+
+
+def test_the_two_legs_of_a_tie_are_not_one_row(store):
+    """The key has to separate them. A home leg and an away leg are the same
+    two clubs in the same competition in the same season, and a key without
+    the date would keep one of them and pay for a tie that was half played."""
+    from whul import ingest
+
+    legs = [
+        _club_match("Arsenal", "Bayern", 2, 0, "2026-09-15", competition="ucl", label="Champions League"),
+        _club_match("Arsenal", "Bayern", 1, 0, "2026-09-22", competition="ucl", label="Champions League"),
+    ]
+    def played(keep):
+        held = open_store(":memory:")
+        source = _soccer_source({"2026-09-22": legs}, keep)
+        source.day = "2026-09-22"
+        got = ingest._pull(source, date(2026, 9, 22), verbose=False, store=held)
+        return float(got["matches_played"].iloc[0])
+
+    assert played(tuple(k for k in CLUB_KEYS if k != "date")) == 1, \
+        "without the date the two legs are one row"
+    assert played(CLUB_KEYS) == 2
+
+
+def test_a_season_wide_feed_that_forgets_says_so(store, capsys):
+    """A windowed feed forgetting last month is what a window is. A feed asked
+    for the whole season is reporting a fault, and it is the kind that costs
+    points with nothing raised."""
+    from whul import ingest
+
+    shown = {"2026-09-15": _FULL, "2026-09-16": _SHORT}
+    source = _soccer_source(shown)
+    notes: list[str] = []
+    for day in shown:
+        source.day = day
+        ingest._pull(source, date.fromisoformat(day), verbose=False,
+                     store=store, notes=notes)
+
+    assert len(notes) == 1
+    assert "did not return 1 row(s) it has returned before" in notes[0]
+    assert "Port Vale" in notes[0]
+
+
+def test_last_league_year_is_not_reported_as_missing(store):
+    """The ledger keeps every season it has ever seen. August's matches are not
+    missing from tonight's pull -- they are not what was asked for."""
+    from whul import ingest
+
+    # Before 2026-08-21, when the Premier League's results start counting.
+    old = _club_match("Arsenal", "Everton", 1, 0, "2026-08-16")
+    shown = {"2026-09-15": _FULL + [old], "2026-09-16": _FULL}
+    source = _soccer_source(shown)
+    notes: list[str] = []
+    for day in shown:
+        source.day = day
+        ingest._pull(source, date.fromisoformat(day), verbose=False,
+                     store=store, notes=notes)
+
+    assert not [n for n in notes if "returned before" in n]

@@ -445,3 +445,46 @@ def test_a_season_with_no_title_to_take_back_says_so(tmp_path, capsys):
     })
     assert _retract(tmp_path) == 0
     assert "No title to take back" in capsys.readouterr().out
+
+
+def test_a_gathered_season_can_be_committed_without_an_export(tmp_path, capsys):
+    """A club soccer season is not exported from anywhere -- it is gathered a
+    pull at a time, as the guard against a feed forgetting what it showed
+    yesterday. That record lives in a database three workflows rebuild and
+    force-push, so without this a season held only there is one rebuild from
+    being the feed's opinion again."""
+    import pandas as pd
+
+    from whul.benchmark_sources import resolve
+    from whul.store import feed_ledger, open_store
+
+    source = next(s for s in resolve(None) if s.key == "epl")
+    store = open_store(str(tmp_path / "held.sqlite3"))
+    feed_ledger.record(store, "epl", pd.DataFrame([{
+        "team": "Arsenal", "opponent": "Port Vale", "league": "Premier League",
+        "date": "2026-09-15", "competition": "EFL Cup",
+        "competition_key": "efl_cup", "goals_for": 3, "goals_against": 1,
+        "shootout_for": 0.0, "shootout_against": 0.0, "season_year": 2026,
+    }]), source.accumulates)
+
+    import whul.store.feed_ledger as ledger
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(ledger, "SEED_DIR", tmp_path / "seed")
+    try:
+        code = main(["feed-seed", "--source", "epl", "--from-ledger",
+                     "--db", str(tmp_path / "held.sqlite3")])
+    finally:
+        monkeypatch.undo()
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "1 row(s) in epl's ledger" in out
+    written = feed_ledger.read_seed("epl", root=tmp_path / "seed")
+    assert list(written["opponent"]) == ["Port Vale"]
+
+
+def test_asking_to_commit_a_ledger_that_holds_nothing_says_so(tmp_path, capsys):
+    code = main(["feed-seed", "--source", "epl", "--from-ledger",
+                     "--db", str(tmp_path / "empty.sqlite3")])
+    assert code == 1
+    assert "gathered nothing yet" in capsys.readouterr().err

@@ -2666,7 +2666,7 @@ def test_the_playoff_boxes_read_january_and_not_the_season():
                    post_receiving_tds=0, post_fumbles_lost=1)
     panel = site_build._nfl_panel(row)
 
-    assert panel["games"] == {"team": "17", "played": "16"}
+    assert panel["head"] == [["Games played", "16"], ["Team games", "17"]]
     assert panel["post"]["games"] == "3"
     assert [b["value"] for b in panel["post"]["top"]] == ["812", "7", "2", "96"]
     # The season's own row is untouched by January.
@@ -2678,8 +2678,34 @@ def test_no_playoff_section_until_there_is_a_playoff():
     assert "post" not in site_build._nfl_panel(_nfl_row(passing_yards=300))
 
 
-def test_a_league_without_a_panel_keeps_the_table():
-    assert site_build._nfl_boxes({"league": "MLB", "role": "Batter"}) is None
+def test_a_player_with_figures_and_no_known_position_gets_no_line():
+    """The dash line is for a player nobody has a position for *and* no figures
+    for. One who has played and whose position we cannot read is a fault, and
+    drawing him a quarterback's boxes would hide it."""
+    assert site_build._nfl_boxes(
+        {"league": "NFL", "role": "K", "rushing_yards": 12}) is None
+
+
+def test_an_unplayed_player_gets_the_boxes_rather_than_an_empty_table():
+    """Brock Bowers, injured, four weeks into a season: the profile a manager
+    opens to ask exactly that read "No stat lines recorded for this day yet".
+    The roster records a name and a league and not what he plays, so until he
+    is scored once there is no position to pick a line with -- and these four
+    name every way an NFL player scores rather than guessing at one."""
+    panel = site_build._panel_before_a_season("NFL", "Player", "")
+
+    assert [b["label"] for b in panel["season"]["top"]] == [
+        "Pass yds", "Rush yds", "Rec yds", "Rush / Rec TD"]
+    assert [b["value"] for b in panel["season"]["top"]] == ["—"] * 4
+    # A dash, not a zero: zero says he played and did none of it.
+    assert all(b["points"] is None for b in panel["season"]["top"])
+    assert panel["head"] == [["Games played", "—"], ["Team games", "—"]]
+
+
+def test_a_position_is_kept_once_a_scored_row_carries_one():
+    """And then the line is his own rather than the neutral one."""
+    panel = site_build._panel_before_a_season("NFL", "Player", "TE")
+    assert [b["label"] for b in panel["season"]["top"]][0] == "Rec"
 
 
 # --- NFL teams, and the outcome boxes both panels share ---------------------
@@ -3491,9 +3517,9 @@ def test_a_driver_is_shown_in_his_own_series_vocabulary():
     """NASCAR counts top fives, Formula 1 counts podiums, and neither page
     borrows the other's word for a good day."""
     nascar = site_build._motorsport_panel(
-        {"league": "NASCAR", "role": "Driver", "events": 28,
+        {"league": "NASCAR", "role": "Driver", "starts": 28, "events_held": 30,
          "wins": 3, "top_fives": 11, "top_tens": 17})
-    assert nascar["head"] == [["Races", "28"]]
+    assert nascar["head"] == [["Races started", "28"], ["Races run", "30"]]
     assert [(b["label"], b["value"]) for b in nascar["top"]] == [
         ("Wins", "3"), ("Top 5", "11"), ("Top 10", "17")]
 
@@ -3519,7 +3545,7 @@ def test_a_driver_box_carries_no_points_strip():
 
 def test_a_driver_who_has_not_raced_reads_as_unknown_not_as_zero():
     panel = site_build._motorsport_panel({"league": "NASCAR", "role": "Driver"})
-    assert panel["head"] == [["Races", "—"]]
+    assert panel["head"] == [["Races started", "—"], ["Races run", "—"]]
     assert [b["value"] for b in panel["top"]] == ["—"] * 3
 
 
@@ -3549,3 +3575,85 @@ def test_a_club_with_no_losses_counted_shows_no_record():
     assert site_build._team_record({"reg_wins": 11}) is None
     panel = site_build._nfl_team_panel(_nfl_team(reg_losses=None))
     assert panel["head"] == [["Division", "1st in NFC West"]]
+
+
+def test_a_driver_is_read_off_the_asset_rather_than_the_feed_that_pulled_him():
+    """NASCAR and Formula 1 arrive as one feed called Motorsports and are
+    stored under that name, so the stored row says "Motorsports" where every
+    other sport says its own league. Reading the series off the row left every
+    driver with no panel at all -- the figures reached the page and were shown
+    as a table of raw column names."""
+    row = {"league": "Motorsports", "role": "Driver", "starts": 17,
+           "events_held": 18, "wins": 4, "podiums": 9, "top_tens": 15}
+
+    assert site_build._motorsport_panel(row) is None
+    panel = site_build._motorsport_panel(row, "F1")
+    assert [(b["label"], b["value"]) for b in panel["top"]] == [
+        ("Wins", "4"), ("Podiums", "9"), ("Points finishes", "15")]
+
+
+def test_a_part_timer_does_not_read_as_a_regular_having_a_quiet_year():
+    """The same heading every other slot carries: a start count alone cannot
+    say whether the rest of the calendar was missed or has not been run."""
+    panel = site_build._motorsport_panel(
+        {"league": "NASCAR", "role": "Driver", "starts": 6, "events_held": 28,
+         "wins": 0, "top_fives": 1, "top_tens": 2})
+    assert panel["head"] == [["Races started", "6"], ["Races run", "28"]]
+
+
+def test_football_says_games_played_the_same_way_every_other_slot_does():
+    """It read "— team games  — played": the same pair, backwards, in words
+    nothing else on the site uses."""
+    row = _nfl_row(passing_yards=334, team_games=17, regular_games=16)
+    assert (site_build._nfl_panel(row)["head"]
+            == site_build._games_head(row)
+            == [["Games played", "16"], ["Team games", "17"]])
+
+
+# --- how many games his club played, for a club nobody drafted --------------
+
+def test_a_club_count_covers_clubs_nobody_drafted():
+    """Eintracht Frankfurt is on no roster, so it has no row of its own and its
+    player's heading had no second number at all. The team pull reads a whole
+    league and is narrowed to the roster afterwards; this is that figure."""
+    recorded = {"Eintracht Frankfurt": 3.0, "Bayern Munich": 4.0}
+    games = site_build._club_games(None, recorded)
+
+    assert games["Eintracht Frankfurt"] == 3.0
+
+
+def test_a_club_count_is_read_on_the_same_basis_his_own_is():
+    """His European matches are a bonus with a section of their own and are not
+    in his appearance count, so a club figure that counted them read as a
+    player who had missed matches he in fact played -- Arsenal on six and Saka
+    on four, the difference being a Champions League night he started."""
+    import pandas as pd
+
+    stats = pd.DataFrame([{"team": "Arsenal", "matches_played": 6.0,
+                           "counted_matches": 5.0}])
+    assert site_build._club_games(stats)["Arsenal"] == 5.0
+
+
+def test_what_the_league_pull_wrote_down_wins_over_a_club_row():
+    import pandas as pd
+
+    stats = pd.DataFrame([{"team": "Arsenal", "counted_matches": 5.0}])
+    games = site_build._club_games(stats, {"Arsenal": 6.0})
+
+    assert games["Arsenal"] == 6.0
+
+
+def test_a_batter_is_shown_against_his_club_s_games():
+    """Six games is a season interrupted or a club that has played six, and a
+    figure on its own cannot tell them apart."""
+    panel = site_build._mlb_panel(
+        {"league": "MLB", "role": "Batter", "games": 6, "ab": 21, "h": 4},
+        team_games=7.0)
+
+    assert panel["head"] == [["Games played", "6"], ["Team games", "7"]]
+
+
+def test_a_batter_whose_club_nobody_drafted_says_so_rather_than_guessing():
+    panel = site_build._mlb_panel(
+        {"league": "MLB", "role": "Batter", "games": 6}, team_games=None)
+    assert panel["head"] == [["Games played", "6"], ["Team games", "—"]]

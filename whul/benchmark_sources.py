@@ -1218,7 +1218,22 @@ SOURCES: dict[str, Source] = _register(
     ],
     *[
         Source(key, category, "Team", _soccer(key, category),
-               seasons_for=_espn_seasons(key, category))
+               seasons_for=_espn_seasons(key, category),
+               # The walk reads a competition one date at a time, and a date
+               # that will not read is a day of matches missing from the pull
+               # rather than a day nobody played. Arsenal's EFL Cup win was
+               # there on the fifteenth and gone on the sixteenth, five points
+               # with it, and the same night took Liverpool's and one of Real
+               # Madrid's league matches. Nothing said so: the club simply
+               # scored less than it had the day before.
+               #
+               # The match itself, not the feed's id for it. An id is exactly
+               # right until it is blank, and a blank one would key every
+               # unidentified match in a competition to the same row and lose
+               # all but the last. The two legs of a tie are the case this has
+               # to separate, and they differ by date.
+               accumulates=("season_year", "competition_key", "date",
+                            "team", "opponent"))
         for key, category in SOCCER_CATEGORIES.items()
     ],
     # The seasons asked for are the European shape only. MLS runs inside a
