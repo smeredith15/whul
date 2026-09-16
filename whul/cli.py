@@ -2381,9 +2381,24 @@ def cmd_alias(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ingest_one_day(ingest_module, store, sources, season, as_of) -> list:
+    """One day's pull across every source asked for."""
+    print(f"\nIngesting {season} as of {as_of}.\n")
+    reports = []
+    for source in sources:
+        report = ingest_module.ingest(store, source, season, as_of)
+        reports.append(report)
+        # A skipped league is noise when every league is being tried; a league
+        # that actually did something, or failed at something, is not.
+        if report.pulled or report.problems != [
+                "nothing rostered in this league; skipped"]:
+            print(f"{report}\n")
+    return reports
+
+
 def cmd_ingest(args: argparse.Namespace) -> int:
     """Pull today's results for the live leagues and record them."""
-    from datetime import date as _date
+    from datetime import date as _date, timedelta
 
     from whul import ingest as ingest_module
     from whul.benchmark_sources import resolve
@@ -2397,16 +2412,29 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 
     store = open_store(args.db)
     as_of = _date.fromisoformat(args.date) if args.date else _date.today()
-    print(f"\nIngesting {args.season} as of {as_of}.\n")
+    days = [as_of]
+    if getattr(args, "since", None):
+        # Every stored day from `since`, rewritten from what is known now.
+        # A correction to the history -- a duplicate found in the ledger, a
+        # name two feeds spelled differently -- fixes today and leaves every
+        # earlier day holding the figure it was given at the time, and the
+        # standings ledger differences consecutive days, so the correction
+        # reads as a loss on the day it was made. Restating does not touch
+        # this: it rescores what is stored against the frozen scale, and a
+        # day stored wrong stays wrong at whatever scale it is rescored
+        # against.
+        first = _date.fromisoformat(args.since)
+        if first > as_of:
+            print(f"\n--since {first} is after {as_of}.\n", file=sys.stderr)
+            return 2
+        days = [first + timedelta(days=n) for n in range((as_of - first).days + 1)]
 
     reports = []
-    for source in sources:
-        report = ingest_module.ingest(store, source, args.season, as_of)
-        reports.append(report)
-        # A skipped league is noise when every league is being tried; a league
-        # that actually did something, or failed at something, is not.
-        if report.pulled or report.problems != ["nothing rostered in this league; skipped"]:
-            print(f"{report}\n")
+    for day in days:
+        if len(days) > 1:
+            print(f"\n--- {day} ---", flush=True)
+        reports.extend(_ingest_one_day(
+            ingest_module, store, sources, args.season, day))
 
     scored = sum(r.scored for r in reports)
     recorded = sum(r.recorded for r in reports)
@@ -3751,6 +3779,15 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("--db", default="data/whul.sqlite3", help="database path")
     ingest.add_argument("--season", default="2026-27", help="season to record into")
     ingest.add_argument("--date", help="YYYY-MM-DD to record as (default: today)")
+    ingest.add_argument(
+        "--since", metavar="YYYY-MM-DD",
+        help="also rewrite every stored day from this one forward, each from "
+             "what is known now cut back to that day. For a correction to the "
+             "history -- a duplicate found in the ledger, a name two feeds "
+             "spelled differently -- which otherwise fixes today and leaves "
+             "the days before it holding the figure they were given, so the "
+             "correction reads as a loss. Restating cannot do this: it "
+             "rescores what is stored, and a day stored wrong stays wrong")
     ingest.set_defaults(func=cmd_ingest)
 
     bench = sub.add_parser("benchmarks", help="compute, review and freeze the 0-100 scale")

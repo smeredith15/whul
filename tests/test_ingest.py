@@ -1800,3 +1800,49 @@ def test_a_team_pull_is_not_checked_against_itself():
         open_store(":memory:"), pd.DataFrame([{"asset_id": "t1", "games": 99}]),
         Source(), "2026-27", _date(2026, 9, 16), report)
     assert report.problems == []
+
+
+def test_a_day_is_scored_on_what_had_been_played_by_then():
+    """A feed answers with everything it has, which for today's run is
+    everything up to today and for a day rewritten later is everything up to
+    now. Without the cut every rewritten day gets the same figure, and the
+    standings read as a season in which nothing happened until the last day
+    and then all of it did."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+
+    played = pd.DataFrame([
+        {"player": "E. Rybakina", "date": "2026-09-04", "event_points": 100},
+        {"player": "E. Rybakina", "date": "2026-09-09", "event_points": 400},
+        {"player": "E. Rybakina", "date": "2026-09-12", "event_points": 700},
+    ])
+
+    assert len(ing._up_to(played, _date(2026, 9, 9))) == 2
+    assert len(ing._up_to(played, _date(2026, 9, 12))) == 3
+    assert ing._up_to(played, _date(2026, 9, 3)).empty
+
+
+def test_a_row_with_no_date_survives_the_cut():
+    """Dropping it would lose a result silently, and the scorer is the better
+    place to notice a broken row."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+
+    played = pd.DataFrame([
+        {"player": "A", "date": "not a date", "event_points": 100},
+        {"player": "B", "date": "2026-09-20", "event_points": 100},
+    ])
+    kept = ing._up_to(played, _date(2026, 9, 12))
+    assert list(kept["player"]) == ["A"]
+
+
+def test_a_frame_with_no_dates_at_all_is_left_alone():
+    """A season aggregate has no per-event date and is not a thing to cut."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+
+    season = pd.DataFrame([{"player": "A", "passing_yards": 4000}])
+    assert len(ing._up_to(season, _date(2026, 9, 12))) == 1

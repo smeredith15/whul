@@ -534,3 +534,33 @@ def test_a_competition_that_answers_says_the_loss_is_after_the_pull(capsys, monk
 
     assert main(["probe-squad", "--competition", "efl_cup"]) == 0
     assert "the loss is after the pull" in capsys.readouterr().out
+
+
+def test_since_rewrites_every_stored_day_from_that_one(monkeypatch, tmp_path):
+    """A correction to the history fixes today and leaves every earlier day
+    holding the figure it was given, so it reads as a loss on the day it was
+    made. Restate cannot help: it rescores what is stored."""
+    from datetime import date
+
+    from whul import ingest as ingest_module
+
+    asked: list[date] = []
+    monkeypatch.setattr(ingest_module, "ingest",
+                        lambda store, source, season, as_of: (
+                            asked.append(as_of)
+                            or ingest_module.IngestReport(league="x", asset_type="Player")))
+
+    main(["ingest", "tennis", "--db", str(tmp_path / "x.sqlite3"),
+          "--season", "2026-27", "--date", "2026-09-16",
+          "--since", "2026-09-13"])
+
+    assert asked == [date(2026, 9, 13), date(2026, 9, 14),
+                     date(2026, 9, 15), date(2026, 9, 16)]
+
+
+def test_since_after_the_day_being_recorded_is_refused(tmp_path, capsys):
+    code = main(["ingest", "tennis", "--db", str(tmp_path / "x.sqlite3"),
+                 "--season", "2026-27", "--date", "2026-09-13",
+                 "--since", "2026-09-16"])
+    assert code == 2
+    assert "is after" in capsys.readouterr().err
