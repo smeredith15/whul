@@ -386,7 +386,13 @@ def match_events(matches: pd.DataFrame, losses: bool = False) -> pd.DataFrame:
     if scored.empty:
         return pd.DataFrame()
 
-    def side(name_col: str, points, result: str) -> pd.DataFrame:
+    # What the straight-sets rule paid, kept apart from what the round did.
+    # A profile shows the two as one figure and a superscript, and the
+    # superscript is the whole of the difference between beating the draw and
+    # beating it quickly.
+    straight = scored["match_points"] - scored["win_points"]
+
+    def side(name_col: str, points, result: str, bonus=0.0) -> pd.DataFrame:
         return pd.DataFrame({
             "player": scored[name_col],
             "date": scored["date"],
@@ -398,13 +404,14 @@ def match_events(matches: pd.DataFrame, losses: bool = False) -> pd.DataFrame:
             "round": scored["round"],
             "result": result,
             "event_points": points,
+            "straight_points": bonus,
             "league": scored["tour"].str.upper().str.contains("WTA").map(
                 {True: "WTA", False: "ATP"}
             ),
             "role": "Singles",
         })
 
-    won = side("winner", scored["match_points"], "W")
+    won = side("winner", scored["match_points"], "W", straight)
     if not losses:
         return won
 

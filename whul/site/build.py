@@ -426,6 +426,10 @@ def asset_profiles(
                 panel = _motorsport_panel(row, asset_league)
                 if panel:
                     panels[asset_id] = panel
+            elif asset_league == "PGA":
+                panels[asset_id] = _golf_panel(row)
+            elif asset_league in TENNIS_TOURS:
+                panels[asset_id] = _tennis_panel(row)
             elif _is_a_club_soccer_player(row):
                 panels[asset_id] = _soccer_player_panel(
                     row, club_games,
@@ -533,7 +537,8 @@ STAT_SKIP = {
     # Feed identifiers. "Player id 00-0038543" sat in a column of yards and
     # touchdowns as though it were one of them.
     "player_id", "playerid", "athlete_id", "team_id", "driver_id", "id",
-    "finishes", "norm_key", "asset_type", "role_count", "contract_year",
+    "finishes", "tier_detail", "norm_key", "asset_type", "role_count",
+    "contract_year",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
     # Shown as identity, above the figures. Left here as well they read as a
     # statistic -- "Position  F" in a column of goals and assists, and
@@ -1197,6 +1202,104 @@ def _motorsport_panel(row: dict, league: str = "") -> dict | None:
     }
 
 
+def _golf_panel(row: dict) -> dict | None:
+    """A golfer's season above the tournaments that made it.
+
+    The driver's panel, in golf's words. No points strip under these either: a
+    win is worth 500 and a major's is worth 750, a top five is worth whatever
+    the five finishes in it were worth, and a strip would print a sum that is
+    not a category. The tournament list below carries the points, one line an
+    event.
+
+    The cut is a pair rather than a count. "Cuts made 7" cannot say whether he
+    missed two or entered seven and made them all, and for a sport a player
+    picks his own schedule in, that is the whole of the figure.
+    """
+    entered = _stat_number(row, "starts")
+    if entered is None:
+        entered = _stat_number(row, "events")
+    cuts = _stat_number(row, "made_cut")
+    return {
+        "kind": "boxes",
+        # One figure, and deliberately: a golfer enters the tournaments he
+        # chooses, so the number the tour held is not a number he missed.
+        "head": [["Tournaments", "\u2014" if entered is None
+                  else f"{entered:,.0f}"]],
+        "top": [
+            {"label": label, "bare": True,
+             "value": ("\u2014" if _stat_number(row, column) is None
+                       else f"{_stat_number(row, column):,.0f}")}
+            for column, label in (("wins", "Wins"), ("top_fives", "Top 5"),
+                                  ("top_tens", "Top 10"))
+        ] + [{
+            "label": "Cuts made", "bare": True,
+            "value": ("\u2014" if cuts is None or entered is None
+                      else f"{cuts:,.0f} / {entered:,.0f}"),
+        }],
+        "secondary": [],
+    }
+
+
+#: The tours whose profile is drawn by tier. Both, and the labels inside each
+#: entry already say which -- a WTA profile reads "WTA 1000" where an ATP one
+#: reads "ATP 1000", because that is what the two tours call them.
+TENNIS_TOURS = ("ATP", "WTA")
+
+
+def _points_text(value: float) -> str:
+    """Points as a reader writes them: no decimal unless the bonus made one."""
+    return f"{value:,.0f}" if float(value) == int(value) else f"{value:,.1f}"
+
+
+def _tennis_panel(row: dict) -> dict:
+    """A tennis season by the size of the field, not as a list of matches.
+
+    The big figure in each box is what that tier paid, because at tennis the
+    points *are* the achievement -- a round is worth what the draw it came
+    through is worth, which is the whole of why a 250 and a slam are different
+    results. So there is no strip beneath repeating it; the superscript is the
+    part of it the straight-sets rule added, which is the difference between
+    beating the draw and beating it quickly.
+
+    Beside each figure, what happened: the round he went out in at each
+    tournament of that tier, grouped, because at a tier entered nine times the
+    list is the noise and the count is the point. The two tiers that are not a
+    draw say so in their own terms -- a Davis Cup tie is not a knockout round,
+    and a round-robin group is three matches nobody is eliminated by.
+    """
+    detail = _detail_list(row, "tier_detail")
+    if not detail:
+        from whul.scoring.finishes import TIER_LABELS
+
+        detail = [{"label": label.format(tour=str(row.get("league") or "ATP")),
+                   "points": None, "straight": 0.0, "note": "", "entered": 0}
+                  for _, label in TIER_LABELS]
+    entered = sum(int(entry.get("entered") or 0) for entry in detail)
+    return {
+        "kind": "boxes",
+        "head": [["Tournaments", f"{entered:,.0f}" if entered else "\u2014"]],
+        "top": [_tennis_box(entry) for entry in detail],
+        "secondary": [],
+    }
+
+
+def _tennis_box(entry: dict) -> dict:
+    points = _stat_number(entry, "points")
+    straight = _stat_number(entry, "straight") or 0.0
+    box = {
+        "label": str(entry.get("label") or ""),
+        "bare": True,
+        "value": "\u2014" if points is None else _points_text(points),
+    }
+    if straight:
+        box["sup"] = f"+{_points_text(straight)}"
+        box["suptitle"] = "of these, what winning in straight sets added"
+    note = str(entry.get("note") or "").strip()
+    if note:
+        box["aside"] = note
+    return box
+
+
 #: Leagues whose profile is a panel built from figures, so that one can be
 #: drawn before the figures exist. The football and motorsport builders take a
 #: second argument and are called by name above.
@@ -1234,6 +1337,10 @@ def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | No
         return _soccer_player_panel({}, {}, league)
     if league in MOTORSPORT_BOXES:
         return _motorsport_panel({}, league)
+    if league == "PGA":
+        return _golf_panel({})
+    if league in TENNIS_TOURS:
+        return _tennis_panel({"league": league})
     made = EMPTY_PANELS.get(league)
     return made({"league": league, "role": role}) if made else None
 

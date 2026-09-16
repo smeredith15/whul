@@ -122,3 +122,43 @@ def test_short_seasons_are_kept_out_of_the_pool():
 def test_empty_input_is_empty_output():
     assert score_players(pd.DataFrame()).empty
     assert score_events(pd.DataFrame()).empty
+
+
+def test_a_tournament_is_marked_for_the_counts_a_profile_shows():
+    import pandas as pd
+
+    from whul.scoring import golf as scorer
+
+    events = scorer.score_events(pd.DataFrame([
+        {"player": "S. Scheffler", "tournament": "Masters", "position": p,
+         "date": d, "season": 2026}
+        for p, d in [(1, "2026-08-20"), (4, "2026-08-27"),
+                     (9, "2026-09-03"), (75, "2026-09-10")]
+    ]))
+
+    assert list(events["wins"]) == [1, 0, 0, 0]
+    assert list(events["top_fives"]) == [1, 1, 0, 0]
+    assert list(events["top_tens"]) == [1, 1, 1, 0]
+    assert list(events["made_cut"]) == [True, True, True, False]
+    assert list(events["starts"]) == [1, 1, 1, 1]
+
+
+def test_the_counts_are_summed_over_a_window_not_a_season():
+    """A season total is grouped by calendar year and a league year is not."""
+    from datetime import date
+
+    import pandas as pd
+
+    from whul.scoring import golf as scorer
+    from whul.scoring.window import season_windows, window_totals
+
+    events = scorer.score_events(pd.DataFrame([
+        {"player": "S. Scheffler", "tournament": "Open", "position": p,
+         "date": d, "season": 2026}
+        for p, d in [(1, "2026-07-05"), (3, "2026-09-06"), (80, "2026-09-13")]
+    ]))
+    window = season_windows(0, start=date(2026, 8, 1), end=date(2027, 7, 31))[-1]
+    out = window_totals(events, [window]).iloc[0]
+
+    assert out["wins"] == 0, "a July win is in the season and not in the year"
+    assert (out["starts"], out["top_fives"], out["made_cut"]) == (2, 1, 1)

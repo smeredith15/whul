@@ -1526,4 +1526,13 @@ def _with_finishes(totals: pd.DataFrame, events: pd.DataFrame, current) -> pd.Da
     id_col = "player" if "player" in totals.columns else totals.columns[0]
     out = totals.copy()
     out["finishes"] = [records.get(str(name), []) for name in out[id_col]]
+    # Tennis, additionally, by the size of the field. Fifty tournaments a year
+    # and seven matches in a good week make one list unreadable, and the thing
+    # a reader wants -- how he did against fields of each size -- is exactly
+    # what a flat list buries: a first-round loss at a 250 and one at a slam
+    # are the same line and not remotely the same result.
+    if "round" in inside.columns:
+        tiers = finish_summary.tier_summary(inside)
+        if tiers:
+            out["tier_detail"] = [tiers.get(str(name), []) for name in out[id_col]]
     return out

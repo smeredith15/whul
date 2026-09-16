@@ -827,6 +827,9 @@ dialog.profile .statbox .bp.said {
   font-style: italic; color: var(--muted); font-size: 10px;
 }
 
+/* A shrunk figure shrinks its superscript with it, or the two together are
+   wider than the number alone was. */
+dialog.profile .statbox .bv.tight sup.bye { font-size: 0.55em; }
 dialog.profile .statbox .bv sup.bye {
   font-size: 0.5em; font-weight: 600; color: var(--text-secondary);
   margin-left: 1px; vertical-align: super;

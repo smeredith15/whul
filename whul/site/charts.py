@@ -1083,8 +1083,9 @@ SCRIPT = """\
       : (value > 0 ? '+' : '') + (Math.round(value * 10) / 10).toFixed(1);
     // A bye rides on the wins box as a superscript: rounds the club never had
     // to play, which are worth win points and carry neither bonus.
-    var sup = box.sup ? '<sup class="bye" title="rounds skipped by seeding, ' +
-                        'credited as wins">' + box.sup + '</sup>' : '';
+    var sup = box.sup ? '<sup class="bye" title="' +
+                        (box.suptitle || 'rounds skipped by seeding, ' +
+                         'credited as wins') + '">' + box.sup + '</sup>' : '';
     // The counts a derived figure is made of, small beside it: WHIP is the
     // recognisable number and the hits and walks are what actually scored.
     var aside = box.aside
@@ -1096,7 +1097,11 @@ SCRIPT = """\
     return '<div class="statbox' + (small ? ' small' : '') +
              (box.muted ? ' muted' : '') + (box.bare ? ' bare' : '') + '">' +
            '<div class="bn">' + box.label + '</div>' +
-           '<div class="bv' + (String(box.value).length > 7 ? ' tight' : '') +
+           // The superscript is part of the width. Without it in the test a
+           // 687.5 carrying a +112.5 was measured as five characters and
+           // printed as "687.5+1", the rest over the edge of the box.
+           '<div class="bv' +
+             ((String(box.value) + (box.sup || '')).length > 7 ? ' tight' : '') +
              '">' + box.value + sup + aside + '</div>' +
            // Counted, not scored. A strip under "Top 5" would print either a
            // sum that is not a category or a blank that reads as nothing

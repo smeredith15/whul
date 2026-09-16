@@ -27,7 +27,8 @@ from datetime import date
 import pandas as pd
 
 from whul.config.league import SEASON
-from whul.scoring.motorsport import EVENT_COUNTS
+from whul.scoring.golf import EVENT_COUNTS as GOLF_COUNTS
+from whul.scoring.motorsport import EVENT_COUNTS as RACE_COUNTS
 
 #: Leagues benchmarked this way. The team sports keep season aggregates, whose
 #: seasons already align year to year.
@@ -47,7 +48,7 @@ DEFAULT_YEARS = 5
 #: else in an event frame is dropped, which is why the marks have to be said
 #: out loud -- a driver's finishing position summed over a season is a number
 #: with no meaning, and a total that appeared on its own would be exactly that.
-COUNTED = EVENT_COUNTS
+COUNTED = tuple(dict.fromkeys(RACE_COUNTS + GOLF_COUNTS))
 
 
 @dataclass(frozen=True)

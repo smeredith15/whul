@@ -181,3 +181,130 @@ def summarize(events: pd.DataFrame) -> dict[str, list[dict]]:
         if column in events.columns:
             return as_records(event_finishes(events, column))
     return {}
+
+
+# --- tennis, by the size of the tournament ---------------------------------
+#
+# A tennis profile is unreadable as one list. Fifty tournaments a year, seven
+# matches in a good week, and the one thing a reader wants -- how the player
+# did against fields of each size -- is exactly what a flat list of matches
+# buries. A first-round loss at a 250 and a first-round loss at a slam are the
+# same line and not remotely the same result.
+
+#: How each tier is named on a profile, and the order a reader looks for them
+#: in: up the tour's own ladder, then the two that are not on it. ``{tour}`` is
+#: the player's own, so a WTA profile says "WTA 1000" where an ATP one says
+#: "ATP 1000" -- which is what both tours call them.
+TIER_LABELS: tuple[tuple[str, str], ...] = (
+    ("250", "{tour} 250"),
+    ("500", "{tour} 500"),
+    ("Masters 1000", "{tour} 1000"),
+    ("Grand Slam", "Grand Slam"),
+    ("Tour Finals", "{tour} Finals"),
+    ("International", "Team Events"),
+)
+
+#: Tiers whose result is a record rather than a round. A Davis Cup tie is not
+#: a knockout round in the sense the draw assumes, and the round-robin group at
+#: the Tour Finals is three matches nobody is eliminated by -- "RR" on its own
+#: says a player turned up.
+RECORD_TIERS = {"Tour Finals", "International"}
+
+
+def _tier_of(category) -> str:
+    """The tier a tournament belongs to, minus the tour that names it."""
+    return _tier(category)
+
+
+def _round_counts(block: pd.DataFrame) -> str:
+    """The furthest round reached at each tournament of this tier, grouped.
+
+    "W x1 · SF x1" rather than a line per tournament: the count is the point,
+    and at a tier a player enters nine times the list is the noise.
+    """
+    order = {name: index for index, name in enumerate(ROUND_ORDER)}
+    tally: dict[str, int] = {}
+    for name in block["round"]:
+        text = str(name or "").strip()
+        if text:
+            tally[text] = tally.get(text, 0) + 1
+    ranked = sorted(tally.items(), key=lambda pair: -order.get(pair[0], -1))
+    return " · ".join(
+        name if count == 1 else f"{name} ×{count}" for name, count in ranked
+    )
+
+
+def _record(events: pd.DataFrame, group: str = "") -> str:
+    """Matches won and lost, for a tier whose result is a record.
+
+    The round-robin at the Tour Finals is named, because a player who came
+    through it has a knockout round to show as well and the two are different
+    kinds of answer: "RR 2-1 · SF" is a group won and a semi-final lost.
+    """
+    results = events["result"].astype(str).str.upper()
+    won = int((results == "W").sum())
+    lost = int((results == "L").sum())
+    record = f"{won}-{lost}"
+    return f"{group} {record}".strip()
+
+
+def _note_for(tier: str, block: pd.DataFrame, reached: pd.DataFrame) -> str:
+    """What happened at this tier, in the words the tier is played in."""
+    if tier == "International":
+        return _record(block)
+    if tier == "Tour Finals":
+        group = block[block["round"].astype(str).str.upper() == "RR"]
+        said = _record(group, "RR") if not group.empty else ""
+        # Past the group, the round he went out in -- which is the knockout
+        # answer, and the group's record does not contain it.
+        beyond = _round_counts(
+            reached[reached["round"].astype(str).str.upper() != "RR"])
+        return " \u00b7 ".join(part for part in (said, beyond) if part)
+    return _round_counts(reached)
+
+
+def tier_summary(events: pd.DataFrame) -> dict[str, list[dict]]:
+    """Per player, one entry a tier: what it paid and what happened in it.
+
+    ``events`` are match rows -- ``player``, ``category``, ``round``,
+    ``result``, ``event_points`` and ``straight_points`` -- already cut to the
+    window being shown. Every tier is returned, including the ones a player
+    never entered, because a profile that omits them cannot say whether he
+    skipped the 500s or the feed did.
+    """
+    if events is None or events.empty or "player" not in events.columns:
+        return {}
+    work = events.copy()
+    for column in ("category", "round", "result", "league"):
+        if column not in work.columns:
+            work[column] = ""
+    if "straight_points" not in work.columns:
+        work["straight_points"] = 0.0
+    work["_tier"] = work["category"].map(_tier_of)
+
+    reached = tennis_finishes(work)
+    out: dict[str, list[dict]] = {}
+    for player, played in work.groupby("player", sort=False):
+        tour = str(played["league"].iloc[0] or "").strip().upper() or "ATP"
+        mine = reached[reached["player"] == player] if not reached.empty \
+            else pd.DataFrame(columns=["category", "round"])
+        entries = []
+        for tier, template in TIER_LABELS:
+            block = played[played["_tier"] == tier]
+            here = (mine[mine["category"].map(_tier_of) == tier]
+                    if not mine.empty else mine)
+            entries.append({
+                "tier": tier,
+                "label": template.format(tour=tour),
+                # None, not zero, for a tier he never entered. Zero is the
+                # honest answer for a slam he lost in the third round and the
+                # wrong one for a 500 he did not play: one says he earned
+                # nothing there and the other that there is nothing to say.
+                "points": (None if block.empty
+                           else float(block["event_points"].sum())),
+                "straight": float(block["straight_points"].sum()),
+                "entered": 0 if block.empty else int(len(here)),
+                "note": "" if block.empty else _note_for(tier, block, here),
+            })
+        out[str(player)] = entries
+    return out
