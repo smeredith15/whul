@@ -3011,9 +3011,7 @@ def test_a_league_that_has_not_played_still_gets_its_panel():
 
     assert site_build._panel_before_a_season("NHL", "Player", "Skater")
     assert site_build._panel_before_a_season("PGA", "Player", "")
-    # Not a team, and not a league whose profile is not a panel.
-    assert site_build._panel_before_a_season("NBA", "Team", "") is None
-    assert site_build._panel_before_a_season("Tennis", "Player", "") is None
+    assert site_build._panel_before_a_season("Tennis", "Player", "") is not None
 
 
 def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
@@ -3973,3 +3971,209 @@ def test_a_clubs_nan_role_does_not_send_it_down_the_player_path():
     assert not _has_a_role({"role": float("nan")})
     assert not _has_a_role({"role": ""})
     assert not _has_a_role({})
+
+
+# --- the format is forced, whether or not anything has been played ----------
+
+#: Every league a rostered asset can be filed under, and which kinds of asset
+#: that league holds. Not the slot categories: an umbrella is a slot and not a
+#: league, and nobody's asset is filed under "Tennis".
+EVERY_SLOT = (
+    ("Premier League", "Team"), ("La Liga", "Team"), ("Serie A", "Team"),
+    ("Bundesliga", "Team"), ("Ligue 1", "Team"), ("MLS", "Team"),
+    ("NWSL", "Team"),
+    ("Premier League", "Player"), ("La Liga", "Player"), ("Serie A", "Player"),
+    ("Bundesliga", "Player"), ("Ligue 1", "Player"), ("MLS", "Player"),
+    ("NWSL", "Player"),
+    ("NFL", "Team"), ("NFL", "Player"),
+    ("NBA", "Team"), ("NBA", "Player"),
+    ("MLB", "Team"), ("MLB", "Player"),
+    ("NHL", "Team"), ("NHL", "Player"),
+    ("NCAAF", "Team"), ("NCAAM", "Team"), ("NCAAW", "Team"),
+    ("NCAA Baseball", "Team"), ("NCAA Softball", "Team"),
+    ("Men's Intl Soccer", "Team"), ("Women's Intl Soccer", "Team"),
+    ("ATP", "Player"), ("WTA", "Player"),
+    ("F1", "Player"), ("NASCAR", "Player"),
+    ("PGA", "Player"),
+    # And by the umbrella, because a caller that has the slot and not the
+    # league should still get an answer.
+    ("Tennis", "Player"), ("Motorsports", "Player"),
+    ("Club Soccer", "Player"), ("Club Soccer", "Team"),
+)
+
+
+@pytest.mark.parametrize("league,kind", EVERY_SLOT)
+def test_every_slot_has_its_panel_before_it_has_played(league, kind):
+    """The one that keeps being forgotten. Two panels shipped without anybody
+    seeing them -- a national team's and a basketball club's -- because the
+    leagues they belong to open in October and a club with no figures got no
+    panel at all, only "No stat lines recorded for this day yet".
+
+    A profile exists from the day the asset is drafted. What it says before the
+    season is the same thing it will say during it, with dashes where the
+    figures go, so a layout can be looked at in August and a reader can see
+    what is coming.
+    """
+    panel = site_build._panel_before_a_season(league, kind, "")
+    assert panel, f"{kind} in {league} has no panel before its season"
+    # The panel shapes differ -- boxes at the top level, inside a `season`,
+    # inside sections, inside a section's phases -- and this is deliberately
+    # indifferent to which: what is being asserted is that there are boxes and
+    # that they read as unplayed, not where they live.
+    holders = [panel, panel.get("season") or {}]
+    boxes = [
+        b for holder in holders
+        for key in ("top", "secondary", "outcomes")
+        for b in holder.get(key, [])
+    ] + [
+        b for section in panel.get("sections", [])
+        for block in section.get("blocks", [])
+        for key in ("top", "secondary")
+        for b in block.get(key, [])
+    ] + [
+        b for section in panel.get("sections", [])
+        for key in ("top", "secondary")
+        for b in section.get(key, [])
+    ]
+    assert boxes, f"{kind} in {league} has a panel with no boxes in it"
+    # Dashes, not zeroes. "0" says the asset played and did nothing, which is
+    # the opposite of what a season that has not opened means -- and it is what
+    # a reader would check the standings against.
+    counts = [b for b in boxes if not b.get("outcome")]
+    assert any(b["value"] == "—" for b in counts), (
+        f"{kind} in {league} reads as a season played and lost: "
+        f"{[(b['label'], b['value']) for b in counts][:6]}"
+    )
+
+
+# --- the clubs scored by counting things ------------------------------------
+
+def _panel_total(panel: dict) -> float:
+    """Every box on a club's panel, added up the way a reader would."""
+    got = 0.0
+    for holder in [panel, *panel.get("posts", [])]:
+        for key in ("top", "secondary", "outcomes"):
+            for box in holder.get(key, []):
+                if box.get("points") is not None and not box.get("note"):
+                    got += box["points"]
+    return round(got, 1)
+
+
+def _ncaa_game(home, away, hs, as_, hc="ACC", ac="ACC", season_type=2, notes="",
+               season=2026, day="2026-11-15"):
+    return {"season": season, "season_type": season_type, "notes": notes,
+            "home_team": home, "away_team": away, "home_conference": hc,
+            "away_conference": ac, "home_score": hs, "away_score": as_,
+            "completed": True, "game_date": day}
+
+
+def test_a_college_football_club_reconciles_with_its_own_score():
+    """The invariant every panel here is built on, now for the seven leagues
+    that were still on the old table: the boxes add up to the number printed
+    under them, against the scorer's own arithmetic rather than a copy of it."""
+    from whul.scoring import ncaa
+
+    games = pd.DataFrame(
+        [_ncaa_game("A", "B", 40, 3), _ncaa_game("B", "A", 10, 31),
+         _ncaa_game("A", "C", 28, 21, ac="SEC"),
+         _ncaa_game("A", "B", 35, 0, season_type=3, notes="ACC Championship"),
+         _ncaa_game("A", "D", 30, 10, season_type=3, notes="CFP Semifinal",
+                    ac="B1G")]
+        + [_ncaa_game("A", "B", 20, 17) for _ in range(6)])
+    row = ncaa.score_football(games).set_index("team").loc["A"].to_dict()
+    panel = site_build._counted_team_panel("NCAAF", row)
+    assert _panel_total(panel) == pytest.approx(row["total_points"], abs=0.2)
+    # The conference record rides on one box rather than taking two, since the
+    # denominator is not scored and is most of what the numerator means.
+    conf = next(b for b in panel["top"] if b["label"] == "Conference wins")
+    assert conf["aside"] == f"of {row['conf_games']:,.0f}"
+
+
+def test_a_college_basketball_club_reconciles_with_its_own_score():
+    from whul.scoring import ncaa
+
+    games = pd.DataFrame(
+        [_ncaa_game("A", "B", 90, 60), _ncaa_game("B", "A", 70, 95),
+         _ncaa_game("A", "C", 88, 55, ac="SEC"),
+         _ncaa_game("A", "B", 80, 70, season_type=3,
+                    notes="ACC Tournament Championship"),
+         _ncaa_game("A", "D", 78, 70, season_type=3,
+                    notes="NCAA Tournament Second Round", ac="B1G")]
+        + [_ncaa_game("A", "B", 70, 65) for _ in range(8)])
+    row = ncaa.score_basketball(games, "NCAAM").set_index("team").loc["A"].to_dict()
+    panel = site_build._counted_team_panel("NCAAM", row)
+    assert _panel_total(panel) == pytest.approx(row["total_points"], abs=0.2)
+
+
+def test_a_college_diamond_club_reconciles_with_its_own_score():
+    """And its rounds carry the wins that decided them, rather than giving each
+    count a box whose points strip would have to read nought."""
+    from whul.scoring import ncaa
+
+    games = pd.DataFrame(
+        [_ncaa_game("A", "B", 9, 2), _ncaa_game("B", "A", 1, 7),
+         _ncaa_game("A", "C", 5, 4, ac="SEC")] * 4
+        + [_ncaa_game("A", "D", 6, 3, season_type=3, notes="Regional")
+           for _ in range(3)]
+        + [_ncaa_game("A", "D", 5, 2, season_type=3, notes="Super Regional")
+           for _ in range(2)]
+        + [_ncaa_game("A", "D", 4, 1, season_type=3,
+                      notes="College World Series") for _ in range(4)])
+    row = ncaa.score_diamond(games, "NCAA Baseball").set_index("team").loc["A"].to_dict()
+    panel = site_build._counted_team_panel("NCAA Baseball", row)
+    assert _panel_total(panel) == pytest.approx(row["total_points"], abs=0.2)
+    regional = next(b for b in panel["posts"][0]["top"] if b["label"] == "Regional")
+    assert regional["value"] == "Yes" and regional["aside"] == "3 won"
+
+
+def test_a_basketball_club_reconciles_with_its_own_score():
+    from whul.scoring import nba
+
+    def ev(home, away, hs, as_, stype=2, notes=""):
+        return {"season": 2026, "season_type": stype, "notes": notes,
+                "home_team": home, "away_team": away, "home_score": hs,
+                "away_score": as_, "completed": True, "game_date": "2026-12-01"}
+
+    rows = ([ev("A", "B", 120, 95) for _ in range(30)]
+            + [ev("B", "A", 110, 90) for _ in range(20)]
+            + [ev("A", "C", 118, 100, stype=3) for _ in range(9)]
+            + [ev("A", "D", 112, 105, notes="In-Season Tournament")
+               for _ in range(3)])
+    row = nba.score_teams(pd.DataFrame(rows)).set_index("team").loc["A"].to_dict()
+    panel = site_build._counted_team_panel("NBA", row)
+    assert _panel_total(panel) == pytest.approx(row["total_points"], abs=0.2)
+    # No games-played column exists in this sport, and the record says it
+    # anyway -- so the heading does not print a dash that reads as a fault.
+    assert panel["head"] == [["Record", f"{row['reg_wins']:,.0f}–{row['reg_losses']:,.0f}"]]
+
+
+def test_a_hockey_club_carries_the_lift_its_points_were_given():
+    """An 82-game history scored against an 84-game season: the points are
+    lifted and the counts are not, so a page that multiplied a count by a
+    weight would print a figure the score does not contain."""
+    from whul.scoring import nhl
+
+    regular = pd.DataFrame([{
+        "season": 20262027, "team": "A", "games_played": 82, "wins": 50,
+        "losses": 22, "ot_losses": 10, "regulation_wins": 42,
+        "goals_for": 280, "goals_against": 220, "points": 110,
+    }])
+    post = pd.DataFrame([{"season": 20262027, "team": "A",
+                          "games_played": 20, "wins": 12}])
+    row = nhl.score_teams(regular, post).set_index("team").loc["A"].to_dict()
+    panel = site_build._counted_team_panel("NHL", row)
+    assert _panel_total(panel) == pytest.approx(row["total_points"], abs=0.2)
+    wins = next(b for b in panel["top"] if b["label"] == "Wins")
+    assert wins["points"] > 50 * nhl.PTS_WIN, "the lift is missing"
+
+
+def test_an_outcome_nobody_has_lost_yet_does_not_read_as_lost():
+    """Indiana read "Conference title No / Regular-season title No / Playoff
+    No" in week two of a season it was 2-0 in. A club that has not won its
+    conference in September has not failed to either."""
+    row = {"wins": 2.0, "losses": 0.0, "games_played": 2.0, "point_diff": 91.0,
+           "big_wins": 2.0, "conf_wins": 0.0, "conf_games": 0.0,
+           "conf_title_win": 0.0, "playoff_app": 0.0, "playoff_wins": 0.0,
+           "pts_reg_champ": 0.0}
+    panel = site_build._counted_team_panel("NCAAF", row)
+    assert [b["value"] for b in panel["outcomes"]] == ["—"] * 3
