@@ -406,6 +406,10 @@ def asset_profiles(
                 panels[asset_id] = _nba_panel(row)
             elif str(row.get("league")) == "NHL" and row.get("role"):
                 panels[asset_id] = _nhl_panel(row)
+            elif str(row.get("league")) in MOTORSPORT_BOXES:
+                panel = _motorsport_panel(row)
+                if panel:
+                    panels[asset_id] = panel
             elif _is_a_club_soccer_player(row):
                 panels[asset_id] = _soccer_player_panel(
                     row, club_games,
@@ -1042,6 +1046,45 @@ def _nhl_panel(row: dict) -> dict | None:
         if post:
             panel["posts"] = [post]
     return panel
+
+
+#: What each series counts, in the order a reader looks for it. The two do not
+#: share a vocabulary, so neither do their panels.
+MOTORSPORT_BOXES = {
+    "F1": (("wins", "Wins"), ("podiums", "Podiums"),
+           ("top_tens", "Points finishes")),
+    "NASCAR": (("wins", "Wins"), ("top_fives", "Top 5"),
+               ("top_tens", "Top 10")),
+}
+
+
+def _motorsport_panel(row: dict) -> dict | None:
+    """A driver's season above the list of races that made it.
+
+    No points strip under these. A win is worth 55 in NASCAR and 25 in Formula
+    1, a top five is worth whatever the five finishes in it were worth, and a
+    strip under "Top 5" would have to print either a sum that is not a category
+    or a blank that reads as nothing earned. The categories are how the sport
+    is read; the points are in the race list below, one line a race.
+    """
+    league = str(row.get("league") or "").strip().upper()
+    wanted = MOTORSPORT_BOXES.get(league)
+    if not wanted:
+        return None
+    started = _stat_number(row, "events")
+    return {
+        "kind": "boxes",
+        "head": [["Races", "\u2014" if started is None else f"{started:,.0f}"]],
+        # `bare`: counted, not scored, and the box says so by having no strip
+        # at all rather than an empty one.
+        "top": [
+            {"label": label, "bare": True,
+             "value": ("\u2014" if _stat_number(row, column) is None
+                       else f"{_stat_number(row, column):,.0f}")}
+            for column, label in wanted
+        ],
+        "secondary": [],
+    }
 
 
 #: Leagues whose profile is a panel built from figures, so that one can be

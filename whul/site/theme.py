@@ -820,6 +820,7 @@ dialog.profile .statbox .bv .aside {
   color: var(--muted); font-variant-numeric: tabular-nums;
 }
 /* A strip saying where its points went rather than printing a number. */
+.statbox.bare .bv{padding-bottom:6px}
 .statbox.muted{opacity:.6;border-style:dashed}
 .statbox.muted .bp{background:transparent}
 dialog.profile .statbox .bp.said {

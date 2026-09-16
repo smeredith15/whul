@@ -112,3 +112,18 @@ def test_a_profile_does_not_carry_a_whole_season_of_matches():
     ])
     out = finishes.as_records(finishes.tennis_finishes(events))["A. Fils"]
     assert len(out) == finishes.MAX_FINISHES
+
+
+def test_a_race_is_labelled_by_where_it_finished_not_where_it_stands():
+    """``position`` is overloaded: the driver feed carries a championship
+    standing under that name, and a frame can reach here with both columns.
+    Reading it labelled every one of Ryan Blaney's races "3rd" -- a win and a
+    thirty-third alike, beside points of 55 and 4 that said otherwise."""
+    events = pd.DataFrame([
+        {"player": "R. Blaney", "date": "2026-07-13", "tournament": "Sonoma",
+         "finish": 1, "position": 3, "event_points": 55.0, "league": "NASCAR"},
+        {"player": "R. Blaney", "date": "2026-08-23", "tournament": "Daytona",
+         "finish": 33, "position": 3, "event_points": 4.0, "league": "NASCAR"},
+    ])
+    out = finishes.summarize(events)["R. Blaney"]
+    assert [f["label"] for f in out] == ["Daytona 33rd", "Sonoma 1st"]
