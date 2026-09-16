@@ -1748,3 +1748,55 @@ def test_a_competition_that_answered_says_nothing():
          "player": "A", "matches": 2},
     ]))
     assert bs.take_findings() == []
+
+
+def test_a_player_cannot_have_played_more_games_than_his_club():
+    """The one arithmetic a reader can do in their head, and the figures failed
+    it: twelve of twenty baseball players were recorded with more games than
+    their club had played, by half again. Twenty-eight games and eighteen games
+    both look reasonable alone; the pair is what says one is wrong."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+    store.upsert("assets", [
+        {"asset_id": "p1", "asset_type": "Player", "display_name": "Acuna",
+         "league": "MLB", "role": "Batter", "norm_key": "MLB",
+         "active": 1, "created_at": "x", "affiliation": "Atlanta Braves"},
+        {"asset_id": "p2", "asset_type": "Player", "display_name": "Ohtani",
+         "league": "MLB", "role": "Batter", "norm_key": "MLB",
+         "active": 1, "created_at": "x", "affiliation": "Los Angeles Dodgers"},
+    ], keys=("asset_id",))
+    store.record_club_games({"Atlanta Braves": 18.0, "Los Angeles Dodgers": 17.0},
+                            "2026-27", _date(2026, 9, 16), "MLB")
+
+    class Source:
+        key, league, asset_type = "mlb", "MLB", "Player"
+
+    report = ing.IngestReport(league="MLB", asset_type="Player")
+    ing._check_against_the_club(
+        store, pd.DataFrame([{"asset_id": "p1", "games": 28},
+                             {"asset_id": "p2", "games": 17}]),
+        Source(), "2026-27", _date(2026, 9, 16), report)
+
+    assert len(report.problems) == 1
+    assert "Atlanta Braves 28 of 18" in report.problems[0]
+    assert "Dodgers" not in report.problems[0], "17 of 17 is a full season, not a fault"
+
+
+def test_a_team_pull_is_not_checked_against_itself():
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    class Source:
+        key, league, asset_type = "mlb-teams", "MLB", "Team"
+
+    report = ing.IngestReport(league="MLB", asset_type="Team")
+    ing._check_against_the_club(
+        open_store(":memory:"), pd.DataFrame([{"asset_id": "t1", "games": 99}]),
+        Source(), "2026-27", _date(2026, 9, 16), report)
+    assert report.problems == []

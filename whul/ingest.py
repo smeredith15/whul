@@ -137,6 +137,7 @@ def ingest(
     if getattr(source, "cumulative", False):
         mine = _against_the_league_year(store, mine, source, season, as_of, report)
 
+    _check_against_the_club(store, mine, source, season, as_of, report)
     _settle_umbrella_league(store, mine, report)
     _report_shrinkage(store, mine, source, season, as_of, report)
     mine = _keep_competitions_the_pull_missed(
@@ -183,6 +184,68 @@ def ingest(
         store, placed, season, as_of, version.version
     )
     return report
+
+
+#: What a player's own game count is called, in order of preference.
+PLAYER_GAMES_COLUMNS = ("regular_games", "games_played", "games", "matches")
+
+
+def _check_against_the_club(store: Store, mine: pd.DataFrame, source,
+                            season: str, as_of: date, report: IngestReport) -> None:
+    """Nobody plays more games than his club did.
+
+    The one arithmetic a reader can do in their head, and the figures failed
+    it: twelve of twenty baseball players were recorded with more games than
+    their club had played, by half again. Both numbers looked reasonable on
+    their own -- twenty-eight games, eighteen games -- and the pair is what
+    says one of them is wrong.
+
+    Reported rather than refused, and deliberately not corrected: which figure
+    is the wrong one is a question about the feeds, and clamping the player to
+    his club would hide a club count that is short.
+    """
+    if getattr(source, "asset_type", "") != "Player" or mine is None or mine.empty:
+        return
+    if store is None or "asset_id" not in mine.columns:
+        return
+    column = next((c for c in PLAYER_GAMES_COLUMNS if c in mine.columns), None)
+    if column is None:
+        return
+    club_games = store.read_club_games(season, as_of)
+    if not club_games:
+        return
+
+    ids = [str(a) for a in mine["asset_id"] if str(a)]
+    if not ids:
+        return
+    marks = ",".join("?" for _ in ids)
+    clubs = dict(store.query(
+        f"SELECT asset_id, affiliation FROM assets WHERE asset_id IN ({marks})",
+        tuple(ids),
+    ).itertuples(index=False, name=None))
+
+    impossible = []
+    played = pd.to_numeric(mine[column], errors="coerce")
+    for asset_id, his in zip(mine["asset_id"], played):
+        club = str(clubs.get(str(asset_id)) or "").strip()
+        theirs = club_games.get(club)
+        if theirs is None or pd.isna(his) or his <= theirs:
+            continue
+        impossible.append((club, float(his), float(theirs)))
+    if not impossible:
+        return
+
+    worst = sorted(impossible, key=lambda row: row[2] - row[1])[:4]
+    detail = "; ".join(f"{club} {his:,.0f} of {theirs:,.0f}"
+                       for club, his, theirs in worst)
+    report.problems.append(
+        f"{len(impossible)} player(s) are recorded with more games than their "
+        f"club has played, which cannot be: {detail}"
+        + (f" (and {len(impossible) - len(worst)} more)"
+           if len(impossible) > len(worst) else "")
+        + ". One of the two feeds is wrong about its window and the pair is "
+          "what says so; neither figure is altered here"
+    )
 
 
 #: How many games a club has played, under the names a scorer gives it. In
