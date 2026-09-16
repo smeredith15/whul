@@ -1301,15 +1301,18 @@ SCRIPT = """\
         '<div class="meta">' + who + '</div>' +
         (a.group ? '<div class="grp">' + a.group + '</div>' : '') +
         '</div></div>' +
-      (finishes
-        ? '<div class="body"><h3>Finishes</h3><table class="finishes"><tbody>' +
-          finishes + '</tbody></table></div>'
-        : '') +
+      // The summary first, then what it is a summary of. A driver's season
+      // opened on twenty-eight race results and the three numbers that sum
+      // them up were below the fold; every other slot leads with its boxes.
       (panel ? panel
              : stats ? '<div class="body">' + (finishes ? '<h3>Season totals</h3>' : '') +
                '<table><tbody>' + stats + '</tbody></table></div>'
              : '<div class="body"><p class="sub">No stat lines recorded for this ' +
                'day yet.</p></div>') +
+      (finishes
+        ? '<div class="body"><h3>Finishes</h3><table class="finishes"><tbody>' +
+          finishes + '</tbody></table></div>'
+        : '') +
       bonus +
       (notes ? '<div class="body">' + notes + '</div>' : '') +
       '<div class="scoreline">' +

@@ -3491,9 +3491,9 @@ def test_a_driver_is_shown_in_his_own_series_vocabulary():
     """NASCAR counts top fives, Formula 1 counts podiums, and neither page
     borrows the other's word for a good day."""
     nascar = site_build._motorsport_panel(
-        {"league": "NASCAR", "role": "Driver", "events": 28,
+        {"league": "NASCAR", "role": "Driver", "starts": 28, "events_held": 30,
          "wins": 3, "top_fives": 11, "top_tens": 17})
-    assert nascar["head"] == [["Races", "28"]]
+    assert nascar["head"] == [["Races started", "28"], ["Races run", "30"]]
     assert [(b["label"], b["value"]) for b in nascar["top"]] == [
         ("Wins", "3"), ("Top 5", "11"), ("Top 10", "17")]
 
@@ -3519,7 +3519,7 @@ def test_a_driver_box_carries_no_points_strip():
 
 def test_a_driver_who_has_not_raced_reads_as_unknown_not_as_zero():
     panel = site_build._motorsport_panel({"league": "NASCAR", "role": "Driver"})
-    assert panel["head"] == [["Races", "—"]]
+    assert panel["head"] == [["Races started", "—"], ["Races run", "—"]]
     assert [b["value"] for b in panel["top"]] == ["—"] * 3
 
 
@@ -3549,3 +3549,27 @@ def test_a_club_with_no_losses_counted_shows_no_record():
     assert site_build._team_record({"reg_wins": 11}) is None
     panel = site_build._nfl_team_panel(_nfl_team(reg_losses=None))
     assert panel["head"] == [["Division", "1st in NFC West"]]
+
+
+def test_a_driver_is_read_off_the_asset_rather_than_the_feed_that_pulled_him():
+    """NASCAR and Formula 1 arrive as one feed called Motorsports and are
+    stored under that name, so the stored row says "Motorsports" where every
+    other sport says its own league. Reading the series off the row left every
+    driver with no panel at all -- the figures reached the page and were shown
+    as a table of raw column names."""
+    row = {"league": "Motorsports", "role": "Driver", "starts": 17,
+           "events_held": 18, "wins": 4, "podiums": 9, "top_tens": 15}
+
+    assert site_build._motorsport_panel(row) is None
+    panel = site_build._motorsport_panel(row, "F1")
+    assert [(b["label"], b["value"]) for b in panel["top"]] == [
+        ("Wins", "4"), ("Podiums", "9"), ("Points finishes", "15")]
+
+
+def test_a_part_timer_does_not_read_as_a_regular_having_a_quiet_year():
+    """The same heading every other slot carries: a start count alone cannot
+    say whether the rest of the calendar was missed or has not been run."""
+    panel = site_build._motorsport_panel(
+        {"league": "NASCAR", "role": "Driver", "starts": 6, "events_held": 28,
+         "wins": 0, "top_fives": 1, "top_tens": 2})
+    assert panel["head"] == [["Races started", "6"], ["Races run", "28"]]

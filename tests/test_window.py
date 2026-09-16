@@ -233,6 +233,6 @@ def test_the_marks_reach_the_panel_the_page_draws():
                                      ("Points finishes", "1")])):
         rows = events_frame[events_frame["league"] == league]
         row = window_totals(rows, [window]).to_dict("records")[0]
-        panel = build._motorsport_panel(row)
-        assert panel["head"] == [["Races", "1"]]
+        panel = build._motorsport_panel(row, league)
+        assert panel["head"] == [["Races started", "1"], ["Races run", "1"]]
         assert [(b["label"], b["value"]) for b in panel["top"]] == expected

@@ -383,6 +383,12 @@ def asset_profiles(
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
+            # What the asset *is*, which is not always what pulled it. NASCAR
+            # and Formula 1 arrive as one feed called Motorsports and the row
+            # is stored under that name, so the series a driver runs in can
+            # only be read off the asset.
+            asset_league = (str(meta.loc[asset_id, "league"])
+                            if asset_id in meta.index else "")
             finishes[asset_id] = _finish_list(row)
             bonuses[asset_id] = _bonus_list(row)
             notes[asset_id] = _scaling_notes(row)
@@ -406,8 +412,8 @@ def asset_profiles(
                 panels[asset_id] = _nba_panel(row)
             elif str(row.get("league")) == "NHL" and row.get("role"):
                 panels[asset_id] = _nhl_panel(row)
-            elif str(row.get("league")) in MOTORSPORT_BOXES:
-                panel = _motorsport_panel(row)
+            elif asset_league in MOTORSPORT_BOXES:
+                panel = _motorsport_panel(row, asset_league)
                 if panel:
                     panels[asset_id] = panel
             elif _is_a_club_soccer_player(row):
@@ -542,6 +548,8 @@ STAT_SKIP = {
     "double_doubles", "triple_doubles", "secondary_stats",
     # The NFL panel's own figures. On the fallback table they would read
     # "Post passing yards 0" in a column of season totals.
+    # Panel headings, both of them: shown above the figures, not among them.
+    "events_held",
     "team_games", "post_passing_yards", "post_passing_tds", "post_interceptions",
     "post_rushing_yards", "post_rushing_tds", "post_receptions",
     "post_receiving_yards", "post_receiving_tds", "post_fumbles_lost",
@@ -1104,7 +1112,30 @@ MOTORSPORT_BOXES = {
 }
 
 
-def _motorsport_panel(row: dict) -> dict | None:
+def _races_head(row: dict) -> list[list[str]]:
+    """Races started, and out of how many the series ran.
+
+    The same heading every other slot carries, in the sport's own words: a
+    start count on its own cannot say whether the rest of the calendar was
+    missed or has not been run, and a part-timer reads exactly like a regular
+    having a quiet year.
+
+    Starts, not rows. A Formula 1 weekend with a sprint is two results and one
+    start, and a driver's own page says three where a count of entries says
+    four. `events` is the fallback for a row stored before the marks were
+    carried, and for NASCAR the two are the same number.
+    """
+    started = _stat_number(row, "starts")
+    if started is None:
+        started = _stat_number(row, "events")
+    ran = _stat_number(row, "events_held")
+    return [
+        ["Races started", "\u2014" if started is None else f"{started:,.0f}"],
+        ["Races run", "\u2014" if not ran else f"{ran:,.0f}"],
+    ]
+
+
+def _motorsport_panel(row: dict, league: str = "") -> dict | None:
     """A driver's season above the list of races that made it.
 
     No points strip under these. A win is worth 55 in NASCAR and 25 in Formula
@@ -1113,20 +1144,15 @@ def _motorsport_panel(row: dict) -> dict | None:
     or a blank that reads as nothing earned. The categories are how the sport
     is read; the points are in the race list below, one line a race.
     """
-    league = str(row.get("league") or "").strip().upper()
-    wanted = MOTORSPORT_BOXES.get(league)
+    # The series, not the source. Both are pulled as one feed called
+    # Motorsports and stored under that name, so the row cannot say which of
+    # them a driver runs in -- the asset can, and does.
+    wanted = MOTORSPORT_BOXES.get(str(league or row.get("league") or "").strip().upper())
     if not wanted:
         return None
-    # Starts, not rows. A Formula 1 weekend with a sprint is two results and
-    # one start, and a driver's own page says three where a count of entries
-    # would say four. `events` is the fallback for a row stored before the
-    # marks were carried, and for NASCAR the two are the same number.
-    started = _stat_number(row, "starts")
-    if started is None:
-        started = _stat_number(row, "events")
     return {
         "kind": "boxes",
-        "head": [["Races", "\u2014" if started is None else f"{started:,.0f}"]],
+        "head": _races_head(row),
         # `bare`: counted, not scored, and the box says so by having no strip
         # at all rather than an empty one.
         "top": [
