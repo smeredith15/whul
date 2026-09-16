@@ -185,6 +185,7 @@ def record(store: Store, source: str, frame: pd.DataFrame,
             source, row_key(clean, keys), str(clean.get("season") or ""),
             json.dumps(clean, default=str), stamp, stamp,
         ))
+    _say_if_it_collapsed(source, keys, frame, rows)
     conflict = (
         "ON CONFLICT (source, row_key) DO UPDATE SET "
         "payload = excluded.payload, season = excluded.season, "
@@ -207,6 +208,47 @@ def record(store: Store, source: str, frame: pd.DataFrame,
     # What was added, not what was offered. A seed reloaded every night would
     # otherwise report its whole size as if it were news.
     return after - before if not overwrite else len(rows)
+
+
+#: Keys that turned out not to tell two rows apart, for the ingest report.
+COLLAPSES: list[str] = []
+
+#: How many to name before the count stands in for the rest.
+COLLAPSES_SHOWN = 3
+
+
+def take_collapses() -> list[str]:
+    """Drain what the last pull's keys could not distinguish."""
+    said, COLLAPSES[:] = list(COLLAPSES), []
+    return said
+
+
+def _say_if_it_collapsed(source: str, keys: tuple[str, ...],
+                         frame: pd.DataFrame, rows: list[tuple]) -> None:
+    """Name a key that put two different rows in one place.
+
+    A key column that is absent raises -- there is no reading of that which is
+    correct. A key column that is present and blank does not: motorsport's
+    ``session`` is empty for every race that is not a sprint, and that is the
+    key working, not failing. The two are only distinguishable by what the key
+    does, so this looks at that: rows going in, distinct keys coming out, and
+    the difference named where there is one.
+
+    Reported rather than raised. A feed serving the same game twice is a real
+    possibility and losing the ledger over it would cost more than it saves --
+    but a key that silently keeps one row of two is exactly the quiet
+    understatement everything here exists to prevent, so it is said out loud.
+    """
+    distinct = len({key for _, key, _, _, _, _ in rows})
+    if distinct >= len(rows):
+        return
+    blank = [k for k in keys if not frame[k].map(lambda v: bool(_part(v))).any()]
+    because = (f" -- {', '.join(blank)} is blank on every row"
+               if blank else "")
+    COLLAPSES.append(
+        f"{source}: {len(rows)} row(s) share {distinct} key(s) on "
+        f"({', '.join(keys)}){because}; the ledger keeps one of each"
+    )
 
 
 def load(store: Store, source: str) -> pd.DataFrame:

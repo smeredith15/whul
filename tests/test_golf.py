@@ -162,3 +162,131 @@ def test_the_counts_are_summed_over_a_window_not_a_season():
 
     assert out["wins"] == 0, "a July win is in the season and not in the year"
     assert (out["starts"], out["top_fives"], out["made_cut"]) == (2, 1, 1)
+
+
+def test_a_feed_that_forgets_a_tournament_cannot_take_it_off_a_golfer():
+    """The driver's fault in golf's words. A tournament that has been played
+    cannot be un-played, so a feed that comes back without one is never
+    correcting anything -- it is keeping less, and the difference reads in the
+    standings as a golfer who lost points by playing."""
+    from datetime import date
+
+    import pandas as pd
+
+    from whul import ingest as ing
+    from whul.benchmark_sources import resolve
+    from whul.store import open_store
+
+    ME = "S. Scheffler"
+    whole = [
+        {"season": 2026, "event_id": "1", "tournament": "BMW",
+         "date": "2026-08-20", "player": ME, "position": 12},
+        {"season": 2026, "event_id": "2", "tournament": "TOUR Championship",
+         "date": "2026-08-27", "player": ME, "position": 1},
+    ]
+    shown = {"whole": whole, "short": whole[:1]}
+    keys = next(s for s in resolve(None) if s.key == "pga").accumulates
+
+    class Feed:
+        key, league, asset_type = "pga-test", "PGA", "Player"
+        accumulates = keys
+        windowed, dated_by_source, cumulative = True, False, False
+        produces, roster_scoped, live = ("PGA",), False, None
+        seasons_for = staticmethod(lambda day: [2026])
+        which = "whole"
+
+        @staticmethod
+        def build():
+            from whul.scoring import golf as scorer
+            return (lambda _s: pd.DataFrame(shown[Feed.which]), scorer.score_events)
+
+    def week(keep):
+        Feed.accumulates = keys if keep else ()
+        store = open_store(":memory:")
+        out = []
+        for day, which in (("2026-09-14", "whole"), ("2026-09-15", "short"),
+                           ("2026-09-16", "whole")):
+            Feed.which = which
+            got = ing._pull(Feed(), date.fromisoformat(day), verbose=False,
+                            store=store)
+            out.append(0.0 if got is None or got.empty
+                       else float(got["total_points"].sum()))
+        return out
+
+    before = week(keep=False)
+    assert before[1] < before[0], "the fault, for the record"
+    after = week(keep=True)
+    assert after[0] == after[1] == after[2]
+
+
+def test_the_autumn_belongs_to_next_year_and_is_asked_for():
+    """Scottie Scheffler held 565.0 points off two August events from the
+    fourth of September to the sixteenth, with the pull succeeding every night
+    and matching thirteen of the fifteen rostered golfers. The PGA Tour's 2026
+    season closed six days after the league year opened; the Procore
+    Championship, played inside the same league year, is a 2027 event. Asked
+    for the calendar year, ESPN returns the first and not the second."""
+    from datetime import date
+
+    from whul import ingest as ing
+    from whul.scoring import golf as scorer
+
+    ME = "S. Scheffler"
+    by_season = {
+        2026: [{"season": 2026, "event_id": "1", "tournament": "TOUR Championship",
+                "date": "2026-08-27", "player": ME, "position": 1}],
+        2027: [{"season": 2027, "event_id": "2", "tournament": "Procore Championship",
+                "date": "2026-09-14", "player": ME, "position": 1}],
+    }
+    asked: list[list[int]] = []
+
+    def load(seasons):
+        asked.append(list(seasons))
+        rows = [r for s in seasons for r in by_season.get(s, [])]
+        return pd.DataFrame(rows)
+
+    class Feed:
+        key, league, asset_type = "pga-test", "PGA", "Player"
+        accumulates = ()
+        windowed, dated_by_source, cumulative = True, False, False
+        produces, roster_scoped, live = ("PGA",), False, None
+        seasons_for = None
+
+        @staticmethod
+        def build():
+            return load, scorer.score_events
+
+    def events_on(day):
+        got = ing._pull(Feed(), date.fromisoformat(day), verbose=False)
+        return 0 if got is None or got.empty else int(got["events"].iloc[0])
+
+    # The calendar year alone, which is what the windowed path used to compute.
+    assert events_on("2026-09-16") == 1, "the fault, for the record"
+    assert asked[-1] == [2026]
+
+    # And with the source saying which labels its league year can carry.
+    from whul.benchmark_sources import _tour_season_labels
+    Feed.seasons_for = staticmethod(_tour_season_labels)
+    assert events_on("2026-09-16") == 2
+    assert asked[-1] == [2026, 2027]
+
+
+def test_a_tour_that_has_gone_quiet_while_answering_says_so():
+    """The pull had no error to report and its figures were plausible -- a tour
+    does take weeks off -- so the only thing that could have said anything was
+    the gap itself."""
+    from datetime import date
+
+    from whul import ingest as ing
+
+    class Feed:
+        league = "PGA"
+
+    events = pd.DataFrame([{"date": "2026-08-27", "total_points": 500.0}])
+    notes: list[str] = []
+    ing._say_if_nothing_new(Feed(), events, date(2026, 9, 16), notes)
+    assert notes and "2026-08-27" in notes[0] and "wrong season" in notes[0]
+
+    quiet: list[str] = []
+    ing._say_if_nothing_new(Feed(), events, date(2026, 9, 6), quiet)
+    assert quiet == [], "a fortnight off is a fortnight off"

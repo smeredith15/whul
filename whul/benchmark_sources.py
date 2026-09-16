@@ -1042,6 +1042,31 @@ def _report_champions(key: str, scored: pd.DataFrame) -> None:
         print(f"      {season}  {who}{shared}", flush=True)
 
 
+def _tour_season_labels(as_of: date) -> list[int]:
+    """Every season label that can carry an event inside this league year.
+
+    A tour's season and a league year are not the same year and do not even
+    turn over together. This league year opened on 21 August 2026; the PGA
+    Tour's 2026 season closed six days later with the TOUR Championship, and
+    its 2027 season opened a fortnight after that with the Procore
+    Championship -- played inside this league year and labelled with next
+    year's number.
+
+    Asked for the calendar year, ESPN returns the first and not the second. So
+    the golf window closed on the twenty-seventh of August and stayed closed,
+    and three weeks of the tour playing looked exactly like three weeks of the
+    tour not playing: the pull succeeded every night, matched thirteen of the
+    fifteen rostered golfers, and reported the same two events.
+
+    Both labels are asked for and the league year decides. An event dated
+    outside it is dropped by the window either way, so asking wide costs one
+    request a night and guessing narrow cost a month.
+    """
+    from whul.config.league import SEASON
+
+    return list(range(SEASON.start.year, SEASON.end.year + 1))
+
+
 def _pga_players():
     from whul.scoring import golf
     from whul.sources import espn_individual
@@ -1049,17 +1074,69 @@ def _pga_players():
     return lambda seasons: espn_individual.load_results("pga", seasons), golf.score_events
 
 
+#: What identifies one result row across both series, in columns both are given
+#: on the way out. Neither feed's own shape can be used: ESPN calls the event
+#: `tournament` and the driver `driver`, Jolpica calls them `race` and
+#: `driver_name`, and only one of the two knows what a sprint is.
+#:
+#: The event id rather than its name, because a series can run two races at the
+#: same track in one year -- ESPN's own id for NASCAR, the round number for
+#: Formula 1, both stable within a season.
+MOTORSPORT_KEYS = ("series", "season", "event_key", "session", "driver")
+
+#: One completed game, for the sources that read a schedule. Every one of them
+#: -- the NCAA leagues through their own API or a team's ESPN schedule, MLB
+#: through the Stats API, the NBA through ESPN's scoreboard -- returns one row
+#: per game carrying the feed's own id for it, and a game that has been played
+#: cannot be un-played. So a night that comes back without one is never a
+#: correction: the NCAA walks twenty weeks and skips any that fails, and Ohio
+#: State's win left its ledger on the sixteenth of September that way.
+GAME_KEYS = ("season", "game_id")
+
+
 def _motorsports_players():
+    """Both series, in one frame, so both can be written down.
+
+    Formula 1 used to reach the scorer through a closure: the loader returned
+    NASCAR and left F1 in a dict beside it. Only what a loader *returns* passes
+    through the ledger, so half the sport had nothing keeping what the feed
+    forgot -- and Jolpica forgot. Andrea Kimi Antonelli's Spanish and Italian
+    Grands Prix were in his profile on the fifth of September, gone on the
+    sixth, back on the seventh and gone again on the eighth, each disappearance
+    a fifty-point fall in the standings for a driver who had raced.
+
+    A race that has been run cannot be un-run, so a short answer about one is
+    always wrong and never a correction. That is what makes this preventable
+    rather than reportable.
+    """
     from whul.scoring import motorsport
     from whul.sources import espn_individual, jolpica
 
-    held: dict[str, pd.DataFrame] = {}
-
     def load(seasons):
-        held["f1"] = jolpica.load_results(seasons)
-        return espn_individual.load_results("nascar", seasons)
+        nascar = espn_individual.load_results("nascar", seasons)
+        f1 = jolpica.load_results(seasons)
+        frames = []
+        if nascar is not None and not nascar.empty:
+            frames.append(nascar.assign(
+                series="NASCAR", session="",
+                event_key=nascar["event_id"].astype(str),
+                driver=nascar["driver"].astype(str)))
+        if f1 is not None and not f1.empty:
+            frames.append(f1.assign(
+                series="F1",
+                session=f1["is_sprint"].fillna(False).map(
+                    {True: "sprint", False: ""}),
+                event_key=f1["round"].astype(str),
+                driver=f1["driver_name"].astype(str)))
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    return load, lambda nascar: motorsport.race_events(nascar, held["f1"])
+    def score(rows):
+        if rows is None or rows.empty or "series" not in rows.columns:
+            return motorsport.race_events(rows, None)
+        series = rows["series"].astype(str)
+        return motorsport.race_events(rows[series == "NASCAR"], rows[series == "F1"])
+
+    return load, score
 
 
 def _tennis_live():
@@ -1207,6 +1284,12 @@ def _register(*sources: Source) -> dict[str, Source]:
 SOURCES: dict[str, Source] = _register(
     Source("nfl", "NFL", "Player", _nfl_players, reliability="verified",
            seasons_for=_feed_seasons("nfl", "NFL"),
+           # One player's week. nflverse republishes the whole season file
+           # every week, so a week that is served and then is not is a file
+           # that failed to read -- and load_player_stats collects that season
+           # into `missing` and returns the rest, which is a quiet way to lose
+           # every NFL player in a year.
+           accumulates=("season", "week", "player_id"),
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified",
            seasons_for=_feed_seasons("nfl", "NFL")),
@@ -1216,12 +1299,17 @@ SOURCES: dict[str, Source] = _register(
            note="FanGraphs leaderboards; one row per player-role, folded after "
                 "normalization by the two-way rule"),
     Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
-           seasons_for=_league_year_seasons,
+           seasons_for=_league_year_seasons, accumulates=GAME_KEYS,
            note="a live contract year is scored on the half already played"),
     Source("nba", "NBA", "Player", _nba_players,
            seasons_for=_espn_seasons("nba", "NBA"),
+           # One player's game. The walk asks ESPN for a date and then for each
+           # game on it, and skips anything that raises on either request -- so
+           # a night that times out is a night nobody played, and the players
+           # who played it lose it.
+           accumulates=("season", "game_id", "athlete_id"),
            note="ESPN box scores, one date at a time -- slow to backfill"),
-    Source("nba-teams", "NBA", "Team", _nba_teams,
+    Source("nba-teams", "NBA", "Team", _nba_teams, accumulates=GAME_KEYS,
            seasons_for=_espn_seasons("nba", "NBA"),
            note="ESPN scoreboard; hoopR's archive stops at 2023"),
     Source("nhl", "NHL", "Player", _nhl_players, scale_for="NHL",
@@ -1229,9 +1317,14 @@ SOURCES: dict[str, Source] = _register(
            note="82-game history lifted to the 84-game 2026-27 season"),
     Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL",
            seasons_for=_feed_seasons("nhl", "NHL")),
-    Source("pga", "PGA", "Player", _pga_players, windowed=True),
+    Source("pga", "PGA", "Player", _pga_players, windowed=True,
+           seasons_for=_tour_season_labels,
+           # One row per golfer per tournament, keyed on ESPN's own id for the
+           # event: a tournament that has been played cannot be un-played, so a
+           # feed that comes back without one is never correcting anything.
+           accumulates=("season", "event_id", "player")),
     Source("motorsports", "Motorsports", "Player", _motorsports_players, windowed=True,
-           produces=("F1", "NASCAR"),
+           produces=("F1", "NASCAR"), accumulates=MOTORSPORT_KEYS,
            note="one pull, two benchmarks -- each series against itself"),
     Source("tennis", "Tennis", "Player", _tennis_players, live=_tennis_live,
            windowed=True, produces=("ATP", "WTA"),
@@ -1247,6 +1340,7 @@ SOURCES: dict[str, Source] = _register(
     *[
         Source(key, category, "Team", _ncaa(key, category),
                live=_ncaa_live(key, category), roster_scoped=True,
+               accumulates=GAME_KEYS,
                seasons_for=_espn_seasons(key, category))
         for key, category in NCAA_CATEGORIES.items()
     ],
