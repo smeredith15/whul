@@ -157,6 +157,7 @@ def ingest(
             "no frozen benchmark for this season, so the raw figures were "
             "recorded but not scaled"
         )
+        _say_problems(store, source, report, as_of)
         return report
     report.version = version.version
 
@@ -171,6 +172,7 @@ def ingest(
         )
     placed = placed[placed["scaled_score"].notna()]
     if placed.empty:
+        _say_problems(store, source, report, as_of)
         return report
 
     # A scorer that emits several rows per asset folds them here, after each has
@@ -183,7 +185,33 @@ def ingest(
     report.scored = write_daily_scores(
         store, placed, season, as_of, version.version
     )
+    _say_problems(store, source, report, as_of)
     return report
+
+
+#: How much of a run's complaint the feed page carries. It is a cell in a
+#: table, not a log.
+PROBLEM_TEXT = 400
+
+
+def _say_problems(store: Store, source, report: IngestReport, as_of: date) -> None:
+    """Put what the run found where somebody will see it.
+
+    Every one of these was already found and said. A pull that came back with
+    two of Andrea Kimi Antonelli's four races reported the fall the same night,
+    into a log nobody reads on the nights it says nothing is wrong -- and the
+    figure went into the standings anyway, twice, a fortnight apart. The feed
+    page already shows a source's message beside its state; a successful pull
+    simply never wrote one.
+    """
+    if store is None or not report.problems:
+        return
+    said = "; ".join(report.problems)
+    store.record_source_status(
+        source.key, source.league, ok=True, rows=report.recorded,
+        last_data_date=as_of.isoformat(),
+        message=said[:PROBLEM_TEXT] + ("..." if len(said) > PROBLEM_TEXT else ""),
+    )
 
 
 #: What a player's own game count is called, in order of preference.

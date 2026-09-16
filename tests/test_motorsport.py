@@ -297,3 +297,87 @@ def test_the_counts_are_summed_over_a_window_not_a_season():
     inside = events[events["date"] >= "2026-08-01"]
     assert inside["wins"].sum() == 0
     assert inside["top_fives"].sum() == 1
+
+
+def test_a_feed_that_forgets_a_race_cannot_take_it_off_a_driver():
+    """Andrea Kimi Antonelli's Spanish and Italian Grands Prix were in his
+    profile on the fifth of September, gone on the sixth, back on the seventh
+    and gone again on the eighth -- each disappearance a fifty-point fall in
+    the standings for a driver who had raced. A race that has been run cannot
+    be un-run, so a short answer about one is always wrong and never a
+    correction: it is kept rather than reported."""
+    from datetime import date
+
+    from whul import ingest as ing
+    from whul.benchmark_sources import MOTORSPORT_KEYS
+    from whul.scoring import motorsport as scorer
+    from whul.store import open_store
+
+    ME = "A. K. Antonelli"
+
+    def entry(rnd, race, place, day, sprint=False, points=25):
+        return {"season": 2026, "round": rnd, "race": race, "date": day,
+                "driver_name": ME, "position": place, "points": points,
+                "is_sprint": sprint}
+
+    whole = [entry(15, "Dutch Grand Prix", 2, "2026-08-30", points=18),
+             entry(16, "Italian Grand Prix", 1, "2026-09-06"),
+             entry(17, "Spanish Grand Prix", 1, "2026-09-13")]
+    shown = {"whole": whole, "short": whole[:1]}
+
+    class Feed:
+        key, league, asset_type = "motorsports-test", "F1", "Player"
+        accumulates = MOTORSPORT_KEYS
+        windowed, dated_by_source, cumulative = True, False, False
+        produces, roster_scoped, live = ("F1",), False, None
+        seasons_for = staticmethod(lambda day: [2026])
+        which = "whole"
+
+        @staticmethod
+        def build():
+            def load(_seasons):
+                rows = pd.DataFrame(shown[Feed.which])
+                return rows.assign(
+                    series="F1", driver=rows["driver_name"],
+                    event_key=rows["round"].astype(str),
+                    session=rows["is_sprint"].map({True: "sprint", False: ""}))
+            return load, (lambda rows: scorer.race_events(None, rows))
+
+    def week(keep):
+        Feed.accumulates = MOTORSPORT_KEYS if keep else ()
+        store = open_store(":memory:")
+        out = []
+        for day, which in (("2026-09-14", "whole"), ("2026-09-15", "short"),
+                           ("2026-09-16", "whole")):
+            Feed.which = which
+            got = ing._pull(Feed(), date.fromisoformat(day), verbose=False,
+                            store=store)
+            out.append(0.0 if got is None or got.empty
+                       else float(got["total_points"].sum()))
+        return out
+
+    assert week(keep=False) == [68.0, 18.0, 68.0], "the fault, for the record"
+    assert week(keep=True) == [68.0, 68.0, 68.0]
+
+
+def test_both_series_reach_the_scorer_through_what_the_loader_returns():
+    """Formula 1 used to reach it through a closure -- the loader returned
+    NASCAR and left F1 in a dict beside it -- and only what a loader returns
+    passes through the ledger, so half the sport had nothing keeping what the
+    feed forgot."""
+    from whul.benchmark_sources import MOTORSPORT_KEYS, _motorsports_players
+
+    load, score = _motorsports_players()
+    rows = pd.DataFrame([
+        {"series": "F1", "season": 2026, "event_key": "16", "session": "",
+         "driver": "M. Verstappen", "driver_name": "M. Verstappen",
+         "race": "Italian Grand Prix", "date": "2026-09-06", "position": 1,
+         "points": 25, "is_sprint": False},
+        {"series": "NASCAR", "season": 2026, "event_key": "401", "session": "",
+         "driver": "K. Larson", "tournament": "Daytona", "date": "2026-08-20",
+         "position": 1},
+    ])
+    scored = score(rows)
+
+    assert set(scored["league"]) == {"F1", "NASCAR"}
+    assert set(MOTORSPORT_KEYS) <= set(rows.columns)

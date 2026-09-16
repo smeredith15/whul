@@ -162,3 +162,58 @@ def test_the_counts_are_summed_over_a_window_not_a_season():
 
     assert out["wins"] == 0, "a July win is in the season and not in the year"
     assert (out["starts"], out["top_fives"], out["made_cut"]) == (2, 1, 1)
+
+
+def test_a_feed_that_forgets_a_tournament_cannot_take_it_off_a_golfer():
+    """The driver's fault in golf's words. A tournament that has been played
+    cannot be un-played, so a feed that comes back without one is never
+    correcting anything -- it is keeping less, and the difference reads in the
+    standings as a golfer who lost points by playing."""
+    from datetime import date
+
+    import pandas as pd
+
+    from whul import ingest as ing
+    from whul.benchmark_sources import resolve
+    from whul.store import open_store
+
+    ME = "S. Scheffler"
+    whole = [
+        {"season": 2026, "event_id": "1", "tournament": "BMW",
+         "date": "2026-08-20", "player": ME, "position": 12},
+        {"season": 2026, "event_id": "2", "tournament": "TOUR Championship",
+         "date": "2026-08-27", "player": ME, "position": 1},
+    ]
+    shown = {"whole": whole, "short": whole[:1]}
+    keys = next(s for s in resolve(None) if s.key == "pga").accumulates
+
+    class Feed:
+        key, league, asset_type = "pga-test", "PGA", "Player"
+        accumulates = keys
+        windowed, dated_by_source, cumulative = True, False, False
+        produces, roster_scoped, live = ("PGA",), False, None
+        seasons_for = staticmethod(lambda day: [2026])
+        which = "whole"
+
+        @staticmethod
+        def build():
+            from whul.scoring import golf as scorer
+            return (lambda _s: pd.DataFrame(shown[Feed.which]), scorer.score_events)
+
+    def week(keep):
+        Feed.accumulates = keys if keep else ()
+        store = open_store(":memory:")
+        out = []
+        for day, which in (("2026-09-14", "whole"), ("2026-09-15", "short"),
+                           ("2026-09-16", "whole")):
+            Feed.which = which
+            got = ing._pull(Feed(), date.fromisoformat(day), verbose=False,
+                            store=store)
+            out.append(0.0 if got is None or got.empty
+                       else float(got["total_points"].sum()))
+        return out
+
+    before = week(keep=False)
+    assert before[1] < before[0], "the fault, for the record"
+    after = week(keep=True)
+    assert after[0] == after[1] == after[2]

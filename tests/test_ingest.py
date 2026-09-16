@@ -1846,3 +1846,47 @@ def test_a_frame_with_no_dates_at_all_is_left_alone():
 
     season = pd.DataFrame([{"player": "A", "passing_yards": 4000}])
     assert len(ing._up_to(season, _date(2026, 9, 12))) == 1
+
+
+def test_what_a_run_found_reaches_the_page_and_not_only_the_log():
+    """Every one of these was already found and said. A pull that came back
+    with two of Antonelli's four races reported the fall the same night, into
+    a log nobody reads on the nights it says nothing is wrong -- and the
+    figure went into the standings anyway, twice, a fortnight apart."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+
+    class Source:
+        key, league = "motorsports", "Motorsports"
+
+    report = ing.IngestReport(league="Motorsports", asset_type="Player")
+    report.recorded = 10
+    report.problems.append("2 asset(s) came back with a smaller season-to-date "
+                           "total than the last pull")
+
+    ing._say_problems(store, Source(), report, _date(2026, 9, 6))
+
+    held = store.query("SELECT last_ok, message FROM source_status").iloc[0]
+    assert held["last_ok"] == 1, "the pull worked; it just found something"
+    assert "smaller season-to-date" in held["message"]
+
+
+def test_a_clean_run_leaves_no_message():
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+
+    class Source:
+        key, league = "nfl", "NFL"
+
+    ing._say_problems(store, Source(),
+                      ing.IngestReport(league="NFL", asset_type="Player"),
+                      _date(2026, 9, 6))
+    assert store.query("SELECT * FROM source_status").empty

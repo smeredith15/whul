@@ -1049,17 +1049,60 @@ def _pga_players():
     return lambda seasons: espn_individual.load_results("pga", seasons), golf.score_events
 
 
+#: What identifies one result row across both series, in columns both are given
+#: on the way out. Neither feed's own shape can be used: ESPN calls the event
+#: `tournament` and the driver `driver`, Jolpica calls them `race` and
+#: `driver_name`, and only one of the two knows what a sprint is.
+#:
+#: The event id rather than its name, because a series can run two races at the
+#: same track in one year -- ESPN's own id for NASCAR, the round number for
+#: Formula 1, both stable within a season.
+MOTORSPORT_KEYS = ("series", "season", "event_key", "session", "driver")
+
+
 def _motorsports_players():
+    """Both series, in one frame, so both can be written down.
+
+    Formula 1 used to reach the scorer through a closure: the loader returned
+    NASCAR and left F1 in a dict beside it. Only what a loader *returns* passes
+    through the ledger, so half the sport had nothing keeping what the feed
+    forgot -- and Jolpica forgot. Andrea Kimi Antonelli's Spanish and Italian
+    Grands Prix were in his profile on the fifth of September, gone on the
+    sixth, back on the seventh and gone again on the eighth, each disappearance
+    a fifty-point fall in the standings for a driver who had raced.
+
+    A race that has been run cannot be un-run, so a short answer about one is
+    always wrong and never a correction. That is what makes this preventable
+    rather than reportable.
+    """
     from whul.scoring import motorsport
     from whul.sources import espn_individual, jolpica
 
-    held: dict[str, pd.DataFrame] = {}
-
     def load(seasons):
-        held["f1"] = jolpica.load_results(seasons)
-        return espn_individual.load_results("nascar", seasons)
+        nascar = espn_individual.load_results("nascar", seasons)
+        f1 = jolpica.load_results(seasons)
+        frames = []
+        if nascar is not None and not nascar.empty:
+            frames.append(nascar.assign(
+                series="NASCAR", session="",
+                event_key=nascar["event_id"].astype(str),
+                driver=nascar["driver"].astype(str)))
+        if f1 is not None and not f1.empty:
+            frames.append(f1.assign(
+                series="F1",
+                session=f1["is_sprint"].fillna(False).map(
+                    {True: "sprint", False: ""}),
+                event_key=f1["round"].astype(str),
+                driver=f1["driver_name"].astype(str)))
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    return load, lambda nascar: motorsport.race_events(nascar, held["f1"])
+    def score(rows):
+        if rows is None or rows.empty or "series" not in rows.columns:
+            return motorsport.race_events(rows, None)
+        series = rows["series"].astype(str)
+        return motorsport.race_events(rows[series == "NASCAR"], rows[series == "F1"])
+
+    return load, score
 
 
 def _tennis_live():
@@ -1229,9 +1272,13 @@ SOURCES: dict[str, Source] = _register(
            note="82-game history lifted to the 84-game 2026-27 season"),
     Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL",
            seasons_for=_feed_seasons("nhl", "NHL")),
-    Source("pga", "PGA", "Player", _pga_players, windowed=True),
+    Source("pga", "PGA", "Player", _pga_players, windowed=True,
+           # One row per golfer per tournament, keyed on ESPN's own id for the
+           # event: a tournament that has been played cannot be un-played, so a
+           # feed that comes back without one is never correcting anything.
+           accumulates=("season", "event_id", "player")),
     Source("motorsports", "Motorsports", "Player", _motorsports_players, windowed=True,
-           produces=("F1", "NASCAR"),
+           produces=("F1", "NASCAR"), accumulates=MOTORSPORT_KEYS,
            note="one pull, two benchmarks -- each series against itself"),
     Source("tennis", "Tennis", "Player", _tennis_players, live=_tennis_live,
            windowed=True, produces=("ATP", "WTA"),
