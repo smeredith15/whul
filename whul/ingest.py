@@ -108,6 +108,10 @@ def ingest(
         _record_nothing(store, source, as_of, report)
         return report
     report.pulled = len(scored)
+    # Before the roster narrows it. Every club in the league is in this frame
+    # and only some of them were drafted, and a player's club need not be one
+    # of the drafted ones.
+    _record_club_games(store, scored, source, season, as_of)
     # Anything the pull wanted seen. The notes above this line all belong to a
     # pull that returned nothing and has already gone home; these are the ones
     # raised by a pull that worked, and without this they went nowhere.
@@ -179,6 +183,52 @@ def ingest(
         store, placed, season, as_of, version.version
     )
     return report
+
+
+#: How many games a club has played, under the names a scorer gives it. In
+#: order of preference, because they are not the same question everywhere: a
+#: footballer's own count stops at the competitions that count toward his
+#: total, so his club's has to as well, and `matches_played` -- every match the
+#: club played, Champions League included -- would read as a player who missed
+#: matches he in fact played.
+CLUB_GAMES_COLUMNS = ("counted_matches", "games_played", "team_games",
+                      "matches_played")
+
+
+def _record_club_games(store: Store, scored: pd.DataFrame, source,
+                       season: str, as_of: date) -> int:
+    """Write down every club's game count, drafted or not.
+
+    A player's games-played figure says nothing on its own -- four matches is a
+    season interrupted or the league in September -- and only his club's count
+    tells them apart. Read off the club's own row it is there for the clubs
+    somebody drafted and missing for the rest, which is why Eintracht
+    Frankfurt's player had no second number at all and why twenty of the thirty
+    MLB clubs could not have given one either.
+
+    Taken from the team pull, which reads a whole league and is narrowed to the
+    roster afterwards, so this is simply the figure before the narrowing.
+    """
+    if store is None or getattr(source, "asset_type", "") != "Team":
+        return 0
+    if scored is None or scored.empty or "team" not in scored.columns:
+        return 0
+    column = next((c for c in CLUB_GAMES_COLUMNS if c in scored.columns), None)
+    if column is None:
+        return 0
+    played = pd.to_numeric(scored[column], errors="coerce")
+    # A source that produces several leagues says which on the row; one that
+    # produces one does not need to.
+    leagues = (scored["league"].astype(str)
+               if "league" in scored.columns
+               else pd.Series(source.league, index=scored.index))
+    written = 0
+    for league, block in scored.assign(_g=played, _l=leagues).groupby("_l"):
+        written += store.record_club_games(
+            dict(zip(block["team"].astype(str), block["_g"])),
+            season, as_of, str(league),
+        )
+    return written
 
 
 #: A windowed total below the last one by more than this is reported. A small

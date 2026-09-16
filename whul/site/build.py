@@ -343,6 +343,13 @@ def badge_names(store: Store, season: str, as_of=None) -> dict[str, str]:
     return out
 
 
+def _affiliation(meta, asset_id: str) -> str:
+    """The club the roster says an asset plays for, or an empty string."""
+    if asset_id not in getattr(meta, "index", ()):
+        return ""
+    return str(meta.loc[asset_id, "affiliation"] or "").strip()
+
+
 def asset_profiles(
     store: Store, season: str, as_of, wanted: set[str], depth: int = 0
 ) -> dict[str, dict]:
@@ -379,7 +386,7 @@ def asset_profiles(
     panels: dict[str, dict] = {}
     # Built once for the whole day rather than per player: it is a scan of
     # every club's row, and there are fifty footballers asking.
-    club_games = _club_games(stats)
+    club_games = _club_games(stats, store.read_club_games(season, as_of))
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
@@ -405,7 +412,10 @@ def asset_profiles(
                 if panel:
                     panels[asset_id] = panel
             elif str(row.get("league")) == "MLB" and row.get("role"):
-                panel = _mlb_panel(row)
+                # By the club, which the row does not carry: a batting line has
+                # no team on it, and the roster's own note of who he plays for
+                # is the only thing that does.
+                panel = _mlb_panel(row, club_games.get(_affiliation(meta, asset_id)))
                 if panel:
                     panels[asset_id] = panel
             elif str(row.get("league")) == "NBA" and row.get("role"):
@@ -668,6 +678,14 @@ NFL_TD_SHORT = {"rushing_tds": "Rush", "receiving_tds": "Rec"}
 #: a quarterback has no receptions and saying so four times is noise.
 NFL_ALWAYS = ("interceptions", "fumbles_lost")
 
+#: The line for a player whose position nobody has told us yet. It only arises
+#: before he has been scored once -- a stat row always says what he plays, and
+#: the position is kept on the asset the first time one arrives -- so it is a
+#: profile of dashes either way, and these four name every way an NFL player
+#: scores rather than guessing at one of the four position lines and drawing a
+#: quarterback receiving boxes.
+NFL_UNKNOWN_LINE = ("passing_yards", "rushing_yards", "receiving_yards", "TDS")
+
 NFL_BOX_LABELS = {
     "passing_yards": "Pass yds", "passing_tds": "Pass TD",
     "interceptions": "INT", "rushing_yards": "Rush yds",
@@ -693,23 +711,28 @@ def _nfl_box(row: dict, column: str, prefix: str = "",
     """
     from whul.scoring.nfl import PLAYER_WEIGHTS
 
-    def figure(name: str) -> float:
-        value = row.get(f"{prefix}{name}")
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
+    # None where the feed put nothing, which for a scored player never happens
+    # -- a row carries every column the weight table names, zero included --
+    # and for a player nobody has a row for is every column there is. Zero says
+    # he played and did none of it; a dash says we do not know, and the two are
+    # not the same claim.
+    def figure(name: str):
+        return _stat_number(row, f"{prefix}{name}")
 
+    dash = "\u2014"
     if column == "TDS":
         first, second = (figure(c) for c in td_order)
-        count, points = first + second, (first + second) * 6.0
-        text = f"{first:,.0f} / {second:,.0f}"
+        known = [v for v in (first, second) if v is not None]
+        count = sum(known) if known else None
+        points = None if count is None else count * 6.0
+        text = dash if count is None else (
+            f"{first or 0:,.0f} / {second or 0:,.0f}")
         label = " / ".join(NFL_TD_SHORT[c] for c in td_order) + " TD"
     else:
         count = figure(column)
-        points = count * PLAYER_WEIGHTS.get(column, 0.0)
-        text = f"{count:,.0f}"
-    if not count and not keep_zero and column not in NFL_ALWAYS:
+        points = None if count is None else count * PLAYER_WEIGHTS.get(column, 0.0)
+        text = dash if count is None else f"{count:,.0f}"
+    if not count and count is not None and not keep_zero and column not in NFL_ALWAYS:
         return None
     if column != "TDS":
         label = NFL_BOX_LABELS.get(column, _label_for(column))
@@ -717,7 +740,8 @@ def _nfl_box(row: dict, column: str, prefix: str = "",
             # `or 0.0` because a zero count against a negative weight rounds to
             # `-0.0`, which renders as "-0.0" and reads as a penalty nobody
             # took. Negative zero is falsy, so this keeps every real figure.
-            "value": text, "points": round(points, 1) or 0.0}
+            "value": text,
+            "points": None if points is None else (round(points, 1) or 0.0)}
 
 
 def _nfl_rest(lead) -> list[str]:
@@ -773,7 +797,14 @@ def _nfl_boxes(row: dict, prefix: str = "",
     role = str(row.get("role") or row.get("position") or "").upper()
     lead = NFL_TOP_LINE.get(role)
     if lead is None:
-        return None
+        # A player nobody has a position for, which happens only before he has
+        # ever been scored. Refusing here is what left an injured tight end's
+        # profile reading "No stat lines recorded for this day yet" four weeks
+        # into a season -- the one profile a manager opens to ask exactly that.
+        if any(_stat_number(row, f"{prefix}{c}") for c in PLAYER_WEIGHTS):
+            return None
+        lead = NFL_UNKNOWN_LINE
+        role = ""
 
     # The top row keeps its zeroes. It is the line that makes one profile
     # comparable with the next, and a receiver who happened not to run the ball
@@ -815,13 +846,14 @@ def _nfl_panel(row: dict) -> dict | None:
         except (TypeError, ValueError):
             return 0.0
 
-    # Both figures or neither. "Games played 3" alone cannot say whether the
-    # other fourteen were missed or not yet played, which is the only reason
-    # the number is worth a heading.
-    team_games = figure("team_games")
-    if team_games:
-        panel["games"] = {"team": f"{team_games:,.0f}",
-                          "played": f"{figure('regular_games'):,.0f}"}
+    # The same heading every other slot carries, built by the same function.
+    # Always both figures, and a dash where one is not known: "Games played 3"
+    # alone cannot say whether the other fourteen were missed or not yet
+    # played, which is the only reason the number is worth a heading -- and the
+    # heading is worth keeping even when neither is known, because a profile
+    # with no heading reads as a broken page rather than as a player who has
+    # not taken the field.
+    panel["head"] = _games_head(row)
     if figure("postseason_games"):
         kept = _nfl_shared_rest(row)
         panel["season"] = _nfl_boxes(row, keep=kept) or season
@@ -1166,12 +1198,18 @@ def _motorsport_panel(row: dict, league: str = "") -> dict | None:
 
 
 #: Leagues whose profile is a panel built from figures, so that one can be
-#: drawn before the figures exist.
-EMPTY_PANELS = {"NBA": "_nba_panel", "NHL": "_nhl_panel"}
+#: drawn before the figures exist. The football and motorsport builders take a
+#: second argument and are called by name above.
+EMPTY_PANELS = {
+    "NBA": lambda row: _nba_panel(row),
+    "NHL": lambda row: _nhl_panel(row),
+    "NFL": lambda row: _nfl_panel(row),
+    "MLB": lambda row: _mlb_panel(row),
+}
 
 
 def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | None:
-    """The panel a rostered asset gets before its league has played.
+    """The panel a rostered asset gets before it has played.
 
     Built from nothing at all, which is the point: a club drafted in August
     into a league that opens in October has a profile from the day it is
@@ -1179,6 +1217,12 @@ def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | No
     recorded for this day yet". The boxes are the same boxes, every figure a
     dash, so the page says what will be there rather than that there is no
     page.
+
+    Not only before a *league* has played. A scorer drops a player who has
+    scored nothing -- an injury, a suspension, a week one nobody was picked for
+    -- so the very players a reader goes looking for in September are the ones
+    whose profile had no panel: Brock Bowers, injured, read as a broken page in
+    a league four weeks old.
     """
     if asset_type != "Player":
         return None
@@ -1188,10 +1232,10 @@ def _panel_before_a_season(league: str, asset_type: str, role: str) -> dict | No
     # season that has not started.
     if league in covered_by("Club Soccer"):
         return _soccer_player_panel({}, {}, league)
-    if league not in EMPTY_PANELS:
-        return None
-    made = {"NBA": _nba_panel, "NHL": _nhl_panel}[league]
-    return made({"league": league, "role": role})
+    if league in MOTORSPORT_BOXES:
+        return _motorsport_panel({}, league)
+    made = EMPTY_PANELS.get(league)
+    return made({"league": league, "role": role}) if made else None
 
 
 #: What a batter's line leads with, and what sits under it.
@@ -1355,7 +1399,28 @@ MLB_ALSO = {"Batter": "batted", "Pitcher": "pitched"}
 MLB_SECOND_SECTION_AT = 10.0
 
 
-def _mlb_panel(row: dict) -> dict | None:
+def _mlb_games_head(row: dict, team_games: float | None) -> list[list[str]]:
+    """Games played, and out of how many his club played.
+
+    The same heading every other slot carries. Six games is a season
+    interrupted or a club that has played six, and a figure on its own cannot
+    tell them apart -- which on a window that opens in the middle of a season
+    is the difference between a healthy player and one who has been out since
+    August.
+
+    His club's figure comes from the league's own pull rather than from a club
+    row, because twenty of the thirty clubs are on nobody's roster.
+    """
+    played = _stat_number(row, "games")
+    if played is None:
+        played = _stat_number(row, "games_played")
+    return [
+        ["Games played", "\u2014" if played is None else f"{played:,.0f}"],
+        ["Team games", "\u2014" if not team_games else f"{team_games:,.0f}"],
+    ]
+
+
+def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
     """A baseball player, at whichever of the two jobs he does -- or both.
 
     Both only where the second is worth showing. A pitcher with four at-bats
@@ -1403,7 +1468,8 @@ def _mlb_panel(row: dict) -> dict | None:
                 f"{worth:,.1f} normalized, worth "
                 f"{worth * 0.5:,.1f} after the half a second role is taxed."
             )
-    panel = {"kind": "mlb", "sections": sections, "note": note}
+    panel = {"kind": "mlb", "head": _mlb_games_head(row, team_games),
+             "sections": sections, "note": note}
     posts = _mlb_posts(row, role, build)
     if posts:
         panel["posts"] = posts
@@ -1670,27 +1736,37 @@ def _is_a_club_soccer_player(row: dict) -> bool:
     return isinstance(name, str) and bool(name.strip())
 
 
-def _club_games(stats) -> dict[str, float]:
-    """How many matches each club has played, by the name a player names it.
+def _club_games(stats, recorded: dict[str, float] | None = None) -> dict[str, float]:
+    """How many games each club has played, by the name a player names it.
 
     A footballer's row reads "Club Soccer" where his club's reads "Premier
     League", so the two cannot be joined on the competition -- only on the
     club's own name, which is unique across the clubs we carry.
 
-    Where his club is not one of ours the figure is nowhere in the store, and
-    the heading says so with a dash. Falling back to his own appearances would
-    be worse than saying nothing: every such player would read as one who had
-    never missed a match.
+    ``recorded`` is every club in every league the team pull read, drafted or
+    not, and is preferred. The rostered clubs' own rows are the fallback, for a
+    day pulled before that was written down. Two things were wrong with reading
+    only those rows: a player whose club nobody drafted got no figure at all --
+    Eintracht Frankfurt is nobody's pick -- and the figure that was there
+    counted every competition the club played while his own count stops at the
+    ones that count toward his total, so a Champions League night read as a
+    match he had missed.
+
+    Falling back to his own appearances would be worse than saying nothing:
+    every such player would read as one who had never missed a match.
     """
-    if stats is None or getattr(stats, "empty", True):
-        return {}
-    if "matches_played" not in stats.columns or "team" not in stats.columns:
-        return {}
     out: dict[str, float] = {}
-    for team, played in zip(stats["team"], stats["matches_played"]):
-        if not isinstance(team, str) or played is None or played != played:
-            continue
-        out[team.strip()] = float(played)
+    if stats is not None and not getattr(stats, "empty", True):
+        column = next((c for c in ("counted_matches", "matches_played")
+                       if c in stats.columns), None)
+        if column and "team" in stats.columns:
+            for team, played in zip(stats["team"], stats[column]):
+                if not isinstance(team, str) or played is None or played != played:
+                    continue
+                out[team.strip()] = float(played)
+    for club, played in (recorded or {}).items():
+        if str(club).strip():
+            out[str(club).strip()] = float(played)
     return out
 
 

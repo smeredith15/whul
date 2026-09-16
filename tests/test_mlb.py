@@ -547,3 +547,25 @@ def test_a_game_called_level_is_neither_a_win_nor_a_loss():
     would file it as one."""
     out = summarize_teams(pd.DataFrame([game("NYY", "BOS", 3, 3)])).set_index("team")
     assert (out.loc["NYY", "reg_wins"], out.loc["NYY", "reg_losses"]) == (0, 0)
+
+
+def test_a_club_carries_the_games_a_batters_own_count_is_measured_against():
+    """Six games is a season interrupted or a club that has played six, and the
+    player's figure alone cannot tell them apart."""
+    out = summarize_teams(pd.DataFrame([
+        game("NYY", "BOS", 5, 2),
+        game("NYY", "BOS", 1, 4),
+        game("NYY", "BOS", 3, 0, game_type="F"),
+    ])).set_index("team")
+    assert out.loc["NYY", "games_played"] == 2, "October is not the regular season"
+
+
+def test_the_window_carries_games_played_without_scoring_it():
+    from whul.scoring.mlb import WINDOW_COUNTING, score_teams
+
+    out = score_teams(pd.DataFrame([
+        game("NYY", "BOS", 5, 2), game("NYY", "BOS", 1, 4),
+    ]), partial=True).set_index("team")
+
+    assert out.loc["NYY", "games_played"] == 2
+    assert "games_played" not in WINDOW_COUNTING, "a game count is not points"

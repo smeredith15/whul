@@ -370,7 +370,8 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
 
 
 TEAM_SUMMARY_COLUMNS = [
-    "season", "team", "reg_wins", "reg_losses", "reg_big_wins", "shutouts",
+    "season", "team", "games_played", "reg_wins", "reg_losses", "reg_big_wins",
+    "shutouts",
     "run_diff",
     "wc_wins", "lds_wins", "lcs_wins", "ws_wins", "series_wc_or_bye",
     "series_lds", "series_lcs", "series_ws", "playoff_game_wins",
@@ -395,6 +396,7 @@ def summarize_teams(
     summary = games.groupby(["season", "team"], as_index=False).apply(
         lambda g: pd.Series(
             {
+                "games_played": int(g["is_reg"].sum()),
                 "reg_wins": int((g["is_win"] & g["is_reg"]).sum()),
                 # Unscored, and carried anyway: a record is two numbers, and
                 # "Wins 82" on its own cannot say whether the other eighty were
@@ -575,9 +577,12 @@ def _window_points(summary: pd.DataFrame,
     out = pd.DataFrame({
         "season": summary["season"],
         "team": summary["team"],
-        "reg_wins": summary["reg_wins"],
         # Carried, not scored, and so not a `pts_` column: nothing sums it and
-        # the prorater leaves it where it is.
+        # the prorater leaves it where it is. Games played is what a batter's
+        # own figure is measured against -- six games is a season interrupted
+        # or a club that has played six.
+        "games_played": summary["games_played"],
+        "reg_wins": summary["reg_wins"],
         "reg_losses": summary["reg_losses"],
         "pts_reg_wins": summary["reg_wins"] * BASE_REG_WIN,
         "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN,

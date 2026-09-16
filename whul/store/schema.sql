@@ -330,3 +330,34 @@ CREATE TABLE IF NOT EXISTS feed_rows (
 );
 
 CREATE INDEX IF NOT EXISTS feed_rows_source_idx ON feed_rows (source, season);
+
+-- How many games each club in a league has played, for every club rather than
+-- for the ones somebody drafted.
+--
+-- A player's own games-played figure means nothing on its own: four matches is
+-- a season interrupted or the league in September, and only the club's count
+-- tells them apart. For most sports that count reaches the profile off the
+-- club's own row -- but a player's club need not be one we hold. Eintracht
+-- Frankfurt is nobody's pick and its player's heading had no second number at
+-- all, and the same is true of every MLB club outside the ten that were
+-- drafted.
+--
+-- The team pull already sees all of them: it reads a whole league and is only
+-- narrowed to the roster afterwards. This is that figure, written down before
+-- the narrowing.
+--
+-- Counted on the same basis the player's own figure is, which for a footballer
+-- means the competitions that count toward his total rather than every match
+-- his club played. Pairing an appearance count that stops at the league with a
+-- club count that includes the Champions League reads as a player who missed
+-- matches he in fact played.
+CREATE TABLE IF NOT EXISTS club_games (
+    season TEXT NOT NULL,
+    as_of  TEXT NOT NULL,
+    league TEXT NOT NULL,
+    club   TEXT NOT NULL,
+    games  REAL NOT NULL,
+    PRIMARY KEY (season, as_of, league, club)
+);
+
+CREATE INDEX IF NOT EXISTS club_games_day_idx ON club_games (season, as_of);

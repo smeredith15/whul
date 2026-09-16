@@ -1185,6 +1185,15 @@ SCRIPT = """\
   }
 
   function renderMlb(panel) {
+    // The same heading every other slot carries, above the tabs rather than
+    // inside one: a club's games and a player's are both the window's.
+    var head = (panel.head || []).map(function (h) {
+      return '<span><i>' + h[0] + '</i> ' + h[1] + '</span>';
+    }).join('');
+    // `boxes` as well as `body`: the flex that spaces the pair is scoped to a
+    // boxes panel, and without it the two read as one run-on word.
+    head = head ? '<div class="body boxes"><div class="games comp">' + head +
+                  '</div></div>' : '';
     var note = panel.note
       ? '<div class="body"><p class="note">' + panel.note + '</p></div>' : '';
     // October in the same boxes as the summer, collapsed, and priced by the
@@ -1200,7 +1209,7 @@ SCRIPT = """\
              '</details>';
     }).join('');
     if (!panel.years || panel.years.length < 2) {
-      return mlbSections(panel.sections) + posts + note;
+      return head + mlbSections(panel.sections) + posts + note;
     }
     // A league year spans two calendar seasons and they are summed, so the
     // total is the figure that is scored and neither season is. Total leads,
@@ -1220,7 +1229,7 @@ SCRIPT = """\
       return '<div class="yrpane"' + (i === 0 ? '' : ' hidden') + '>' +
              mlbSections(v.sections) + '</div>';
     }).join('');
-    return '<div class="body years"><div class="yrtabs">' + tabs +
+    return head + '<div class="body years"><div class="yrtabs">' + tabs +
            '</div></div>' + panes + posts + note;
   }
 
@@ -1241,12 +1250,13 @@ SCRIPT = """\
     if (panel.kind === 'boxes') return renderNflTeam(panel);
     if (panel.kind === 'mlb') return renderMlb(panel);
     if (!panel.season) return '';
-    var head = '';
-    if (panel.games) {
-      head = '<div class="games">' +
-             '<span><b>' + panel.games.team + '</b> team games</span>' +
-             '<span><b>' + panel.games.played + '</b> played</span></div>';
-    }
+    // The same heading, in the same words and the same order, as every other
+    // slot. Football's own read "— team games  — played", which is the same
+    // two figures said backwards.
+    var head = (panel.head || []).map(function (h) {
+      return '<span><i>' + h[0] + '</i> ' + h[1] + '</span>';
+    }).join('');
+    head = head ? '<div class="games comp">' + head + '</div>' : '';
     var post = '';
     if (panel.post) {
       post = '<details class="body boxes post"><summary>Playoffs' +

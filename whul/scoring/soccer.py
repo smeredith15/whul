@@ -260,8 +260,18 @@ def score_teams(
             scored[outcome.value] * scored["outcome_points"]
         )
 
+    # What a player's own appearance count is measured against. His European
+    # matches are a bonus with a section of their own and are not in `matches`,
+    # so a club figure that counted them would read as a player who had missed
+    # matches he in fact played. The same rule decides both, rather than a
+    # second list of competition names to keep in step.
+    scored["counts_for_a_player"] = [
+        rule_for(tier, league) is None
+        for tier, league in zip(scored["tier"], scored["league"])
+    ]
     totals = scored.groupby(["league", "team", "season"], as_index=False).agg(
         matches_played=("match_points", "size"),
+        counted_matches=("counts_for_a_player", "sum"),
         wins=("win", "sum"),
         shootout_wins=("shootout_win", "sum"),
         draws=("draw", "sum"),
