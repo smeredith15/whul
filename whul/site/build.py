@@ -478,22 +478,30 @@ def asset_profiles(
             str(info["asset_type"]), league, raw_rows.get(asset_id, {}),
             (who["position"], who["team"]),
         )
+        # Text, not markup. These used to be escaped here, which read as
+        # defensive and was the opposite: an escaped name went on to be
+        # escaped again by the chart that drew it and truncated by the label
+        # that shortened it, so St. John's Red Storm reached the page as
+        # "St. John&#x27;s Red Storm" and its bar as "St. John&amp;#x27;s
+        # Red...". A value that is sometimes markup and sometimes not cannot
+        # be handled correctly by anything downstream. So this holds what the
+        # thing is called, every use escapes it, and `_profile_payload`
+        # escapes the fields the browser writes into innerHTML.
         out[asset_id] = {
-            "name": escape(marked_name(name, league)),
+            "name": marked_name(name, league),
             # The league only where the identity line above it does not
             # already say so. A club read "Premier League · Champions League ·
             # Premier League · Team", the league twice because this repeated
             # what `_under_a_team` had just said.
-            "meta": escape(
-                str(info["asset_type"]) if first == league
-                else f"{league} · {info['asset_type']}"),
+            "meta": (str(info["asset_type"]) if first == league
+                     else f"{league} · {info['asset_type']}"),
             # Each on its own, as well as in the line the window prints. A
             # table cell shows the position and the club and not the rest, and
             # splitting a formatted string back up to get at them is how the
             # two drift apart.
-            "position": escape(first),
-            "team": escape(second),
-            "group": escape(who["group"]),
+            "position": first,
+            "team": second,
+            "group": who["group"],
             # Carried so the tables can badge a name without working out again
             # what this already knows. Two derivations of one rule drift.
             "corner": list(corner) if corner else None,
@@ -504,8 +512,8 @@ def asset_profiles(
             # Kept apart from `meta` as well as in it: the chart labels a bar
             # with the kind alone, and splitting a formatted string back up to
             # get at it is how the two drift.
-            "kind": escape(str(info["asset_type"])),
-            "league": escape(league),
+            "kind": str(info["asset_type"]),
+            "league": league,
             "avatar": images.avatar("asset", asset_id, name, size=52, depth=depth,
                                     badge=corner,
                                     logo=str(info["asset_type"]) == "Team"),
@@ -2300,10 +2308,10 @@ def _identity_lines(profile: dict | None, *tail: str) -> str:
     parts: list[str] = []
     for part in (profile.get("position", ""), profile.get("team", ""), *tail):
         if part and part not in parts:
-            parts.append(part)
+            parts.append(escape(str(part)))
     out = f'<span class="idl">{" · ".join(parts)}</span>' if parts else ""
     group = profile.get("group", "")
-    return out + (f'<em class="grp">{group}</em>' if group else "")
+    return out + (f'<em class="grp">{escape(str(group))}</em>' if group else "")
 
 
 def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0,
@@ -2460,12 +2468,12 @@ def _results_table(
         group = umbrella_for(league)
         groups.add(group)
         rows.append(
-            f'<tr data-league="{league}" data-kind="{kind}" '
-            f'data-group="{group}" '
+            f'<tr data-league="{escape(league)}" data-kind="{escape(kind)}" '
+            f'data-group="{escape(group)}" '
             f'data-manager="{escape(str(row.manager_id))}" '
             f'data-counts="{1 if (not has_counts or row.counts) else 0}">'
             f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
-            f'{profile["name"]}</button>'
+            f'{escape(profile["name"])}</button>'
             f'<span class="rowmeta">{_identity_lines(profile, league, kind)}</span>'
             f'</td>'
             f'<td><span class="who"><i class="swatch" '
@@ -2477,17 +2485,21 @@ def _results_table(
         return '<p class="sub">Nothing scored yet.</p>'
 
     def chips(name: str, values: set[str], umbrellas: set[str] = frozenset()) -> str:
-        # Already escaped: these come off the profiles, which hold HTML because
-        # every other place they are used is HTML. Escaping again turned "Men's
-        # Intl Soccer" into a chip reading "Men&#x27;s Intl Soccer" -- and the
-        # filter went on working, because the row's own attribute was wrong in
-        # exactly the same way.
+        # Escaped here, and here only. A chip once read "Men&#x27;s Intl
+        # Soccer" and the filter went on working, because the row's own
+        # attribute was wrong the same way; it was fixed by dropping the escape
+        # on the reasoning that the profiles hold HTML. They hold text, and
+        # every other reader of them was escaping -- which is how the same
+        # apostrophe reached a chart label as "St. John&amp;#x27;s Red...".
+        # The chip and the row attribute have to agree, so they are escaped
+        # together and the value the filter compares is the escaped one on both
+        # sides.
         buttons = "".join(
             f'<button class="chip{" umbrella" if v in umbrellas else ""}" '
-            f'data-filter="{name}" data-value="{v}" aria-pressed="false"'
-            + (f' title="Everything in {v}: '
+            f'data-filter="{name}" data-value="{escape(v)}" aria-pressed="false"'
+            + (f' title="Everything in {escape(v)}: '
                f'{escape(", ".join(covered_by(v)))}"' if v in umbrellas else "")
-            + f'>{v}</button>'
+            + f'>{escape(v)}</button>'
             for v in sorted(values | umbrellas) if v
         )
         return f'<div class="chips" role="group" aria-label="Filter by {name}">{buttons}</div>'
@@ -2668,9 +2680,29 @@ def _figure_index(items: list[tuple[str, str]]) -> str:
     return f'<nav class="figureindex" aria-label="On this page">{links}</nav>'
 
 
+#: Profile fields the browser writes into innerHTML, and which are therefore
+#: escaped on the way into the payload rather than where they are read. The
+#: rest are markup already (`avatar`, `badge`), numbers, or structures the
+#: renderer walks itself.
+PAYLOAD_TEXT = ("name", "meta", "position", "team", "group", "kind", "league")
+
+
 def _profile_payload(profiles: dict[str, dict]) -> str:
+    """The profiles, as the profile window reads them.
+
+    Escaped here because this is the boundary: the dict holds what an asset is
+    called and the window builds HTML out of it. Doing it at the source instead
+    was what put an entity in the middle of a chart label.
+    """
+    shown = {
+        asset: {
+            key: escape(str(value)) if key in PAYLOAD_TEXT and value else value
+            for key, value in profile.items()
+        }
+        for asset, profile in profiles.items()
+    }
     return (
-        f'<script type="application/json" id="assetdata">{json.dumps(profiles)}</script>'
+        f'<script type="application/json" id="assetdata">{json.dumps(shown)}</script>'
         '<dialog class="profile" id="profile" aria-label="Asset profile"></dialog>'
     )
 
@@ -3407,8 +3439,8 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
             f'<button class="assetlink" type="button" data-asset="{escape(asset_id)}">'
             f'<span class="who">'
             f"{images.avatar('asset', asset_id, name, size=26, badge=corner, logo=is_logo)}"
-            f'<span><span class="nm">{name}</span> '
-            f'<span style="color:var(--muted)">{best["category"]} · '
+            f'<span><span class="nm">{escape(name)}</span> '
+            f'<span style="color:var(--muted)">{escape(str(best["category"]))} · '
             f'{float(best["score"]):,.1f}</span></span></span></button>'
         )
 

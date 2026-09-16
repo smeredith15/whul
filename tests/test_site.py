@@ -2465,20 +2465,23 @@ def test_the_totals_round_the_way_the_standings_do():
 
 
 def test_a_filter_chip_is_not_escaped_twice():
-    """The league names come off the profiles, which hold HTML because every
-    other place they are used is HTML. Escaping again turned "Men's Intl
-    Soccer" into a chip reading "Men&#x27;s Intl Soccer" -- and the filter went
-    on working, because the row's own attribute was wrong the same way."""
+    """A chip once read "Men&#x27;s Intl Soccer", and the filter went on
+    working because the row's own attribute was wrong the same way. It was
+    fixed by dropping the escape here, on the reasoning that the profiles hold
+    HTML -- which made every other reader of them wrong instead, and put an
+    entity in the middle of a chart label. The profiles hold text now, so this
+    escapes, and once."""
     from whul.site.build import _results_table
 
     frame = pd.DataFrame([
         {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
     ])
-    profiles = {"a1": {"name": "a1", "league": "Men&#x27;s Intl Soccer",
+    profiles = {"a1": {"name": "a1", "league": "Men's Intl Soccer",
                        "kind": "Team"}}
     html = _results_table(frame, profiles, ["SS"])
     assert "&amp;#x27;" not in html
     assert ">Men&#x27;s Intl Soccer</button>" in html
+    assert 'data-league="Men&#x27;s Intl Soccer"' in html
 
 
 # --- an umbrella is not a league --------------------------------------------
@@ -3779,3 +3782,41 @@ def test_a_womens_profile_names_the_tours_she_plays():
         "WTA 250", "WTA 500", "WTA 1000", "Grand Slam", "WTA Finals",
         "Team Events"]
     assert [b["value"] for b in panel["top"]] == ["—"] * 6
+
+
+def test_an_apostrophe_survives_the_whole_way_to_a_chart_label():
+    """St. John's Red Storm reached the results page as "St. John&#x27;s Red
+    Storm" and its bar as "St. John&amp;#x27;s Red..." -- escaped once on the
+    way into the profiles, escaped again by the chart that drew it, and then
+    cut off mid-entity by the label that shortened it. Saint Mary's Gaels and
+    Ja'Marr Chase went the same way."""
+    from html import escape as html_escape
+
+    from whul.site import charts
+    from whul.site.build import _profile_payload, _results_table
+
+    THEM = "St. John's Red Storm"
+    profiles = {"a1": {"name": THEM, "league": "NCAAM", "kind": "Team"}}
+
+    frame = pd.DataFrame([
+        {"asset_id": "a1", "manager_id": "SS", "score": 1.0, "counts": 1},
+    ])
+    table = _results_table(frame, profiles, ["SS"])
+    assert "&amp;#x27;" not in table
+    assert html_escape(THEM) in table
+
+    # The chart is handed text and escapes it itself, so the label is the whole
+    # name rather than 22 characters of which five are an entity.
+    bars = charts.slot_sections(
+        [("NCAAM", "NCAAM 1", "#1")], [("Shelby", 1)],
+        {("Shelby", "NCAAM 1"): (1.0, "a1", THEM, "Team")},
+    )
+    assert "&amp;#x27;" not in bars
+    assert f'data-name="{html_escape(THEM)}"' in bars
+    assert "Red Storm" in bars, "the name was truncated inside an entity"
+
+    # And the payload the profile window reads is escaped exactly once, since
+    # the window writes it into innerHTML.
+    payload = _profile_payload(profiles)
+    assert "&amp;#x27;" not in payload
+    assert html_escape(THEM) in payload

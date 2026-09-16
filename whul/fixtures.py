@@ -625,6 +625,26 @@ WORD_ALIASES = {
     "st": "saint", "st.": "saint",
 }
 
+#: Clubs the feed and the roster call different things, rather than the same
+#: thing at different lengths. The word rules above and the abbreviation rule
+#: below both assume one name is a shortening of the other; these are the
+#: cases where neither name contains the other, so no rule can reach them.
+#:
+#: Written roster-name-first because that is the side this project controls,
+#: and with every spelling worth listing rather than the one believed current
+#: -- an extra spelling that never arrives costs nothing, and the one that does
+#: arrive under a name nobody listed costs a club its fixture column for a
+#: season. Athletic Club played three weeks with an empty one.
+#:
+#: Deliberately short. A club-by-club table of the whole of Europe would be a
+#: second roster to keep in step; anything not here is named by
+#: ``no fixture found`` together with what the feed did call the clubs in that
+#: country, which is how the next one gets added rather than guessed at.
+CLUB_ALIASES: dict[str, tuple[str, ...]] = {
+    "Athletic Club": ("Athletic Bilbao", "Ath Bilbao", "Athletic Club Bilbao"),
+    "LAFC": ("Los Angeles FC", "Los Angeles"),
+}
+
 
 #: Where a league's clubs may legitimately be playing, as Flashscore writes
 #: the country in its competition headers. This is the guard against a name
@@ -777,6 +797,23 @@ def _initials(words: list[str]) -> str:
     return "".join(w[0] for w in words if w)
 
 
+def alias_index() -> dict[str, str]:
+    """``{a spelling the feed may use: the roster's normalized name}``.
+
+    Built from ``CLUB_ALIASES`` rather than written out, so the table stays
+    readable in the direction a person thinks in -- this club, also called
+    these things.
+    """
+    return {
+        normalize_team(alias): normalize_team(roster)
+        for roster, aliases in CLUB_ALIASES.items()
+        for alias in aliases
+    }
+
+
+ALIASES = alias_index()
+
+
 def match_team(name: str, wanted: dict[str, tuple[str, str]],
                country: str = "") -> str | None:
     """The roster's spelling of a club the feed named, or None.
@@ -807,6 +844,13 @@ def match_team(name: str, wanted: dict[str, tuple[str, str]],
     key = normalize_team(name)
     if key in wanted:
         return wanted[key][0]
+    # A club the two sides genuinely call different things. Only where it lands
+    # on something rostered *and* allowed to be playing here: an alias that
+    # names nobody on this roster falls through to the rules below rather than
+    # ending the search, which is what keeps the table from being load-bearing.
+    aliased = ALIASES.get(key)
+    if aliased and aliased in wanted:
+        return wanted[aliased][0]
     words = [WORD_ALIASES.get(w, w) for w in key.split()]
     expanded = " ".join(words)
     if expanded in wanted:
@@ -853,6 +897,13 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
 
     sports = sorted({feed.SPORTS[l] for l in leagues if l in feed.SPORTS})
     recorded: dict[str, int] = {}
+    #: Every country a rostered league may be playing in, and what the feed
+    #: called the clubs it showed there. A club that matched nothing is only
+    #: half an answer -- the other half is the name the feed used, and without
+    #: it the next Athletic Bilbao is guessed at rather than read off.
+    reachable = {c for _, league in wanted.values()
+                 for c in allowed_countries(league)}
+    spoken: dict[str, set[str]] = {}
     #: Which bucket each rostered club was found in, so the summary below can
     #: say a club has a fixture only where the fixture is one it may read.
     seen: dict[str, set[str]] = {}
@@ -910,6 +961,11 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
             country = str(getattr(row, "country", "") or "")
             home, away = str(row.home_team), str(row.away_team)
             womens = feed.is_womens(home), feed.is_womens(away)
+            if country.upper() in reachable:
+                spoken.setdefault(country.upper(), set()).update(
+                    feed.strip_womens(n) if w else n
+                    for n, w in ((home, womens[0]), (away, womens[1]))
+                )
             if womens[0] != womens[1]:
                 # Not a fixture in any competition this reads. Dropped rather
                 # than assigned, because either bucket would be a guess.
@@ -969,7 +1025,37 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
             print("  No fixture found for: " + ", ".join(missing[:20]), flush=True)
             print("  (out of season, between competitions, or a name this "
                   "could not read)", flush=True)
+            _say_what_the_feed_called_them(wanted, found, spoken)
     return recorded
+
+
+#: How many of a country's clubs to name before the count stands in. Enough
+#: for a division, since that is the list a person scans for the club they
+#: expected to see.
+SPOKEN_SHOWN = 24
+
+
+def _say_what_the_feed_called_them(wanted, found, spoken: dict[str, set[str]]) -> None:
+    """For a club that matched nothing, what the feed did show where it plays.
+
+    "No fixture found for Athletic Club" is true of a club between competitions
+    and true of a club the feed calls Athletic Bilbao, and those want opposite
+    responses. The second is obvious the moment the names are side by side, and
+    impossible to tell from the first without them.
+    """
+    countries: dict[str, set[str]] = {}
+    for key, (spelling, league) in wanted.items():
+        if found(key):
+            continue
+        for country in allowed_countries(league) & set(spoken):
+            countries.setdefault(country, set()).add(spelling)
+    for country in sorted(countries):
+        names = sorted(spoken.get(country, ()))
+        shown = ", ".join(names[:SPOKEN_SHOWN])
+        more = f" (+{len(names) - SPOKEN_SHOWN} more)" if len(names) > SPOKEN_SHOWN else ""
+        print(f"    {country} showed: {shown}{more}", flush=True)
+        print(f"    ... nothing there matched "
+              f"{', '.join(sorted(countries[country]))}", flush=True)
 
 
 def _timestamp() -> str:
