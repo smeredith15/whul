@@ -3742,23 +3742,25 @@ def _tier(label, points, straight=0.0, note="", entered=1):
 
 def test_a_tennis_season_is_shown_by_the_size_of_the_field():
     panel = site_build._tennis_panel({"league": "ATP", "tier_detail": [
-        _tier("ATP 250", 187.5, 37.5, "W · SF", 2),
+        _tier("ATP 250", 150.0, 37.5, "W · R32", 2),
         _tier("ATP 500", None, 0.0, "", 0),
-        _tier("ATP 1000", 562.5, 112.5, "F"),
-        _tier("Grand Slam", 0.0, 0.0, "R32"),
-        _tier("ATP Finals", 250.0, 50.0, "RR 1-2"),
-        _tier("Team Events", 62.5, 12.5, "1-0"),
+        _tier("ATP 1000", 550.0, 137.5, "F"),
+        _tier("Grand Slam", 100.0, 50.0, "R32"),
+        _tier("ATP Finals", 200.0, 50.0, "RR 1-1"),
+        _tier("Team Events", 50.0, 12.5, "1-0"),
     ]})
 
     assert panel["head"] == [["Tournaments", "6"]]
+    # Whole numbers, every one: these are the tour's own totals, and the bonus
+    # that would put a half on the end of them is the superscript instead.
     assert [(b["label"], b["value"], b.get("sup"), b.get("aside"))
             for b in panel["top"]] == [
-        ("ATP 250", "187.5", "+37.5", "W · SF"),
+        ("ATP 250", "150", "+37.5", "W · R32"),
         ("ATP 500", "—", None, None),
-        ("ATP 1000", "562.5", "+112.5", "F"),
-        ("Grand Slam", "0", None, "R32"),
-        ("ATP Finals", "250", "+50", "RR 1-2"),
-        ("Team Events", "62.5", "+12.5", "1-0"),
+        ("ATP 1000", "550", "+137.5", "F"),
+        ("Grand Slam", "100", "+50", "R32"),
+        ("ATP Finals", "200", "+50", "RR 1-1"),
+        ("Team Events", "50", "+12.5", "1-0"),
     ]
 
 
@@ -3766,7 +3768,7 @@ def test_a_tennis_box_has_no_points_strip_because_it_is_one():
     """The big figure is what the tier paid. A strip beneath would print the
     same number twice."""
     panel = site_build._tennis_panel({"league": "ATP", "tier_detail": [
-        _tier("ATP 250", 187.5, 37.5, "W")]})
+        _tier("ATP 250", 150.0, 37.5, "W")]})
     assert all(box["bare"] for box in panel["top"])
 
 

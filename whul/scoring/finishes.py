@@ -271,6 +271,11 @@ def tier_summary(events: pd.DataFrame) -> dict[str, list[dict]]:
     window being shown. Every tier is returned, including the ones a player
     never entered, because a profile that omits them cannot say whether he
     skipped the 500s or the feed did.
+
+    ``points`` is the ranking total and ``straight`` is what winning quickly
+    added; the two sum to what the tier scored. Split because only the first
+    can be checked against anything: the tour publishes it, and a figure with
+    our bonus already inside it matches no list anywhere.
     """
     if events is None or events.empty or "player" not in events.columns:
         return {}
@@ -296,12 +301,19 @@ def tier_summary(events: pd.DataFrame) -> dict[str, list[dict]]:
             entries.append({
                 "tier": tier,
                 "label": template.format(tour=tour),
+                # The ranking points, which is what the figure has to be if
+                # anyone is to check it: 550 at a Masters is a number that
+                # appears on the tour's own list, and 687.5 is a number that
+                # appears nowhere. What the straight-sets rule added rides
+                # above it as the superscript, and the two sum to what scored.
+                #
                 # None, not zero, for a tier he never entered. Zero is the
-                # honest answer for a slam he lost in the third round and the
-                # wrong one for a 500 he did not play: one says he earned
-                # nothing there and the other that there is nothing to say.
-                "points": (None if block.empty
-                           else float(block["event_points"].sum())),
+                # honest answer for a tournament he lost his opening match at
+                # -- only wins pay, so a first-round exit earns none -- and
+                # the wrong one for a 500 he did not play: one says he earned
+                # nothing there, the other that there is nothing to say.
+                "points": (None if block.empty else float(
+                    (block["event_points"] - block["straight_points"]).sum())),
                 "straight": float(block["straight_points"].sum()),
                 "entered": 0 if block.empty else int(len(here)),
                 "note": "" if block.empty else _note_for(tier, block, here),

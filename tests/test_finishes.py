@@ -143,9 +143,15 @@ def _rows(*played):
 
 
 ME = "A. Fils"
+#: A season with one of everything in it. The slam is a third-round exit
+#: written out in full -- the two wins that got him there and the loss that
+#: ended it -- because only wins pay and the wins are what makes it 100 rather
+#: than nothing.
 SEASON = (
     ("Cincinnati", "Masters 1000", "F", "Other", ME, 64, "6-4 6-4"),
     ("Cincinnati", "Masters 1000", "SF", ME, "X", 64, "6-4 6-4"),
+    ("US Open", "Grand Slam", "R128", ME, "Y3", 128, "6-4 6-4 6-4"),
+    ("US Open", "Grand Slam", "R64", ME, "Y2", 128, "6-4 6-4 6-4"),
     ("US Open", "Grand Slam", "R32", "Y", ME, 128, "6-4 6-4 6-4"),
     ("Metz", "250", "F", ME, "Z", 32, "6-4 6-4"),
     ("Basel", "250", "SF", "Q", ME, 32, "6-4 6-4"),
@@ -175,20 +181,38 @@ def test_a_season_reads_by_the_size_of_the_field():
 
 
 def test_a_tier_he_never_entered_is_unknown_rather_than_nothing():
-    """Zero is the honest answer for a slam he lost in the third round and the
-    wrong one for a 500 he did not play."""
-    tiers = _by_label(_rows(*SEASON))
+    """Zero is the honest answer for a tournament he lost his opening match at
+    -- only wins pay -- and the wrong one for a 500 he did not play."""
+    tiers = _by_label(_rows(*SEASON, ("Doha", "500", "R32", "N", ME, 32, "6-4 6-4")))
 
-    assert tiers["ATP 500"]["points"] is None
-    assert tiers["Grand Slam"]["points"] == 0.0, "entered, and earned nothing"
+    assert tiers["ATP 500"]["points"] == 0.0, "entered, and won nothing"
+    assert _by_label(_rows(*SEASON))["ATP 500"]["points"] is None
+
+
+def test_the_figure_is_the_one_the_tour_publishes():
+    """550 at a Masters is a number that appears on the tour's own list; 687.5
+    is a number that appears nowhere. What winning quickly added rides above
+    it instead, and losing in the third round of a slam is the two wins that
+    got him there rather than nothing."""
+    from whul.scoring.tennis import ATP_WIN_POINTS
+
+    tiers = _by_label(_rows(*SEASON))
+    table = ATP_WIN_POINTS
+
+    assert tiers["Grand Slam"]["points"] == (
+        table[("GS", "R128")] + table[("GS", "R64")]) == 100
+    assert tiers["Grand Slam"]["points"] == int(tiers["Grand Slam"]["points"])
+    assert tiers["Grand Slam"]["straight"] > 0, "won in straight sets as well"
 
 
 def test_the_tiers_add_up_to_what_the_season_scored():
-    """The figures are the score said six ways, so a reader can check it."""
+    """Each figure and the superscript above it, over six tiers, is the score
+    said twelve ways -- so a reader can check it, which is the point of
+    splitting them."""
     events = _rows(*SEASON)
     tiers = finishes.tier_summary(events)[ME]
 
-    shown = sum(entry["points"] or 0.0 for entry in tiers)
+    shown = sum((entry["points"] or 0.0) + entry["straight"] for entry in tiers)
     scored = float(events[events["player"] == ME]["event_points"].sum())
     assert round(shown, 2) == round(scored, 2)
 

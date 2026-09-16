@@ -1254,12 +1254,14 @@ def _points_text(value: float) -> str:
 def _tennis_panel(row: dict) -> dict:
     """A tennis season by the size of the field, not as a list of matches.
 
-    The big figure in each box is what that tier paid, because at tennis the
-    points *are* the achievement -- a round is worth what the draw it came
-    through is worth, which is the whole of why a 250 and a slam are different
-    results. So there is no strip beneath repeating it; the superscript is the
-    part of it the straight-sets rule added, which is the difference between
-    beating the draw and beating it quickly.
+    The big figure is the ranking total, because at tennis the points *are*
+    the achievement -- a round is worth what the draw it came through is worth,
+    which is the whole of why a 250 and a slam are different results -- and
+    because it is the one figure anyone can check. 550 at a Masters appears on
+    the tour's own list; 687.5, the same total with our straight-sets bonus
+    folded in, appears nowhere. So the bonus rides above it as a superscript
+    instead, which is also the only way to tell beating the draw from beating
+    it quickly. There is no strip beneath: the figure is already the points.
 
     Beside each figure, what happened: the round he went out in at each
     tournament of that tier, grouped, because at a tier entered nine times the
