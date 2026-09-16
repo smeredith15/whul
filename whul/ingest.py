@@ -988,8 +988,10 @@ def _drain_findings(notes) -> None:
     """
     from whul import benchmark_sources
     from whul.scoring import tennis
+    from whul.store import feed_ledger
 
-    said = benchmark_sources.take_findings() + tennis.take_collisions()
+    said = (benchmark_sources.take_findings() + tennis.take_collisions()
+            + feed_ledger.take_collapses())
     if notes is not None:
         notes.extend(said)
 

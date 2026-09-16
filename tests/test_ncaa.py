@@ -445,3 +445,84 @@ def test_a_college_team_carries_what_it_lost_as_well_as_what_it_won():
     out = score_football(sched).set_index("team")
     assert (out.loc["A", "wins"], out.loc["A", "losses"]) == (1, 1)
     assert (out.loc["B", "wins"], out.loc["B", "losses"]) == (1, 1)
+
+
+def test_a_night_the_walk_skipped_cannot_take_a_win_off_a_team():
+    """Ohio State showed one game played, no wins and a point differential of
+    -1 on the sixteenth of September, having won on the sixth. The NCAA walk
+    reads twenty weeks and skips any that raises, and ESPN's per-team schedule
+    drops a team whose request failed, so a week that does not answer is a week
+    nobody played. A game that has been played cannot be un-played, so a pull
+    that comes back without one is never a correction."""
+    from datetime import date
+
+    from whul import ingest as ing
+    from whul.benchmark_sources import GAME_KEYS
+    from whul.scoring.ncaa import score_football
+    from whul.store import open_store
+
+    US, THEM = "Ohio State Buckeyes", "Texas Longhorns"
+
+    def played(day, ident, ours):
+        return dict(game(US, THEM, ours, 0, hc="Big Ten", ac="SEC",
+                         season=2026, game_date=day), game_id=ident)
+
+    whole = [played("2026-09-06", "401700001", 14),
+             played("2026-09-13", "401700002", 21)]
+    shown = {"whole": whole, "short": whole[1:]}
+
+    class Feed:
+        key, league, asset_type = "ncaaf-test", "NCAAF", "Team"
+        accumulates = GAME_KEYS
+        windowed, dated_by_source, cumulative = False, False, False
+        produces, roster_scoped = (), True
+        seasons_for = staticmethod(lambda day: [2026])
+        which = "whole"
+
+        @staticmethod
+        def build():
+            raise AssertionError("the live loader is the one under test")
+
+        @staticmethod
+        def live():
+            return (lambda _seasons, _names: pd.DataFrame(shown[Feed.which]),
+                    lambda raw: score_football(raw, {US, THEM}))
+
+    def week(keep):
+        Feed.accumulates = GAME_KEYS if keep else ()
+        store = open_store(":memory:")
+        out = []
+        for day, which in (("2026-09-14", "whole"), ("2026-09-15", "short"),
+                           ("2026-09-16", "whole")):
+            Feed.which = which
+            got = ing._pull(Feed(), date.fromisoformat(day), verbose=False,
+                            store=store, names=[US, THEM])
+            row = got[got["team"] == US]
+            out.append(0 if row.empty else int(row["wins"].iloc[0]))
+        return out
+
+    assert week(keep=False) == [2, 1, 2], "the fault, for the record"
+    assert week(keep=True) == [2, 2, 2]
+
+
+def test_a_season_wide_feed_that_forgets_a_game_says_so():
+    """The ledger restores it either way. For a feed asked about the whole
+    season the restoring is not the end of it: a week that did not answer is a
+    fault in the pull, not a window rolling over, and the run's report is where
+    that has to show up."""
+    from whul import ingest as ing
+    from whul.benchmark_sources import GAME_KEYS
+
+    class Feed:
+        key, league, windowed = "ncaaf-test", "NCAAF", False
+        accumulates = GAME_KEYS
+
+    held = pd.DataFrame([
+        dict(game(_A := "A", "B", 14, 0, season=2026, game_date="2026-09-06"),
+             game_id="1"),
+        dict(game(_A, "B", 21, 0, season=2026, game_date="2026-09-13"),
+             game_id="2"),
+    ])
+    notes: list[str] = []
+    ing._report_forgotten(Feed(), held.iloc[1:], held, False, notes)
+    assert notes and "1" in notes[0]

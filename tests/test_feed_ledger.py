@@ -678,3 +678,129 @@ def test_a_player_nobody_drafted_is_left_alone(store):
     ]), KEYS)
 
     assert len(feed_ledger.load(store, "tennis")) == 2
+
+
+# --- a key that names a column the pull does not produce --------------------
+
+def _stubbed_pull(source_key, monkeypatch):
+    """One pull of one source, with the network stubbed out one layer down.
+
+    Stubbed as close to the wire as each loader allows, so everything between
+    the payload and the returned frame -- the renames, the drops, the
+    concatenations -- is the real thing. That is where the key went missing:
+    `load_soccer_matches` produced `season_year` and dropped it on the way out.
+    """
+    from datetime import date as _date
+
+    from whul.sources import espn, mlb, ncaa_api, nflverse
+
+    day = _date(2026, 9, 13)
+
+    if source_key == "mlb-teams":
+        monkeypatch.setattr(mlb, "_get", lambda *a, **k: {"dates": [{
+            "date": "2026-09-13", "games": [{
+                "gamePk": 778001, "season": "2026", "gameType": "R",
+                "officialDate": "2026-09-13",
+                "teams": {"home": {"score": 4, "team": {"name": "Chicago Cubs"}},
+                          "away": {"score": 1, "team": {"name": "Tampa Bay Rays"}}},
+            }]}]})
+        return mlb.load_schedule([2026])
+
+    if source_key in {"ncaaf", "ncaam", "ncaaw", "ncaabaseball", "ncaasoftball"}:
+        # The season loader, through the NCAA API's own parser.
+        payload = {"games": [{"game": {
+            "gameID": "6300001", "startDate": "09/13/2026",
+            "home": {"names": {"short": "Ohio State"}, "score": "34",
+                     "conferenceNames": {"conferenceName": "Big Ten"}},
+            "away": {"names": {"short": "Texas"}, "score": "17",
+                     "conferenceNames": {"conferenceName": "SEC"}},
+            "gameState": "final", "finalMessage": "FINAL",
+        }}]}
+        return pd.DataFrame(ncaa_api.parse_scoreboard(payload, source_key, day))
+
+    if source_key == "nba-teams":
+        monkeypatch.setattr(espn, "season_dates", lambda *a, **k: [day])
+        monkeypatch.setattr(espn, "scoreboard", lambda *a, **k: {"events": [{
+            "id": "401800001", "date": "2026-09-13T23:00Z",
+            "season": {"type": 2},
+            "competitions": [{
+                "status": {"type": {"completed": True}},
+                "competitors": [
+                    {"homeAway": "home", "score": "110",
+                     "team": {"displayName": "Boston Celtics"}},
+                    {"homeAway": "away", "score": "99",
+                     "team": {"displayName": "Denver Nuggets"}},
+                ]}]}]})
+        return espn.load_team_results("nba", [2026], verbose=False)
+
+    if source_key == "nba":
+        monkeypatch.setattr(espn, "season_dates", lambda *a, **k: [day])
+        monkeypatch.setattr(espn, "scoreboard", lambda *a, **k: {"events": [{
+            "id": "401800001", "season": {"type": 2},
+            "competitions": [{"status": {"type": {"completed": True}}}]}]})
+        monkeypatch.setattr(espn, "summary", lambda *a, **k: {"boxscore": {
+            "players": [{"team": {"abbreviation": "BOS"}, "statistics": [{
+                "labels": ["PTS", "REB", "AST"],
+                "athletes": [{"athlete": {"id": "4066261", "displayName": "X",
+                                          "position": {"abbreviation": "G"}},
+                              "stats": ["30", "5", "5"]}],
+            }]}]}})
+        return espn.load_nba_player_box([2026], verbose=False)
+
+    if source_key == "nfl":
+        monkeypatch.setattr(nflverse.pd, "read_parquet", lambda *a, **k: pd.DataFrame([{
+            "season": 2026, "week": 2, "player_id": "00-0034796",
+            "player_display_name": "Y", "position": "QB", "team": "BUF",
+        }]))
+        return nflverse.load_player_stats([2026])
+
+    raise AssertionError(f"no stub for {source_key}")
+
+
+def test_every_declared_key_names_a_column_its_own_pull_returns(monkeypatch):
+    """The club-soccer keys have had this since they cost two nights of every
+    league's pull. These are the rest of them: a key is only a guard while the
+    frame it keys has the columns in it, and nothing but a nightly run was
+    checking."""
+    from whul.benchmark_sources import resolve
+
+    checked = {"mlb-teams", "nba-teams", "nba", "nfl", "ncaaf", "ncaam",
+               "ncaaw", "ncaabaseball", "ncaasoftball"}
+    seen = set()
+    for source in resolve(None):
+        if source.key not in checked:
+            continue
+        seen.add(source.key)
+        assert source.accumulates, f"{source.key} has stopped accumulating"
+        produced = set(_stubbed_pull(source.key, monkeypatch).columns)
+        missing = [c for c in source.accumulates if c not in produced]
+        assert not missing, (
+            f"{source.key} is keyed on {missing}, which its own pull does not "
+            f"return, so every run of it loses the ledger it is keyed for")
+    assert seen == checked, f"never reached: {sorted(checked - seen)}"
+
+
+def test_a_key_that_cannot_tell_two_rows_apart_is_said_out_loud(store):
+    """A key column that is absent raises; one that is present and blank does
+    not, and it is worse -- the key still forms, every row gets the same one,
+    and the ledger keeps one row of the pull as though it were the season.
+    Motorsport's `session` is blank on every race that is not a sprint and that
+    is the key working, so blankness alone decides nothing. What the key *does*
+    decides it."""
+    from whul.store import feed_ledger
+
+    feed_ledger.take_collapses()
+    frame = pd.DataFrame([
+        {"season": 2026, "game_id": "", "team": "Ohio State"},
+        {"season": 2026, "game_id": "", "team": "Texas"},
+    ])
+    feed_ledger.record(store, "ncaaf-test", frame, ("season", "game_id"))
+
+    said = feed_ledger.take_collapses()
+    assert said and "game_id" in said[0] and "2 row(s) share 1 key(s)" in said[0]
+    assert feed_ledger.take_collapses() == [], "drained"
+
+    # And a key that works says nothing at all.
+    feed_ledger.record(store, "ncaaf-test", frame.assign(game_id=["1", "2"]),
+                       ("season", "game_id"))
+    assert feed_ledger.take_collapses() == []

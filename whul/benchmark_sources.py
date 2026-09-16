@@ -1059,6 +1059,15 @@ def _pga_players():
 #: Formula 1, both stable within a season.
 MOTORSPORT_KEYS = ("series", "season", "event_key", "session", "driver")
 
+#: One completed game, for the sources that read a schedule. Every one of them
+#: -- the NCAA leagues through their own API or a team's ESPN schedule, MLB
+#: through the Stats API, the NBA through ESPN's scoreboard -- returns one row
+#: per game carrying the feed's own id for it, and a game that has been played
+#: cannot be un-played. So a night that comes back without one is never a
+#: correction: the NCAA walks twenty weeks and skips any that fails, and Ohio
+#: State's win left its ledger on the sixteenth of September that way.
+GAME_KEYS = ("season", "game_id")
+
 
 def _motorsports_players():
     """Both series, in one frame, so both can be written down.
@@ -1250,6 +1259,12 @@ def _register(*sources: Source) -> dict[str, Source]:
 SOURCES: dict[str, Source] = _register(
     Source("nfl", "NFL", "Player", _nfl_players, reliability="verified",
            seasons_for=_feed_seasons("nfl", "NFL"),
+           # One player's week. nflverse republishes the whole season file
+           # every week, so a week that is served and then is not is a file
+           # that failed to read -- and load_player_stats collects that season
+           # into `missing` and returns the rest, which is a quiet way to lose
+           # every NFL player in a year.
+           accumulates=("season", "week", "player_id"),
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified",
            seasons_for=_feed_seasons("nfl", "NFL")),
@@ -1259,12 +1274,17 @@ SOURCES: dict[str, Source] = _register(
            note="FanGraphs leaderboards; one row per player-role, folded after "
                 "normalization by the two-way rule"),
     Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
-           seasons_for=_league_year_seasons,
+           seasons_for=_league_year_seasons, accumulates=GAME_KEYS,
            note="a live contract year is scored on the half already played"),
     Source("nba", "NBA", "Player", _nba_players,
            seasons_for=_espn_seasons("nba", "NBA"),
+           # One player's game. The walk asks ESPN for a date and then for each
+           # game on it, and skips anything that raises on either request -- so
+           # a night that times out is a night nobody played, and the players
+           # who played it lose it.
+           accumulates=("season", "game_id", "athlete_id"),
            note="ESPN box scores, one date at a time -- slow to backfill"),
-    Source("nba-teams", "NBA", "Team", _nba_teams,
+    Source("nba-teams", "NBA", "Team", _nba_teams, accumulates=GAME_KEYS,
            seasons_for=_espn_seasons("nba", "NBA"),
            note="ESPN scoreboard; hoopR's archive stops at 2023"),
     Source("nhl", "NHL", "Player", _nhl_players, scale_for="NHL",
@@ -1294,6 +1314,7 @@ SOURCES: dict[str, Source] = _register(
     *[
         Source(key, category, "Team", _ncaa(key, category),
                live=_ncaa_live(key, category), roster_scoped=True,
+               accumulates=GAME_KEYS,
                seasons_for=_espn_seasons(key, category))
         for key, category in NCAA_CATEGORIES.items()
     ],
