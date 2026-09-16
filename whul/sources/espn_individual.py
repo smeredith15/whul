@@ -29,6 +29,8 @@ import requests
 
 from whul.sources.espn import BASE, TIMEOUT, _get
 
+from whul.sources import season_is_over
+
 CACHE = Path("data/cache/espn")
 
 LEAGUE_PATHS = {
@@ -84,8 +86,13 @@ def season_events(league: str, season: int) -> list[dict]:
     """
     sport, path = LEAGUE_PATHS[league]
     url = f"{BASE}/{sport}/{path}/scoreboard"
+    # A finished season's event list is the same every time it is asked. One
+    # still being run gains a race most weekends, and this cache had no expiry
+    # -- so once the 2026 list was written, no later race was ever discovered
+    # and every driver's figure held still while the source reported ten
+    # healthy rows a night.
     cached = CACHE / f"{league}/season/{season}.json"
-    if cached.exists():
+    if cached.exists() and season_is_over(season):
         return usable_events(json.loads(cached.read_text()).get("events", []))
 
     best: dict | None = None
@@ -107,6 +114,10 @@ def season_events(league: str, season: int) -> list[dict]:
     if best is None:
         raise last if last else RuntimeError(f"no season shape succeeded for {league}")
 
+    # Written every time, including for a season still being run. The read
+    # above is what is gated, so a live season is always fetched -- and the
+    # file left behind is the last state of it, which is the complete season
+    # by the time the year turns and it becomes readable.
     cached.parent.mkdir(parents=True, exist_ok=True)
     cached.write_text(json.dumps(best))
     return usable_events(best.get("events", []))
