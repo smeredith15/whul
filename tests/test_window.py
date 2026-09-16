@@ -150,3 +150,89 @@ def test_empty_input_is_empty_output():
 def test_the_default_reaches_back_far_enough_to_be_stable():
     assert DEFAULT_YEARS >= 3
     assert len(season_windows()) == DEFAULT_YEARS + 1
+
+
+# --- the marks a profile counts, from the scorer to the panel ---------------
+
+def _driver_window():
+    """The league year as the motorsports ingest builds it: one window, opening
+    in August, so a season that runs February to November is split by it."""
+    return season_windows(0, start=date(2026, 8, 1), end=date(2027, 7, 31))[-1]
+
+
+def test_a_windows_totals_carry_the_marks_as_well_as_the_points():
+    """The whole point of marking each race. `window_totals` kept only the
+    points and the row count, so every per-race mark a scorer wrote was
+    dropped on the way to the profile and the summary boxes had nothing to
+    read -- three em-dashes above a full list of results."""
+    from whul.scoring import motorsport
+
+    races = motorsport.nascar_events(pd.DataFrame([
+        {"driver": "K. Larson", "finish": f, "season": 2026, "date": d}
+        for f, d in [(1, "2026-08-20"), (4, "2026-08-27"), (9, "2026-09-03"),
+                     (22, "2026-09-10")]
+    ]))
+    out = window_totals(races, [_driver_window()]).iloc[0]
+
+    assert (out["wins"], out["top_fives"], out["top_tens"]) == (1, 2, 3)
+
+
+def test_a_race_outside_the_window_is_not_counted_in_it():
+    """The reason the marks are summed here rather than by season: a league
+    year opening in August holds part of one season and part of the next."""
+    from whul.scoring import motorsport
+
+    races = motorsport.nascar_events(pd.DataFrame([
+        {"driver": "K. Larson", "finish": f, "season": 2026, "date": d}
+        for f, d in [(1, "2026-07-05"), (4, "2026-09-06")]
+    ]))
+    out = window_totals(races, [_driver_window()]).iloc[0]
+
+    assert out["wins"] == 0, "a July win is in the season and not in the year"
+    assert out["top_fives"] == 1
+
+
+def test_a_sprint_is_a_result_and_is_not_a_start():
+    """A Formula 1 weekend with a sprint is two rows and one start, and the
+    sport's own page says three where a count of entries says four."""
+    from whul.scoring import motorsport
+
+    races = motorsport.f1_events(pd.DataFrame([
+        {"driver_name": "M. Verstappen", "position": p, "season": 2026,
+         "date": d, "race": r, "is_sprint": s}
+        for p, d, r, s in [(1, "2026-08-29", "Dutch Grand Prix", True),
+                           (1, "2026-08-30", "Dutch Grand Prix", False),
+                           (3, "2026-09-06", "Italian Grand Prix", False),
+                           (12, "2026-09-13", "Baku Grand Prix", False)]
+    ]))
+    out = window_totals(races, [_driver_window()]).iloc[0]
+
+    assert out["events"] == 4
+    assert out["starts"] == 3
+    assert out["wins"] == 1, "the sprint win is not a win"
+
+
+def test_the_marks_reach_the_panel_the_page_draws():
+    """End to end, because each half worked on its own: the scorer wrote the
+    marks, the panel read them, and nothing in between carried them across."""
+    from whul.scoring import motorsport
+    from whul.site import build
+
+    events_frame = motorsport.race_events(
+        pd.DataFrame([{"driver": "K. Larson", "finish": 1, "season": 2026,
+                       "date": "2026-08-20"}]),
+        pd.DataFrame([{"driver_name": "M. Verstappen", "position": 2,
+                       "season": 2026, "date": "2026-08-30",
+                       "race": "Dutch Grand Prix", "is_sprint": False}]),
+    )
+    window = _driver_window()
+
+    for league, expected in (("NASCAR", [("Wins", "1"), ("Top 5", "1"),
+                                         ("Top 10", "1")]),
+                             ("F1", [("Wins", "0"), ("Podiums", "1"),
+                                     ("Points finishes", "1")])):
+        rows = events_frame[events_frame["league"] == league]
+        row = window_totals(rows, [window]).to_dict("records")[0]
+        panel = build._motorsport_panel(row)
+        assert panel["head"] == [["Races", "1"]]
+        assert [(b["label"], b["value"]) for b in panel["top"]] == expected
