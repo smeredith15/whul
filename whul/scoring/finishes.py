@@ -170,7 +170,14 @@ def summarize(events: pd.DataFrame) -> dict[str, list[dict]]:
         return {}
     if "round" in events.columns:
         return as_records(tennis_finishes(events))
-    for column in ("position", "finish"):
+    # `finish` first. Only a scorer that means "where this row placed in this
+    # event" ever writes it, while `position` is overloaded -- a footballer's
+    # playing position, a driver's championship standing, and golf's finish all
+    # answer to it, and `CARRIED_IDENTITY` will put the feed's own onto a frame
+    # that has one already. Preferring it labelled every one of Ryan Blaney's
+    # races with his season standing: a win and a thirty-third both read "3rd",
+    # beside points of 55 and 4 that said otherwise on the same line.
+    for column in ("finish", "position"):
         if column in events.columns:
             return as_records(event_finishes(events, column))
     return {}

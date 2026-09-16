@@ -254,3 +254,46 @@ def test_a_nascar_season_in_progress_ignores_its_cached_list(tmp_path, monkeypat
     got = espn_individual.season_events("nascar", 2026)
 
     assert [e["name"] for e in got] == ["Old", "New"], "the stale list was served"
+
+
+def test_a_nascar_race_is_marked_for_the_counts_a_profile_shows():
+    events = motorsport.nascar_events(pd.DataFrame([
+        race(finish=1), race(finish=4), race(finish=9), race(finish=22),
+    ]))
+    assert list(events["wins"]) == [1, 0, 0, 0]
+    assert list(events["top_fives"]) == [1, 1, 0, 0]
+    assert list(events["top_tens"]) == [1, 1, 1, 0]
+
+
+def test_a_formula_one_race_is_marked_for_podiums_not_top_fives():
+    """The two series do not share a vocabulary: NASCAR counts top fives and
+    Formula 1 counts podiums, and each profile shows its own sport's."""
+    events = motorsport.f1_events(pd.DataFrame([
+        grand_prix(position=1), grand_prix(position=3), grand_prix(position=8),
+        grand_prix(position=14),
+    ]))
+    assert list(events["podiums"]) == [1, 1, 0, 0]
+    assert list(events["top_tens"]) == [1, 1, 1, 0]
+    assert "top_fives" not in events.columns
+
+
+def test_a_sprint_win_is_not_counted_as_a_win():
+    """The sport does not put one in a driver's tally, and a page sitting next
+    to the sport's own cannot say a different number."""
+    events = motorsport.f1_events(pd.DataFrame([
+        grand_prix(position=1, is_sprint=True),
+        grand_prix(position=2, is_sprint=False),
+    ]))
+    assert list(events["wins"]) == [0, 0]
+    assert list(events["podiums"]) == [0, 1]
+
+
+def test_the_counts_are_summed_over_a_window_not_a_season():
+    """A league year opens in August and holds part of one season and part of
+    the next, so the marks are per race and the window adds them up."""
+    events = motorsport.nascar_events(pd.DataFrame([
+        race(finish=1, date="2026-07-05"), race(finish=2, date="2026-09-06"),
+    ]))
+    inside = events[events["date"] >= "2026-08-01"]
+    assert inside["wins"].sum() == 0
+    assert inside["top_fives"].sum() == 1

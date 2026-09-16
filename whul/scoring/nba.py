@@ -268,6 +268,10 @@ def score_teams(schedule: pd.DataFrame) -> pd.DataFrame:
         lambda g: pd.Series(
             {
                 "reg_wins": int((g["is_win"] & g["is_reg"]).sum()),
+                # Unscored, and carried anyway: a record is two numbers, and
+                # "Wins 41" on its own cannot say whether the other forty-one
+                # were lost or have not been played.
+                "reg_losses": int(((g["margin"] < 0) & g["is_reg"]).sum()),
                 "reg_big_wins": int((g["is_big_win"] & g["is_reg"]).sum()),
                 "point_diff": float(g.loc[g["is_reg"], "margin"].sum()),
                 "playin_appearance": int(g["is_playin"].any()),

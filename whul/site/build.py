@@ -406,6 +406,10 @@ def asset_profiles(
                 panels[asset_id] = _nba_panel(row)
             elif str(row.get("league")) == "NHL" and row.get("role"):
                 panels[asset_id] = _nhl_panel(row)
+            elif str(row.get("league")) in MOTORSPORT_BOXES:
+                panel = _motorsport_panel(row)
+                if panel:
+                    panels[asset_id] = panel
             elif _is_a_club_soccer_player(row):
                 panels[asset_id] = _soccer_player_panel(
                     row, club_games,
@@ -552,6 +556,10 @@ STAT_LABELS = {
     "regular_points": "Points from league and cups",
     "events": "Events", "matches": "Matches", "matches_played": "Matches played",
     "games_played": "Games played", "wins": "Wins", "reg_wins": "Regular-season wins",
+    # Unscored, and shown: a win count on its own cannot say whether the rest
+    # of the season was lost or has not been played.
+    "reg_losses": "Regular-season losses", "reg_ties": "Regular-season ties",
+    "div_ties": "Division ties",
     "big_wins": "Big wins", "reg_big_wins": "Big wins", "conf_wins": "Conference wins",
     "div_wins": "Division wins", "point_diff": "Point differential",
     "run_diff": "Run differential", "shutouts": "Shutouts",
@@ -838,13 +846,49 @@ SOCCER_BOX_LABELS = {
 #: An NFL club's week-by-week figures, and what each is worth. The same weight
 #: table the score is built from, so the boxes cannot be a second opinion.
 NFL_TEAM_TOP = ("reg_wins", "point_diff", "reg_big_wins", "reg_shutouts")
-NFL_TEAM_REST = ("div_wins",)
+#: Zero-suppressed, so a tie is a box only in the seasons one happened -- there
+#: were none at all in 2023 or 2024, and "Ties 0" on thirty-two profiles is a
+#: row of nothing.
+NFL_TEAM_REST = ("div_wins", "reg_ties", "div_ties")
 
 NFL_TEAM_LABELS = {
     "reg_wins": "Wins", "point_diff": "Point diff", "reg_big_wins": "Big wins",
     "reg_shutouts": "Shutouts", "div_wins": "Division wins",
+    "reg_ties": "Ties", "div_ties": "Division ties",
     "playoff_wins": "Playoff wins",
 }
+
+#: What a record is made of, in the order the sport prints it, and under every
+#: name a scorer gives it. The third column is whatever the league puts there:
+#: the NFL prints ties, the NHL prints overtime losses, and a league with
+#: neither prints two numbers.
+RECORD_COLUMNS = (
+    ("reg_wins", "wins"),
+    ("reg_losses", "losses"),
+    ("reg_ties", "draws", "reg_otl"),
+)
+
+
+def _team_record(row: dict) -> str | None:
+    """A club's record, as the standings write it.
+
+    Losses are not scored and are shown anyway. "Wins 11" says nothing about
+    the rest of the season -- whether the other six were lost or have not been
+    played is the first thing a reader wants and the one thing a win count
+    cannot answer.
+    """
+    figures = [
+        next((found for name in names
+              if (found := _stat_number(row, name)) is not None), None)
+        for names in RECORD_COLUMNS
+    ]
+    wins, losses, third = figures
+    if wins is None or losses is None:
+        return None
+    record = f"{wins:,.0f}\u2013{losses:,.0f}"
+    # Omitted at zero rather than printed: "11-6-0" is not how a record with no
+    # ties in it is written.
+    return record + (f"\u2013{third:,.0f}" if third else "")
 
 
 def _nfl_team_box(row: dict, column: str, keep_zero: bool = False) -> dict | None:
@@ -884,10 +928,16 @@ def _nfl_team_panel(row: dict) -> dict | None:
                          float(row.get("playoff_appearance") or 0) * 10.0),
         ],
     }
+    head = []
+    record = _team_record(row)
+    if record:
+        head.append(["Record", record])
     rank = row.get("div_rank")
     division = str(row.get("team_division") or "").strip()
     if rank and division:
-        panel["head"] = [["Division", f"{_ordinal(int(rank))} in {division}"]]
+        head.append(["Division", f"{_ordinal(int(rank))} in {division}"])
+    if head:
+        panel["head"] = head
 
     wins = _nfl_team_box(row, "playoff_wins")
     if wins and wins["value"] != "0":
@@ -1042,6 +1092,45 @@ def _nhl_panel(row: dict) -> dict | None:
         if post:
             panel["posts"] = [post]
     return panel
+
+
+#: What each series counts, in the order a reader looks for it. The two do not
+#: share a vocabulary, so neither do their panels.
+MOTORSPORT_BOXES = {
+    "F1": (("wins", "Wins"), ("podiums", "Podiums"),
+           ("top_tens", "Points finishes")),
+    "NASCAR": (("wins", "Wins"), ("top_fives", "Top 5"),
+               ("top_tens", "Top 10")),
+}
+
+
+def _motorsport_panel(row: dict) -> dict | None:
+    """A driver's season above the list of races that made it.
+
+    No points strip under these. A win is worth 55 in NASCAR and 25 in Formula
+    1, a top five is worth whatever the five finishes in it were worth, and a
+    strip under "Top 5" would have to print either a sum that is not a category
+    or a blank that reads as nothing earned. The categories are how the sport
+    is read; the points are in the race list below, one line a race.
+    """
+    league = str(row.get("league") or "").strip().upper()
+    wanted = MOTORSPORT_BOXES.get(league)
+    if not wanted:
+        return None
+    started = _stat_number(row, "events")
+    return {
+        "kind": "boxes",
+        "head": [["Races", "\u2014" if started is None else f"{started:,.0f}"]],
+        # `bare`: counted, not scored, and the box says so by having no strip
+        # at all rather than an empty one.
+        "top": [
+            {"label": label, "bare": True,
+             "value": ("\u2014" if _stat_number(row, column) is None
+                       else f"{_stat_number(row, column):,.0f}")}
+            for column, label in wanted
+        ],
+        "secondary": [],
+    }
 
 
 #: Leagues whose profile is a panel built from figures, so that one can be

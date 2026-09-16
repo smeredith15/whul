@@ -305,6 +305,10 @@ def score_football(
             {
                 "games_played": len(g),
                 "wins": int(g["is_win"].sum()),
+                # Unscored, and carried anyway: a record is two numbers, and
+                # a win count on its own cannot say whether the rest were lost
+                # or have not been played.
+                "losses": int((g["margin"] < 0).sum()),
                 "big_wins": int(g["is_big_win"].sum()),
                 "conf_wins": int((g["is_win"] & g["is_conf_game"]).sum()),
                 "conf_games": int(g["is_conf_game"].sum()),
@@ -362,6 +366,10 @@ def score_basketball(
             {
                 "games_played": len(g),
                 "reg_wins": int((g["is_win"] & g["is_reg"]).sum()),
+                # Unscored, and carried anyway: a record is two numbers, and
+                # a win count on its own cannot say whether the rest were lost
+                # or have not been played.
+                "reg_losses": int(((g["margin"] < 0) & g["is_reg"]).sum()),
                 "big_wins": int(g["is_big_win"].sum()),
                 "conf_wins": int((g["is_win"] & g["is_reg"] & g["is_conf_game"]).sum()),
                 "conf_games": int((g["is_reg"] & g["is_conf_game"]).sum()),
@@ -412,6 +420,10 @@ def score_diamond(
             {
                 "games_played": len(g),
                 "reg_wins": int((g["is_win"] & ~g["is_postseason"]).sum()),
+                # Unscored, and carried anyway: a record is two numbers, and
+                # a win count on its own cannot say whether the rest were lost
+                # or have not been played.
+                "reg_losses": int(((g["margin"] < 0) & ~g["is_postseason"]).sum()),
                 "run_diff": float(g.loc[~g["is_postseason"], "margin"].sum()),
                 "regional_wins": int((g["is_win"] & g["is_regional"]).sum()),
                 "super_wins": int((g["is_win"] & g["is_super"]).sum()),

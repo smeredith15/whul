@@ -1094,12 +1094,16 @@ SCRIPT = """\
     // rather than repeating them or leaving a blank that reads as free.
     if (box.note) shown = box.note;
     return '<div class="statbox' + (small ? ' small' : '') +
-             (box.muted ? ' muted' : '') + '">' +
+             (box.muted ? ' muted' : '') + (box.bare ? ' bare' : '') + '">' +
            '<div class="bn">' + box.label + '</div>' +
            '<div class="bv' + (String(box.value).length > 7 ? ' tight' : '') +
              '">' + box.value + sup + aside + '</div>' +
-           '<div class="bp' + sign + (box.note ? ' said' : '') + '">' +
-           shown + '</div></div>';
+           // Counted, not scored. A strip under "Top 5" would print either a
+           // sum that is not a category or a blank that reads as nothing
+           // earned, so it has none rather than an empty one.
+           (box.bare ? '' :
+             '<div class="bp' + sign + (box.note ? ' said' : '') + '">' +
+             shown + '</div>') + '</div>';
   }
 
   // A club's season, one competition at a time. The grouping is the reason

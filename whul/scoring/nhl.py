@@ -299,6 +299,14 @@ def score_teams(
         }
     )
     work["goal_diff"] = work["goals_for"] - work["goals_against"]
+    # Unscored, and carried anyway: a record is the three numbers the sport
+    # prints, and "Wins 45" on its own cannot say whether the other thirty-seven
+    # were lost or have not been played. Regulation losses are what is left --
+    # the feed serves wins and overtime losses, and the standings line is
+    # wins, losses, overtime losses.
+    work["reg_losses"] = (
+        work["games_played"] - work["reg_wins"] - work["reg_otl"]
+    ).clip(lower=0)
 
     if playoffs is not None and not playoffs.empty:
         post = pd.DataFrame(

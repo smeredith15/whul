@@ -2686,17 +2686,17 @@ def test_a_league_without_a_panel_keeps_the_table():
 
 def _nfl_team(**over):
     row = {"league": "NFL", "team": "SEA", "team_division": "NFC West",
-           "div_rank": 1, "reg_wins": 11.0, "reg_big_wins": 4.0,
-           "reg_shutouts": 1.0, "div_wins": 5.0, "point_diff": 84.0,
-           "playoff_appearance": 1.0, "playoff_wins": 2.0, "div_champ": 1,
-           "season_settled": True}
+           "div_rank": 1, "reg_wins": 11.0, "reg_losses": 5.0, "reg_ties": 1.0,
+           "reg_big_wins": 4.0, "reg_shutouts": 1.0, "div_wins": 5.0,
+           "div_ties": 1.0, "point_diff": 84.0, "playoff_appearance": 1.0,
+           "playoff_wins": 2.0, "div_champ": 1, "season_settled": True}
     row.update(over)
     return row
 
 
 def test_every_weighted_column_reaches_a_box_and_they_sum_to_the_score():
-    """The eight columns the scorer multiplies are the eight the page shows,
-    off the same table, so the panel can be checked against itself."""
+    """Every column the scorer multiplies is one the page shows, off the same
+    table, so the panel can be checked against itself."""
     from whul.scoring.nfl import TEAM_WEIGHTS
 
     row = _nfl_team()
@@ -2732,7 +2732,8 @@ def test_an_unsettled_season_says_neither_won_nor_lost():
 
 def test_a_division_standing_reads_as_a_place():
     panel = site_build._nfl_team_panel(_nfl_team(div_rank=3))
-    assert panel["head"] == [["Division", "3rd in NFC West"]]
+    assert panel["head"] == [["Record", "11\u20135\u20131"],
+                             ["Division", "3rd in NFC West"]]
 
     assert site_build._ordinal(1) == "1st"
     assert site_build._ordinal(2) == "2nd"
@@ -3482,3 +3483,69 @@ def test_a_player_with_no_second_role_does_not_break_the_build():
     assert site_build._mlb_panel(_batter(secondary_stats=float("nan")))
     assert site_build._mlb_panel(_batter(secondary_stats=[]))
     assert site_build._mlb_panel(_batter(secondary_stats=None))
+
+
+# --- motorsport: counted, not scored ---------------------------------------
+
+def test_a_driver_is_shown_in_his_own_series_vocabulary():
+    """NASCAR counts top fives, Formula 1 counts podiums, and neither page
+    borrows the other's word for a good day."""
+    nascar = site_build._motorsport_panel(
+        {"league": "NASCAR", "role": "Driver", "events": 28,
+         "wins": 3, "top_fives": 11, "top_tens": 17})
+    assert nascar["head"] == [["Races", "28"]]
+    assert [(b["label"], b["value"]) for b in nascar["top"]] == [
+        ("Wins", "3"), ("Top 5", "11"), ("Top 10", "17")]
+
+    f1 = site_build._motorsport_panel(
+        {"league": "F1", "role": "Driver", "events": 17,
+         "wins": 4, "podiums": 9, "top_tens": 15})
+    assert [(b["label"], b["value"]) for b in f1["top"]] == [
+        ("Wins", "4"), ("Podiums", "9"), ("Points finishes", "15")]
+
+
+def test_a_driver_box_carries_no_points_strip():
+    """A win is 55 in NASCAR and 25 in Formula 1, and a top five is worth
+    whatever the five finishes in it were worth. A strip under the box would
+    print either a sum that is not a category or a blank that reads as nothing
+    earned, so the box says outright that it has none."""
+    panel = site_build._motorsport_panel(
+        {"league": "NASCAR", "role": "Driver", "events": 28,
+         "wins": 3, "top_fives": 11, "top_tens": 17})
+
+    assert all(box["bare"] for box in panel["top"])
+    assert not any("points" in box for box in panel["top"])
+
+
+def test_a_driver_who_has_not_raced_reads_as_unknown_not_as_zero():
+    panel = site_build._motorsport_panel({"league": "NASCAR", "role": "Driver"})
+    assert panel["head"] == [["Races", "—"]]
+    assert [b["value"] for b in panel["top"]] == ["—"] * 3
+
+
+def test_a_league_with_no_driver_vocabulary_gets_no_driver_panel():
+    assert site_build._motorsport_panel({"league": "PGA", "role": "Golfer"}) is None
+
+
+def test_a_team_shows_what_it_lost_as_well_as_what_it_won():
+    """Losses are not scored and are shown anyway: "Wins 11" says nothing about
+    whether the other six were lost or have not been played, which is the first
+    thing a reader wants off a club's line."""
+    assert site_build._team_record(_nfl_team()) == "11\u20135\u20131"
+    # A record with no ties in it is not written "11-6-0".
+    assert site_build._team_record(
+        _nfl_team(reg_ties=0, reg_losses=6.0)) == "11\u20136"
+    # Whatever the league puts third: the NHL prints overtime losses there.
+    assert site_build._team_record(
+        {"reg_wins": 45, "reg_losses": 25, "reg_otl": 12}) == "45\u201325\u201312"
+    # And a college team, whose scorer spells both without a prefix.
+    assert site_build._team_record({"wins": 9, "losses": 3}) == "9\u20133"
+
+
+def test_a_club_with_no_losses_counted_shows_no_record():
+    """A row stored before losses were carried. Half a record is worse than
+    none -- "11-0" for a team that lost six is a wrong number, and a missing
+    line is only a missing line."""
+    assert site_build._team_record({"reg_wins": 11}) is None
+    panel = site_build._nfl_team_panel(_nfl_team(reg_losses=None))
+    assert panel["head"] == [["Division", "1st in NFC West"]]

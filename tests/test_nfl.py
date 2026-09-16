@@ -528,3 +528,45 @@ def test_a_traded_player_gets_both_clubs_weeks():
     out = score_players(stats).set_index("player")
     # BUF played week 1; MIA played weeks 2 and 3.
     assert out.loc["Test QB", "team_games"] == 3
+
+
+def test_a_tie_pays_half_a_win_rather_than_nothing():
+    """The one league here that can draw and did not price it. A tie was paid
+    as a loss, which is the one thing it is not: the standings count it half a
+    win and half a loss, and both clubs are credited for it."""
+    sched = pd.DataFrame([game("BUF", "MIA", 17, 17, div=1)])
+    out = score_teams(sched, DIVISIONS).set_index("team")
+
+    for team in ("BUF", "MIA"):
+        assert out.loc[team, "reg_wins"] == 0
+        assert out.loc[team, "reg_ties"] == 1
+        assert out.loc[team, "div_ties"] == 1
+        assert out.loc[team, "reg_losses"] == 0
+    # Half the win, and half the two the division game adds on top of it.
+    # Buffalo's fifteen on top is the division title, which the fixture's
+    # standing awards it whatever the game finished.
+    assert out.loc["MIA", "total_points"] == pytest.approx(6.0)
+    assert out.loc["BUF", "total_points"] == pytest.approx(21.0)
+
+
+def test_a_tie_is_neither_a_big_win_nor_a_shutout():
+    sched = pd.DataFrame([game("BUF", "MIA", 0, 0)])
+    out = score_teams(sched, DIVISIONS).set_index("team")
+    assert out.loc["BUF", "reg_big_wins"] == 0
+    assert out.loc["BUF", "reg_shutouts"] == 0
+    assert out.loc["BUF", "reg_ties"] == 1
+
+
+def test_a_team_carries_what_it_lost_as_well_as_what_it_won():
+    """Unscored, and counted: "Wins 1" cannot say whether the other two were
+    lost or have not been played."""
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10),
+        game("MIA", "BUF", 24, 21),
+        game("BUF", "MIA", 14, 14),
+    ])
+    out = score_teams(sched, DIVISIONS).set_index("team")
+    assert (out.loc["BUF", "reg_wins"], out.loc["BUF", "reg_losses"],
+            out.loc["BUF", "reg_ties"]) == (1, 1, 1)
+    assert (out.loc["MIA", "reg_wins"], out.loc["MIA", "reg_losses"],
+            out.loc["MIA", "reg_ties"]) == (1, 1, 1)

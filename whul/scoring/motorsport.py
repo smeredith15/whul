@@ -85,6 +85,7 @@ def nascar_events(results: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     work["event_points"] = work["finish"].map(nascar_points)
+    _count_finishes(work, top=(1, 5, 10))
     work["league"] = "NASCAR"
     work["role"] = "Driver"
     return work.reset_index(drop=True)
@@ -157,6 +158,10 @@ def f1_events(results: pd.DataFrame) -> pd.DataFrame:
         index=work.index,
     )
     work["event_points"] = reported.fillna(computed)
+    # Grands Prix only. A sprint win is a real result and is not a win: the
+    # sport does not count one in a driver's tally and neither should a page
+    # that sits next to the sport's own.
+    _count_finishes(work, top=(1, 3, 10), only=~work["is_sprint"].astype(bool))
     work["league"] = "F1"
     work["role"] = "Driver"
     return work.reset_index(drop=True)
@@ -186,6 +191,28 @@ def score_players(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+#: What each series counts a good day as, and what the column is called. The
+#: two do not share a vocabulary: NASCAR reports wins, top fives and top tens,
+#: and Formula 1 reports wins, podiums and points finishes.
+FINISH_COUNTS = {1: "wins", 3: "podiums", 5: "top_fives", 10: "top_tens"}
+
+
+def _count_finishes(work: pd.DataFrame, top: tuple, only=None) -> None:
+    """Mark each result so the window can add them up.
+
+    One indicator column a threshold, per race, because the totals a profile
+    shows have to be the window's -- a league year opening in August holds part
+    of one season and part of the next, and a season-long count would be the
+    wrong number twice over. Summing per-race marks gives the right one for
+    whatever stretch is being asked about.
+    """
+    inside = pd.Series(True, index=work.index) if only is None else only
+    for place in top:
+        work[FINISH_COUNTS[place]] = (
+            (work["finish"] <= place) & (work["finish"] > 0) & inside
+        ).astype(float)
 
 
 def race_events(nascar: pd.DataFrame, f1: pd.DataFrame) -> pd.DataFrame:

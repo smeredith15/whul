@@ -261,11 +261,24 @@ def _price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
 def _fold(rows: pd.DataFrame) -> pd.DataFrame:
     """Team-seasons: the best competition whole, everything else at half,
     then lifted so the year's best rung reaches a full ceiling."""
+    # Every ending counted, not only the winning one. A record is the whole
+    # line -- a side that played six and won two drew or lost the other four,
+    # and "Wins 2" alone cannot say which. The club vocabulary, so a national
+    # team's line reads like a club's: shootouts kept apart from the draws
+    # they came out of, because the match itself was drawn and the shootout
+    # was a separate thing that happened after it.
+    def counted(ending: Outcome):
+        return ("outcome", lambda s, v=ending.value: int((s == v).sum()))
+
     per_comp = rows.groupby(
         ["gender", "team", "season", "competition"], as_index=False
     ).agg(points=("points", "sum"), ceiling=("ceiling", "max"),
           matches=("points", "size"),
-          wins=("outcome", lambda s: int((s == Outcome.WIN.value).sum())))
+          wins=counted(Outcome.WIN),
+          shootout_wins=counted(Outcome.SHOOTOUT_WIN),
+          draws=counted(Outcome.DRAW),
+          shootout_losses=counted(Outcome.SHOOTOUT_LOSS),
+          losses=counted(Outcome.LOSS))
 
     ranked = per_comp.sort_values("points", ascending=False)
     share = pd.Series(BEYOND_BEST_SHARE, index=ranked.index)
@@ -275,6 +288,8 @@ def _fold(rows: pd.DataFrame) -> pd.DataFrame:
     out = ranked.groupby(["gender", "team", "season"], as_index=False).agg(
         folded=("folded", "sum"), gross=("points", "sum"),
         matches=("matches", "sum"), wins=("wins", "sum"),
+        shootout_wins=("shootout_wins", "sum"), draws=("draws", "sum"),
+        shootout_losses=("shootout_losses", "sum"), losses=("losses", "sum"),
         competitions=("competition", "size"), top_rung=("ceiling", "max"),
     )
     out["lift"] = max(RUNG.values()) * SCALE / out["top_rung"]
