@@ -2381,19 +2381,54 @@ def cmd_alias(args: argparse.Namespace) -> int:
     return 0
 
 
-def _ingest_one_day(ingest_module, store, sources, season, as_of) -> list:
+def _ingest_one_day(ingest_module, store, sources, season, as_of,
+                    spent: dict | None = None) -> list:
     """One day's pull across every source asked for."""
+    import time
+
     print(f"\nIngesting {season} as of {as_of}.\n")
     reports = []
     for source in sources:
+        began = time.monotonic()
         report = ingest_module.ingest(store, source, season, as_of)
+        took = time.monotonic() - began
+        if spent is not None:
+            spent[source.key] = spent.get(source.key, 0.0) + took
         reports.append(report)
         # A skipped league is noise when every league is being tried; a league
         # that actually did something, or failed at something, is not.
         if report.pulled or report.problems != [
                 "nothing rostered in this league; skipped"]:
-            print(f"{report}\n")
+            print(f"{report}  [{took:,.1f}s]\n")
     return reports
+
+
+#: How many sources to name in the timing line. Enough to see the shape and
+#: few enough that it stays one glance.
+SLOWEST_SHOWN = 8
+
+
+def _say_where_the_time_went(spent: dict[str, float]) -> None:
+    """Which sources the pull spent itself on.
+
+    The nightly job takes ten minutes and a backfill takes forty, and until
+    this nothing said which of the twenty-four feeds that was. A run that
+    cannot say where its time goes cannot be made faster except by guessing,
+    and the guesses have been wrong before -- the fixture pull looks expensive
+    and is forty seconds of the eighteen minutes.
+    """
+    if not spent:
+        return
+    whole = sum(spent.values())
+    ranked = sorted(spent.items(), key=lambda kv: kv[1], reverse=True)
+    print(f"\n  {whole:,.0f}s in the feeds. Slowest:")
+    for key, took in ranked[:SLOWEST_SHOWN]:
+        share = 100.0 * took / whole if whole else 0.0
+        print(f"    {key:16s} {took:7,.1f}s  {share:4.1f}%")
+    rest = sum(took for _, took in ranked[SLOWEST_SHOWN:])
+    if rest:
+        print(f"    {'the rest':16s} {rest:7,.1f}s  "
+              f"{100.0 * rest / whole if whole else 0:4.1f}%")
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -2430,11 +2465,12 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         days = [first + timedelta(days=n) for n in range((as_of - first).days + 1)]
 
     reports = []
+    spent: dict[str, float] = {}
     for day in days:
         if len(days) > 1:
             print(f"\n--- {day} ---", flush=True)
         reports.extend(_ingest_one_day(
-            ingest_module, store, sources, args.season, day))
+            ingest_module, store, sources, args.season, day, spent))
 
     scored = sum(r.scored for r in reports)
     recorded = sum(r.recorded for r in reports)
@@ -2447,6 +2483,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         for pair in (*r.resolution.extra_names, *r.resolution.reordered)
     ]
     print(f"{recorded} raw rows recorded, {scored} scored.")
+    _say_where_the_time_went(spent)
     if inferred:
         # Inferred, not read: worth a glance the first time each one appears.
         print(f"\n  {len(inferred)} matched on a partial name:")

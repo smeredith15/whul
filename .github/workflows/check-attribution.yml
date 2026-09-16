@@ -1,0 +1,88 @@
+# The club-soccer attribution check, on its own.
+#
+# It was the twelfth step of the publish job and took six to seven minutes of
+# every run -- 38% of a nightly publish and a flat tax on a backfill -- for a
+# report that changes nothing and never fails the run. The standings were
+# waiting on a diagnostic.
+#
+# So it runs here instead, after the publish has finished, and the result is
+# an artifact rather than a step in the middle of the deployment. Nothing
+# about what it does has changed: it still reads every rostered club-soccer
+# player's gamelog against his club's own results, and it still only reports.
+#
+# It reads the database from the `data` branch that the publish job has just
+# written, so `workflow_run` rather than a schedule of its own -- a schedule
+# would race the publish for the state it checks.
+
+name: Check attribution
+
+on:
+  workflow_run:
+    workflows: ["Publish standings"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to check"
+        default: "2026-27"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-attribution
+  cancel-in-progress: true   # a newer database supersedes an older check
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # A publish that failed has not written the database this reads, so the
+    # check would report against yesterday's and read as a change that nobody
+    # made.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || github.event.workflow_run.conclusion == 'success'
+    env:
+      SEASON: ${{ inputs.season || '2026-27' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      # The same cache the publish job fills. Read-only here: this job must not
+      # write a key of its own, or the two would take turns overwriting each
+      # other and each would restore the other's half.
+      - name: Restore the feed cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cache
+          key: feed-cache-
+          restore-keys: |
+            feed-cache-
+
+      - name: Restore the database
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+
+      - name: Check players against their clubs' results
+        # Reports and changes nothing. What to do about a disagreement is a
+        # scoring decision, and it should be made against a few weeks of these
+        # rather than the first one.
+        run: |
+          set -o pipefail
+          python -m whul.cli check-attribution --season "$SEASON" \
+            | tee attribution.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: attribution
+          path: attribution.txt
+          if-no-files-found: ignore
