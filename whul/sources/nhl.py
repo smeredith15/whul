@@ -27,6 +27,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from whul.sources import season_is_over
+
 BASE = "https://api.nhle.com/stats/rest/en"
 #: The club-facing API, which is where divisions live. The stats API above
 #: reports a team's season totals and never says who it was competing with.
@@ -84,7 +86,12 @@ def _summary(endpoint: str, seasons: list[int], game_type: int) -> pd.DataFrame:
                 "start": 0,
                 "cayenneExp": f"seasonId={sid} and gameTypeId={game_type}",
             },
-            cache_key=f"{endpoint}/{sid}_{game_type}",
+            # Only a season that cannot gain another game. A season still
+            # being played, cached without an expiry, stops on the day it was
+            # first read -- which is how MLB's clubs sat on an eleven-day-old
+            # record while their players went on accumulating.
+            cache_key=(f"{endpoint}/{sid}_{game_type}"
+                       if season_is_over(season) else None),
         )
         rows = payload.get("data", [])
         if rows:
@@ -181,7 +188,9 @@ def load_divisions(seasons: list[int]) -> pd.DataFrame:
             # A season the API does not list is a season that has not started.
             continue
         try:
-            payload = _web(f"/standings/{end}", cache_key=f"standings/{sid}")
+            payload = _web(f"/standings/{end}",
+                           cache_key=(f"standings/{sid}"
+                                      if season_is_over(season) else None))
         except Exception:
             continue
         for row in payload.get("standings", []) if isinstance(payload, dict) else []:

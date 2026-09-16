@@ -3623,15 +3623,14 @@ def test_a_club_count_covers_clubs_nobody_drafted():
 
 
 def test_a_club_count_is_read_on_the_same_basis_his_own_is():
-    """His European matches are a bonus with a section of their own and are not
-    in his appearance count, so a club figure that counted them read as a
-    player who had missed matches he in fact played -- Arsenal on six and Saka
-    on four, the difference being a Champions League night he started."""
+    """Both sides count every competition. Mbappé read "Games played 6, Team
+    games 6" with a Champions League section under it saying he had played one
+    more: two numbers disagreeing about the same season, in the same panel."""
     import pandas as pd
 
     stats = pd.DataFrame([{"team": "Arsenal", "matches_played": 6.0,
                            "counted_matches": 5.0}])
-    assert site_build._club_games(stats)["Arsenal"] == 5.0
+    assert site_build._club_games(stats)["Arsenal"] == 6.0
 
 
 def test_what_the_league_pull_wrote_down_wins_over_a_club_row():
@@ -3659,15 +3658,48 @@ def test_a_batter_whose_club_nobody_drafted_says_so_rather_than_guessing():
     assert panel["head"] == [["Games played", "6"], ["Team games", "—"]]
 
 
-def test_a_league_whose_row_predates_the_counted_figure_still_has_one():
-    """Chosen once for the whole frame, the column a newer league carries left
-    every club in an older league's row with no figure at all -- a heading that
-    read as a club which had not played."""
+def test_a_club_with_no_match_count_gets_no_figure_rather_than_a_zero():
+    """A row stored before the count was carried. Half a heading is worse than
+    none: "Games played 4, Team games 0" reads as a club that has not played."""
     import pandas as pd
 
     stats = pd.DataFrame([
-        {"team": "Arsenal", "matches_played": 6.0, "counted_matches": 5.0},
-        {"team": "Bayern Munich", "matches_played": 5.0, "counted_matches": None},
+        {"team": "Arsenal", "matches_played": 6.0},
+        {"team": "Bayern Munich", "matches_played": None},
     ])
-    assert site_build._club_games(stats) == {
-        "Arsenal": 5.0, "Bayern Munich": 5.0}
+    assert site_build._club_games(stats) == {"Arsenal": 6.0}
+
+
+def test_a_heading_counts_every_competition_the_panel_shows():
+    """Mbappé read "Games played 6, Team games 6" with a Champions League
+    section under it saying he had played one more."""
+    row = {"league": "La Liga", "team": "Real Madrid", "matches": 6.0,
+           "starts": 6.0, "goals": 7.0, "assists": 2.0,
+           "domestic_detail": [{"competition": "La Liga", "games": 6.0,
+                                "starts": 6.0, "goals": 7.0, "assists": 2.0,
+                                "points": 46.0}],
+           "bonus_detail": [{"competition": "UEFA Champions League",
+                             "games": 1.0, "starts": 1.0, "points": 2.0,
+                             "share": 0.05, "scalar": 1.9, "adds": 3.8,
+                             "credited": False}]}
+    panel = site_build._soccer_player_panel(row, {"Real Madrid": 7.0}, "La Liga")
+
+    assert panel["head"] == [["Games played", "7"], ["Team games", "7"]]
+
+
+def test_a_competition_he_was_not_picked_for_is_not_a_section():
+    """ESPN returns a cup's whole squad and fills the figures in only where
+    they exist, so a club that played a tie hands back every player on its
+    books at nought. Guirassy's profile carried a DFB-Pokal section reading
+    "Apps / Starts 0 / 0", which says he was there and did nothing rather than
+    that he was not picked."""
+    row = {"league": "Bundesliga", "team": "Borussia Dortmund", "matches": 3.0,
+           "domestic_detail": [
+               {"competition": "Bundesliga", "games": 3.0, "starts": 3.0,
+                "goals": 2.0, "assists": 2.0, "points": 20.0},
+               {"competition": "DFB-Pokal", "games": 0.0, "starts": 0.0,
+                "goals": 0.0, "assists": 0.0, "points": 0.0},
+           ]}
+    panel = site_build._soccer_player_panel(row, {}, "Bundesliga")
+
+    assert [s["name"] for s in panel["sections"]] == ["Bundesliga"]

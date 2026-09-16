@@ -1743,14 +1743,17 @@ def _club_games(stats, recorded: dict[str, float] | None = None) -> dict[str, fl
     League", so the two cannot be joined on the competition -- only on the
     club's own name, which is unique across the clubs we carry.
 
+    Every competition, because the heading it feeds counts every competition
+    on his side too. A club figure that stopped where his total does and a
+    panel that went on to show a Champions League section under it were two
+    numbers disagreeing about the same season; both now answer the question
+    the heading is for, which is whether he played the matches his club did.
+
     ``recorded`` is every club in every league the team pull read, drafted or
     not, and is preferred. The rostered clubs' own rows are the fallback, for a
-    day pulled before that was written down. Two things were wrong with reading
-    only those rows: a player whose club nobody drafted got no figure at all --
-    Eintracht Frankfurt is nobody's pick -- and the figure that was there
-    counted every competition the club played while his own count stops at the
-    ones that count toward his total, so a Champions League night read as a
-    match he had missed.
+    day pulled before that was written down -- a player whose club nobody
+    drafted got no figure at all otherwise, and Eintracht Frankfurt is nobody's
+    pick.
 
     Falling back to his own appearances would be worse than saying nothing:
     every such player would read as one who had never missed a match.
@@ -1765,11 +1768,7 @@ def _club_games(stats, recorded: dict[str, float] | None = None) -> dict[str, fl
             team = row.get("team")
             if not isinstance(team, str) or not team.strip():
                 continue
-            played = next(
-                (value for value in
-                 (_stat_number(row, c)
-                  for c in ("counted_matches", "matches_played"))
-                 if value is not None), None)
+            played = _stat_number(row, "matches_played")
             if played is not None:
                 out[team.strip()] = float(played)
     for club, played in (recorded or {}).items():
@@ -1930,6 +1929,14 @@ def _soccer_domestic_sections(row: dict, league: str = "") -> list[dict]:
         return []
     out = []
     for entry in detail:
+        # A competition his club entered and he did not is not his season.
+        # ESPN returns a cup's whole squad and fills the figures in only where
+        # they exist, so a club that played a cup tie hands back every player
+        # on its books at nought -- and Guirassy's profile carried a DFB-Pokal
+        # section reading "Apps / Starts 0 / 0", which says he was there and
+        # did nothing rather than that he was not picked.
+        if not _stat_number(entry, "games"):
+            continue
         made = _soccer_campaign_boxes(entry)
         made.pop("apps", None)
         made["name"] = str(entry.get("competition") or "")
@@ -2014,6 +2021,16 @@ def _soccer_player_panel(row: dict, club_games: dict | None = None,
     team = row.get("team")
     club = (club_games or {}).get(team.strip()) if isinstance(team, str) else None
 
+    # Every match, on both sides of the pair. His own count stops at the
+    # competitions that count toward his total -- a European night is a bonus
+    # with a section of its own -- and a heading that said six while a
+    # Champions League section sat under it saying he had played one more was
+    # two numbers disagreeing in the same panel. The heading answers "did he
+    # play them all", so it counts what the panel shows.
+    for entry in _bonus_list(row):
+        played = _stat_number(entry, "games")
+        if played:
+            apps = played if apps is None else apps + played
     head = [
         ["Games played", "—" if apps is None else f"{apps:,.0f}"],
         ["Team games", "—" if not club else f"{club:,.0f}"],

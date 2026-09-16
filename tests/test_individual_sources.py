@@ -1181,3 +1181,80 @@ def test_one_season_alone_is_not_judged_against_neighbours(monkeypatch):
     ])
     monkeypatch.setattr(espn_ind, "event_summary", lambda league, event_id: _field("A"))
     assert not espn_ind.load_results("pga", [2026], verbose=False).empty
+
+
+# --- a season still being played cannot be cached without an expiry --------
+#
+# The same fault, four times over, in four feeds. A cache key naming a season
+# or a week that can still gain a game keeps whatever it read first: MLB's 2026
+# schedule was written to disk on 5 September and served from there for eleven
+# days, so every club's record stopped on that date while its players went on
+# accumulating. Milwaukee sat on twelve wins and eighteen games through a
+# fortnight of baseball, and the only thing that said so was a batter with more
+# games played than his club.
+
+def _asked(module, attr="_get"):
+    """Record the cache key each request was made under."""
+    seen = []
+
+    def fake(*args, **kwargs):
+        seen.append(kwargs.get("cache_key"))
+        return {}
+
+    return seen, fake
+
+
+def test_a_baseball_season_in_progress_is_not_cached(monkeypatch):
+    from whul.sources import mlb
+
+    seen, fake = _asked(mlb)
+    monkeypatch.setattr(mlb, "_get", fake)
+    monkeypatch.setattr(mlb, "season_is_over", lambda season: season < 2026)
+
+    mlb.load_schedule([2024, 2026])
+
+    assert seen == ["schedule/2024", None], "the season being played was cached"
+
+
+def test_a_football_week_of_a_season_in_progress_is_not_cached(monkeypatch):
+    from whul.sources import ncaa_api
+
+    seen, fake = _asked(ncaa_api)
+    monkeypatch.setattr(ncaa_api, "_get", lambda path, **k: (
+        seen.append(k.get("cache_key")) or {}))
+    monkeypatch.setattr(ncaa_api, "season_is_over", lambda season: season < 2026)
+
+    ncaa_api.scoreboard_week("ncaaf", 2024, 3)
+    ncaa_api.scoreboard_week("ncaaf", 2026, 3)
+
+    assert seen == ["ncaaf/2024-week03", None]
+
+
+def test_a_football_date_that_has_not_settled_is_not_cached(monkeypatch):
+    from datetime import date
+
+    from whul.sources import ncaa_api
+
+    seen = []
+    monkeypatch.setattr(ncaa_api, "_get", lambda path, **k: (
+        seen.append(k.get("cache_key")) or {}))
+    monkeypatch.setattr(ncaa_api, "_has_settled",
+                        lambda day, today=None: day < date(2026, 9, 14))
+
+    ncaa_api.scoreboard("ncaam", date(2026, 9, 10))
+    ncaa_api.scoreboard("ncaam", date(2026, 9, 15))
+
+    assert seen == ["ncaam/2026-09-10", None]
+
+
+def test_a_hockey_season_in_progress_is_not_cached(monkeypatch):
+    from whul.sources import nhl
+
+    seen = []
+    monkeypatch.setattr(nhl, "_get", lambda path, params, **k: (
+        seen.append(k.get("cache_key")) or {"data": []}))
+    monkeypatch.setattr(nhl, "season_is_over", lambda season: season < 2027)
+
+    nhl._summary("skater", [2025, 2027], 2)
+
+    assert seen == ["skater/20242025_2", None], f"got {seen}"

@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
 import requests
+
+from whul.sources import season_is_over
 
 BASE = "https://ncaa-api.henrygd.me"
 
@@ -99,10 +101,22 @@ def _get(path: str, cache_key: str | None = None) -> dict:
     return payload
 
 
+#: How long after a date its results stop changing. A game finishing late
+#: local time is still being corrected the next morning, and a cache with no
+#: expiry keeps whatever it read first for ever.
+SETTLE_DAYS = 2
+
+
+def _has_settled(day: date, today: date | None = None) -> bool:
+    return day < (today or date.today()) - timedelta(days=SETTLE_DAYS)
+
+
 def scoreboard(league: str, day: date) -> dict:
     sport, division = SPORT_PATHS[league]
     path = f"/scoreboard/{sport}/{division}/{day.year}/{day.month:02d}/{day.day:02d}/all-conf"
-    return _get(path, cache_key=f"{league}/{day.isoformat()}")
+    # Only a date whose results can no longer change.
+    return _get(path, cache_key=(f"{league}/{day.isoformat()}"
+                                 if _has_settled(day) else None))
 
 
 def scoreboard_week(league: str, season: int, week: int) -> dict:
@@ -115,7 +129,12 @@ def scoreboard_week(league: str, season: int, week: int) -> dict:
     """
     sport, division = SPORT_PATHS[league]
     path = f"/scoreboard/{sport}/{division}/{season}/{week:02d}/all-conf"
-    return _get(path, cache_key=f"{league}/{season}-week{week:02d}")
+    # Only a season that cannot gain another game. A week of a season being
+    # played is a week that can still change -- and cached without an expiry it
+    # kept whatever it held when it was first asked, which for a week read on
+    # its own Saturday is a fraction of it.
+    return _get(path, cache_key=(f"{league}/{season}-week{week:02d}"
+                                 if season_is_over(season) else None))
 
 
 #: The API exposes several name forms and does not populate all of them; the
