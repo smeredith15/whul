@@ -517,3 +517,148 @@ def test_the_league_year_starts_after_the_cincinnati_final():
     assert current.contains(date(2026, 8, 26)), "Winston-Salem is this league year"
     assert current.contains(date(2026, 8, 31)), "the US Open is this league year"
     assert season_start("ATP") == season_start("WTA") == season_start("Tennis")
+
+
+# --- which side the feed wrote first is not a fact about the match ---------
+
+def test_a_straight_sets_win_written_loser_first_is_still_straight():
+    """Flashscore writes a score home first, not winner first. Across one
+    league year of its rows 76 had the winner first and 66 had the loser
+    first, and every one of those 66 read as a winner who had dropped every
+    set -- so nearly half the straight-sets bonuses went unpaid."""
+    from whul.scoring.tennis import is_straight_sets
+
+    assert is_straight_sets("6-3 6-4") is True
+    assert is_straight_sets("3-6 4-6") is True, "the same win, written the other way"
+    assert is_straight_sets("6-2 6-7 2-6") is False
+    assert is_straight_sets("2-6 7-6 6-2") is False
+
+
+def test_an_unfinished_score_is_not_a_straight_sets_win():
+    """A level score has nothing to orient it by, and reading it either way
+    finds a dropped set -- which is the cautious answer."""
+    from whul.scoring.tennis import is_straight_sets
+
+    assert is_straight_sets("6-3 3-6") is False
+
+
+def test_a_retirement_orients_the_same_way():
+    from whul.scoring.tennis import is_straight_sets
+
+    assert is_straight_sets("6-3 3-1 RET") is True
+    assert is_straight_sets("3-6 1-3 RET") is True, "the same, written the other way"
+    assert is_straight_sets("6-3 4-6 1-0 RET") is False
+
+
+def test_a_grand_slam_semi_final_pays_what_the_tour_says_it_does():
+    """Coco Gauff's US Open, end to end. She won five matches and lost the
+    semi-final, so she is paid for the five: 50 + 50 + 100 + 200 + 400 = 800,
+    which is what the tour's own list says (780 on the women's scale, which we
+    read on the men's for one table across both tours). Four of the five were
+    straight-sets wins, at a quarter of what each win itself paid."""
+    from whul.scoring import tennis as scorer
+
+    def played(rnd, winner, loser, score):
+        return {"tournament": "US Open", "category": "Grand Slam", "round": rnd,
+                "winner": winner, "loser": loser, "score": score,
+                "date": "2026-09-01", "season": 2026, "tour": "WTA",
+                "draw_size": 128}
+
+    ME = "Coco Gauff"
+    events = scorer.match_events(pd.DataFrame([
+        played("R128", ME, "Z. Sonmez", "6-3 6-4"),
+        played("R64", ME, "P. Badosa", "6-4 7-6"),
+        # Written loser first, as the feed wrote them.
+        played("R32", ME, "C. Bucsa", "3-6 4-6"),
+        played("R16", ME, "I. Jovic", "1-6 4-6"),
+        played("QF", ME, "M. Andreeva", "6-2 6-7 2-6"),
+        played("SF", "E. Rybakina", ME, "6-3 4-6 4-6"),
+    ]), losses=True)
+    hers = events[events["player"] == ME]
+
+    raw = float((hers["event_points"] - hers["straight_points"]).sum())
+    assert raw == 800.0
+    assert float(hers["straight_points"].sum()) == 12.5 + 12.5 + 25 + 50 == 100.0
+
+
+def test_a_player_wins_a_knockout_round_once():
+    """Two feeds describing the same match do not always agree on how to spell
+    the other player. Rybakina's US Open third round arrived twice -- beating
+    "Yulia Starodubtseva" and "Yulia Starodubtsewa", two days apart, the score
+    written from opposite sides -- and she finished the tournament on 2100 of
+    a possible 2000."""
+    from whul.scoring import tennis as scorer
+
+    def played(rnd, loser, score, day, draw=128):
+        return {"tournament": "US Open", "category": "Grand Slam", "round": rnd,
+                "winner": "E. Rybakina", "loser": loser, "score": score,
+                "date": day, "season": 2026, "tour": "WTA", "draw_size": draw}
+
+    twice = scorer.score_matches(pd.DataFrame([
+        played("R32", "Y. Starodubtseva", "7-6 6-3", "2026-09-04"),
+        played("R32", "Y. Starodubtsewa", "6-7 3-6", "2026-09-06"),
+    ]))
+
+    assert len(twice) == 1
+    assert twice["date"].iloc[0] == "2026-09-04", "the earliest sighting is kept"
+
+
+def test_a_group_stage_and_a_team_tie_are_not_a_knockout_round():
+    """A round-robin group gives a player three wins in the same round of the
+    same tournament, and a Davis Cup tie gives him two rubbers under whatever
+    round the tie was filed as. Neither is a draw the rule applies to."""
+    from whul.scoring import tennis as scorer
+
+    group = scorer.score_matches(pd.DataFrame([
+        {"tournament": "Turin", "category": "Tour Finals", "round": "RR",
+         "winner": "A. Fils", "loser": name, "score": "6-4 6-4",
+         "date": "2026-11-1%d" % i, "season": 2026, "tour": "ATP",
+         "draw_size": 8}
+        for i, name in enumerate(("P", "Q", "R"))
+    ]))
+    assert len(group) == 3
+
+    tie = scorer.score_matches(pd.DataFrame([
+        {"tournament": "Davis Cup", "category": "International", "round": "R32",
+         "winner": "A. Fils", "loser": name, "score": "6-4 6-4",
+         "date": "2026-09-12", "season": 2026, "tour": "ATP", "draw_size": 16}
+        for name in ("S", "T")
+    ]))
+    assert len(tie) == 2
+
+
+def test_a_round_won_twice_is_named_rather_than_quietly_corrected():
+    """Dropping it silently is how the fault stayed hidden. Two Rybakina rows
+    in the same round of the same tournament is a name the feeds disagree
+    about, and that is worth seeing rather than being corrected every night
+    for ever with nothing said."""
+    from whul.scoring import tennis as scorer
+
+    scorer.take_collisions()
+    scorer.score_matches(pd.DataFrame([
+        {"tournament": "US Open", "category": "Grand Slam", "round": "R32",
+         "winner": "E. Rybakina", "loser": loser, "score": "7-6 6-3",
+         "date": day, "season": 2026, "tour": "WTA", "draw_size": 128}
+        for loser, day in (("Y. Starodubtseva", "2026-09-04"),
+                           ("Y. Starodubtsewa", "2026-09-06"))
+    ]))
+    said = scorer.take_collisions()
+
+    assert len(said) == 1
+    assert "1 match(es)" in said[0]
+    assert "Starodubtsewa" in said[0]
+    assert scorer.take_collisions() == [], "reported once, not every run"
+
+
+def test_a_clean_draw_says_nothing():
+    from whul.scoring import tennis as scorer
+
+    scorer.take_collisions()
+    scorer.score_matches(pd.DataFrame([
+        {"tournament": "US Open", "category": "Grand Slam", "round": rnd,
+         "winner": "E. Rybakina", "loser": "X", "score": "6-4 6-4",
+         "date": "2026-09-0%d" % i, "season": 2026, "tour": "WTA",
+         "draw_size": 128}
+        for i, rnd in enumerate(("R128", "R64", "R32"), start=1)
+    ]))
+    assert scorer.take_collisions() == []

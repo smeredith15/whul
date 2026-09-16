@@ -269,6 +269,26 @@ def best_of_for(category: str | None, tour: str | None) -> int:
     return 5 if (is_slam and is_mens) else DEFAULT_BEST_OF
 
 
+def from_the_winners_side(sets: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The set scores read from whoever won the match.
+
+    Which side a feed writes first is the feed's business and not a fact about
+    the match. Flashscore writes home first: across one league year of its
+    rows, 76 had the winner first and 66 had the loser first, and every one of
+    the 66 read as a winner who had dropped every set. So the bonus for winning
+    in straight sets was missed on nearly half of them -- Coco Gauff's US Open
+    came back with two of its four straight-sets wins paid.
+
+    It cannot be got wrong from the sets themselves: a completed match's winner
+    is whoever won more of them. A score that is level has not finished, and is
+    left alone -- there is nothing to orient it by, and reading it either way
+    finds a dropped set, which is the cautious answer.
+    """
+    won = sum(1 for first, second in sets if first > second)
+    lost = sum(1 for first, second in sets if second > first)
+    return [(second, first) for first, second in sets] if lost > won else sets
+
+
 def is_straight_sets(score: str | None, winner_first: bool = True) -> bool:
     """Whether the winner dropped no set, and played enough of a match to say.
 
@@ -277,6 +297,10 @@ def is_straight_sets(score: str | None, winner_first: bool = True) -> bool:
     was completed: '6-3 3-1 RET' qualifies and '6-3 4-6 1-0 RET' does not, but
     neither does '3-1 RET', where the loser stopped during the opening set and
     nothing was really won.
+
+    ``winner_first`` says which side the *feed* wrote first, and is now only a
+    starting point: the sets say which side actually won, and they are read
+    that way round whatever the column order claimed.
     """
     if is_walkover(score):
         return False
@@ -285,6 +309,7 @@ def is_straight_sets(score: str | None, winner_first: bool = True) -> bool:
         return False
     if not winner_first:
         sets = [(b, a) for a, b in sets]
+    sets = from_the_winners_side(sets)
     if any(b > a for a, b in sets):
         return False
     return not (is_retirement(score) and not any(is_complete_set(s) for s in sets))
@@ -295,6 +320,66 @@ def straight_sets_multiplier(best_of: float | None) -> float:
     if best_of is None or pd.isna(best_of):
         best_of = DEFAULT_BEST_OF
     return STRAIGHT_SETS_MULTIPLIER.get(int(best_of), STRAIGHT_SETS_MULTIPLIER[DEFAULT_BEST_OF])
+
+
+#: Matches this scorer refused, for the run to report. Dropping a duplicate
+#: silently is how the fault stayed hidden: two Rybakina rows in the same round
+#: of the same tournament is a name the feeds disagree about, and that is worth
+#: seeing rather than quietly correcting every night for ever.
+COLLISIONS: list[str] = []
+
+#: How many to name before the count stands in for the rest.
+COLLISIONS_SHOWN = 4
+
+
+def take_collisions() -> list[str]:
+    """Everything the draw's own rule refused, and clear it."""
+    said, COLLISIONS[:] = list(COLLISIONS), []
+    return said
+
+
+def _one_win_a_round(work: pd.DataFrame) -> pd.DataFrame:
+    """A player wins a round of a knockout draw once, or not at all.
+
+    Two feeds describing the same match do not always agree on how to spell the
+    other player: Elena Rybakina's US Open third round arrived twice, once
+    beating "Yulia Starodubtseva" and once "Yulia Starodubtsewa", two days
+    apart, with the score written from opposite sides. Nothing upstream can
+    collapse those -- the opponent's name is part of what makes a match unique,
+    and it has to be, because a round-robin group gives a player three wins in
+    the same round of the same tournament. So the draw's own rule is applied
+    here instead, where the round is known: she was paid for the round twice
+    and finished the tournament on 2100 of a possible 2000.
+
+    Two exceptions, and they are the reason the rule has to be applied here
+    rather than to the key: a round-robin group gives a player three wins in
+    the same round of the same tournament, and a Davis Cup tie gives him two
+    rubbers filed under whatever round the tie itself was. Neither is a
+    knockout draw, and neither is touched.
+
+    The earliest sighting is the one kept, so a copy that arrived with the
+    wrong date cannot move a match into a different window.
+    """
+    if work.empty:
+        return work
+    ordered = work.sort_values("date", kind="stable")
+    knockout = (ordered["round"] != RR) & (ordered["tier"] != "INTERNATIONAL")
+    twice = ordered.duplicated(
+        subset=["season", "tournament", "round", "winner"], keep="first"
+    ) & knockout
+    if twice.any():
+        shown = "; ".join(
+            f"{row.winner} beat {row.loser} in the {row.round} of "
+            f"{row.tournament} twice"
+            for row in ordered[twice].head(COLLISIONS_SHOWN).itertuples()
+        )
+        COLLISIONS.append(
+            f"{int(twice.sum())} match(es) had a player winning the same "
+            f"knockout round twice, which cannot happen; they are scored once "
+            f"and the second copy is the two feeds disagreeing about a name: "
+            f"{shown}"
+        )
+    return ordered[~twice]
 
 
 def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
@@ -339,6 +424,8 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     work = work[scorable].copy()
     if work.empty:
         return pd.DataFrame()
+
+    work = _one_win_a_round(work)
 
     # Which rounds each player has a result in at each tournament. Only wins
     # appear in this feed, so a player's last round is the one they lost -- but

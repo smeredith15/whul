@@ -934,11 +934,11 @@ def _drain_findings(notes) -> None:
     a log is not read on the nights it says nothing is wrong.
     """
     from whul import benchmark_sources
+    from whul.scoring import tennis
 
-    if notes is None:
-        benchmark_sources.take_findings()
-        return
-    notes.extend(benchmark_sources.take_findings())
+    said = benchmark_sources.take_findings() + tennis.take_collisions()
+    if notes is not None:
+        notes.extend(said)
 
 
 def _scored_on(score, kept, as_of: date):

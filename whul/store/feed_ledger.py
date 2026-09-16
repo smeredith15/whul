@@ -48,20 +48,112 @@ def _part(value) -> str:
     return _SPACES.sub(" ", str("" if value is None else value)).strip().casefold()
 
 
-def row_key(row: dict, keys: tuple[str, ...]) -> str:
+def row_key(row: dict, keys: tuple[str, ...],
+            names: dict[str, str] | None = None) -> str:
     """One row's identity, as one string.
 
     Normalized, because the same match reaches this table from more than one
     source: tonight's feed, a database the history was seeded from, a list
     typed by hand. A key that treated those spellings as different would pay
     for the same win twice.
+
+    ``names`` closes the gap normalizing cannot: case and spacing are the only
+    differences it can settle, and two feeds naming the same person differently
+    is not one of them. The Flashscore scraper resolves Carlos Alcaraz as
+    "Carlos Alcaraz Garfia" and a list typed by hand calls him "Carlos
+    Alcaraz"; both are in the alias table against the same player, and without
+    reading it the ledger held his season as two players, 575 points under the
+    name on the roster and 525 under one nobody holds.
     """
+    if names:
+        return KEY_SEPARATOR.join(
+            _part(names.get(_part(row.get(k)), row.get(k))) for k in keys)
     return KEY_SEPARATOR.join(_part(row.get(k)) for k in keys)
+
+
+def canonical_names(store: Store, source: str) -> dict[str, str]:
+    """Every spelling of a player this source knows, mapped onto one of them.
+
+    From the alias table, which is where the resolver has already recorded that
+    two spellings are the same person. Only the ones it has judged: a name it
+    has never seen is left as it is, because guessing that two similar names
+    are one player is the mistake this whole file is written to avoid.
+
+    Which spelling wins is decided by the ledger rather than by us -- the one
+    already holding rows is the one the rest fold onto, so a list arriving
+    later defers to what is stored instead of renaming it.
+    """
+    aliases = store.query(
+        "SELECT a.source_key, a.asset_id, s.display_name FROM asset_aliases a "
+        "JOIN assets s ON s.asset_id = a.asset_id WHERE a.source = ?",
+        (source,),
+    )
+    if aliases.empty:
+        return {}
+    spellings: dict[str, list[str]] = {}
+    for row in aliases.itertuples():
+        # The roster's own spelling counts as one of them. The alias table
+        # records what the *feed* called him, and a list typed by hand uses
+        # the name on the roster -- which is how "Carlos Alcaraz" and "Carlos
+        # Alcaraz Garfia" sat in the same ledger as two players.
+        for name in (row.source_key, row.display_name):
+            if str(name).strip():
+                spellings.setdefault(str(row.asset_id), []).append(str(name))
+
+    held = store.query(
+        "SELECT payload FROM feed_rows WHERE source = ?", (source,))
+    seen: dict[str, int] = {}
+    for payload in held["payload"] if not held.empty else []:
+        try:
+            row = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        for value in row.values():
+            if isinstance(value, str) and value.strip():
+                key = _part(value)
+                seen[key] = seen.get(key, 0) + 1
+
+    out: dict[str, str] = {}
+    for variants in spellings.values():
+        if len(variants) < 2:
+            continue
+        # Most seen in the ledger, then longest, then alphabetical: a rule that
+        # gives the same answer every run, whatever order the aliases arrive in.
+        best = max(variants, key=lambda name: (seen.get(_part(name), 0),
+                                               len(name), name))
+        for name in variants:
+            if _part(name) != _part(best):
+                out[_part(name)] = best
+    return out
+
+
+def canonical_row(row: dict, keys: tuple[str, ...],
+                  names: dict[str, str] | None) -> dict:
+    """The row with its identity fields spelled the way the ledger spells them.
+
+    The key alone is not enough. A match only the typed list holds keeps its
+    own payload, and the scorer reads the payload -- so Carlos Alcaraz's first
+    two rounds went on scoring under the name the list used while the rest of
+    his tournament scored under the feed's, and the roster holds one of them.
+
+    Only the identity fields, and only the spellings the alias table has
+    already judged to be the same person.
+    """
+    if not names:
+        return row
+    out = dict(row)
+    for key in keys:
+        value = out.get(key)
+        if isinstance(value, str):
+            wanted = names.get(_part(value))
+            if wanted:
+                out[key] = wanted
+    return out
 
 
 def record(store: Store, source: str, frame: pd.DataFrame,
            keys: tuple[str, ...], now: str | None = None,
-           overwrite: bool = True) -> int:
+           overwrite: bool = True, names: dict[str, str] | None = None) -> int:
     """Write down every row, keeping the first sighting of each.
 
     A row already held has its payload replaced -- a result the feed corrects
@@ -88,6 +180,7 @@ def record(store: Store, source: str, frame: pd.DataFrame,
     for payload in frame.to_dict("records"):
         clean = {k: (None if pd.isna(v) else v) if not isinstance(v, (list, dict))
                  else v for k, v in payload.items()}
+        clean = canonical_row(clean, keys, names)
         rows.append((
             source, row_key(clean, keys), str(clean.get("season") or ""),
             json.dumps(clean, default=str), stamp, stamp,
@@ -127,6 +220,62 @@ def load(store: Store, source: str) -> pd.DataFrame:
     return pd.DataFrame([json.loads(p) for p in held["payload"]])
 
 
+def rekey(store: Store, source: str, keys: tuple[str, ...],
+          names: dict[str, str] | None = None) -> int:
+    """Move rows written under a superseded key scheme onto the current one.
+
+    A ledger row is only unique for the key it was written under, so changing
+    what identifies a row leaves every earlier row filed under a name nothing
+    will ever collide with -- and the union then hands the same match back
+    twice. Coco Gauff's US Open was scored as nine matches: the four her
+    tournament was re-recorded under both schemes, counted once each way. Her
+    Grand Slam total read 1500 where the tour's own list says 800.
+
+    Re-keyed rather than deleted, because a row the feed has stopped serving
+    is exactly what this table exists to keep: dropping the old copy of a match
+    that has aged out of the window would lose it for good. Where the newer
+    scheme already holds the match, the older row folds into it and the earlier
+    sighting wins -- that date is the only record of when it was played that
+    survives the feed forgetting.
+    """
+    held = store.query(
+        "SELECT row_key, payload, first_seen FROM feed_rows WHERE source = ?",
+        (source,),
+    )
+    if held.empty:
+        return 0
+    stale = []
+    for row in held.itertuples():
+        try:
+            payload = json.loads(row.payload)
+        except (TypeError, ValueError):
+            continue
+        payload = canonical_row(payload, keys, names)
+        wanted = row_key(payload, keys)
+        if wanted != row.row_key or json.dumps(payload, default=str) != row.payload:
+            stale.append((row.row_key, wanted,
+                          json.dumps(payload, default=str), str(row.first_seen)))
+    if not stale:
+        return 0
+    with store.transaction() as conn:
+        for was, wanted, payload, first in stale:
+            conn.execute(
+                "INSERT INTO feed_rows (source, row_key, season, payload, "
+                "first_seen, last_seen) "
+                "SELECT ?, ?, season, ?, ?, last_seen FROM feed_rows "
+                "WHERE source = ? AND row_key = ? "
+                "ON CONFLICT (source, row_key) DO UPDATE SET "
+                "  first_seen = MIN(feed_rows.first_seen, excluded.first_seen)",
+                (source, wanted, payload, first, source, was),
+            )
+            if wanted != was:
+                conn.execute(
+                    "DELETE FROM feed_rows WHERE source = ? AND row_key = ?",
+                    (source, was),
+                )
+    return len(stale)
+
+
 def merge(store: Store, source: str, frame: pd.DataFrame,
           keys: tuple[str, ...]) -> pd.DataFrame:
     """Record what the feed is showing now, and return everything it ever has.
@@ -135,7 +284,16 @@ def merge(store: Store, source: str, frame: pd.DataFrame,
     answers for the season, which is the difference between a quiet week and a
     season that unhappened.
     """
-    record(store, source, frame, keys)
+    names = canonical_names(store, source)
+    moved = rekey(store, source, keys, names)
+    if moved:
+        # A correction to what is stored, not a fact about tonight's feed, so
+        # it is said out loud once rather than left to be inferred from a
+        # total that quietly halved.
+        print(f"  {source}: {moved} row(s) were filed under a superseded key "
+              f"and were being counted twice; moved onto the current one",
+              flush=True)
+    record(store, source, frame, keys, names=names)
     held = load(store, source)
     return held if not held.empty else (frame if frame is not None else pd.DataFrame())
 
@@ -196,6 +354,12 @@ def apply_seed(store: Store, source: str, keys: tuple[str, ...],
     Run on every pull, not once: the ledger lives in a database that is rebuilt
     and force-pushed by three workflows, and a history that had to be restored
     by remembering to restore it is one that will eventually not be.
+
+    Keyed through the alias table, because a list typed by hand uses the name
+    on the roster and the feed uses whatever its scraper resolved. Without that
+    the two never collide, and "adds only what is missing" adds a second copy
+    of a match that was already there under another spelling of the same
+    player.
     """
     held = read_seed(source, root)
     if held.empty:
@@ -203,4 +367,5 @@ def apply_seed(store: Store, source: str, keys: tuple[str, ...],
     # Adds only what is missing. The seed overlaps the feed -- both cover the
     # last week of it -- and where they describe the same match the one the
     # feed wrote down is the one to keep.
-    return record(store, source, held, keys, overwrite=False)
+    return record(store, source, held, keys, overwrite=False,
+                  names=canonical_names(store, source))

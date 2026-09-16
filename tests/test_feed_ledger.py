@@ -537,3 +537,144 @@ def test_the_club_key_names_columns_the_pull_actually_produces(monkeypatch):
         assert not missing, (
             f"{source.key} is keyed on {missing}, which its own pull does not "
             f"return, so every run of it raises before it scores anything")
+
+
+# --- a key scheme that changed under the ledger ----------------------------
+
+def test_a_row_written_under_an_old_key_is_not_paid_for_twice(store):
+    """A ledger row is only unique for the key it was written under. Changing
+    what identifies a row left every earlier one filed under a name nothing
+    would ever collide with, and the union handed the same match back twice:
+    Coco Gauff's US Open scored as nine matches instead of five, and her Grand
+    Slam total read 1500 where the tour's own list says 800."""
+    keys = ("season", "tournament", "round", "winner", "loser")
+    match = {"season": 2026, "tournament": "US Open", "round": "R32",
+             "winner": "Coco Gauff", "loser": "Cristina Bucsa",
+             "score": "3-6 4-6", "match_uid": "SStV7i8F"}
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), ("match_uid",))
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), keys)
+    assert len(feed_ledger.load(store, "tennis")) == 2, "the fault, for the record"
+
+    assert feed_ledger.rekey(store, "tennis", keys) == 1
+    assert len(feed_ledger.load(store, "tennis")) == 1
+
+
+def test_re_keying_keeps_a_match_the_new_scheme_never_saw(store):
+    """The row the feed has stopped serving is exactly what this table exists
+    to keep, so an old-scheme row is moved rather than dropped."""
+    keys = ("season", "tournament", "round", "winner", "loser")
+    match = {"season": 2026, "tournament": "Cincinnati", "round": "F",
+             "winner": "A. Fils", "loser": "B. Other", "score": "6-4 6-4",
+             "match_uid": "aged-out"}
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), ("match_uid",))
+    feed_ledger.rekey(store, "tennis", keys)
+
+    held = feed_ledger.load(store, "tennis")
+    assert list(held["tournament"]) == ["Cincinnati"]
+    assert feed_ledger.rekey(store, "tennis", keys) == 0, "and it stays put"
+
+
+def test_the_earlier_sighting_survives_the_move(store):
+    """That date is the only record of when a match was played that survives
+    the feed forgetting it."""
+    keys = ("season", "tournament", "round", "winner", "loser")
+    match = {"season": 2026, "tournament": "US Open", "round": "R32",
+             "winner": "C. Gauff", "loser": "C. Bucsa", "score": "3-6 4-6",
+             "match_uid": "x1"}
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), ("match_uid",),
+                       now="2026-09-05T00:00:00.000+00:00")
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), keys,
+                       now="2026-09-11T00:00:00.000+00:00")
+    feed_ledger.rekey(store, "tennis", keys)
+
+    held = store.query("SELECT first_seen FROM feed_rows WHERE source = 'tennis'")
+    assert list(held["first_seen"]) == ["2026-09-05T00:00:00.000+00:00"]
+
+
+# --- the same player under two spellings -----------------------------------
+
+def _rostered(store, asset_id, display, feed_spelling):
+    store.upsert("assets", [{
+        "asset_id": asset_id, "asset_type": "Player", "display_name": display,
+        "league": "ATP", "role": "Singles", "norm_key": "ATP",
+        "active": 1, "created_at": "2026-08-21"}], keys=("asset_id",))
+    store.upsert("asset_aliases", [{
+        "source": "tennis", "source_key": feed_spelling, "asset_id": asset_id,
+        "match_kind": "name", "needs_review": 0,
+        "created_at": "2026-09-05T00:00:00.000+00:00"}],
+        keys=("source", "source_key"))
+
+
+KEYS = ("season", "tournament", "round", "winner", "loser")
+
+
+def _won(winner, loser="Y. Wu", rnd="R32"):
+    return {"season": 2026, "tournament": "US Open", "round": rnd,
+            "winner": winner, "loser": loser, "score": "6-4 6-4",
+            "category": "Grand Slam", "tour": "ATP", "date": "2026-09-04"}
+
+
+def test_the_roster_s_spelling_and_the_feed_s_are_one_player(store):
+    """The scraper resolves him as "Carlos Alcaraz Garfia" and a list typed by
+    hand calls him "Carlos Alcaraz". Both are the same asset, and the alias
+    table is where that is already written down."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia")]), KEYS)
+
+    assert feed_ledger.canonical_names(store, "tennis") == {
+        "carlos alcaraz": "Carlos Alcaraz Garfia"}
+
+
+def test_a_typed_list_does_not_add_a_second_copy_of_a_match_already_held(store):
+    """"Adds only what is missing" added a match that was already there under
+    another spelling of the same player, because the two never collided."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia")]), KEYS)
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([_won("Carlos Alcaraz")]),
+                       KEYS, overwrite=False,
+                       names=feed_ledger.canonical_names(store, "tennis"))
+
+    held = feed_ledger.load(store, "tennis")
+    assert len(held) == 1
+    assert list(held["winner"]) == ["Carlos Alcaraz Garfia"], "the ledger's own"
+
+
+def test_a_match_only_the_typed_list_holds_is_spelled_the_ledger_s_way(store):
+    """The key alone is not enough: the scorer reads the payload, so his first
+    two rounds went on scoring under one name while the rest of his tournament
+    scored under the other, and the roster holds one of them."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia", rnd="R32")]), KEYS)
+    # A round the feed's window no longer reaches, so only the list has it.
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz", loser="R. Safiullin", rnd="R128")]), KEYS)
+
+    feed_ledger.rekey(store, "tennis", KEYS,
+                      feed_ledger.canonical_names(store, "tennis"))
+
+    held = feed_ledger.load(store, "tennis")
+    assert len(held) == 2
+    assert set(held["winner"]) == {"Carlos Alcaraz Garfia"}
+
+
+def test_a_player_nobody_drafted_is_left_alone(store):
+    """Guessing that two similar names are one player is the mistake this file
+    is written to avoid. Only what the alias table has already judged."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia", loser="Yulia Starodubtseva"),
+        _won("Carlos Alcaraz Garfia", loser="Yulia Starodubtsewa"),
+    ]), KEYS)
+
+    assert len(feed_ledger.load(store, "tennis")) == 2
