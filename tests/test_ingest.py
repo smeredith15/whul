@@ -1688,3 +1688,29 @@ def test_a_frame_with_no_game_count_writes_nothing_rather_than_a_zero():
     assert ing._record_club_games(
         store, pd.DataFrame([{"team": "SEA", "reg_wins": 3}]),
         Source(), "2026-27", _date(2026, 9, 16)) == 0
+
+
+def test_a_key_the_source_cannot_produce_costs_the_ledger_not_the_league():
+    """It cost the league. Every club-soccer source failed outright for two
+    days over one column name -- and the ledger is a guard against a feed
+    forgetting, so losing the guard is worth far less than losing the pull."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    window = pd.DataFrame([{"team": "Arsenal", "date": "2026-09-15",
+                            "goals_for": 2, "goals_against": 0}])
+
+    class Source:
+        key, league, asset_type = "epl", "Premier League", "Team"
+        accumulates = ("nothing_like_this",)
+        windowed = False
+
+    notes: list[str] = []
+    fetch = ing._accumulating(lambda years: window, Source(),
+                              open_store(":memory:"), verbose=False, notes=notes)
+    got = fetch([2026])
+
+    assert list(got["team"]) == ["Arsenal"], "the pull went on"
+    assert notes and "cannot be accumulated" in notes[0]

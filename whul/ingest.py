@@ -786,7 +786,21 @@ def _accumulating(fetch, source, store: Store, verbose: bool = True,
         # restore it is one that eventually is not.
         seeded = feed_ledger.apply_seed(store, source.key, source.accumulates)
         window = fetch(years)
-        held = feed_ledger.merge(store, source.key, window, source.accumulates)
+        try:
+            held = feed_ledger.merge(store, source.key, window, source.accumulates)
+        except KeyError as exc:
+            # A key naming a column the source does not produce. Loud, and not
+            # fatal: this is a guard against a feed forgetting, and losing the
+            # guard is worth one league's pull, which is what happened -- every
+            # club-soccer source failed outright for two days over a column
+            # name.
+            said = (f"{source.key} cannot be accumulated: {exc}. Tonight's "
+                    f"pull is scored as it came, so a match the feed has "
+                    f"stopped returning is lost until this is fixed")
+            if notes is not None:
+                notes.append(said)
+            print(f"  {said}", flush=True)
+            return window if window is not None else pd.DataFrame()
         if verbose:
             fresh = 0 if window is None or window.empty else len(window)
             print(f"  {source.key}: {fresh} row(s) in the feed's window, "

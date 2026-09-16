@@ -1232,8 +1232,14 @@ SOURCES: dict[str, Source] = _register(
                # unidentified match in a competition to the same row and lose
                # all but the last. The two legs of a tie are the case this has
                # to separate, and they differ by date.
-               accumulates=("season_year", "competition_key", "date",
-                            "team", "opponent"))
+               #
+               # No season: `load_soccer_matches` drops `season_year` on the
+               # way out -- "the feed's season label chose the rows; it is not
+               # for the scorers to read" -- and naming it here took every
+               # club-soccer pull down with a KeyError for two days. The date
+               # carries the year anyway, so nothing is lost by not saying it
+               # twice.
+               accumulates=("competition_key", "date", "team", "opponent"))
         for key, category in SOCCER_CATEGORIES.items()
     ],
     # The seasons asked for are the European shape only. MLS runs inside a

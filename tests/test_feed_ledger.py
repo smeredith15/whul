@@ -496,3 +496,44 @@ def test_last_league_year_is_not_reported_as_missing(store):
                      store=store, notes=notes)
 
     assert not [n for n in notes if "returned before" in n]
+
+
+def test_the_club_key_names_columns_the_pull_actually_produces(monkeypatch):
+    """Every club-soccer source failed outright for two days -- `could not
+    pull: KeyError: 'epl rows have no season_year to key on'` -- because the
+    key named a column `load_soccer_matches` drops on the way out. The ledger
+    refuses a key it cannot find, which is right; what was missing was anything
+    checking the key against the frame before a nightly run did."""
+    from datetime import date as _date
+
+    from whul.benchmark_sources import SOCCER_CATEGORIES, resolve
+    from whul.sources import espn
+
+    board = {"events": [{
+        "id": "401915443",
+        "season": {"year": 2026, "slug": "regular-season"},
+        "competitions": [{
+            "status": {"type": {"completed": True}},
+            "competitors": [
+                {"homeAway": "home", "score": "2",
+                 "team": {"id": "359", "displayName": "Arsenal"}},
+                {"homeAway": "away", "score": "0",
+                 "team": {"id": "364", "displayName": "Liverpool"}},
+            ],
+        }],
+    }]}
+    monkeypatch.setattr(espn, "_by_range", lambda *a, **k: ([], [_date(2026, 9, 15)]))
+    monkeypatch.setattr(espn, "_scoreboard_or_none", lambda *a, **k: board)
+    monkeypatch.setattr(espn, "scoreboard_league_name", lambda b: "Premier League")
+    monkeypatch.setattr(espn, "season_dates", lambda *a, **k: [_date(2026, 9, 15)])
+    monkeypatch.setattr(espn, "_the_season_asked_for", lambda rows, *a, **k: rows)
+
+    produced = set(espn.load_soccer_matches("epl", [2026], verbose=False).columns)
+
+    for source in resolve(None):
+        if source.key not in SOCCER_CATEGORIES or not source.accumulates:
+            continue
+        missing = [c for c in source.accumulates if c not in produced]
+        assert not missing, (
+            f"{source.key} is keyed on {missing}, which its own pull does not "
+            f"return, so every run of it raises before it scores anything")
