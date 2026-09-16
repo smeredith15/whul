@@ -173,3 +173,84 @@ def test_a_feed_without_a_sprint_column_still_scores():
     out = motorsport.f1_events(races)
     assert out.loc[0, "tournament"] == "British Grand Prix"
     assert not out.loc[0, "is_sprint"]
+
+
+# --- what may be kept, and for how long ------------------------------------
+
+def test_only_a_finished_season_may_be_cached():
+    """Formula 1 and NASCAR both froze on this: eleven days of identical
+    figures with the source reporting ten healthy rows a night, because the
+    first pull of the 2026 season had been written to disk and never asked
+    again."""
+    from datetime import date
+
+    from whul.sources import season_is_over
+
+    assert season_is_over(2025, date(2026, 9, 16))
+    assert not season_is_over(2026, date(2026, 9, 16))
+    # And on the first day of the next year, last year's is settled.
+    assert season_is_over(2026, date(2027, 1, 1))
+
+
+def test_a_season_in_progress_is_fetched_rather_than_read_back(tmp_path, monkeypatch):
+    """The cache file exists and is stale; the season is still being run, so
+    it must not be served."""
+    import json
+
+    from whul.sources import jolpica
+
+    asked = []
+
+    def get(path, params, cache_key=None):
+        asked.append(cache_key)
+        return {"MRData": {"total": "1", "RaceTable": {"Races": [
+            {"raceName": "Italian Grand Prix", "date": "2026-09-06"}]}}}
+
+    monkeypatch.setattr(jolpica, "_get", get)
+
+    races = jolpica.fetch_season(2026)
+
+    assert [r["raceName"] for r in races] == ["Italian Grand Prix"]
+    assert asked == [None], "a live season asked to be cached"
+
+
+def test_a_finished_season_still_caches():
+    """It cannot gain another race, so asking twice is a wasted request."""
+    from whul.sources import jolpica
+
+    asked = []
+
+    def get(path, params, cache_key=None):
+        asked.append(cache_key)
+        return {"MRData": {"total": "1", "RaceTable": {"Races": [{"raceName": "X"}]}}}
+
+    import pytest
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(jolpica, "_get", get)
+        jolpica.fetch_season(2024)
+
+    assert asked == ["results/2024-0"]
+
+
+def test_a_nascar_season_in_progress_ignores_its_cached_list(tmp_path, monkeypatch):
+    import json
+
+    from whul.sources import espn_individual
+
+    cache = tmp_path / "nascar" / "season"
+    cache.mkdir(parents=True)
+    # A stale list: one race, written weeks ago.
+    (cache / "2026.json").write_text(json.dumps(
+        {"events": [{"id": "1", "name": "Old", "competitions": [{}]}]}))
+    monkeypatch.setattr(espn_individual, "CACHE", tmp_path)
+
+    fetched = {"events": [
+        {"id": "1", "name": "Old", "competitions": [{}]},
+        {"id": "2", "name": "New", "competitions": [{}]},
+    ]}
+    monkeypatch.setattr(espn_individual, "_get", lambda *a, **k: fetched)
+    monkeypatch.setattr(espn_individual, "usable_events", lambda e: e)
+
+    got = espn_individual.season_events("nascar", 2026)
+
+    assert [e["name"] for e in got] == ["Old", "New"], "the stale list was served"

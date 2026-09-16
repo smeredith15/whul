@@ -23,6 +23,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from whul.sources import season_is_over
+
 BASE = "https://api.jolpi.ca/ergast/f1"
 CACHE = Path("data/cache/jolpica")
 PAGE_SIZE = 100
@@ -65,7 +67,11 @@ def fetch_season(season: int, kind: str = "results") -> list[dict]:
         payload = _get(
             f"{season}/{kind}/",
             {"limit": PAGE_SIZE, "offset": offset},
-            cache_key=f"{kind}/{season}-{offset}",
+            # Only a season that cannot gain another race. This one is still
+            # being run, and a cache with no expiry served the Dutch Grand Prix
+            # as the latest result for eleven days after it stopped being.
+            cache_key=(f"{kind}/{season}-{offset}"
+                       if season_is_over(season) else None),
         )
         page = _races(payload)
         races.extend(page)
