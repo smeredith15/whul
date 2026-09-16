@@ -127,3 +127,110 @@ def test_a_race_is_labelled_by_where_it_finished_not_where_it_stands():
     ])
     out = finishes.summarize(events)["R. Blaney"]
     assert [f["label"] for f in out] == ["Daytona 33rd", "Sonoma 1st"]
+
+
+# --- tennis by the size of the field ---------------------------------------
+
+def _rows(*played):
+    from whul.scoring import tennis
+
+    return tennis.match_events(pd.DataFrame([
+        {"tournament": t, "category": cat, "round": rnd, "winner": w,
+         "loser": l, "score": score, "date": "2026-09-01", "season": 2026,
+         "tour": "ATP", "draw_size": draw}
+        for t, cat, rnd, w, l, draw, score in played
+    ]), losses=True)
+
+
+ME = "A. Fils"
+#: A season with one of everything in it. The slam is a third-round exit
+#: written out in full -- the two wins that got him there and the loss that
+#: ended it -- because only wins pay and the wins are what makes it 100 rather
+#: than nothing.
+SEASON = (
+    ("Cincinnati", "Masters 1000", "F", "Other", ME, 64, "6-4 6-4"),
+    ("Cincinnati", "Masters 1000", "SF", ME, "X", 64, "6-4 6-4"),
+    ("US Open", "Grand Slam", "R128", ME, "Y3", 128, "6-4 6-4 6-4"),
+    ("US Open", "Grand Slam", "R64", ME, "Y2", 128, "6-4 6-4 6-4"),
+    ("US Open", "Grand Slam", "R32", "Y", ME, 128, "6-4 6-4 6-4"),
+    ("Metz", "250", "F", ME, "Z", 32, "6-4 6-4"),
+    ("Basel", "250", "SF", "Q", ME, 32, "6-4 6-4"),
+    ("Turin", "Tour Finals", "RR", ME, "P", 8, "6-4 6-4"),
+    ("Turin", "Tour Finals", "RR", "R", ME, 8, "6-4 6-4"),
+    ("Turin", "Tour Finals", "RR", "S", ME, 8, "6-4 6-4"),
+    ("Davis Cup", "International", "R32", ME, "T", 16, "6-4 6-4"),
+)
+
+
+def _by_label(events):
+    return {e["label"]: e for e in finishes.tier_summary(events)[ME]}
+
+
+def test_a_season_reads_by_the_size_of_the_field():
+    """Fifty tournaments a year and seven matches in a good week make one list
+    unreadable, and the thing a reader wants -- how he did against fields of
+    each size -- is exactly what a flat list buries: a first-round loss at a
+    250 and one at a slam are the same line and not remotely the same result."""
+    tiers = _by_label(_rows(*SEASON))
+
+    assert tiers["ATP 250"]["note"] == "W · SF"
+    assert tiers["ATP 1000"]["note"] == "F"
+    assert tiers["Grand Slam"]["note"] == "R32"
+    assert tiers["ATP Finals"]["note"] == "RR 1-2"
+    assert tiers["Team Events"]["note"] == "1-0"
+
+
+def test_a_tier_he_never_entered_is_unknown_rather_than_nothing():
+    """Zero is the honest answer for a tournament he lost his opening match at
+    -- only wins pay -- and the wrong one for a 500 he did not play."""
+    tiers = _by_label(_rows(*SEASON, ("Doha", "500", "R32", "N", ME, 32, "6-4 6-4")))
+
+    assert tiers["ATP 500"]["points"] == 0.0, "entered, and won nothing"
+    assert _by_label(_rows(*SEASON))["ATP 500"]["points"] is None
+
+
+def test_the_figure_is_the_one_the_tour_publishes():
+    """550 at a Masters is a number that appears on the tour's own list; 687.5
+    is a number that appears nowhere. What winning quickly added rides above
+    it instead, and losing in the third round of a slam is the two wins that
+    got him there rather than nothing."""
+    from whul.scoring.tennis import ATP_WIN_POINTS
+
+    tiers = _by_label(_rows(*SEASON))
+    table = ATP_WIN_POINTS
+
+    assert tiers["Grand Slam"]["points"] == (
+        table[("GS", "R128")] + table[("GS", "R64")]) == 100
+    assert tiers["Grand Slam"]["points"] == int(tiers["Grand Slam"]["points"])
+    assert tiers["Grand Slam"]["straight"] > 0, "won in straight sets as well"
+
+
+def test_the_tiers_add_up_to_what_the_season_scored():
+    """Each figure and the superscript above it, over six tiers, is the score
+    said twelve ways -- so a reader can check it, which is the point of
+    splitting them."""
+    events = _rows(*SEASON)
+    tiers = finishes.tier_summary(events)[ME]
+
+    shown = sum((entry["points"] or 0.0) + entry["straight"] for entry in tiers)
+    scored = float(events[events["player"] == ME]["event_points"].sum())
+    assert round(shown, 2) == round(scored, 2)
+
+
+def test_the_straight_sets_bonus_is_kept_apart_from_what_the_round_paid():
+    """It is the difference between beating the draw and beating it quickly,
+    and a single figure cannot say which of the two a player did."""
+    events = _rows(*SEASON)
+    tiers = _by_label(events)
+
+    assert tiers["ATP 1000"]["straight"] > 0
+    assert tiers["ATP 1000"]["straight"] < tiers["ATP 1000"]["points"]
+
+
+def test_a_tier_entered_more_than_once_is_counted_not_listed():
+    tiers = _by_label(_rows(
+        ("Metz", "250", "F", ME, "Z", 32, "6-4 6-4"),
+        ("Basel", "250", "F", ME, "Q", 32, "6-4 6-4"),
+        ("Doha", "250", "SF", "R", ME, 32, "6-4 6-4"),
+    ))
+    assert tiers["ATP 250"]["note"] == "W ×2 · SF"

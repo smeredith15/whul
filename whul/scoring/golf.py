@@ -86,11 +86,32 @@ def score_events(results: pd.DataFrame) -> pd.DataFrame:
         {True: MAJOR_MULTIPLIER, False: 1.0}
     )
     work["made_cut"] = work["position"] <= CUT_POSITION
+    _count_finishes(work)
     # Named here rather than only on the season totals, so the window-based
     # benchmark reads the same league and role the season view does.
     work["league"] = "PGA"
     work["role"] = "Golfer"
     return work.reset_index(drop=True)
+
+
+#: What a profile counts, and what each column is called. The same names the
+#: motorsport scorer writes, so one window sums both sports' marks.
+FINISH_COUNTS = {1: "wins", 5: "top_fives", 10: "top_tens"}
+
+#: Every per-event mark this scorer writes, for a window to add up. A start is
+#: one of them and is not the row count: a season total is grouped by calendar
+#: year and a league year is not, so the figure a profile shows has to be the
+#: window's own -- summing per-event marks gives the right one for whatever
+#: stretch is being asked about.
+EVENT_COUNTS = ("starts",) + tuple(FINISH_COUNTS.values()) + ("made_cut",)
+
+
+def _count_finishes(work: pd.DataFrame) -> None:
+    """Mark each tournament so a window can count the good ones."""
+    work["starts"] = 1.0
+    for place, column in FINISH_COUNTS.items():
+        work[column] = ((work["position"] <= place)
+                        & (work["position"] > 0)).astype(float)
 
 
 def score_players(results: pd.DataFrame, min_events: int = MIN_EVENTS) -> pd.DataFrame:

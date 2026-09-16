@@ -3007,9 +3007,10 @@ def test_a_league_that_has_not_played_still_gets_its_panel():
     assert [b["value"] for b in panel["top"]] == ["—"] * 3
 
     assert site_build._panel_before_a_season("NHL", "Player", "Skater")
+    assert site_build._panel_before_a_season("PGA", "Player", "")
     # Not a team, and not a league whose profile is not a panel.
     assert site_build._panel_before_a_season("NBA", "Team", "") is None
-    assert site_build._panel_before_a_season("PGA", "Player", "") is None
+    assert site_build._panel_before_a_season("Tennis", "Player", "") is None
 
 
 def test_a_soccer_section_always_shows_big_wins_and_clean_sheets():
@@ -3703,3 +3704,78 @@ def test_a_competition_he_was_not_picked_for_is_not_a_section():
     panel = site_build._soccer_player_panel(row, {}, "Bundesliga")
 
     assert [s["name"] for s in panel["sections"]] == ["Bundesliga"]
+
+
+# --- golf: counted, not scored ---------------------------------------------
+
+def test_a_golfer_is_shown_the_way_a_driver_is():
+    panel = site_build._golf_panel(
+        {"league": "PGA", "role": "Golfer", "starts": 9, "wins": 1,
+         "top_fives": 3, "top_tens": 5, "made_cut": 7})
+
+    assert panel["head"] == [["Tournaments", "9"]]
+    assert [(b["label"], b["value"]) for b in panel["top"]] == [
+        ("Wins", "1"), ("Top 5", "3"), ("Top 10", "5"), ("Cuts made", "7 / 9")]
+    assert all(box["bare"] for box in panel["top"]), "no points strip"
+
+
+def test_a_cut_is_a_pair_because_the_count_alone_says_nothing():
+    """"Cuts made 7" cannot say whether he missed two or entered seven and
+    made them all, and for a sport a player picks his own schedule in that is
+    the whole of the figure."""
+    panel = site_build._golf_panel(
+        {"league": "PGA", "starts": 7, "made_cut": 7})
+    assert panel["top"][-1]["value"] == "7 / 7"
+
+
+def test_a_golfer_who_has_not_teed_off_reads_as_unknown_not_as_zero():
+    panel = site_build._panel_before_a_season("PGA", "Player", "Golfer")
+    assert [b["value"] for b in panel["top"]] == ["—"] * 4
+
+
+# --- tennis: the points are the achievement --------------------------------
+
+def _tier(label, points, straight=0.0, note="", entered=1):
+    return {"label": label, "points": points, "straight": straight,
+            "note": note, "entered": entered}
+
+
+def test_a_tennis_season_is_shown_by_the_size_of_the_field():
+    panel = site_build._tennis_panel({"league": "ATP", "tier_detail": [
+        _tier("ATP 250", 150.0, 37.5, "W · R32", 2),
+        _tier("ATP 500", None, 0.0, "", 0),
+        _tier("ATP 1000", 550.0, 137.5, "F"),
+        _tier("Grand Slam", 100.0, 50.0, "R32"),
+        _tier("ATP Finals", 200.0, 50.0, "RR 1-1"),
+        _tier("Team Events", 50.0, 12.5, "1-0"),
+    ]})
+
+    assert panel["head"] == [["Tournaments", "6"]]
+    # Whole numbers, every one: these are the tour's own totals, and the bonus
+    # that would put a half on the end of them is the superscript instead.
+    assert [(b["label"], b["value"], b.get("sup"), b.get("aside"))
+            for b in panel["top"]] == [
+        ("ATP 250", "150", "+37.5", "W · R32"),
+        ("ATP 500", "—", None, None),
+        ("ATP 1000", "550", "+137.5", "F"),
+        ("Grand Slam", "100", "+50", "R32"),
+        ("ATP Finals", "200", "+50", "RR 1-1"),
+        ("Team Events", "50", "+12.5", "1-0"),
+    ]
+
+
+def test_a_tennis_box_has_no_points_strip_because_it_is_one():
+    """The big figure is what the tier paid. A strip beneath would print the
+    same number twice."""
+    panel = site_build._tennis_panel({"league": "ATP", "tier_detail": [
+        _tier("ATP 250", 150.0, 37.5, "W")]})
+    assert all(box["bare"] for box in panel["top"])
+
+
+def test_a_womens_profile_names_the_tours_she_plays():
+    """Both tours call them that, so a WTA profile says "WTA 1000"."""
+    panel = site_build._panel_before_a_season("WTA", "Player", "Singles")
+    assert [b["label"] for b in panel["top"]] == [
+        "WTA 250", "WTA 500", "WTA 1000", "Grand Slam", "WTA Finals",
+        "Team Events"]
+    assert [b["value"] for b in panel["top"]] == ["—"] * 6

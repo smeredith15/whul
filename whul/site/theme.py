@@ -827,6 +827,15 @@ dialog.profile .statbox .bp.said {
   font-style: italic; color: var(--muted); font-size: 10px;
 }
 
+/* A figure narrow enough to need `nowrap` cannot also hold a note beside it:
+   the note is inside the same line box, so it was clipped at the edge rather
+   than wrapped -- "W · R32" printed as "W · R". It drops below instead. */
+dialog.profile .statbox .bv.tight .aside {
+  display: block; margin-left: 0; white-space: normal; text-align: center;
+}
+/* A shrunk figure shrinks its superscript with it, or the two together are
+   wider than the number alone was. */
+dialog.profile .statbox .bv.tight sup.bye { font-size: 0.55em; }
 dialog.profile .statbox .bv sup.bye {
   font-size: 0.5em; font-weight: 600; color: var(--text-secondary);
   margin-left: 1px; vertical-align: super;
