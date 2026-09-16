@@ -863,6 +863,23 @@ def _report_forgotten(source, window, held, verbose: bool, notes) -> None:
         print(f"  {source.key}: {said}", flush=True)
 
 
+def _drain_findings(notes) -> None:
+    """Carry a loader's findings into the run's report.
+
+    A loader is handed a list of seasons and returns a frame, so anything it
+    notices about the *shape* of what came back could only ever be printed.
+    That is where the domestic cups went: every night's log said the League Cup
+    had returned squads with no appearances in them, ten thousand lines in, and
+    a log is not read on the nights it says nothing is wrong.
+    """
+    from whul import benchmark_sources
+
+    if notes is None:
+        benchmark_sources.take_findings()
+        return
+    notes.extend(benchmark_sources.take_findings())
+
+
 def _scored_on(score, kept, as_of: date):
     """Score a day, telling the scorer which day it is.
 
@@ -942,6 +959,7 @@ def _pull(
         fetch = _accumulating(fetch, source, store, verbose, notes)
     if not source.windowed:
         raw = fetch(seasons)
+        _drain_findings(notes)
         if raw is None or raw.empty:
             # A feed that returns nothing said nothing about why, and an empty
             # frame reaching the report as a bare zero is the shape of fault
@@ -977,6 +995,7 @@ def _pull(
     # since two series sharing a pull need not start on the same day.
     years = sorted({season_start(source.league).year, as_of.year})
     fetched = fetch(years)
+    _drain_findings(notes)
     events = _carry_identity(
         _scored_on(score, fetched, as_of), fetched, source.asset_type)
     if events is None or events.empty:

@@ -1714,3 +1714,37 @@ def test_a_key_the_source_cannot_produce_costs_the_ledger_not_the_league():
 
     assert list(got["team"]) == ["Arsenal"], "the pull went on"
     assert notes and "cannot be accumulated" in notes[0]
+
+
+def test_a_competition_that_returned_no_appearances_reaches_the_report():
+    """It has been in every night's log, ten thousand lines in, and a log is
+    not read on the nights it says nothing is wrong. A domestic cup is counted
+    in full rather than paid as a bonus, so one that answers with nothing is
+    points missing from a total."""
+    from whul import benchmark_sources as bs
+
+    bs.take_findings()
+    bs._report_competition_coverage(pd.DataFrame([
+        {"league": "Premier League", "competition_key": "epl",
+         "player": "A", "matches": 4},
+        {"league": "Premier League", "competition_key": "efl_cup",
+         "player": "A", "matches": 0},
+    ]))
+    said = bs.take_findings()
+
+    assert len(said) == 1
+    assert "efl_cup" in said[0]
+    assert bs.take_findings() == [], "a finding is reported once, not every run"
+
+
+def test_a_competition_that_answered_says_nothing():
+    from whul import benchmark_sources as bs
+
+    bs.take_findings()
+    bs._report_competition_coverage(pd.DataFrame([
+        {"league": "Premier League", "competition_key": "epl",
+         "player": "A", "matches": 4},
+        {"league": "Premier League", "competition_key": "efl_cup",
+         "player": "A", "matches": 2},
+    ]))
+    assert bs.take_findings() == []

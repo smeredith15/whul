@@ -1756,13 +1756,21 @@ def _club_games(stats, recorded: dict[str, float] | None = None) -> dict[str, fl
     every such player would read as one who had never missed a match.
     """
     out: dict[str, float] = {}
-    if stats is not None and not getattr(stats, "empty", True):
-        column = next((c for c in ("counted_matches", "matches_played")
-                       if c in stats.columns), None)
-        if column and "team" in stats.columns:
-            for team, played in zip(stats["team"], stats[column]):
-                if not isinstance(team, str) or played is None or played != played:
-                    continue
+    if stats is not None and not getattr(stats, "empty", True) and "team" in stats.columns:
+        # Per row, not per frame. One league's pull can carry the counted
+        # figure while another's row predates it, and choosing the column once
+        # for the whole frame left every club in the older league with no
+        # figure at all -- a heading that read as a club which had not played.
+        for row in stats.to_dict("records"):
+            team = row.get("team")
+            if not isinstance(team, str) or not team.strip():
+                continue
+            played = next(
+                (value for value in
+                 (_stat_number(row, c)
+                  for c in ("counted_matches", "matches_played"))
+                 if value is not None), None)
+            if played is not None:
                 out[team.strip()] = float(played)
     for club, played in (recorded or {}).items():
         if str(club).strip():
