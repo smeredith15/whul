@@ -248,14 +248,12 @@ def _check_against_the_club(store: Store, mine: pd.DataFrame, source,
     )
 
 
-#: How many games a club has played, under the names a scorer gives it. In
-#: order of preference, because they are not the same question everywhere: a
-#: footballer's own count stops at the competitions that count toward his
-#: total, so his club's has to as well, and `matches_played` -- every match the
-#: club played, Champions League included -- would read as a player who missed
-#: matches he in fact played.
-CLUB_GAMES_COLUMNS = ("counted_matches", "games_played", "team_games",
-                      "matches_played")
+#: How many games a club has played, under the names a scorer gives it. Every
+#: competition, because the heading it feeds counts every competition on the
+#: player's side too: a club figure that stopped where his total does, under a
+#: panel that went on to show a Champions League section, was two numbers
+#: disagreeing about the same season.
+CLUB_GAMES_COLUMNS = ("matches_played", "games_played", "team_games")
 
 
 def _record_club_games(store: Store, scored: pd.DataFrame, source,

@@ -32,6 +32,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from whul.sources import season_is_over
+
 STATS_API = "https://statsapi.mlb.com/api/v1"
 FANGRAPHS_API = "https://www.fangraphs.com/api/leaders/major-league/data"
 CACHE = Path("data/cache/mlb")
@@ -190,7 +192,12 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
     """Every completed game for the given seasons, one row per game.
 
     A whole season arrives in a single request, so this is cheap enough to re-pull
-    nightly during the season.
+    nightly during the season -- and it has to be. Cached without an expiry it
+    was not re-pulled at all: the 2026 schedule was written to disk on 5
+    September and served from there for eleven days, so every club's record
+    stopped on that date while its players went on accumulating. Milwaukee sat
+    on twelve wins and eighteen games through a fortnight of baseball, and the
+    only thing that said so was a batter with more games played than his club.
     """
     rows: list[dict] = []
     for season in seasons:
@@ -205,7 +212,8 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
                     "detailedState,teams,home,away,score,team,name,isWinner"
                 ),
             },
-            cache_key=f"schedule/{season}",
+            # Only a season that cannot gain another game.
+            cache_key=(f"schedule/{season}" if season_is_over(season) else None),
         )
         for day in payload.get("dates", []):
             for game in day.get("games", []):
@@ -557,7 +565,11 @@ def load_sabermetrics(season: int, group: str = "hitting") -> pd.DataFrame:
             "stats": "sabermetrics", "group": group, "season": season,
             "sportId": 1, "limit": 2000, "gameType": "R", "playerPool": "All",
         },
-        cache_key=f"statsapi/saber_{group}_{season}",
+        # As the schedule: a season still being played cannot be cached
+        # without an expiry, or its advanced metrics stop on the day they were
+        # first read and every profile carries a stale run value.
+        cache_key=(f"statsapi/saber_{group}_{season}"
+                   if season_is_over(season) else None),
     )
     rows: list[dict] = []
     for split_group in payload.get("stats", []):

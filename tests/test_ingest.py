@@ -1651,8 +1651,8 @@ def test_every_club_in_the_league_is_written_down_not_only_the_drafted_ones():
 
     assert written == 2
     assert store.read_club_games("2026-27", "2026-09-16") == {
-        "Eintracht Frankfurt": 3.0, "Bayern Munich": 4.0}, \
-        "counted, not every match: a Champions League night is not one of his"
+        "Eintracht Frankfurt": 3.0, "Bayern Munich": 5.0}, \
+        "every competition, because his own count is read the same way"
 
 
 def test_a_player_pull_writes_no_club_counts():
