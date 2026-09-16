@@ -797,6 +797,31 @@ DATE_COLUMNS = ("date", "game_date", "event_date", "match_date", "start_date",
                 "gameday")
 
 
+def _up_to(raw: pd.DataFrame, as_of: date) -> pd.DataFrame:
+    """Drop what had not been played yet on the day being scored.
+
+    A feed answers with everything it has, which for today's run is everything
+    up to today and for a day rewritten later is everything up to *now*. The
+    two are not the same question, and without this every backfilled day gets
+    the same figure: the standings would read as a season in which nothing
+    happened until the last day and then all of it did.
+
+    It is what makes a correction repairable at all. The ledger held Elena
+    Rybakina's US Open third round twice, so every stored day from the fourth
+    of September carried the wrong total; rewriting those days needs the
+    corrected ledger cut back to each of them.
+
+    A row whose date will not parse is kept, as everywhere else here: dropping
+    it would lose a result silently, and the scorer is the better place to
+    notice a broken row.
+    """
+    column = next((c for c in DATE_COLUMNS if c in raw.columns), None)
+    if column is None:
+        return raw
+    days = pd.to_datetime(raw[column], errors="coerce", utc=True).dt.tz_localize(None)
+    return raw[days.isna() | (days.dt.date <= as_of)]
+
+
 def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
     """Drop rows from before the league's results start counting.
 
@@ -1043,7 +1068,7 @@ def _pull(
         # and would cut a World Cup off at the year's end.
         _harvest(source, raw, as_of, seasons, upcoming)
         kept = raw if source.dated_by_source else _from_season_start(raw, source.league)
-        scored = _scored_on(score, kept, as_of)
+        scored = _scored_on(score, _up_to(kept, as_of), as_of)
         if (scored is None or scored.empty) and notes is not None:
             notes.append(_why_nothing_scored(raw, kept, source.league))
         if not getattr(source, "cumulative", False):
@@ -1055,7 +1080,7 @@ def _pull(
     # benchmark was drawn over -- and over each produced league's own window,
     # since two series sharing a pull need not start on the same day.
     years = sorted({season_start(source.league).year, as_of.year})
-    fetched = fetch(years)
+    fetched = _up_to(fetch(years), as_of)
     _drain_findings(notes)
     events = _carry_identity(
         _scored_on(score, fetched, as_of), fetched, source.asset_type)

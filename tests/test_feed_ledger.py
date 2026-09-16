@@ -383,10 +383,10 @@ _FULL = [
     _club_match("Arsenal", "Leeds United", 5, 0, "2026-08-23"),
     _club_match("Arsenal", "Liverpool", 1, 0, "2026-08-31"),
     _club_match("Arsenal", "Nottingham Forest", 3, 0, "2026-09-13"),
-    _club_match("Arsenal", "Manchester City", 2, 1, "2026-09-20"),
+    _club_match("Arsenal", "Manchester City", 2, 1, "2026-09-14"),
     _club_match("Arsenal", "Port Vale", 3, 1, "2026-09-15",
                 competition="efl_cup", label="EFL Cup"),
-    _club_match("Arsenal", "Olympiacos", 1, 0, "2026-09-16",
+    _club_match("Arsenal", "Olympiacos", 1, 0, "2026-09-12",
                 competition="ucl", label="Champions League"),
 ]
 _SHORT = [m for m in _FULL if m["competition_key"] != "efl_cup"]

@@ -48,6 +48,17 @@ on:
           nhl nhl-teams nba nba-teams ncaam ncaaw ncaabaseball ncaasoftball
           epl laliga seriea bundesliga ligue1 mls nwsl soccer-players
           intl-soccer
+      since:
+        description: >-
+          Re-pull every stored day from this one (YYYY-MM-DD) as well as
+          today, each from what is known now cut back to that day. For a
+          correction to the *history* -- a duplicate found in the ledger, a
+          name two feeds spelled differently -- which otherwise fixes today
+          and leaves every earlier day holding the figure it was given, so the
+          correction reads as a loss on the day it was made. Restate cannot do
+          this: it rescores what is stored, and a day stored wrong stays wrong
+          at whatever scale it is rescored against. Implies backfill.
+        default: ""
       backfill:
         description: "Rebuild every day from the season start"
         type: boolean
@@ -142,7 +153,13 @@ jobs:
         # must not take the site down with it -- yesterday's standings beat
         # none, and every problem is printed in this step's log.
         continue-on-error: true
-        run: python -m whul.cli ingest $LEAGUES --season "$SEASON"
+        run: |
+          if [ -n "${{ inputs.since }}" ]; then
+            python -m whul.cli ingest $LEAGUES --season "$SEASON" \
+              --since "${{ inputs.since }}"
+          else
+            python -m whul.cli ingest $LEAGUES --season "$SEASON"
+          fi
 
       - name: Pull upcoming fixtures
         # MLB, the NBA and club soccer reach this project through a scoreboard
@@ -190,7 +207,8 @@ jobs:
       - name: Roll up the standings
         run: |
           if [ "${{ inputs.backfill }}" = "true" ] \
-             || [ "${{ inputs.rescore }}" = "true" ]; then
+             || [ "${{ inputs.rescore }}" = "true" ] \
+             || [ -n "${{ inputs.since }}" ]; then
             python -m whul.cli rollup --season "$SEASON" --backfill
           else
             python -m whul.cli rollup --season "$SEASON"
