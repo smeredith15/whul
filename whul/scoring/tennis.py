@@ -322,6 +322,22 @@ def straight_sets_multiplier(best_of: float | None) -> float:
     return STRAIGHT_SETS_MULTIPLIER.get(int(best_of), STRAIGHT_SETS_MULTIPLIER[DEFAULT_BEST_OF])
 
 
+#: Matches this scorer refused, for the run to report. Dropping a duplicate
+#: silently is how the fault stayed hidden: two Rybakina rows in the same round
+#: of the same tournament is a name the feeds disagree about, and that is worth
+#: seeing rather than quietly correcting every night for ever.
+COLLISIONS: list[str] = []
+
+#: How many to name before the count stands in for the rest.
+COLLISIONS_SHOWN = 4
+
+
+def take_collisions() -> list[str]:
+    """Everything the draw's own rule refused, and clear it."""
+    said, COLLISIONS[:] = list(COLLISIONS), []
+    return said
+
+
 def _one_win_a_round(work: pd.DataFrame) -> pd.DataFrame:
     """A player wins a round of a knockout draw once, or not at all.
 
@@ -351,6 +367,18 @@ def _one_win_a_round(work: pd.DataFrame) -> pd.DataFrame:
     twice = ordered.duplicated(
         subset=["season", "tournament", "round", "winner"], keep="first"
     ) & knockout
+    if twice.any():
+        shown = "; ".join(
+            f"{row.winner} beat {row.loser} in the {row.round} of "
+            f"{row.tournament} twice"
+            for row in ordered[twice].head(COLLISIONS_SHOWN).itertuples()
+        )
+        COLLISIONS.append(
+            f"{int(twice.sum())} match(es) had a player winning the same "
+            f"knockout round twice, which cannot happen; they are scored once "
+            f"and the second copy is the two feeds disagreeing about a name: "
+            f"{shown}"
+        )
     return ordered[~twice]
 
 

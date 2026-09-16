@@ -625,3 +625,40 @@ def test_a_group_stage_and_a_team_tie_are_not_a_knockout_round():
         for name in ("S", "T")
     ]))
     assert len(tie) == 2
+
+
+def test_a_round_won_twice_is_named_rather_than_quietly_corrected():
+    """Dropping it silently is how the fault stayed hidden. Two Rybakina rows
+    in the same round of the same tournament is a name the feeds disagree
+    about, and that is worth seeing rather than being corrected every night
+    for ever with nothing said."""
+    from whul.scoring import tennis as scorer
+
+    scorer.take_collisions()
+    scorer.score_matches(pd.DataFrame([
+        {"tournament": "US Open", "category": "Grand Slam", "round": "R32",
+         "winner": "E. Rybakina", "loser": loser, "score": "7-6 6-3",
+         "date": day, "season": 2026, "tour": "WTA", "draw_size": 128}
+        for loser, day in (("Y. Starodubtseva", "2026-09-04"),
+                           ("Y. Starodubtsewa", "2026-09-06"))
+    ]))
+    said = scorer.take_collisions()
+
+    assert len(said) == 1
+    assert "1 match(es)" in said[0]
+    assert "Starodubtsewa" in said[0]
+    assert scorer.take_collisions() == [], "reported once, not every run"
+
+
+def test_a_clean_draw_says_nothing():
+    from whul.scoring import tennis as scorer
+
+    scorer.take_collisions()
+    scorer.score_matches(pd.DataFrame([
+        {"tournament": "US Open", "category": "Grand Slam", "round": rnd,
+         "winner": "E. Rybakina", "loser": "X", "score": "6-4 6-4",
+         "date": "2026-09-0%d" % i, "season": 2026, "tour": "WTA",
+         "draw_size": 128}
+        for i, rnd in enumerate(("R128", "R64", "R32"), start=1)
+    ]))
+    assert scorer.take_collisions() == []

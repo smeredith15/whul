@@ -592,3 +592,89 @@ def test_the_earlier_sighting_survives_the_move(store):
 
     held = store.query("SELECT first_seen FROM feed_rows WHERE source = 'tennis'")
     assert list(held["first_seen"]) == ["2026-09-05T00:00:00.000+00:00"]
+
+
+# --- the same player under two spellings -----------------------------------
+
+def _rostered(store, asset_id, display, feed_spelling):
+    store.upsert("assets", [{
+        "asset_id": asset_id, "asset_type": "Player", "display_name": display,
+        "league": "ATP", "role": "Singles", "norm_key": "ATP",
+        "active": 1, "created_at": "2026-08-21"}], keys=("asset_id",))
+    store.upsert("asset_aliases", [{
+        "source": "tennis", "source_key": feed_spelling, "asset_id": asset_id,
+        "match_kind": "name", "needs_review": 0,
+        "created_at": "2026-09-05T00:00:00.000+00:00"}],
+        keys=("source", "source_key"))
+
+
+KEYS = ("season", "tournament", "round", "winner", "loser")
+
+
+def _won(winner, loser="Y. Wu", rnd="R32"):
+    return {"season": 2026, "tournament": "US Open", "round": rnd,
+            "winner": winner, "loser": loser, "score": "6-4 6-4",
+            "category": "Grand Slam", "tour": "ATP", "date": "2026-09-04"}
+
+
+def test_the_roster_s_spelling_and_the_feed_s_are_one_player(store):
+    """The scraper resolves him as "Carlos Alcaraz Garfia" and a list typed by
+    hand calls him "Carlos Alcaraz". Both are the same asset, and the alias
+    table is where that is already written down."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia")]), KEYS)
+
+    assert feed_ledger.canonical_names(store, "tennis") == {
+        "carlos alcaraz": "Carlos Alcaraz Garfia"}
+
+
+def test_a_typed_list_does_not_add_a_second_copy_of_a_match_already_held(store):
+    """"Adds only what is missing" added a match that was already there under
+    another spelling of the same player, because the two never collided."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia")]), KEYS)
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([_won("Carlos Alcaraz")]),
+                       KEYS, overwrite=False,
+                       names=feed_ledger.canonical_names(store, "tennis"))
+
+    held = feed_ledger.load(store, "tennis")
+    assert len(held) == 1
+    assert list(held["winner"]) == ["Carlos Alcaraz Garfia"], "the ledger's own"
+
+
+def test_a_match_only_the_typed_list_holds_is_spelled_the_ledger_s_way(store):
+    """The key alone is not enough: the scorer reads the payload, so his first
+    two rounds went on scoring under one name while the rest of his tournament
+    scored under the other, and the roster holds one of them."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia", rnd="R32")]), KEYS)
+    # A round the feed's window no longer reaches, so only the list has it.
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz", loser="R. Safiullin", rnd="R128")]), KEYS)
+
+    feed_ledger.rekey(store, "tennis", KEYS,
+                      feed_ledger.canonical_names(store, "tennis"))
+
+    held = feed_ledger.load(store, "tennis")
+    assert len(held) == 2
+    assert set(held["winner"]) == {"Carlos Alcaraz Garfia"}
+
+
+def test_a_player_nobody_drafted_is_left_alone(store):
+    """Guessing that two similar names are one player is the mistake this file
+    is written to avoid. Only what the alias table has already judged."""
+    _rostered(store, "player-atp-carlos-alcaraz", "Carlos Alcaraz",
+              "Carlos Alcaraz Garfia")
+    feed_ledger.record(store, "tennis", pd.DataFrame([
+        _won("Carlos Alcaraz Garfia", loser="Yulia Starodubtseva"),
+        _won("Carlos Alcaraz Garfia", loser="Yulia Starodubtsewa"),
+    ]), KEYS)
+
+    assert len(feed_ledger.load(store, "tennis")) == 2
