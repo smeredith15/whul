@@ -1549,3 +1549,77 @@ def test_a_feed_that_names_nobody_we_hold_is_not_left_reading_yesterdays_ok(stor
     status = store.query("SELECT * FROM source_status WHERE source = 'nfl'")
     assert status.loc[0, "last_ok"] == 0
     assert "no rostered asset matched a feed row" in status.loc[0, "message"]
+
+
+def _scored_day(store, asset_id, day, points, version, season="2026-27"):
+    store.upsert("daily_scores", [{
+        "asset_id": asset_id, "season": season, "as_of": day,
+        "league_points": points, "scaled_score": points,
+        "benchmark_version": version, "computed_at": "2026-09-16T00:00:00Z",
+    }], keys=("asset_id", "season", "as_of"))
+
+
+def test_a_broken_run_is_told_from_a_feeds_window_ageing_out(tmp_path, capsys):
+    """The ledger differences consecutive days, so a figure that falls reads as
+    a loss -- and restating does not touch it, because restating rescores what
+    is stored and a day stored wrong stays wrong.
+
+    Tennis falls honestly: a tournament ages out of the feed's window and the
+    points go with it, one player at a time. A failed run takes the whole
+    roster to zero on one date. Those want different answers, so they are
+    reported apart."""
+    import argparse
+
+    from whul import cli
+    from whul.store import open_store
+
+    path = tmp_path / "w.sqlite3"
+    store = open_store(str(path))
+    version = frozen_benchmark(store)
+    for i, name in enumerate(["A", "B", "C", "D"]):
+        store.upsert("assets", [{
+            "asset_id": f"p{i}", "asset_type": "Player", "display_name": name,
+            "league": "Tennis", "role": "", "norm_key": "Tennis", "active": 1,
+            "created_at": "2026-08-21",
+        }], keys=("asset_id",))
+        _scored_day(store, f"p{i}", "2026-09-01", 100.0, version)
+        # One player's tournament ages out; everybody keeps their points.
+        _scored_day(store, f"p{i}", "2026-09-02", 0.0 if i == 0 else 120.0, version)
+        # Then a run fails and takes all four to nothing.
+        _scored_day(store, f"p{i}", "2026-09-03", 0.0, version)
+
+    cli.cmd_backwards(argparse.Namespace(
+        db=str(path), season="2026-27", tolerance="0.05"))
+    said = capsys.readouterr().out
+
+    assert "2026-09-02: 1 asset(s) fell" in said
+    # Three, not four: the one whose tournament aged out yesterday was already
+    # at nothing, and nothing does not fall.
+    assert "2026-09-03: 3 asset(s) fell" in said
+    assert "a broken run" in said
+    # The honest day is not accused of being one.
+    ageing = next(l for l in said.splitlines() if "2026-09-02" in l)
+    assert "broken run" not in ageing
+
+
+def test_a_season_that_only_ever_rose_says_so(tmp_path, capsys):
+    import argparse
+
+    from whul import cli
+    from whul.store import open_store
+
+    path = tmp_path / "w.sqlite3"
+    store = open_store(str(path))
+    version = frozen_benchmark(store)
+    store.upsert("assets", [{
+        "asset_id": "p0", "asset_type": "Player", "display_name": "A",
+        "league": "NFL", "role": "", "norm_key": "NFL", "active": 1,
+        "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    _scored_day(store, "p0", "2026-09-01", 10.0, version)
+    _scored_day(store, "p0", "2026-09-02", 25.0, version)
+
+    cli.cmd_backwards(argparse.Namespace(
+        db=str(path), season="2026-27", tolerance="0.05"))
+
+    assert "Every asset's figure only ever rose" in capsys.readouterr().out

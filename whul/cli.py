@@ -3177,6 +3177,78 @@ def cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backwards(args: argparse.Namespace) -> int:
+    """Days where an asset's season-to-date figure fell.
+
+    The standings ledger differences consecutive days, so a figure that goes
+    down is read as a loss and shown as a negative adjustment. Restating does
+    not touch it: restating rescores what is stored, and a day stored wrong
+    stays wrong at whatever scale it is rescored against.
+
+    Some falls are real -- a run value can genuinely drop, and a feed whose
+    window has aged out will report less than it did. What this separates is
+    one bad day from many honest ones: if a single date accounts for most of
+    the fall across most of the roster, that date is a broken run and can be
+    pulled again.
+    """
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    rows = store.query(
+        "SELECT d.asset_id, d.as_of, d.league_points, a.display_name, a.league "
+        "FROM daily_scores d LEFT JOIN assets a ON a.asset_id = d.asset_id "
+        "WHERE d.season = ? ORDER BY d.asset_id, d.as_of", (args.season,))
+    if rows.empty:
+        print(f"\nNo scored days in {args.season}.\n")
+        return 0
+
+    limit = float(args.tolerance)
+    falls, by_day = [], {}
+    for asset_id, block in rows.groupby("asset_id", sort=False):
+        block = block.reset_index(drop=True)
+        for i in range(1, len(block)):
+            before = float(block.loc[i - 1, "league_points"] or 0.0)
+            now = float(block.loc[i, "league_points"] or 0.0)
+            if before - now <= limit:
+                continue
+            day = str(block.loc[i, "as_of"])
+            falls.append({
+                "asset": str(block.loc[i, "display_name"] or asset_id),
+                "league": str(block.loc[i, "league"] or ""),
+                "day": day, "from": before, "to": now,
+                "fell": round(before - now, 1),
+            })
+            entry = by_day.setdefault(day, {"assets": 0, "fell": 0.0, "to_zero": 0})
+            entry["assets"] += 1
+            entry["fell"] += before - now
+            entry["to_zero"] += 1 if now == 0 else 0
+
+    scored = rows["asset_id"].nunique()
+    print(f"\nDays a season-to-date figure fell by more than {limit:g}, "
+          f"across {scored} asset(s) in {args.season}.\n")
+    if not falls:
+        print("  None. Every asset's figure only ever rose.\n")
+        return 0
+
+    for day in sorted(by_day):
+        e = by_day[day]
+        # A day where most of the roster falls, and falls to nothing, is a run
+        # that failed rather than a league that had a bad Tuesday.
+        flag = ("  <-- most of the roster, and mostly to zero: a broken run"
+                if e["assets"] >= scored * 0.5 and e["to_zero"] >= e["assets"] * 0.5
+                else "")
+        print(f"  {day}: {e['assets']} asset(s) fell, {e['fell']:,.1f} in all, "
+              f"{e['to_zero']} to zero{flag}")
+
+    print(f"\n  The largest, worst first:")
+    for f in sorted(falls, key=lambda f: -f["fell"])[:15]:
+        print(f"      {f['day']}  {f['asset'][:28]:<30} "
+              f"{f['from']:>9,.1f} -> {f['to']:>9,.1f}  ({-f['fell']:+,.1f})")
+    print(f"\n  A day flagged above is re-pulled with "
+          f"`ingest --date <day>`, then `rescore` and `rollup --backfill`.\n")
+    return 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Full acquisition + benchmark + leaders + scrape-readiness report."""
     from whul.validate import run
@@ -3482,6 +3554,16 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--feed-season", default="2027",
                        help="our season label for the feed, e.g. 2027")
     check.set_defaults(func=cmd_check_attribution)
+
+    back = sub.add_parser(
+        "backwards",
+        help="days a season-to-date figure fell, which a ledger reads as a loss",
+    )
+    back.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    back.add_argument("--season", default="2026-27")
+    back.add_argument("--tolerance", default="0.05",
+                      help="ignore falls smaller than this (default 0.05)")
+    back.set_defaults(func=cmd_backwards)
 
     site = sub.add_parser("site", help="generate the static site")
     site.add_argument("--db", default="data/whul.sqlite3", help="database path")
