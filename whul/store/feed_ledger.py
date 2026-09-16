@@ -127,6 +127,58 @@ def load(store: Store, source: str) -> pd.DataFrame:
     return pd.DataFrame([json.loads(p) for p in held["payload"]])
 
 
+def rekey(store: Store, source: str, keys: tuple[str, ...]) -> int:
+    """Move rows written under a superseded key scheme onto the current one.
+
+    A ledger row is only unique for the key it was written under, so changing
+    what identifies a row leaves every earlier row filed under a name nothing
+    will ever collide with -- and the union then hands the same match back
+    twice. Coco Gauff's US Open was scored as nine matches: the four her
+    tournament was re-recorded under both schemes, counted once each way. Her
+    Grand Slam total read 1500 where the tour's own list says 800.
+
+    Re-keyed rather than deleted, because a row the feed has stopped serving
+    is exactly what this table exists to keep: dropping the old copy of a match
+    that has aged out of the window would lose it for good. Where the newer
+    scheme already holds the match, the older row folds into it and the earlier
+    sighting wins -- that date is the only record of when it was played that
+    survives the feed forgetting.
+    """
+    held = store.query(
+        "SELECT row_key, payload, first_seen FROM feed_rows WHERE source = ?",
+        (source,),
+    )
+    if held.empty:
+        return 0
+    stale = []
+    for row in held.itertuples():
+        try:
+            payload = json.loads(row.payload)
+        except (TypeError, ValueError):
+            continue
+        wanted = row_key(payload, keys)
+        if wanted != row.row_key:
+            stale.append((row.row_key, wanted, row.payload, str(row.first_seen)))
+    if not stale:
+        return 0
+    with store.transaction() as conn:
+        for was, wanted, payload, first in stale:
+            conn.execute(
+                "INSERT INTO feed_rows (source, row_key, season, payload, "
+                "first_seen, last_seen) "
+                "SELECT ?, ?, season, payload, ?, last_seen FROM feed_rows "
+                "WHERE source = ? AND row_key = ? "
+                "ON CONFLICT (source, row_key) DO UPDATE SET "
+                "  first_seen = MIN(feed_rows.first_seen, excluded.first_seen)",
+                (source, wanted, first, source, was),
+            )
+            conn.execute(
+                "DELETE FROM feed_rows WHERE source = ? AND row_key = ?",
+                (source, was),
+            )
+    return len(stale)
+
+
 def merge(store: Store, source: str, frame: pd.DataFrame,
           keys: tuple[str, ...]) -> pd.DataFrame:
     """Record what the feed is showing now, and return everything it ever has.
@@ -135,6 +187,14 @@ def merge(store: Store, source: str, frame: pd.DataFrame,
     answers for the season, which is the difference between a quiet week and a
     season that unhappened.
     """
+    moved = rekey(store, source, keys)
+    if moved:
+        # A correction to what is stored, not a fact about tonight's feed, so
+        # it is said out loud once rather than left to be inferred from a
+        # total that quietly halved.
+        print(f"  {source}: {moved} row(s) were filed under a superseded key "
+              f"and were being counted twice; moved onto the current one",
+              flush=True)
     record(store, source, frame, keys)
     held = load(store, source)
     return held if not held.empty else (frame if frame is not None else pd.DataFrame())

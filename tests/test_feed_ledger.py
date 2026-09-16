@@ -537,3 +537,58 @@ def test_the_club_key_names_columns_the_pull_actually_produces(monkeypatch):
         assert not missing, (
             f"{source.key} is keyed on {missing}, which its own pull does not "
             f"return, so every run of it raises before it scores anything")
+
+
+# --- a key scheme that changed under the ledger ----------------------------
+
+def test_a_row_written_under_an_old_key_is_not_paid_for_twice(store):
+    """A ledger row is only unique for the key it was written under. Changing
+    what identifies a row left every earlier one filed under a name nothing
+    would ever collide with, and the union handed the same match back twice:
+    Coco Gauff's US Open scored as nine matches instead of five, and her Grand
+    Slam total read 1500 where the tour's own list says 800."""
+    keys = ("season", "tournament", "round", "winner", "loser")
+    match = {"season": 2026, "tournament": "US Open", "round": "R32",
+             "winner": "Coco Gauff", "loser": "Cristina Bucsa",
+             "score": "3-6 4-6", "match_uid": "SStV7i8F"}
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), ("match_uid",))
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), keys)
+    assert len(feed_ledger.load(store, "tennis")) == 2, "the fault, for the record"
+
+    assert feed_ledger.rekey(store, "tennis", keys) == 1
+    assert len(feed_ledger.load(store, "tennis")) == 1
+
+
+def test_re_keying_keeps_a_match_the_new_scheme_never_saw(store):
+    """The row the feed has stopped serving is exactly what this table exists
+    to keep, so an old-scheme row is moved rather than dropped."""
+    keys = ("season", "tournament", "round", "winner", "loser")
+    match = {"season": 2026, "tournament": "Cincinnati", "round": "F",
+             "winner": "A. Fils", "loser": "B. Other", "score": "6-4 6-4",
+             "match_uid": "aged-out"}
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), ("match_uid",))
+    feed_ledger.rekey(store, "tennis", keys)
+
+    held = feed_ledger.load(store, "tennis")
+    assert list(held["tournament"]) == ["Cincinnati"]
+    assert feed_ledger.rekey(store, "tennis", keys) == 0, "and it stays put"
+
+
+def test_the_earlier_sighting_survives_the_move(store):
+    """That date is the only record of when a match was played that survives
+    the feed forgetting it."""
+    keys = ("season", "tournament", "round", "winner", "loser")
+    match = {"season": 2026, "tournament": "US Open", "round": "R32",
+             "winner": "C. Gauff", "loser": "C. Bucsa", "score": "3-6 4-6",
+             "match_uid": "x1"}
+
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), ("match_uid",),
+                       now="2026-09-05T00:00:00.000+00:00")
+    feed_ledger.record(store, "tennis", pd.DataFrame([match]), keys,
+                       now="2026-09-11T00:00:00.000+00:00")
+    feed_ledger.rekey(store, "tennis", keys)
+
+    held = store.query("SELECT first_seen FROM feed_rows WHERE source = 'tennis'")
+    assert list(held["first_seen"]) == ["2026-09-05T00:00:00.000+00:00"]
