@@ -400,3 +400,35 @@ def test_playing_another_game_can_no_longer_lower_a_score():
     assert two["postseason_pending"] < one["postseason_pending"], \
         "the rate itself really does fall"
     assert one["total_points"] == two["total_points"], "the score does not"
+
+
+def test_no_list_column_reaches_the_numeric_fill():
+    """The columns to fill were listed by name, so every nested figure added
+    later had to be remembered here too -- and `domestic_detail` was not. A
+    column of lists handed to a numeric fill is the kind of thing that works
+    until a pandas version decides otherwise, on a machine that is not the one
+    the tests ran on."""
+    from whul.scoring import soccer
+
+    def row(**kw):
+        return dict(player="A", league="Premier League", season=2027,
+                    position="M", yellow=0, red=0, **kw)
+
+    scored = soccer.score_players(pd.DataFrame([
+        row(competition_key="", competition="Premier League", matches=4,
+            starts=4, goals=2, assists=2),
+        row(competition_key="efl_cup", competition="EFL Cup", matches=2,
+            starts=1, goals=1, assists=0),
+        row(competition_key="UCL", competition="UEFA Champions League",
+            matches=1, starts=1, goals=1, assists=1),
+    ]), postseason=True).iloc[0]
+
+    # Both breakdowns survive as lists, and the figures beside them are real.
+    assert isinstance(scored["domestic_detail"], list)
+    assert isinstance(scored["bonus_detail"], list)
+    assert scored["regular_points"] > 0
+    assert scored["matches"] == 6
+    # The domestic lines add to the domestic score, which is the invariant the
+    # split exists to keep.
+    assert round(sum(e["points"] for e in scored["domestic_detail"]), 1) == \
+        round(float(scored["regular_points"]), 1)

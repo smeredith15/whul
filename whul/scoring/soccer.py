@@ -1052,8 +1052,16 @@ def _fold_competitions(
         ]
     else:
         totals[DETAIL_COLUMN] = [[] for _ in range(len(totals))]
-    numeric = [c for c in totals.columns
-               if c not in PLAYER_KEYS and c != DETAIL_COLUMN]
+    # Every column that is a figure, which is every column that is not a key
+    # and does not hold a list. Named columns were listed here instead, so
+    # adding `domestic_detail` beside `bonus_detail` quietly fed a column of
+    # lists to a numeric fill -- the kind of thing that works until a pandas
+    # version decides otherwise, on a machine that is not this one.
+    numeric = [
+        c for c in totals.columns
+        if c not in PLAYER_KEYS
+        and not any(isinstance(v, list) for v in totals[c])
+    ]
     totals[numeric] = totals[numeric].fillna(0.0)
     # Split the rate into what is settled and what is still moving. Only the
     # settled half reaches the score; the rest is carried so the page can show
