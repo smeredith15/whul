@@ -34,6 +34,7 @@ from whul.config.league import covered_by
 from whul.normalize import apply_benchmarks
 from whul.pipeline import write_daily_scores
 from whul.store import benchmarks as store_benchmarks
+from whul.store import monotonic
 from whul.store.db import Store, _now
 
 
@@ -73,6 +74,7 @@ def ingest(
     season: str,
     as_of: date,
     verbose: bool = True,
+    hold: bool = True,
 ) -> IngestReport:
     """Pull one league up to ``as_of`` and record it against the roster."""
     report = IngestReport(league=source.league, asset_type=source.asset_type)
@@ -139,6 +141,11 @@ def ingest(
 
     _check_against_the_club(store, mine, source, season, as_of, report)
     _settle_umbrella_league(store, mine, report)
+    # Before anything is recorded. A count that has gone backwards is the one
+    # fault here that must never reach the store, because the standings ledger
+    # differences consecutive days and would read it as a loss.
+    if hold:
+        mine = _hold_what_went_backwards(store, mine, source, season, as_of, report)
     _report_shrinkage(store, mine, source, season, as_of, report)
     mine = _keep_competitions_the_pull_missed(
         store, mine, source, season, as_of, report)
@@ -423,6 +430,121 @@ def _keep_competitions_the_pull_missed(
     return out
 
 
+def _figures_the_day_before(store: Store, source, season: str,
+                            as_of: date) -> dict[str, dict]:
+    """What each asset's row said on the last day this source was stored.
+
+    The last day rather than yesterday: a run that was skipped, or a league
+    with no fixture on a Tuesday, must not read as every figure appearing from
+    nothing on the Wednesday.
+    """
+    previous = store.query(
+        "SELECT asset_id, stats FROM raw_stats WHERE league = ? AND source = ? "
+        "AND season = ? AND as_of = (SELECT MAX(as_of) FROM raw_stats "
+        "  WHERE league = ? AND source = ? AND season = ? AND as_of < ?)",
+        (source.league, source.key, season, source.league, source.key, season,
+         as_of.isoformat()),
+    )
+    out: dict[str, dict] = {}
+    for row in previous.itertuples():
+        try:
+            figures = json.loads(row.stats)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(figures, dict):
+            out[str(row.asset_id)] = figures
+    return out
+
+
+#: How many held assets to name before the count stands in for the rest.
+HELD_SHOWN = 4
+
+
+def _hold_what_went_backwards(
+    store: Store, mine: pd.DataFrame, source, season: str, as_of: date,
+    report: IngestReport,
+) -> pd.DataFrame:
+    """Refuse a day in which something that cannot have happened, happened.
+
+    A score that falls is not by itself wrong -- a club that loses by three has
+    a worse point differential, a batter who goes 0-for-4 has four more at-bats
+    priced at minus one apiece, a pitcher who is hit around loses WAR. Those are
+    the sport, and the standings should show them.
+
+    A *count* falling is never the sport. A win cannot be un-won, a shutout
+    cannot be un-thrown, a match cannot be un-played and a division title
+    cannot be un-awarded. Every time one has fallen here it has been the
+    pipeline's fault in one of two ways: a feed that stopped returning
+    something it used to return, or a result credited before it was final and
+    then corrected. Both reach the standings ledger -- which differences
+    consecutive days -- as a manager losing points on a day when nothing
+    happened to them.
+
+    So the day is not written for that asset. Yesterday's figures are carried
+    forward whole, which is the one answer that is certainly not wrong, and the
+    run says which asset and which count. The next pull that comes back
+    complete moves the score again, so a feed that hiccups costs a day of
+    stillness rather than a fortnight of phantom losses.
+
+    Whole rather than clamped, because a row is one story: holding `reg_wins`
+    at nineteen while a run differential built from eighteen wins goes through
+    would leave the panel unable to add up, which is the fault the panels were
+    built to make visible.
+
+    Switched off for a restatement, and only there. ``--since`` exists to
+    rewrite days that were stored wrong, and the day before the range is by
+    definition one of them -- so holding the first corrected day against the
+    uncorrected one it follows would pin the very figure the restatement is
+    there to remove.
+    """
+    if mine.empty or "asset_id" not in mine.columns:
+        return mine
+    was = _figures_the_day_before(store, source, season, as_of)
+    if not was:
+        return mine
+
+    held: list[tuple[str, list]] = []
+    rows = mine.to_dict("records")
+    for index, row in enumerate(rows):
+        before = was.get(str(row.get("asset_id", "")))
+        if not before:
+            continue
+        fell = monotonic.what_went_backwards(before, row)
+        if not fell:
+            continue
+        # Identity from today, figures from the day that was whole. A held row
+        # keeps the name, the club and the asset it was resolved to, because
+        # those are this pull's answers and are not what went wrong.
+        rows[index] = {**row, **{k: v for k, v in before.items()
+                                 if k not in IDENTITY_KEPT}}
+        held.append((str(row.get("asset_id", "")), fell))
+
+    if not held:
+        return mine
+    names = _names_for(store, [asset for asset, _ in held])
+    shown = "; ".join(
+        f"{names.get(asset, asset)} ({monotonic.explain(fell)})"
+        for asset, fell in held[:HELD_SHOWN]
+    )
+    report.problems.append(
+        f"{len(held)} asset(s) came back with a count smaller than the last "
+        f"pull, which cannot happen -- a win cannot be un-won and a match "
+        f"cannot be un-played. They are held at the last whole figures rather "
+        f"than scored down: {shown}"
+        + (f" (and {len(held) - HELD_SHOWN} more)" if len(held) > HELD_SHOWN else "")
+    )
+    return pd.DataFrame(rows, index=mine.index)
+
+
+#: What a held row keeps from today's pull rather than taking from the day it
+#: is held at. Everything that says *which* asset this is: the resolution is
+#: this pull's work and is not what went backwards.
+IDENTITY_KEPT = frozenset({
+    "asset_id", "norm_key", "display_name", "asset_type", "league", "role",
+    "as_of", "source", "season",
+})
+
+
 def _report_shrinkage(
     store: Store, mine: pd.DataFrame, source, season: str, as_of: date,
     report: IngestReport,
@@ -446,26 +568,15 @@ def _report_shrinkage(
     if mine.empty or "total_points" not in mine.columns or "asset_id" not in mine.columns:
         return
 
-    previous = store.query(
-        "SELECT asset_id, stats FROM raw_stats WHERE league = ? AND source = ? "
-        "AND season = ? AND as_of = (SELECT MAX(as_of) FROM raw_stats "
-        "  WHERE league = ? AND source = ? AND season = ? AND as_of < ?)",
-        (source.league, source.key, season, source.league, source.key, season,
-         as_of.isoformat()),
-    )
-    if previous.empty:
-        return
-
     was = {}
-    for row in previous.itertuples():
-        try:
-            figures = json.loads(row.stats)
-        except (TypeError, ValueError):
-            continue
+    for asset_id, figures in _figures_the_day_before(
+            store, source, season, as_of).items():
         value = pd.to_numeric(pd.Series([figures.get("total_points")]),
                               errors="coerce").iloc[0]
         if pd.notna(value):
-            was[str(row.asset_id)] = float(value)
+            was[asset_id] = float(value)
+    if not was:
+        return
 
     shrunk = []
     for row in mine.itertuples():
@@ -847,7 +958,50 @@ def _up_to(raw: pd.DataFrame, as_of: date) -> pd.DataFrame:
     if column is None:
         return raw
     days = pd.to_datetime(raw[column], errors="coerce", utc=True).dt.tz_localize(None)
-    return raw[days.isna() | (days.dt.date <= as_of)]
+    keep = days.isna() | (days.dt.date <= as_of)
+    if keep.all():
+        return raw
+
+    # A fixture list is cut differently from a list of results. Dropping a game
+    # that has not been played yet does not merely remove it: it removes the
+    # evidence that the season is still going on, and `settled_seasons` reads
+    # a schedule with nothing ahead of it as a season that is over. Baltimore
+    # were 1-0 and were awarded the AFC North -- fifteen points, on the
+    # thirteenth of September -- and had it taken off them on the seventeenth,
+    # when week two appeared and the season stopped looking finished.
+    #
+    # So a game after the day being scored keeps its row and loses its result,
+    # which is what was true of it on that day: not played yet. Every scorer
+    # here reads a game through whether it has a score, so a blanked row is not
+    # counted; and the question "is there anything left to play" now has the
+    # answer it had at the time, on a replay of an old day as much as on today.
+    blanked = _without_a_result(raw, ~keep)
+    return blanked if blanked is not None else raw[keep]
+
+
+#: Score pairs that make a frame a fixture list rather than a list of figures.
+RESULT_PAIRS = (("home_score", "away_score"), ("points_for", "points_against"))
+
+
+def _without_a_result(raw: pd.DataFrame, future: pd.Series) -> pd.DataFrame | None:
+    """``raw`` with the future's results rubbed out, or None if it has none.
+
+    None rather than an untouched frame, so the caller can tell a fixture list
+    whose future has been blanked from a frame of weekly player figures, where
+    a row with the numbers taken out is not a fixture and is simply noise.
+    """
+    pair = next((p for p in RESULT_PAIRS
+                 if p[0] in raw.columns and p[1] in raw.columns), None)
+    if pair is None:
+        return None
+    out = raw.copy()
+    for column in pair:
+        out.loc[future, column] = float("nan")
+    # `completed` is consulted before the scores are, so a row left saying yes
+    # would still read as a game that has been played.
+    if "completed" in out.columns:
+        out.loc[future, "completed"] = False
+    return out
 
 
 def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:

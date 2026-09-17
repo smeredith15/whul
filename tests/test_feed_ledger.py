@@ -701,6 +701,7 @@ def _stubbed_pull(source_key, monkeypatch):
             "date": "2026-09-13", "games": [{
                 "gamePk": 778001, "season": "2026", "gameType": "R",
                 "officialDate": "2026-09-13",
+                "status": {"abstractGameState": "Final"},
                 "teams": {"home": {"score": 4, "team": {"name": "Chicago Cubs"}},
                           "away": {"score": 1, "team": {"name": "Tampa Bay Rays"}}},
             }]}]})
