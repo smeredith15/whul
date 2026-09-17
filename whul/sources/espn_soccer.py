@@ -36,7 +36,6 @@ import json
 
 import time
 
-from functools import lru_cache
 import pandas as pd
 import requests
 
@@ -1058,30 +1057,6 @@ def load_gamelog(
             }
     return pd.DataFrame(_inside_the_league_year(
         list(rows.values()), league, season))
-
-
-@lru_cache(maxsize=4096)
-def appearance_dates(league: str, athlete_id: str, season: int | None = None
-                     ) -> tuple[str, ...]:
-    """The days this player actually turned out, earliest first.
-
-    The dates and nothing else, which is all the gamelog has and all this
-    needs. `load_gamelog` explains what it cannot give: no statistics, and no
-    domestic cup ties. So this says when a player appeared, never what he did
-    when he appeared, and a total laid along these days is laid along real days
-    and split evenly between them.
-
-    Cached for the life of the process, because the answer does not depend on
-    the day being scored and a restatement asks about twenty-eight of them.
-    """
-    try:
-        log = load_gamelog(league, athlete_id, season)
-    except Exception:  # noqa: BLE001 -- one player must not lose the league
-        return ()
-    if log is None or log.empty or "date" not in log.columns:
-        return ()
-    days = sorted({str(d)[:10] for d in log["date"] if str(d)[:10]})
-    return tuple(days)
 
 
 def _inside_the_league_year(rows: list[dict], league: str, season) -> list[dict]:

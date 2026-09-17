@@ -100,12 +100,6 @@ class Source:
     #: default was eight for everything, and a club soccer pool drawn over
     #: eight years reaches back past the pandemic seasons.
     benchmark_seasons: int | None = None
-    #: Where the days are, for a feed that reports a season and no dates.
-    #: Takes the raw frame and the seasons asked for, and answers
-    #: ``{player: [days he appeared]}`` -- so a total the feed gives whole can
-    #: be laid along the days it was earned on rather than landing on the first
-    #: morning it was ever pulled. See ``ingest._spread_over_appearances``.
-    dates_from: Callable[[pd.DataFrame, list[int]], dict] | None = None
     #: Rough confidence in the source, shown by ``benchmarks list`` so the
     #: easiest leagues can be frozen first and the shaky ones chased separately.
     reliability: str = "unverified"
@@ -489,42 +483,6 @@ def _players_in(competition: str, seasons: tuple[int, ...]):
               f"{len(seasons)} season(s)", flush=True)
         return pd.DataFrame()
     return frame
-
-
-def _soccer_player_dates(raw: pd.DataFrame, seasons: list[int]) -> dict:
-    """The days each club footballer in this frame actually turned out.
-
-    From ESPN's gamelog, one request a player, keyed by the same name the
-    scored rows carry. The squad rows already hold ESPN's own athlete id, so
-    nobody is matched by name against the feed a second time -- the id is what
-    the roster walk read him out of.
-
-    A player with no id, or whose gamelog will not answer, is simply absent
-    from the map, and the day is left without him rather than with a guess.
-    """
-    from whul.sources.espn_soccer import appearance_dates
-
-    if raw is None or raw.empty or "player_id" not in raw.columns:
-        return {}
-    season = max(seasons) if seasons else None
-    # His own league's request, not every league's in turn. Each row already
-    # carries the competition it came back under, and a footballer's gamelog is
-    # the same gamelog whichever of his competitions is used to ask for it --
-    # `load_gamelog` records that the competition in the request path is
-    # ignored. So one request a player, and his own league is the one to use
-    # because it is the one certain to exist.
-    wanted = ["player", "player_id"] + (
-        ["league"] if "league" in raw.columns else [])
-    out: dict[str, list[str]] = {}
-    for row in raw[wanted].drop_duplicates("player").to_dict("records"):
-        name, athlete = str(row.get("player") or ""), str(row.get("player_id") or "")
-        key = PLAYER_LEAGUES.get(str(row.get("league") or ""))
-        if not name or not athlete or not key:
-            continue
-        days = appearance_dates(key, athlete, season)
-        if days:
-            out[name] = list(days)
-    return out
 
 
 def _soccer_players(only: tuple[str, ...] = ()):
@@ -1426,13 +1384,6 @@ SOURCES: dict[str, Source] = _register(
                 "and the women's are normalized against themselves"),
     Source("soccer-players", "Club Soccer", "Player", _soccer_players,
            live=_soccer_players_live,
-           # The squad endpoint gives a season and no dates, so a day that has
-           # gone cannot be asked of it directly. The gamelog gives the days,
-           # and between them a total can be laid along the matches it was
-           # earned over rather than landing whole on the first morning the
-           # feed was ever pulled -- which was the fifth of September, and
-           # thirty-nine footballers' seasons with it.
-           dates_from=_soccer_player_dates,
            produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
                      "Ligue 1", "MLS"),
            seasons_for=_espn_seasons("epl", "Premier League"),
