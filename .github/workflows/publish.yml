@@ -188,22 +188,6 @@ jobs:
       # nothing and never fails the run. The standings were waiting on a
       # diagnostic. It is its own workflow now, fired by this one finishing.
 
-      - name: Refuse a day nothing can explain
-        # The one check this project promises. A score that falls is not by
-        # itself wrong -- a club that loses by three has a worse point
-        # differential -- but a *count* falling is never the sport: a win
-        # cannot be un-won, a match cannot be un-played, a title cannot be
-        # un-awarded. The pull holds those at the last whole figures rather
-        # than scoring them down; this says so out loud if any ever reaches
-        # the stored days anyway.
-        #
-        # Not fatal, deliberately. The standings are already written by the
-        # time this runs and yesterday's page beats none -- but the run goes
-        # red in the list, which is what makes it something somebody looks at
-        # rather than a line in a log.
-        continue-on-error: true
-        run: python -m whul.cli check-falls --season "$SEASON"
-
       - name: Roll up the standings
         run: |
           if [ "${{ inputs.backfill }}" = "true" ] \
@@ -240,3 +224,35 @@ jobs:
     steps:
       - id: deploy
         uses: actions/deploy-pages@v4
+
+  # The one check this project promises. A score that falls is not by itself
+  # wrong -- a club that loses by three has a worse point differential -- but a
+  # *count* falling is never the sport: a win cannot be un-won, a match cannot
+  # be un-played, a title cannot be un-awarded. The pull holds those at the last
+  # whole figures rather than scoring them down; this says so if any ever
+  # reaches the stored days anyway.
+  #
+  # Its own job, after the deploy, because the two things it has to do pull in
+  # opposite directions. The page must ship -- yesterday's standings beat none,
+  # and a check that blocked the deploy would take the site down over a number
+  # being wrong. And the run must go red, because a step that fails quietly
+  # inside a green run is a line in a log that nobody reads.
+  verify:
+    needs: [build, deploy]
+    runs-on: ubuntu-latest
+    env:
+      SEASON: ${{ inputs.season || '2026-27' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: Restore the database the run just wrote
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+      - name: Every fall must be the sport
+        run: python -m whul.cli check-falls --season "$SEASON"

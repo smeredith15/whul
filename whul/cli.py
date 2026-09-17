@@ -782,6 +782,63 @@ def cmd_admin(args: argparse.Namespace) -> int:
 FALLS_SHOWN = 30
 
 
+def _falls(store, season: str, only: str = "") -> tuple[list, list]:
+    """Every day a score fell, split into what the sport did and what did not.
+
+    ``only`` narrows it to falls landing on that one day, which is what a
+    restatement needs: the day it starts on is the one that has an older day
+    in front of it, and that join is where a correction leaves a cliff.
+    """
+    import json
+    from collections import defaultdict
+
+    from whul.store import monotonic
+
+    scores = store.query(
+        "SELECT d.asset_id, d.as_of, d.league_points, a.display_name, a.league "
+        "FROM daily_scores d JOIN assets a ON a.asset_id = d.asset_id "
+        "WHERE d.season = ? ORDER BY d.asset_id, d.as_of",
+        (season,),
+    )
+    if scores.empty:
+        return [], []
+    figures: dict[str, dict[str, dict]] = defaultdict(dict)
+    for row in store.query(
+            "SELECT asset_id, as_of, stats FROM raw_stats WHERE season = ?",
+            (season,)).itertuples():
+        try:
+            figures[str(row.asset_id)][str(row.as_of)] = json.loads(row.stats)
+        except (TypeError, ValueError):
+            continue
+
+    days: dict[str, list] = defaultdict(list)
+    for row in scores.itertuples():
+        days[str(row.asset_id)].append(row)
+
+    unexplained, explained = [], []
+    for asset_id, ordered in days.items():
+        for before, now in zip(ordered, ordered[1:]):
+            if only and str(now.as_of) != only:
+                continue
+            fall = float(before.league_points or 0) - float(now.league_points or 0)
+            if fall <= monotonic.TOLERANCE:
+                continue
+            fell = monotonic.what_went_backwards(
+                figures[asset_id].get(str(before.as_of), {}),
+                figures[asset_id].get(str(now.as_of), {}),
+            )
+            entry = (str(now.as_of), str(now.league), str(now.display_name),
+                     fall, fell)
+            (unexplained if fell else explained).append(entry)
+    return explained, unexplained
+
+
+def _earliest_stored_day(store, season: str) -> str:
+    got = store.query(
+        "SELECT MIN(as_of) AS first FROM daily_scores WHERE season = ?", (season,))
+    return "" if got.empty else str(got["first"].iloc[0] or "")
+
+
 def cmd_check_falls(args: argparse.Namespace) -> int:
     """Every day an asset's score went down, and whether anything explains it.
 
@@ -796,51 +853,16 @@ def cmd_check_falls(args: argparse.Namespace) -> int:
     unexplained. That is the check the promise rests on: not that nobody has
     noticed a negative lately, but that the ledger can be asked.
     """
-    import json
-    from collections import defaultdict
-
     from whul.store import monotonic, open_store
 
     store = open_store(args.db)
-    scores = store.query(
-        "SELECT d.asset_id, d.as_of, d.league_points, d.scaled_score, "
-        "       a.display_name, a.league "
-        "FROM daily_scores d JOIN assets a ON a.asset_id = d.asset_id "
-        "WHERE d.season = ? ORDER BY d.asset_id, d.as_of",
-        (args.season,),
-    )
-    if scores.empty:
+    explained, unexplained = _falls(store, args.season)
+    if not explained and not unexplained and not _earliest_stored_day(
+            store, args.season):
         print(f"\nNothing stored for {args.season}.\n")
         return 0
-    figures: dict[str, dict[str, dict]] = defaultdict(dict)
-    for row in store.query(
-            "SELECT asset_id, as_of, stats FROM raw_stats WHERE season = ?",
-            (args.season,)).itertuples():
-        try:
-            figures[str(row.asset_id)][str(row.as_of)] = json.loads(row.stats)
-        except (TypeError, ValueError):
-            continue
 
-    days: dict[str, list] = defaultdict(list)
-    for row in scores.itertuples():
-        days[str(row.asset_id)].append(row)
-
-    unexplained, explained = [], []
-    for asset_id, ordered in days.items():
-        for before, now in zip(ordered, ordered[1:]):
-            fall = float(before.league_points or 0) - float(now.league_points or 0)
-            if fall <= monotonic.TOLERANCE:
-                continue
-            fell = monotonic.what_went_backwards(
-                figures[asset_id].get(str(before.as_of), {}),
-                figures[asset_id].get(str(now.as_of), {}),
-            )
-            entry = (str(now.as_of), str(now.league), str(now.display_name),
-                     fall, fell)
-            (unexplained if fell else explained).append(entry)
-
-    print(f"\n{args.season}: {len(scores)} stored day(s) across "
-          f"{len(days)} asset(s).")
+    print(f"\n{args.season}:")
     print(f"  {len(explained) + len(unexplained)} day(s) where a score fell.")
     print(f"  {len(explained)} explained by a measure -- a differential, a "
           f"rate, a WAR: the sport happening.")
@@ -862,7 +884,64 @@ def cmd_check_falls(args: argparse.Namespace) -> int:
               f"{monotonic.explain(fell)}")
     if len(unexplained) > FALLS_SHOWN:
         print(f"    ... and {len(unexplained) - FALLS_SHOWN} more")
-    print()
+    _say_how_to_clear_them(store, args.season, unexplained)
+    return 1
+
+
+def _say_how_to_clear_them(store, season: str, unexplained: list) -> None:
+    """The command that removes them, with the date worked out.
+
+    A fall between two days means the earlier one holds a figure the later one
+    says was never true, so it is the earlier one that is wrong -- and
+    restating only from the day the fall shows up moves the cliff back a day
+    rather than removing it. That was done once, with `--since` set to the day
+    of the drop, and the drop simply reappeared on the day before.
+
+    So the date is the first day stored, not the first day that looks wrong.
+    """
+    first = _earliest_stored_day(store, season)
+    if not first:
+        return
+    earliest = min(day for day, *_ in unexplained)
+    print(f"\n  The earliest of these lands on {earliest}, which means the day "
+          f"before it\n  holds a figure that day says was never true -- so it is "
+          f"the earlier day\n  that is wrong, and restating from {earliest} "
+          f"would move the cliff rather\n  than remove it. Restate the whole "
+          f"stored history:\n")
+    print(f"      python -m whul.cli ingest <leagues> --season {season} "
+          f"--since {first}\n")
+
+
+def _refuse_a_restatement_that_left_a_cliff(store, season: str, since) -> int:
+    """Check the join a restatement necessarily leaves behind.
+
+    ``--since`` rewrites a range and leaves everything before it alone, so the
+    first day of the range now sits against a day that was scored from worse
+    information. Where the correction went downwards -- which is most
+    corrections, since a figure that was too high is what a premature credit
+    or a double count leaves -- that join is a fall, and it is the whole
+    correction expressed as a loss on one morning.
+
+    Nothing here can fix it, because fixing it means restating further back,
+    which is the caller's decision and another twenty minutes. So it is said
+    as loudly as a run can say anything, with the date to use.
+    """
+    _, unexplained = _falls(store, season, only=since.isoformat())
+    if not unexplained:
+        return 0
+    print(f"\n  THE RESTATEMENT LEFT A CLIFF on {since}.\n")
+    print(f"  {len(unexplained)} asset(s) now sit against a day before the range "
+          f"that holds\n  figures this restatement says were never true. The "
+          f"correction is right and\n  it is landing as a one-day loss, which "
+          f"is the thing being restated away:\n")
+    for day, league, who, fall, fell in sorted(
+            unexplained, key=lambda e: -e[3])[:FALLS_SHOWN]:
+        from whul.store import monotonic
+        print(f"    {day}  {league:14s} {who[:24]:24s} -{fall:8,.2f}   "
+              f"{monotonic.explain(fell)}")
+    if len(unexplained) > FALLS_SHOWN:
+        print(f"    ... and {len(unexplained) - FALLS_SHOWN} more")
+    _say_how_to_clear_them(store, season, unexplained)
     return 1
 
 
@@ -2622,6 +2701,15 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             print(f"    {row.league} {row.asset_type.lower()}s "
                   f"({row.assets}): {row.names}")
     print()
+    # A restatement rewrites a range and leaves everything before it alone, so
+    # the first day of the range now sits against a day scored from worse
+    # information. Where the correction went downwards -- which is what a
+    # premature credit or a double count leaves behind -- that join is the
+    # whole correction expressed as a loss on one morning, and the run must
+    # not report success having created it.
+    if not hold and _refuse_a_restatement_that_left_a_cliff(
+            store, args.season, days[0]):
+        return 1
     return 0 if scored or recorded else 1
 
 

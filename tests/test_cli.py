@@ -1,6 +1,8 @@
 import pytest
 
-from whul.cli import LEAGUES, main
+from whul.cli import (
+    LEAGUES, _refuse_a_restatement_that_left_a_cliff, main,
+)
 
 
 def test_list_runs(capsys):
@@ -639,3 +641,72 @@ def test_check_falls_separates_the_sport_from_the_fault(tmp_path, capsys):
     assert "1 where a count went backwards" in said
     assert "reg_wins 19 -> 18" in said
     assert "Arkansas" not in said.split("Unexplained")[1]
+
+
+def _seed_a_wrong_history(db, days: dict[str, list[tuple[float, dict]]]):
+    """A stored season, day by day, as the pipeline would have written it."""
+    from datetime import date
+
+    from whul.store import open_store
+
+    store = open_store(str(db))
+    store.upsert("assets", [
+        {"asset_id": asset, "asset_type": "Team", "league": "NFL",
+         "display_name": asset, "norm_key": "NFL", "active": 1,
+         "created_at": "2026-08-21T00:00:00+00:00"} for asset in days
+    ], ["asset_id"])
+    store.upsert("benchmark_versions", [{
+        "version": "v", "season": "2026-27", "quantile": 0.99, "managers": 5,
+        "computed_at": "2026-08-21T00:00:00+00:00"}], ["version"])
+    for asset, series in days.items():
+        for offset, (points, figures) in enumerate(series):
+            when = date(2026, 9, 13 + offset)
+            store.record_stats([{"asset_id": asset, **figures}], source="test",
+                               season="2026-27", as_of=when, league="NFL")
+            store.upsert("daily_scores", [{
+                "asset_id": asset, "season": "2026-27",
+                "as_of": when.isoformat(), "league_points": points,
+                "scaled_score": points, "benchmark_version": "v",
+                "computed_at": "2026-09-18T00:00:00+00:00"}],
+                ["asset_id", "season", "as_of"])
+    return store
+
+
+def test_a_restatement_that_moved_the_cliff_instead_of_removing_it(tmp_path, capsys):
+    """This is what happened. Baltimore held a division title it won in week
+    one from the thirteenth; the day it was taken back was the seventeenth; the
+    restatement was run from the sixteenth, and the drop reappeared on the
+    sixteenth instead of going away.
+
+    A fall between two days means the *earlier* one holds a figure the later
+    one says was never true, so restating from the day of the drop can only
+    move it back a day."""
+    from datetime import date
+
+    store = _seed_a_wrong_history(tmp_path / "cliff.sqlite3", {
+        "Baltimore Ravens": [
+            (29.8, {"div_champ": 1, "reg_wins": 1.0}),   # 09-13, wrong
+            (29.8, {"div_champ": 1, "reg_wins": 1.0}),   # 09-14, wrong
+            (29.8, {"div_champ": 1, "reg_wins": 1.0}),   # 09-15, wrong
+            (14.8, {"div_champ": 0, "reg_wins": 1.0}),   # 09-16, restated
+            (14.8, {"div_champ": 0, "reg_wins": 1.0}),   # 09-17, restated
+        ],
+    })
+
+    # The restatement reports the cliff it left rather than reporting success.
+    assert _refuse_a_restatement_that_left_a_cliff(
+        store, "2026-27", date(2026, 9, 16)) == 1
+    said = capsys.readouterr().out
+    assert "LEFT A CLIFF" in said
+    assert "div_champ 1 -> 0" in said
+    # And it names the day to restate from, which is the first day stored and
+    # not the day the drop shows up on.
+    assert "--since 2026-09-13" in said
+
+    # A restatement that covered the whole history leaves nothing behind.
+    store = _seed_a_wrong_history(tmp_path / "clean.sqlite3", {
+        "Baltimore Ravens": [(14.8, {"div_champ": 0, "reg_wins": 1.0})] * 3
+                            + [(31.4, {"div_champ": 0, "reg_wins": 2.0})] * 2,
+    })
+    assert _refuse_a_restatement_that_left_a_cliff(
+        store, "2026-27", date(2026, 9, 13)) == 0
