@@ -563,6 +563,9 @@ STAT_SKIP = {
     "finishes", "tier_detail", "norm_key", "asset_type", "role_count",
     "contract_year",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
+    # Said in a note under the boxes, where it can say what it means. As a row
+    # in a column of goals and assists it reads as one of them.
+    "estimated_share",
     # Shown as identity, above the figures. Left here as well they read as a
     # statistic -- "Position  F" in a column of goals and assists, and
     # "Continental  Champions League" under the club's own line saying so.
@@ -2888,6 +2891,17 @@ def _scaling_notes(row: dict) -> list[str]:
         out.append(
             f"The benchmark for this league is lifted by \u00d7{factor:.3f} to "
             f"match a longer schedule than its history was played over."
+        )
+
+    share = row.get("estimated_share")
+    if isinstance(share, (int, float)) and share == share and 0 < share < 1:
+        out.append(
+            f"An estimate for this day. The feed reports a season and no dates, "
+            f"so the total is laid along the days this player actually appeared "
+            f"and split evenly between them \u2014 {share:.0%} of them had been "
+            f"played by now. The dates are real; which of the points fell on "
+            f"which day is not something the feed says. The figure on the last "
+            f"day he appeared is the feed's own."
         )
     return out
 

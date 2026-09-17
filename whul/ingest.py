@@ -1019,6 +1019,86 @@ def _without_a_result(raw: pd.DataFrame, future: pd.Series) -> pd.DataFrame | No
     return out
 
 
+#: Fields on a scored row that name it rather than measure it, and so are not
+#: scaled when a season is laid along the days it was earned on.
+NOT_SPREAD = frozenset({
+    "season", "season_year", "season_said", "contract_year", "player_id",
+    "team_id", "athlete_id", "game_id", "position", "div_rank", "conference",
+    "opp_conference", "proration_factor", "schedule_factor", "advanced_share",
+})
+
+
+def _spread_over_appearances(source, scored: pd.DataFrame, raw: pd.DataFrame,
+                             as_of: date, seasons: list[int], notes) -> pd.DataFrame:
+    """A season total laid along the days it was actually earned on.
+
+    Some feeds report a season and no dates -- a club footballer's line is one
+    row for the year, however many matches went into it. Asked what was true on
+    the thirtieth of August they answer with today's figures, which is why a
+    replay of one cannot be trusted and is refused.
+
+    Where the dates exist somewhere else, they can be. ESPN's gamelog gives the
+    days a player turned out and no statistics; the squad endpoint gives the
+    statistics and no days. Neither is a per-match record and the two together
+    are not one either -- but between them they say a total was earned over
+    these four days, which is enough to stop a season arriving in a single
+    Saturday.
+
+    Split evenly, which is the part that is an estimate and is marked as one: a
+    hat-trick and a quiet twenty minutes are priced the same. What is not an
+    estimate is the dates, and the total on the last of them, which is the
+    figure the feed actually reports.
+
+    A player the gamelog does not know is left out of the day rather than
+    guessed at. Dating him from nothing would put a season's points on the
+    league year's first morning, and that is the fault this is fixing rather
+    than a different way of committing it.
+    """
+    if scored is None or scored.empty or not getattr(source, "dates_from", None):
+        return scored
+    try:
+        by_player = source.dates_from(raw, seasons)
+    except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
+        if notes is not None:
+            notes.append(f"could not date this league's appearances "
+                         f"({type(exc).__name__}: {exc}), so the day is left "
+                         f"as the feed reported it")
+        return scored
+    if not by_player:
+        return scored
+
+    key = next((c for c in ("player", "display_name", "team") if c in scored.columns), None)
+    if key is None:
+        return scored
+
+    numeric = [c for c in scored.columns if c not in NOT_SPREAD
+               and pd.api.types.is_numeric_dtype(scored[c])]
+    kept, undated = [], 0
+    for row in scored.to_dict("records"):
+        days = by_player.get(str(row.get(key, "")))
+        if not days:
+            undated += 1
+            continue
+        played = sum(1 for day in days if str(day)[:10] <= as_of.isoformat())
+        if not played:
+            continue
+        share = played / len(days)
+        kept.append({**row,
+                     **{c: row[c] * share for c in numeric
+                        if isinstance(row.get(c), (int, float))
+                        and row.get(c) == row.get(c)},
+                     # What the page needs to say the figure is an estimate,
+                     # and what of. One on the last day a player appeared,
+                     # which is the day the feed's own total is exact.
+                     "estimated_share": round(share, 4)})
+    if undated and notes is not None:
+        notes.append(f"{undated} player(s) have no dated appearances, so this "
+                     f"day does not carry them: a season's points placed on "
+                     f"the league year's first morning would be the fault "
+                     f"being fixed rather than a different way of making it")
+    return pd.DataFrame(kept) if kept else scored.iloc[0:0]
+
+
 class CannotReplay(RuntimeError):
     """This feed cannot be asked what was true on a day that has gone.
 
@@ -1036,7 +1116,8 @@ class CannotReplay(RuntimeError):
     """
 
 
-def _can_answer_for(raw: pd.DataFrame, as_of: date, today: date) -> str:
+def _can_answer_for(raw: pd.DataFrame, as_of: date, today: date,
+                    dates_from=None) -> str:
     """Why this frame cannot be cut back to ``as_of``, or "" if it can.
 
     Only ever a reason for a day that has gone, and only where the caller has
@@ -1048,6 +1129,10 @@ def _can_answer_for(raw: pd.DataFrame, as_of: date, today: date) -> str:
     if raw is None or raw.empty or as_of >= today:
         return ""
     if any(column in raw.columns for column in DATE_COLUMNS):
+        return ""
+    if dates_from is not None:
+        # It carries no dates and knows where to find them, which is the same
+        # thing one step further away. See `_spread_over_appearances`.
         return ""
     return (f"this feed reports a season to date and carries no dates, so it "
             f"cannot say what was true on {as_of}: it would answer with "
@@ -1303,10 +1388,14 @@ def _pull(
         # and would cut a World Cup off at the year's end.
         _harvest(source, raw, as_of, seasons, upcoming)
         kept = raw if source.dated_by_source else _from_season_start(raw, source.league)
-        refused = _can_answer_for(kept, as_of, today or as_of)
+        dates_from = getattr(source, "dates_from", None)
+        refused = _can_answer_for(kept, as_of, today or as_of, dates_from)
         if refused:
             raise CannotReplay(refused)
         scored = _scored_on(score, _up_to(kept, as_of), as_of)
+        if dates_from and as_of < (today or as_of):
+            scored = _spread_over_appearances(
+                source, scored, kept, as_of, seasons, notes)
         if (scored is None or scored.empty) and notes is not None:
             notes.append(_why_nothing_scored(raw, kept, source.league))
         if not getattr(source, "cumulative", False):
