@@ -2012,3 +2012,111 @@ def test_a_frame_of_figures_is_still_simply_cut():
         {"season": 2026, "date": "2026-09-14", "player": "X", "yards": 95},
     ])
     assert len(ing._up_to(figures, _date(2026, 9, 10))) == 1
+
+
+# --- a day that has gone is not a question every feed can answer -------------
+
+def test_a_season_aggregate_is_not_replayed_over_the_day_it_cannot_describe():
+    """Cole Palmer read four matches on the fifth of September, the sixth, the
+    seventh and every day to the sixteenth, because a restatement asked ESPN
+    for his season twelve times and wrote the same answer down twelve times.
+    He had played two of them by the fifth.
+
+    A feed that reports dated events can be cut back to a day. One that reports
+    a season to date cannot: it answers "what is true now", and replaying it
+    does not merely fail to restore the history, it overwrites the only record
+    of what the feed said at the time."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+
+    class Feed:
+        key, league, asset_type = "epl-players-test", "Premier League", "Player"
+        windowed, dated_by_source, cumulative = False, False, False
+        produces, roster_scoped, live, seasons_for, accumulates = (), False, None, None, ()
+
+        @staticmethod
+        def build():
+            # What ESPN gives for a club footballer: one row a season, with no
+            # date anywhere on it.
+            return (lambda _seasons: pd.DataFrame([
+                {"season": 2026, "player": "Cole Palmer", "team": "Chelsea",
+                 "matches": 6.0, "goals": 4.0, "total_points": 36.0}]),
+                    lambda raw: raw)
+
+    # Today, the aggregate is exactly the right answer.
+    got = ing._pull(Feed(), _date(2026, 9, 17), verbose=False,
+                    today=_date(2026, 9, 17))
+    assert float(got["matches"].iloc[0]) == 6.0
+
+    # A day that has gone, during a restatement, is refused.
+    with pytest.raises(ing.CannotReplay) as refused:
+        ing._pull(Feed(), _date(2026, 9, 5), verbose=False,
+                  today=_date(2026, 9, 17))
+    assert "cannot say what was true on 2026-09-05" in str(refused.value)
+
+    # And a pull that does not say which day is now is pulling that day, so it
+    # is never refused -- a replay is something a caller does on purpose.
+    assert not ing._pull(Feed(), _date(2026, 9, 5), verbose=False).empty
+
+
+def test_a_dated_feed_is_still_replayed():
+    """The other half. Events carry their dates, so a day is the events up to
+    it, and that is exactly what a restatement is for."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+
+    class Feed:
+        key, league, asset_type = "mlb-teams-test", "MLB", "Team"
+        windowed, dated_by_source, cumulative = False, False, False
+        produces, roster_scoped, live, seasons_for, accumulates = (), False, None, None, ()
+
+        @staticmethod
+        def build():
+            return (lambda _seasons: pd.DataFrame([
+                {"season": 2026, "game_date": "2026-09-05", "team": "A",
+                 "home_score": 4, "away_score": 1, "wins": 1},
+                {"season": 2026, "game_date": "2026-09-16", "team": "A",
+                 "home_score": 7, "away_score": 2, "wins": 1}]),
+                    lambda raw: raw.assign(total_points=raw["wins"] * 2))
+
+    early = ing._pull(Feed(), _date(2026, 9, 6), verbose=False,
+                      today=_date(2026, 9, 17))
+    # Two rows, because a fixture list keeps the games it has not played yet --
+    # that is what says the season is still going on. The one that had not
+    # happened on the sixth has no result on it.
+    assert len(early) == 2
+    assert pd.isna(early.sort_values("game_date")["home_score"].iloc[-1])
+
+
+def test_a_refused_replay_leaves_the_stored_day_alone(monkeypatch):
+    """Not a failure and not an empty day: the day already has an answer and
+    this pull is not in a position to improve on it. Marking the source not-ok
+    would report a feed that is working perfectly as broken."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+
+    class Feed:
+        key, league, asset_type = "epl-players-test", "Premier League", "Player"
+        produces = ()
+
+    said: list = []
+    monkeypatch.setattr(ing, "_pull",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            ing.CannotReplay("cannot say what was true")))
+    monkeypatch.setattr(ing.resolver, "rostered_assets",
+                        lambda *a, **k: pd.DataFrame([
+                            {"asset_id": "player-epl-x", "display_name": "Cole Palmer",
+                             "league": "Premier League", "norm_key": "Premier League"}]))
+    monkeypatch.setattr(store, "record_source_status",
+                        lambda *a, **k: said.append(a))
+
+    report = ing.ingest(store, Feed(), "2026-27", _date(2026, 9, 5),
+                        verbose=False, today=_date(2026, 9, 17))
+    assert report.skipped and report.recorded == 0
+    assert said == [], "a working feed was marked broken"

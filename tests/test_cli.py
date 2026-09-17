@@ -549,7 +549,7 @@ def test_since_rewrites_every_stored_day_from_that_one(monkeypatch, tmp_path):
     asked: list[date] = []
     held: list[bool] = []
     monkeypatch.setattr(ingest_module, "ingest",
-                        lambda store, source, season, as_of, hold=True: (
+                        lambda store, source, season, as_of, hold=True, today=None: (
                             asked.append(as_of) or held.append(hold)
                             or ingest_module.IngestReport(league="x", asset_type="Player")))
 
@@ -574,7 +574,7 @@ def test_an_ordinary_pull_holds_what_cannot_have_happened(monkeypatch, tmp_path)
 
     held: list[bool] = []
     monkeypatch.setattr(ingest_module, "ingest",
-                        lambda store, source, season, as_of, hold=True: (
+                        lambda store, source, season, as_of, hold=True, today=None: (
                             held.append(hold)
                             or ingest_module.IngestReport(league="x", asset_type="Player")))
     main(["ingest", "tennis", "--db", str(tmp_path / "x.sqlite3"),
