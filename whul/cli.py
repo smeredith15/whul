@@ -778,6 +778,94 @@ def cmd_admin(args: argparse.Namespace) -> int:
     return 0
 
 
+#: How many falls to name before the count stands in for the rest.
+FALLS_SHOWN = 30
+
+
+def cmd_check_falls(args: argparse.Namespace) -> int:
+    """Every day an asset's score went down, and whether anything explains it.
+
+    A score that falls is not by itself wrong: a club that loses by three has a
+    worse point differential, a batter who goes 0-for-4 has four more at-bats
+    priced at minus one apiece. What is always wrong is a count falling -- a
+    win un-won, a match un-played, a title un-awarded -- and that is what this
+    separates out.
+
+    It reads the stored days rather than re-pulling anything, so it can be run
+    against any database at any time, and it exits non-zero when anything is
+    unexplained. That is the check the promise rests on: not that nobody has
+    noticed a negative lately, but that the ledger can be asked.
+    """
+    import json
+    from collections import defaultdict
+
+    from whul.store import monotonic, open_store
+
+    store = open_store(args.db)
+    scores = store.query(
+        "SELECT d.asset_id, d.as_of, d.league_points, d.scaled_score, "
+        "       a.display_name, a.league "
+        "FROM daily_scores d JOIN assets a ON a.asset_id = d.asset_id "
+        "WHERE d.season = ? ORDER BY d.asset_id, d.as_of",
+        (args.season,),
+    )
+    if scores.empty:
+        print(f"\nNothing stored for {args.season}.\n")
+        return 0
+    figures: dict[str, dict[str, dict]] = defaultdict(dict)
+    for row in store.query(
+            "SELECT asset_id, as_of, stats FROM raw_stats WHERE season = ?",
+            (args.season,)).itertuples():
+        try:
+            figures[str(row.asset_id)][str(row.as_of)] = json.loads(row.stats)
+        except (TypeError, ValueError):
+            continue
+
+    days: dict[str, list] = defaultdict(list)
+    for row in scores.itertuples():
+        days[str(row.asset_id)].append(row)
+
+    unexplained, explained = [], []
+    for asset_id, ordered in days.items():
+        for before, now in zip(ordered, ordered[1:]):
+            fall = float(before.league_points or 0) - float(now.league_points or 0)
+            if fall <= monotonic.TOLERANCE:
+                continue
+            fell = monotonic.what_went_backwards(
+                figures[asset_id].get(str(before.as_of), {}),
+                figures[asset_id].get(str(now.as_of), {}),
+            )
+            entry = (str(now.as_of), str(now.league), str(now.display_name),
+                     fall, fell)
+            (unexplained if fell else explained).append(entry)
+
+    print(f"\n{args.season}: {len(scores)} stored day(s) across "
+          f"{len(days)} asset(s).")
+    print(f"  {len(explained) + len(unexplained)} day(s) where a score fell.")
+    print(f"  {len(explained)} explained by a measure -- a differential, a "
+          f"rate, a WAR: the sport happening.")
+    print(f"  {len(unexplained)} where a count went backwards, which cannot "
+          f"happen.\n")
+
+    if args.show_all and explained:
+        print("  Explained:")
+        for day, league, who, fall, _ in sorted(explained, key=lambda e: -e[3]):
+            print(f"    {day}  {league:10s} {who[:30]:30s} -{fall:8,.2f}")
+        print()
+    if not unexplained:
+        print("  Nothing unexplained.\n")
+        return 0
+    print("  Unexplained -- each of these is a bug:")
+    for day, league, who, fall, fell in sorted(unexplained,
+                                               key=lambda e: -e[3])[:FALLS_SHOWN]:
+        print(f"    {day}  {league:10s} {who[:26]:26s} -{fall:8,.2f}   "
+              f"{monotonic.explain(fell)}")
+    if len(unexplained) > FALLS_SHOWN:
+        print(f"    ... and {len(unexplained) - FALLS_SHOWN} more")
+    print()
+    return 1
+
+
 def cmd_rescore(args: argparse.Namespace) -> int:
     """Restate every stored day against one benchmark version.
 
@@ -2382,7 +2470,7 @@ def cmd_alias(args: argparse.Namespace) -> int:
 
 
 def _ingest_one_day(ingest_module, store, sources, season, as_of,
-                    spent: dict | None = None) -> list:
+                    spent: dict | None = None, hold: bool = True) -> list:
     """One day's pull across every source asked for."""
     import time
 
@@ -2390,7 +2478,7 @@ def _ingest_one_day(ingest_module, store, sources, season, as_of,
     reports = []
     for source in sources:
         began = time.monotonic()
-        report = ingest_module.ingest(store, source, season, as_of)
+        report = ingest_module.ingest(store, source, season, as_of, hold=hold)
         took = time.monotonic() - began
         if spent is not None:
             spent[source.key] = spent.get(source.key, 0.0) + took
@@ -2464,13 +2552,22 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             return 2
         days = [first + timedelta(days=n) for n in range((as_of - first).days + 1)]
 
+    # A figure that has gone backwards is normally held at the last whole one,
+    # because a win cannot be un-won. A restatement is the exception: the day
+    # before the range is one of the days being corrected, so holding against
+    # it would pin the figure the restatement exists to remove.
+    hold = not getattr(args, "since", None)
+    if not hold:
+        print("\n  Restating, so a figure that falls is written rather than "
+              "held: the days before this range are the ones being corrected.")
+
     reports = []
     spent: dict[str, float] = {}
     for day in days:
         if len(days) > 1:
             print(f"\n--- {day} ---", flush=True)
         reports.extend(_ingest_one_day(
-            ingest_module, store, sources, args.season, day, spent))
+            ingest_module, store, sources, args.season, day, spent, hold=hold))
 
     scored = sum(r.scored for r in reports)
     recorded = sum(r.recorded for r in reports)
@@ -3628,6 +3725,18 @@ def main(argv: list[str] | None = None) -> int:
         help="rebuild every day from the season start, after a formula change",
     )
     rollup.set_defaults(func=cmd_rollup)
+
+    falls = sub.add_parser(
+        "check-falls",
+        help="every day a score went down, and whether a count explains it",
+    )
+    falls.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    falls.add_argument("--season", default="2026-27")
+    falls.add_argument(
+        "--show-all", action="store_true",
+        help="list the explained falls too, not only the unexplained ones",
+    )
+    falls.set_defaults(func=cmd_check_falls)
 
     rescore = sub.add_parser(
         "rescore",

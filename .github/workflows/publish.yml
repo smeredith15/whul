@@ -188,6 +188,22 @@ jobs:
       # nothing and never fails the run. The standings were waiting on a
       # diagnostic. It is its own workflow now, fired by this one finishing.
 
+      - name: Refuse a day nothing can explain
+        # The one check this project promises. A score that falls is not by
+        # itself wrong -- a club that loses by three has a worse point
+        # differential -- but a *count* falling is never the sport: a win
+        # cannot be un-won, a match cannot be un-played, a title cannot be
+        # un-awarded. The pull holds those at the last whole figures rather
+        # than scoring them down; this says so out loud if any ever reaches
+        # the stored days anyway.
+        #
+        # Not fatal, deliberately. The standings are already written by the
+        # time this runs and yesterday's page beats none -- but the run goes
+        # red in the list, which is what makes it something somebody looks at
+        # rather than a line in a log.
+        continue-on-error: true
+        run: python -m whul.cli check-falls --season "$SEASON"
+
       - name: Roll up the standings
         run: |
           if [ "${{ inputs.backfill }}" = "true" ] \

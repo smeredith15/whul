@@ -200,6 +200,7 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
     only thing that said so was a batter with more games played than his club.
     """
     rows: list[dict] = []
+    unfinished = 0
     for season in seasons:
         payload = _get(
             f"{STATS_API}/schedule",
@@ -209,7 +210,8 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
                 "gameTypes": ",".join(GAME_TYPES),
                 "fields": (
                     "dates,date,games,gamePk,gameType,season,officialDate,status,"
-                    "detailedState,teams,home,away,score,team,name,isWinner"
+                    "abstractGameState,detailedState,teams,home,away,score,"
+                    "team,name,isWinner"
                 ),
             },
             # Only a season that cannot gain another game.
@@ -220,6 +222,17 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
                 home = (game.get("teams") or {}).get("home", {})
                 away = (game.get("teams") or {}).get("away", {})
                 if home.get("score") is None or away.get("score") is None:
+                    continue
+                if not _is_final(game):
+                    # A game being played carries the score so far, and the
+                    # score so far is a result to anything that only checks
+                    # whether there is one. The nightly job runs at 03:37
+                    # Eastern, which is the seventh inning on the west coast:
+                    # Los Angeles were 19-10 with three shutouts one morning
+                    # and 18-11 with two the next, having won a game that was
+                    # still going on when it was counted. A win that gets
+                    # taken back is worse than a win that lands a day late.
+                    unfinished += 1
                     continue
                 rows.append(
                     {
@@ -233,7 +246,29 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
                         "away_score": away.get("score"),
                     }
                 )
+    if unfinished:
+        # Said rather than silent. It is the correct answer and it is also what
+        # a feed stuck reporting live games for ever would look like.
+        print(f"  mlb: {unfinished} game(s) in progress, counted when they are "
+              f"final", flush=True)
     return pd.DataFrame(rows)
+
+
+#: What the Stats API calls a game that can no longer change. `abstractGameState`
+#: is the canonical one and is three values wide -- Preview, Live, Final -- and
+#: `detailedState` is consulted only where a response predates it being asked
+#: for, since a missing state must not read as a finished game.
+FINAL_STATES = ("final", "game over", "completed early")
+
+
+def _is_final(game: dict) -> bool:
+    """Whether this game's score is the one it will end on."""
+    status = game.get("status") or {}
+    abstract = str(status.get("abstractGameState") or "").strip().lower()
+    if abstract:
+        return abstract == "final"
+    detailed = str(status.get("detailedState") or "").strip().lower()
+    return detailed.startswith(FINAL_STATES)
 
 
 #: Keys the leaderboard has returned its rows under across versions.

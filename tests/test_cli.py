@@ -545,9 +545,10 @@ def test_since_rewrites_every_stored_day_from_that_one(monkeypatch, tmp_path):
     from whul import ingest as ingest_module
 
     asked: list[date] = []
+    held: list[bool] = []
     monkeypatch.setattr(ingest_module, "ingest",
-                        lambda store, source, season, as_of: (
-                            asked.append(as_of)
+                        lambda store, source, season, as_of, hold=True: (
+                            asked.append(as_of) or held.append(hold)
                             or ingest_module.IngestReport(league="x", asset_type="Player")))
 
     main(["ingest", "tennis", "--db", str(tmp_path / "x.sqlite3"),
@@ -556,6 +557,27 @@ def test_since_rewrites_every_stored_day_from_that_one(monkeypatch, tmp_path):
 
     assert asked == [date(2026, 9, 13), date(2026, 9, 14),
                      date(2026, 9, 15), date(2026, 9, 16)]
+    # And nothing is held against the days being corrected. The day before the
+    # range is one of them, so holding the first corrected day against it would
+    # pin the very figure the restatement exists to remove.
+    assert held == [False] * 4
+
+
+def test_an_ordinary_pull_holds_what_cannot_have_happened(monkeypatch, tmp_path):
+    """The other side of it: without `--since` a figure that has gone
+    backwards is held rather than written."""
+    from datetime import date
+
+    from whul import ingest as ingest_module
+
+    held: list[bool] = []
+    monkeypatch.setattr(ingest_module, "ingest",
+                        lambda store, source, season, as_of, hold=True: (
+                            held.append(hold)
+                            or ingest_module.IngestReport(league="x", asset_type="Player")))
+    main(["ingest", "tennis", "--db", str(tmp_path / "x.sqlite3"),
+          "--season", "2026-27", "--date", "2026-09-16"])
+    assert held == [True]
 
 
 def test_since_after_the_day_being_recorded_is_refused(tmp_path, capsys):
@@ -564,3 +586,56 @@ def test_since_after_the_day_being_recorded_is_refused(tmp_path, capsys):
                  "--since", "2026-09-16"])
     assert code == 2
     assert "is after" in capsys.readouterr().err
+
+
+def test_check_falls_separates_the_sport_from_the_fault(tmp_path, capsys):
+    """The command the promise rests on: not that nobody has noticed a
+    negative lately, but that the ledger can be asked and answers."""
+    from datetime import date
+
+    from whul.store import open_store
+
+    db = tmp_path / "falls.sqlite3"
+    store = open_store(str(db))
+    store.upsert("assets", [
+        {"asset_id": "team-mlb-la", "asset_type": "Team", "league": "MLB",
+         "display_name": "Los Angeles Dodgers", "norm_key": "MLB", "active": 1,
+         "created_at": "2026-08-21T00:00:00+00:00"},
+        {"asset_id": "team-ncaaf-ark", "asset_type": "Team", "league": "NCAAF",
+         "display_name": "Arkansas Razorbacks", "norm_key": "NCAAF", "active": 1,
+         "created_at": "2026-08-21T00:00:00+00:00"},
+    ], ["asset_id"])
+    store.upsert("benchmark_versions", [{
+        "version": "v", "season": "2026-27", "quantile": 0.99, "managers": 5,
+        "computed_at": "2026-08-21T00:00:00+00:00"}], ["version"])
+
+    # A club that lost a win overnight, and a club that simply lost.
+    days = {
+        "team-mlb-la": [
+            ({"reg_wins": 19.0, "shutouts": 3.0, "run_diff": 35.0}, 59.4),
+            ({"reg_wins": 18.0, "shutouts": 2.0, "run_diff": 30.0}, 54.2),
+        ],
+        "team-ncaaf-ark": [
+            ({"games_played": 1.0, "losses": 0.0, "point_diff": 17.0}, 10.85),
+            ({"games_played": 2.0, "losses": 1.0, "point_diff": -16.0}, 9.2),
+        ],
+    }
+    for asset_id, series in days.items():
+        for offset, (figures, points) in enumerate(series):
+            when = date(2026, 9, 16 + offset)
+            store.record_stats([{"asset_id": asset_id, **figures}],
+                               source="test", season="2026-27", as_of=when,
+                               league="MLB")
+            store.upsert("daily_scores", [{
+                "asset_id": asset_id, "season": "2026-27",
+                "as_of": when.isoformat(), "league_points": points,
+                "scaled_score": points, "benchmark_version": "v",
+                "computed_at": "2026-09-18T00:00:00+00:00",
+            }], ["asset_id", "season", "as_of"])
+
+    assert main(["check-falls", "--db", str(db), "--season", "2026-27"]) == 1
+    said = capsys.readouterr().out
+    assert "1 explained by a measure" in said
+    assert "1 where a count went backwards" in said
+    assert "reg_wins 19 -> 18" in said
+    assert "Arkansas" not in said.split("Unexplained")[1]

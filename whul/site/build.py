@@ -936,27 +936,57 @@ RECORD_COLUMNS = (
     ("reg_ties", "draws", "reg_otl"),
 )
 
+#: Third columns a sport prints whether or not there are any. An NHL record is
+#: three numbers -- 45-25-12, and 45-25-0 for a club that never lost in
+#: overtime -- where an NFL record with no ties in it is two. Which is right
+#: depends on the sport and is knowable from which column supplied the figure,
+#: so it is read off that rather than guessed from whether it is nought.
+ALWAYS_THIRD = frozenset({"reg_otl"})
+
 
 def _team_record(row: dict) -> str | None:
-    """A club's record, as the standings write it.
+    """A club's record, as its own standings write it.
 
     Losses are not scored and are shown anyway. "Wins 11" says nothing about
     the rest of the season -- whether the other six were lost or have not been
     played is the first thing a reader wants and the one thing a win count
     cannot answer.
+
+    Three answers, because there are three things to say. A record, where both
+    halves of one are known. ``""`` where the wins are there and the losses are
+    not, which is half a record and worse than none -- "11-0" for a club that
+    lost six is a wrong number where a missing line is only a missing line.
+    ``None`` where nothing is known at all, which is a club that has not played
+    rather than a row missing a column, and which a heading answers with a dash
+    like every other figure on the panel.
     """
-    figures = [
-        next((found for name in names
-              if (found := _stat_number(row, name)) is not None), None)
-        for names in RECORD_COLUMNS
-    ]
-    wins, losses, third = figures
-    if wins is None or losses is None:
+    found: list[tuple[float, str] | None] = []
+    for names in RECORD_COLUMNS:
+        found.append(next(
+            ((got, name) for name in names
+             if (got := _stat_number(row, name)) is not None), None))
+    wins, losses, third = found
+    if wins is None and losses is None and third is None:
         return None
-    record = f"{wins:,.0f}\u2013{losses:,.0f}"
-    # Omitted at zero rather than printed: "11-6-0" is not how a record with no
-    # ties in it is written.
-    return record + (f"\u2013{third:,.0f}" if third else "")
+    if wins is None or losses is None:
+        return ""
+    record = f"{wins[0]:,.0f}\u2013{losses[0]:,.0f}"
+    if third is not None and (third[0] or third[1] in ALWAYS_THIRD):
+        record += f"\u2013{third[0]:,.0f}"
+    return record
+
+
+def _record_head(row: dict) -> list[list[str]]:
+    """The record line every club's panel leads with.
+
+    A dash where nothing has been played, so the heading is the heading it will
+    be in January rather than a different one. Absent only for the half-record
+    case, which is a fault in the row and not a season that has not opened.
+    """
+    record = _team_record(row)
+    if record is None:
+        return [["Record", DASH]]
+    return [["Record", record]] if record else []
 
 
 def _nfl_team_box(row: dict, column: str, keep_zero: bool = False) -> dict | None:
@@ -996,10 +1026,7 @@ def _nfl_team_panel(row: dict) -> dict | None:
                          float(row.get("playoff_appearance") or 0) * 10.0),
         ],
     }
-    head = []
-    record = _team_record(row)
-    if record:
-        head.append(["Record", record])
+    head = _record_head(row)
     rank = row.get("div_rank")
     division = str(row.get("team_division") or "").strip()
     if rank and division:
@@ -1569,20 +1596,17 @@ def _counted_team_panel(league: str, row: dict) -> dict | None:
         "top": [box(b) for b in spec.top],
         "secondary": [box(b) for b in spec.rest],
     }
-    head = []
-    record = _team_record(row)
-    if record:
-        head.append(["Record", record])
+    head = _record_head(row)
     played = _stat_number(row, "games_played")
     # Only where it says something the record does not. Basketball's scorer
     # carries no games-played column at all, so a club with a full season
     # behind it read "Record 50-20  Games played --", which looks like a fault
     # and is only a column the sport does not report.
-    if played is not None or not record:
-        head.append(["Games played", DASH if played is None else f"{played:,.0f}"])
+    if played is not None:
+        head.append(["Games played", f"{played:,.0f}"])
     for column, label in spec.head:
         got = _stat_number(row, column)
-        head.append([label, "\u2014" if got is None else f"{got:,.0f}"])
+        head.append([label, DASH if got is None else f"{got:,.0f}"])
     panel["head"] = head
     if spec.outcomes:
         panel["outcomes"] = [box(b) for b in spec.outcomes]
@@ -1996,10 +2020,7 @@ def _mlb_team_panel(row: dict, force: bool = False) -> dict | None:
     settled = bool(_stat_number(row, "pts_div_champ"))
     panel: dict = {"kind": "nfl-team", **_mlb_team_boxes(row)}
 
-    head = []
-    record = _team_record(row)
-    if record:
-        head.append(["Record", record])
+    head = _record_head(row)
     games = _stat_number(row, "games_played")
     if games is not None:
         head.append(["Games played", f"{games:,.0f}"])

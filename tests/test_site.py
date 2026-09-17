@@ -3573,10 +3573,43 @@ def test_a_team_shows_what_it_lost_as_well_as_what_it_won():
 def test_a_club_with_no_losses_counted_shows_no_record():
     """A row stored before losses were carried. Half a record is worse than
     none -- "11-0" for a team that lost six is a wrong number, and a missing
-    line is only a missing line."""
-    assert site_build._team_record({"reg_wins": 11}) is None
+    line is only a missing line.
+
+    Told apart from a club that has not played, which knows nothing about its
+    record rather than half of it, and gets the line with a dash in it."""
+    assert site_build._team_record({"reg_wins": 11}) == ""
+    assert site_build._team_record({}) is None
     panel = site_build._nfl_team_panel(_nfl_team(reg_losses=None))
     assert panel["head"] == [["Division", "1st in NFC West"]]
+
+
+def test_a_hockey_record_is_three_numbers_even_when_the_third_is_nought():
+    """45-25-0 is how the NHL writes a club that never lost in overtime. The
+    NFL does not write 11-6-0, so which it is comes off the column the third
+    figure was found under rather than off whether it is nought."""
+    assert site_build._team_record(
+        {"reg_wins": 45, "reg_losses": 37, "reg_otl": 0}) == "45–37–0"
+    assert site_build._team_record(
+        {"reg_wins": 11, "reg_losses": 6, "reg_ties": 0}) == "11–6"
+
+
+def test_every_club_leads_with_a_record_whether_or_not_it_has_played():
+    """Hockey's clubs read "Games played --  Standings points --" where every
+    other club's panel leads with its record, so the one heading that says what
+    a club has done was the one heading a club without a season did not get."""
+    for league in ("NHL", "NBA", "NCAAF", "NCAAM", "NCAA Baseball"):
+        head = site_build._counted_team_panel(league, {})["head"]
+        assert head[0] == ["Record", "—"], league
+    for league in ("NFL", "MLB"):
+        head = site_build._panel_before_a_season(league, "Team", "")["head"]
+        assert head[0] == ["Record", "—"], league
+    # And a club that has played leads with the real thing, in the shape its
+    # own standings print.
+    head = site_build._counted_team_panel("NHL", {
+        "reg_wins": 45, "reg_losses": 25, "reg_otl": 12, "games_played": 82,
+        "standings_points": 102,
+    })["head"]
+    assert head[0] == ["Record", "45–25–12"]
 
 
 def test_a_driver_is_read_off_the_asset_rather_than_the_feed_that_pulled_him():

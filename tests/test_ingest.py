@@ -1890,3 +1890,125 @@ def test_a_clean_run_leaves_no_message():
                       ing.IngestReport(league="NFL", asset_type="Player"),
                       _date(2026, 9, 6))
     assert store.query("SELECT * FROM source_status").empty
+
+
+# --- nothing that cannot have happened reaches the store ---------------------
+
+def test_a_count_that_went_backwards_is_held_rather_than_scored_down():
+    """The guarantee the whole thing rests on. A win cannot be un-won, so a
+    pull that says so is wrong about something -- and the standings ledger,
+    which differences consecutive days, would read it as a manager losing
+    points on a day nothing happened to them.
+
+    Los Angeles is the case: 19-10 with three shutouts one morning and 18-11
+    with two the next, having been credited with a game still being played."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+
+    class Feed:
+        key, league, asset_type = "mlb-teams-test", "MLB", "Team"
+
+    def figures(wins, shutouts, diff):
+        return {"asset_id": "team-mlb-la", "display_name": "Los Angeles Dodgers",
+                "team": "Los Angeles Dodgers", "reg_wins": wins,
+                "reg_losses": 29 - wins, "shutouts": shutouts, "run_diff": diff,
+                "total_points": wins * 2 + shutouts * 2 + diff * 0.05}
+
+    store.upsert("assets", [{
+        "asset_id": "team-mlb-la", "asset_type": "Team", "league": "MLB",
+        "display_name": "Los Angeles Dodgers", "norm_key": "MLB", "active": 1, "created_at": "2026-08-21T00:00:00+00:00"}],
+        ["asset_id"])
+    store.record_stats([figures(19, 3, 35.0)], source=Feed.key, season="2026-27",
+                       as_of=_date(2026, 9, 16), league="MLB")
+
+    report = ing.IngestReport(league="MLB", asset_type="Team")
+    today = pd.DataFrame([figures(18, 2, 30.0)])
+    held = ing._hold_what_went_backwards(
+        store, today, Feed(), "2026-27", _date(2026, 9, 17), report)
+
+    assert float(held["reg_wins"].iloc[0]) == 19.0, "the win was scored away"
+    assert float(held["shutouts"].iloc[0]) == 3.0
+    assert float(held["run_diff"].iloc[0]) == 35.0
+    # The resolution is this pull's answer and is not what went wrong.
+    assert held["asset_id"].iloc[0] == "team-mlb-la"
+    assert report.problems and "reg_wins 19 -> 18" in report.problems[0]
+
+
+def test_the_sport_going_badly_is_not_held():
+    """A club that loses by three has a worse point differential than it had
+    yesterday, and the standings should say so."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+
+    class Feed:
+        key, league, asset_type = "ncaaf-test", "NCAAF", "Team"
+
+    store.upsert("assets", [{
+        "asset_id": "team-ncaaf-ark", "asset_type": "Team", "league": "NCAAF",
+        "display_name": "Arkansas Razorbacks", "norm_key": "NCAAF", "active": 1, "created_at": "2026-08-21T00:00:00+00:00"}],
+        ["asset_id"])
+    store.record_stats(
+        [{"asset_id": "team-ncaaf-ark", "team": "Arkansas Razorbacks",
+          "games_played": 1.0, "wins": 1.0, "losses": 0.0, "point_diff": 17.0,
+          "total_points": 10.85}],
+        source=Feed.key, season="2026-27", as_of=_date(2026, 9, 12), league="NCAAF")
+
+    report = ing.IngestReport(league="NCAAF", asset_type="Team")
+    today = pd.DataFrame([
+        {"asset_id": "team-ncaaf-ark", "display_name": "Arkansas Razorbacks",
+         "team": "Arkansas Razorbacks", "games_played": 2.0, "wins": 1.0,
+         "losses": 1.0, "point_diff": -16.0, "total_points": 9.2}])
+    out = ing._hold_what_went_backwards(
+        store, today, Feed(), "2026-27", _date(2026, 9, 13), report)
+
+    assert float(out["point_diff"].iloc[0]) == -16.0
+    assert float(out["total_points"].iloc[0]) == 9.2
+    assert report.problems == []
+
+
+def test_a_game_still_to_come_keeps_its_row_and_loses_its_result():
+    """`_up_to` scores a day as it was known on that day, and a game played
+    after it had not been played. Dropping the row instead removed the evidence
+    that the season was still going on, and `settled_seasons` reads a schedule
+    with nothing ahead of it as a season that is over -- so Baltimore were 1-0
+    and were awarded the AFC North."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.scoring.base import settled_seasons
+
+    schedule = pd.DataFrame([
+        {"season": 2026, "game_date": "2026-09-07", "home_team": "A",
+         "away_team": "B", "home_score": 24, "away_score": 17, "completed": True},
+        {"season": 2026, "game_date": "2026-09-14", "home_team": "A",
+         "away_team": "C", "home_score": None, "away_score": None,
+         "completed": False},
+    ])
+    cut = ing._up_to(schedule, _date(2026, 9, 10))
+    assert len(cut) == 2, "the fixture ahead was dropped, not blanked"
+    assert pd.isna(cut["home_score"].iloc[1]) and not bool(cut["completed"].iloc[1])
+    # Which is the whole point: the question has the answer it had at the time.
+    assert settled_seasons(cut, today=_date(2026, 9, 10)) == set()
+    assert settled_seasons(schedule, today=_date(2026, 9, 10)) == set()
+
+
+def test_a_frame_of_figures_is_still_simply_cut():
+    """Blanking is for a fixture list. A weekly player line with its numbers
+    taken out is not a fixture, it is noise."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+
+    figures = pd.DataFrame([
+        {"season": 2026, "date": "2026-09-07", "player": "X", "yards": 80},
+        {"season": 2026, "date": "2026-09-14", "player": "X", "yards": 95},
+    ])
+    assert len(ing._up_to(figures, _date(2026, 9, 10))) == 1
