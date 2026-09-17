@@ -2549,7 +2549,8 @@ def cmd_alias(args: argparse.Namespace) -> int:
 
 
 def _ingest_one_day(ingest_module, store, sources, season, as_of,
-                    spent: dict | None = None, hold: bool = True) -> list:
+                    spent: dict | None = None, hold: bool = True,
+                    today=None) -> list:
     """One day's pull across every source asked for."""
     import time
 
@@ -2557,7 +2558,8 @@ def _ingest_one_day(ingest_module, store, sources, season, as_of,
     reports = []
     for source in sources:
         began = time.monotonic()
-        report = ingest_module.ingest(store, source, season, as_of, hold=hold)
+        report = ingest_module.ingest(store, source, season, as_of, hold=hold,
+                                      today=today)
         took = time.monotonic() - began
         if spent is not None:
             spent[source.key] = spent.get(source.key, 0.0) + took
@@ -2646,7 +2648,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         if len(days) > 1:
             print(f"\n--- {day} ---", flush=True)
         reports.extend(_ingest_one_day(
-            ingest_module, store, sources, args.season, day, spent, hold=hold))
+            ingest_module, store, sources, args.season, day, spent, hold=hold,
+            today=as_of))
 
     scored = sum(r.scored for r in reports)
     recorded = sum(r.recorded for r in reports)
@@ -2659,6 +2662,16 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         for pair in (*r.resolution.extra_names, *r.resolution.reordered)
     ]
     print(f"{recorded} raw rows recorded, {scored} scored.")
+    left = [r for r in reports if getattr(r, "skipped", False)]
+    if left:
+        # Named, because "nothing recorded" and "nothing needed recording" look
+        # the same in a row count and are opposite answers.
+        leagues = sorted({r.league for r in left})
+        print(f"\n  {len(left)} pull(s) left the stored day as it was, in "
+              f"{', '.join(leagues)}:")
+        print("  a feed that reports a season to date cannot say what was true "
+              "on a day\n  that has gone, and the day already has the answer it "
+              "was given at the time.")
     _say_where_the_time_went(spent)
     if inferred:
         # Inferred, not read: worth a glance the first time each one appears.

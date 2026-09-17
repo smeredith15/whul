@@ -51,6 +51,10 @@ class IngestReport:
     fixtures: int = 0
     version: str = ""
     resolution: resolver.Resolution | None = None
+    #: True where the day was left as it was found. A replay of a feed that
+    #: reports a season to date is the case: it can only answer about today,
+    #: so the stored day is the better record and nothing is written.
+    skipped: bool = False
     problems: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
@@ -75,6 +79,7 @@ def ingest(
     as_of: date,
     verbose: bool = True,
     hold: bool = True,
+    today: date | None = None,
 ) -> IngestReport:
     """Pull one league up to ``as_of`` and record it against the roster."""
     report = IngestReport(league=source.league, asset_type=source.asset_type)
@@ -91,8 +96,18 @@ def ingest(
     try:
         scored = _pull(
             source, as_of, verbose, names=list(assets["display_name"]),
-            notes=notes, upcoming=upcoming, store=store,
+            notes=notes, upcoming=upcoming, store=store, today=today,
         )
+    except CannotReplay as exc:
+        # Not a failure and not an empty day: the day already has an answer and
+        # this pull is not in a position to improve on it. Nothing is written,
+        # including the status row -- marking the source not-ok would report a
+        # feed that is working perfectly as broken.
+        report.problems.append(str(exc))
+        report.skipped = True
+        if verbose:
+            print(f"  {source.key}: {exc}", flush=True)
+        return report
     except Exception as exc:  # noqa: BLE001 -- one league must not stop the rest
         report.problems.append(f"could not pull: {type(exc).__name__}: {exc}")
         _record_nothing(store, source, as_of, report)
@@ -1004,6 +1019,42 @@ def _without_a_result(raw: pd.DataFrame, future: pd.Series) -> pd.DataFrame | No
     return out
 
 
+class CannotReplay(RuntimeError):
+    """This feed cannot be asked what was true on a day that has gone.
+
+    A feed that reports dated events can: the events carry their dates, and a
+    day is the events up to it. A feed that reports a season aggregate cannot.
+    It answers "what is true now" and there is no cutting that back -- so
+    replaying it writes today's figures onto every day of the range, which does
+    not merely fail to restore the history, it destroys it. The stored day was
+    the only record of what the feed said at the time.
+
+    Cole Palmer read four matches on the fifth of September, the sixth, the
+    seventh and every day to the sixteenth, because a restatement asked ESPN
+    for his season twelve times and wrote the same answer down twelve times.
+    He had played two of them.
+    """
+
+
+def _can_answer_for(raw: pd.DataFrame, as_of: date, today: date) -> str:
+    """Why this frame cannot be cut back to ``as_of``, or "" if it can.
+
+    Only ever a reason for a day that has gone, and only where the caller has
+    said which day is now. A pull that does not say is pulling today, and an
+    aggregate with no dates in it is the right answer to today's question --
+    which is why the default is ``as_of`` rather than the calendar: a replay is
+    something a caller does on purpose and declares.
+    """
+    if raw is None or raw.empty or as_of >= today:
+        return ""
+    if any(column in raw.columns for column in DATE_COLUMNS):
+        return ""
+    return (f"this feed reports a season to date and carries no dates, so it "
+            f"cannot say what was true on {as_of}: it would answer with "
+            f"today's figures and overwrite the only record there is of that "
+            f"day. The stored day is left as it was")
+
+
 def _from_season_start(raw: pd.DataFrame, league: str) -> pd.DataFrame:
     """Drop rows from before the league's results start counting.
 
@@ -1178,7 +1229,7 @@ def _scored_on(score, kept, as_of: date):
 def _pull(
     source, as_of: date, verbose: bool, names: list[str] | None = None,
     notes: list[str] | None = None, upcoming: list | None = None,
-    store: Store | None = None,
+    store: Store | None = None, today: date | None = None,
 ) -> pd.DataFrame:
     """Season-to-date totals for one league, however that league counts them.
 
@@ -1252,6 +1303,9 @@ def _pull(
         # and would cut a World Cup off at the year's end.
         _harvest(source, raw, as_of, seasons, upcoming)
         kept = raw if source.dated_by_source else _from_season_start(raw, source.league)
+        refused = _can_answer_for(kept, as_of, today or as_of)
+        if refused:
+            raise CannotReplay(refused)
         scored = _scored_on(score, _up_to(kept, as_of), as_of)
         if (scored is None or scored.empty) and notes is not None:
             notes.append(_why_nothing_scored(raw, kept, source.league))
@@ -1271,7 +1325,11 @@ def _pull(
     # February to November needs.
     years = (source.seasons_for(as_of) if getattr(source, "seasons_for", None)
              else sorted({season_start(source.league).year, as_of.year}))
-    fetched = _up_to(fetch(years), as_of)
+    got = fetch(years)
+    refused = _can_answer_for(got, as_of, today or as_of)
+    if refused:
+        raise CannotReplay(refused)
+    fetched = _up_to(got, as_of)
     _drain_findings(notes)
     events = _carry_identity(
         _scored_on(score, fetched, as_of), fetched, source.asset_type)
