@@ -828,6 +828,73 @@ SCRIPT = """\
     });
     rows.forEach(function (row) { body.appendChild(row); });
   }
+
+  // --- filtering the head-to-head table ---------------------------------
+  // Its own set of chips and its own state, deliberately. The two tables
+  // answer different questions -- "who is scoring" and "who beat whom" -- and
+  // a chip that emptied both at once would be a surprise rather than a
+  // convenience. A row carries every league and category either side belongs
+  // to, so a Champions League tie between a Serie A club and a Bundesliga one
+  // answers to a reader looking for either.
+  var pickedH2H = {};
+  function applyH2H() {
+    var table = document.getElementById('h2htable');
+    if (!table) return;
+    var any = false;
+    for (var k in pickedH2H) if (pickedH2H[k]) any = true;
+    var shown = 0, total = 0;
+    var tally = {};
+    table.querySelectorAll('tbody tr').forEach(function (row) {
+      total++;
+      var ok = true;
+      if (any) {
+        ok = false;
+        (row.dataset.leagues || '').split('|').forEach(function (name) {
+          if (pickedH2H[name]) ok = true;
+        });
+      }
+      row.hidden = !ok;
+      if (!ok) return;
+      shown++;
+      var one = row.dataset.one, two = row.dataset.two;
+      var key = one < two ? one + '|' + two : two + '|' + one;
+      var slot = tally[key] || (tally[key] = [0, 0, 0]);
+      if (row.dataset.won === 'draw') slot[2]++;
+      else {
+        var winner = row.dataset.won === 'a' ? one : two;
+        slot[winner === key.split('|')[0] ? 0 : 1]++;
+      }
+    });
+    var records = document.getElementById('h2hrecords');
+    if (records) {
+      records.querySelectorAll('tbody tr').forEach(function (row) {
+        var slot = tally[row.dataset.pair];
+        row.hidden = !slot;
+        if (!slot) return;
+        // Draws only where there are some: "2-1" reads cleanly and "2-1-0"
+        // makes a reader wonder which sport has three outcomes.
+        row.querySelector('[data-record]').textContent =
+          slot[2] ? slot[0] + '-' + slot[1] + '-' + slot[2]
+                  : slot[0] + '-' + slot[1];
+      });
+    }
+    var count = document.querySelector('[data-h2hcount]');
+    if (count) {
+      count.textContent = shown === total
+        ? 'Showing every meeting.'
+        : 'Showing ' + shown + ' of ' + total + '.';
+    }
+  }
+  document.querySelectorAll('.chip[data-filter="h2hleague"]').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      var value = chip.dataset.value;
+      pickedH2H[value] = !pickedH2H[value];
+      chip.setAttribute('aria-pressed', pickedH2H[value] ? 'true' : 'false');
+      applyH2H();
+    });
+  });
+  applyH2H();
+
   // Once on load, so the table is the standings before anything is clicked
   // rather than a row of zeroes.
   retotal(document.getElementById('resultstable') || document.createElement('table'));
