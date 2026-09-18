@@ -2191,10 +2191,22 @@ def _box_points(year: dict, index: int, part: str, at: int) -> float:
 def _mlb_posts(row: dict, role: str, build: dict) -> list[dict]:
     """October, in the same boxes as the summer.
 
-    Unscaled, unlike the season above it. Proration scales `role_points` and
-    nothing else, so the postseason line the scorer carries is the raw one --
-    and a section scaled here would stop adding up to the figure the scorer
-    priced it at.
+    Unprorated, unlike the season above it, and the rule behind that is worth
+    stating because half of it is not visible here: October takes the
+    contract-year multiplier and *not* the lift. The lift exists because a
+    league year opening in August is short a month of the summer; a playoff
+    run is not short of anything, so nothing is owed it. The multiplier is the
+    other question -- what the benchmark prices this stretch of a contract at
+    -- and October falls inside year N like the rest of the window, so it
+    takes MULT_YEAR_N. The club side already works this way: a playoff game
+    win and a division title are weighted and not prorated.
+
+    These boxes are built at face value because the figure they are checked
+    against is: no MLB player postseason reaches the store at all today -- the
+    nightly pull asks the Stats API for the regular season only -- so there is
+    no weighted bonus for them to add up to. Whoever wires October up for
+    players applies the weight in the scorer and passes it in here, and the
+    two move together rather than one of them moving first.
     """
     entries = _bonus_list(row)
     if not entries or role not in build:

@@ -1258,3 +1258,44 @@ def test_a_hockey_season_in_progress_is_not_cached(monkeypatch):
     nhl._summary("skater", [2025, 2027], 2)
 
     assert seen == ["skater/20242025_2", None], f"got {seen}"
+
+
+def test_the_probe_names_the_competitions_it_dropped():
+    """A count of what was kept says nothing about what was lost. Davis Cup is
+    scored -- a win pays a flat 50 and the benchmark's history is full of them
+    -- and the header test only recognizes it inside a header that already
+    said ATP or WTA singles. Whether Flashscore files it that way is not
+    knowable from here, so the probe reports it rather than assuming it."""
+    raw = "~".join([
+        "ZA÷ATP - SINGLES: Chengdu (China), hard¬",
+        "AA÷abc¬AC÷1¬WU÷shelton-ben¬WV÷zverev-alexander¬"
+        "AD÷1789000000¬",
+        "ZA÷DAVIS CUP - WORLD GROUP I: Group A¬",
+        "AA÷def¬AC÷1¬WU÷shelton-ben¬WV÷musetti-lorenzo¬"
+        "AD÷1789100000¬",
+        "ZA÷ATP - DOUBLES: Chengdu¬",
+        "AA÷jkl¬AC÷1¬WU÷a-b/c-d¬WV÷e-f/g-h¬AD÷1789300000¬",
+    ])
+
+    out = flashscore._what_was_dropped(raw)
+
+    assert out["dropped"] == "2/3"
+    assert out["team_events"] == ["DAVIS CUP - WORLD GROUP I: Group A"]
+    # And the records underneath, because the fix is written from them: which
+    # fields carry the players, and what tells a doubles rubber from a singles.
+    assert out["team_event_records"] == 1
+    shown = out["team_event_sample"][0]
+    assert shown["names"] == "Ben Shelton v Lorenzo Musetti"
+    assert shown["WU"] == "shelton-ben"
+    assert "AD" in shown["fields"]
+
+
+def test_a_dropped_doubles_header_is_reported_but_not_as_a_team_event():
+    """The ordinary drops are the point of the list too -- a competition
+    vanishing whole looks exactly like a quiet week without it."""
+    raw = "ZA÷ATP - DOUBLES: Chengdu¬~AA÷jkl¬AC÷1¬"
+
+    out = flashscore._what_was_dropped(raw)
+
+    assert out["sample"] == ["ATP - DOUBLES: Chengdu"]
+    assert out["team_events"] == []

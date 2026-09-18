@@ -647,8 +647,20 @@ def _window_points(summary: pd.DataFrame,
         "pts_div_champ": _settled_division_titles(summary, schedule) * weight,
         # Game wins take the year's weight and the series do not, which is what
         # the benchmark does with them -- `_series_points` sits outside the
-        # `MULT_YEAR_N` product in `year_n_points`. Matched rather than tidied:
-        # the benchmark is frozen and the live figure is measured against it.
+        # `MULT_YEAR_N` product in `year_n_points`, alone among the terms in
+        # that block.
+        #
+        # The rule for October is otherwise settled: it takes the contract
+        # multiplier and not the proration lift. A playoff run is not short of
+        # a month, so nothing is owed it; it falls inside year N like the rest
+        # of the window, so it is priced at year N. The series prices are the
+        # one place that rule is not applied, and they are left that way
+        # deliberately. The benchmark is frozen, the live figure is divided by
+        # it, and weighting one side of that division and not the other would
+        # price a World Series run a quarter below what the clubs the scale
+        # was drawn from were paid for the same run. Decided September 2026:
+        # match the scale now, and apply the multiplier on both sides the next
+        # time one is built.
         "pts_playoff": (
             summary["playoff_game_wins"] * BASE_PLAYOFF_WIN * weight
             + _series_points(summary)

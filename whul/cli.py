@@ -608,6 +608,14 @@ def _print_stages(title: str, report: dict) -> int:
         for key, value in detail.items():
             if key == "ok":
                 continue
+            # A list one item per line. These carry the samples a probe exists
+            # to show -- the headers it dropped, the records under them -- and
+            # a dozen dicts printed on one line is a report nobody can read.
+            if isinstance(value, (list, tuple)):
+                print(f"        {key}:")
+                for item in value:
+                    print(f"            {item}")
+                continue
             print(f"        {key:<18} {value}")
 
     if failed or not stages:
