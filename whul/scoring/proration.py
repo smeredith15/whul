@@ -85,26 +85,38 @@ class ProrationRule:
 #: saved for the same league and season overrides one of these.
 #:
 #: MLB 2026-27 is the shortened-window case the module was written for. The
-#: league year opens on 15 August and closes at the 2027 All-Star Game, which
-#: is about 133 games of a 162-game season -- so a player measured against a
-#: benchmark drawn from whole seasons would finish around 80 of a possible 100
-#: however well he played, and every baseball pick would sit below every other
+#: league year opens on 15 August and closes at the 2027 All-Star Game, where
+#: it would usually open at the break -- so it is missing about a month off the
+#: front. Without lifting it, every baseball pick would sit below every other
 #: league's for a structural reason nobody could see in the standings.
 #:
-#: Teams take the same rule, because the same start date cuts their schedule to
-#: the same window -- otherwise a manager's baseball teams and his baseball
-#: players sit on two different scales. Only the components that grow with games
-#: played are lifted; a division title and a playoff run happen once however
-#: long the window is, which is why the caller names its columns.
+#: **``actual`` here is season-equivalents, not games.** The window is 0.811 of
+#: a season by the calendar, but it is not scored by the calendar: each stretch
+#: carries the weight ``whul.scoring.bisection`` gives it, so what has to be
+#: lifted is the *weighted* shortfall::
 #:
-#: ``whul.scoring.bisection`` still governs the *historical* team path, where a
-#: whole season really is being split into its post- and pre-break shares. A
-#: live window is not a whole season to split.
+#:     2026 stretch   0.42 x 43/78.1 = 0.2312 of a season, at mult_n  0.75
+#:     2027 stretch   the whole pre-break portion, 0.58, at mult_n1   1.1810
+#:     weighted       0.2312x0.75 + 0.58x1.1810 = 0.8584 of a contract year
+#:     lift           1 / 0.8584 = 1.1650, which is 139/162
+#:
+#: That inflates both stretches by the same 1.165 over the weights the
+#: benchmark gave them -- year N to 0.874 and year N+1 to 1.376 -- which is the
+#: whole of what a month missing off the front should do. Lifting by 162/133
+#: instead, as this rule first did, weighted the two stretches alike and made
+#: September 2026 worth 1.41 times what the frozen scale says it is.
+#:
+#: Teams and players take the same rule, because the same start date cuts both
+#: to the same window. Only the components that grow with games played are
+#: lifted; a division title and a playoff run happen once however long the
+#: window is, which is why the caller names its columns.
 BUILT_IN_RULES: tuple[ProrationRule, ...] = (
     ProrationRule(
-        league="MLB", season="2026-27", actual_games=133, expected_games=162,
-        note="15 Aug-27 Sep 2026 (43 days) plus 25 Mar-13 Jul 2027 (110 days), "
-             "at 162 games over 186 season days",
+        league="MLB", season="2026-27", actual_games=139, expected_games=162,
+        note="15 Aug-27 Sep 2026 plus 25 Mar-13 Jul 2027, weighted by the "
+             "contract-year multipliers: 0.2312x0.75 + 0.58x1.1810 = 0.8584 "
+             "of a season, so 139 season-equivalents of 162 rather than 133 "
+             "games of 162",
     ),
 )
 

@@ -550,6 +550,37 @@ def _settled_division_titles(summary: pd.DataFrame,
     return (won * PTS_DIV_CHAMP).where(done, 0.0)
 
 
+def contract_weight(seasons, opened: int | None = None) -> pd.Series:
+    """What each stretch of a *live* contract year is worth, by its season.
+
+    The same two weights the benchmark gives the two halves of a historical
+    one: the remainder of year N discounted for being partly known at draft
+    time, the pre-break stretch of year N+1 inflated so the pair reconcile to
+    a full season.
+
+    These were being left off the live path entirely, and the reason is worth
+    recording because it is easy to make again. In the benchmark the share and
+    the multiplier are written as one product::
+
+        reg_wins * SHARE_POST_ASB * BASE_REG_WIN * MULT_YEAR_N
+
+    and ``_window_points`` correctly reasoned that the *share* must not be
+    applied to a window the calendar has already cut -- that would shorten it
+    twice. It then dropped the multiplier with it, because the two were glued
+    together in the same expression. They are different things: a share carves
+    a season into stretches, a multiplier says what a stretch is worth. Only
+    the first had already been done by the start date.
+
+    The effect was a live figure weighting September 2026 and June 2027 alike,
+    measured against a bar built from stretches weighted 0.75 and 1.18.
+    """
+    from whul.config.league import SEASON
+
+    opened = SEASON.start.year if opened is None else int(opened)
+    years = pd.to_numeric(seasons, errors="coerce")
+    return years.map(lambda y: MULT_YEAR_N if y <= opened else MULT_YEAR_N1)
+
+
 def _window_points(summary: pd.DataFrame,
                    schedule: pd.DataFrame | None = None) -> pd.DataFrame:
     """Points for the games in front of us, as components a prorater can scale.
@@ -573,7 +604,11 @@ def _window_points(summary: pd.DataFrame,
     thought and was wrong: the benchmark pool *does* pay five points a title
     (see ``year_n_points``), so a club measured against that scale and never
     able to earn one was scored against a bar it could not reach.
+
+    What the shares must not do, ``contract_weight`` still must: see there for
+    why the multipliers went missing along with them.
     """
+    weight = contract_weight(summary["season"])
     out = pd.DataFrame({
         "season": summary["season"],
         "team": summary["team"],
@@ -598,17 +633,25 @@ def _window_points(summary: pd.DataFrame,
         "series_ws": summary["series_ws"],
         "is_division_champ": summary.get(
             "is_division_champ", pd.Series(0, index=summary.index)),
-        "pts_reg_wins": summary["reg_wins"] * BASE_REG_WIN,
-        "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN,
-        "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT,
-        "pts_run_diff": summary["run_diff"] * PTS_RUN_DIFF,
+        # Each at the weight its own stretch of the contract year carries. The
+        # share is not applied -- the start date has already cut the window to
+        # the stretch, and multiplying by the share as well would cut it twice.
+        "pts_reg_wins": summary["reg_wins"] * BASE_REG_WIN * weight,
+        "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN * weight,
+        "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT * weight,
+        "pts_run_diff": summary["run_diff"] * PTS_RUN_DIFF * weight,
         # Nobody has won a division while the games are still being played --
         # an earlier rule paid four clubs for titles in the first three weeks
         # of a league year. The title lands when the season it belongs to has
         # been played out, and not before.
-        "pts_div_champ": _settled_division_titles(summary, schedule),
+        "pts_div_champ": _settled_division_titles(summary, schedule) * weight,
+        # Game wins take the year's weight and the series do not, which is what
+        # the benchmark does with them -- `_series_points` sits outside the
+        # `MULT_YEAR_N` product in `year_n_points`. Matched rather than tidied:
+        # the benchmark is frozen and the live figure is measured against it.
         "pts_playoff": (
-            summary["playoff_game_wins"] * BASE_PLAYOFF_WIN + _series_points(summary)
+            summary["playoff_game_wins"] * BASE_PLAYOFF_WIN * weight
+            + _series_points(summary)
         ),
     })
     out["total_points"] = out[[c for c in out.columns if c.startswith("pts_")]].sum(axis=1)

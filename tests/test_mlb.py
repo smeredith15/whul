@@ -347,21 +347,65 @@ def test_dropping_advanced_terms_hurts_defenders_most():
     assert share(slugger) < 0.02
 
 
-def test_a_live_window_is_scored_at_face_value():
-    """The historical path splits a whole season into post- and pre-break
-    shares. A live pull is not a whole season to split -- the start date has
-    already cut it to the league year's window -- so multiplying by
-    SHARE_POST_ASB on top of that shortens it twice: once by the calendar, once
-    by arithmetic that no longer describes it."""
-    from whul.scoring.mlb import BASE_REG_WIN, score_teams
+def test_a_live_window_takes_the_weight_but_not_the_share():
+    """The two are different things and were glued into one expression.
+
+    A *share* carves a season into its post- and pre-break stretches, and the
+    start date has already done that to a live window -- applying it again
+    shortens the window twice, once by the calendar and once by arithmetic that
+    no longer describes it. A *multiplier* says what a stretch is worth, and
+    nothing else does that job: dropping it weighted September 2026 and June
+    2027 alike, against a bar built from stretches weighted 0.75 and 1.18."""
+    from whul.scoring.mlb import (
+        BASE_REG_WIN, MULT_YEAR_N, SHARE_POST_ASB, score_teams,
+    )
 
     schedule = pd.DataFrame([game("NYY", "BOS", 5, 1, season=2026)] * 20)
     assert score_teams(schedule).empty, "a benchmark needs both halves"
 
     live = score_teams(schedule, partial=True).set_index("team")
     assert set(live.index) == {"NYY", "BOS"}
-    assert live.loc["NYY", "pts_reg_wins"] == pytest.approx(20 * BASE_REG_WIN)
-    assert live.loc["NYY", "total_points"] >= live.loc["NYY", "pts_reg_wins"]
+    won = live.loc["NYY", "pts_reg_wins"]
+    assert won == pytest.approx(20 * BASE_REG_WIN * MULT_YEAR_N)
+    assert won != pytest.approx(20 * BASE_REG_WIN), "the multiplier went missing"
+    assert won != pytest.approx(20 * BASE_REG_WIN * SHARE_POST_ASB * MULT_YEAR_N), \
+        "the share was applied to a window the calendar had already cut"
+    assert live.loc["NYY", "total_points"] >= won
+
+
+def test_the_second_year_of_the_contract_is_inflated_not_discounted():
+    """Year N is discounted for being partly known at draft time and year N+1
+    is inflated so the pair reconcile to a full season. A live window spans
+    both, and which one a row belongs to is its season."""
+    from whul.scoring.mlb import (
+        BASE_REG_WIN, MULT_YEAR_N, MULT_YEAR_N1, score_teams,
+    )
+
+    both = pd.DataFrame([game("NYY", "BOS", 5, 1, season=2026)] * 10
+                        + [game("NYY", "BOS", 5, 1, season=2027)] * 10)
+    live = score_teams(both, partial=True).set_index(["season", "team"])
+    assert live.loc[(2026, "NYY"), "pts_reg_wins"] == pytest.approx(
+        10 * BASE_REG_WIN * MULT_YEAR_N)
+    assert live.loc[(2027, "NYY"), "pts_reg_wins"] == pytest.approx(
+        10 * BASE_REG_WIN * MULT_YEAR_N1)
+
+
+def test_a_whole_contract_year_reconciles_to_a_full_season():
+    """The property the whole arrangement rests on: a live year weighted and
+    lifted lands where the benchmark's own contract year does, so a live figure
+    and the frozen bar are the same kind of number."""
+    from whul.scoring.bisection import MLB as RULE
+    from whul.scoring.proration import built_in_rule
+
+    tail = RULE.share_post * 43 / (RULE.share_post * 186)   # 15 Aug, not the break
+    weighted = tail * RULE.mult_n + RULE.share_pre * RULE.mult_n1
+    lift = built_in_rule("MLB", "2026-27").factor
+    assert weighted * lift == pytest.approx(1.0, abs=0.005), (
+        f"a weighted window of {weighted:.4f} lifted by {lift:.4f} lands on "
+        f"{weighted * lift:.4f} of a season, not one"
+    )
+    # And the games-only lift, which is what it used to be, does not.
+    assert weighted * (162 / 133) == pytest.approx(1.045, abs=0.005)
 
 
 def test_the_window_separates_what_grows_from_what_happens_once():
@@ -507,7 +551,10 @@ def test_the_live_window_pays_a_division_title_once_the_season_is_over():
     reach."""
     out = mlb.score_teams(pd.DataFrame(PLAYED_OUT), partial=True,
                           divisions=AL_EAST).set_index("team")
-    assert out.loc["NYY", "pts_div_champ"] == pytest.approx(mlb.PTS_DIV_CHAMP)
+    # At the weight its own stretch carries, which is what `year_n_points`
+    # pays it: a title inside year N is `PTS_DIV_CHAMP * MULT_YEAR_N`.
+    assert out.loc["NYY", "pts_div_champ"] == pytest.approx(
+        mlb.PTS_DIV_CHAMP * mlb.MULT_YEAR_N)
     assert out.loc["BOS", "pts_div_champ"] == 0.0
 
 
