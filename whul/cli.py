@@ -431,12 +431,6 @@ def _spec(league: str):
         from whul.scoring import mlb
         from whul.sources import mlb as source
 
-        #: What a batter's and a pitcher's October must show, so the playoff
-        #: section is the same boxes as the season. Named as the scorer names
-        #: them, since that is the frame they are read back off.
-        counted = ("h", "ab", "hr", "doubles", "triples", "bb", "hbp", "sb",
-                   "cs", "ip", "so", "sv", "hld", "games")
-
         def load(seasons):
             batters = source.load_batters(seasons)
             pitchers = source.load_pitchers(seasons)
@@ -471,30 +465,7 @@ def _spec(league: str):
             scored = scored_for("reg")
             if scored is None or scored.empty:
                 scored = mlb.score_players(raw.iloc[0:0], raw.iloc[0:0])
-            scored["regular_points"] = scored["total_points"]
-            scored["regular_games"] = scored.get("games", 0)
-            scored["postseason_points"] = 0.0
-            scored["postseason_games"] = 0.0
-
-            october = scored_for("post")
-            if october is not None and not october.empty:
-                # On the role as well as the player: a two-way player is two
-                # rows here, and crediting his pitching with his batting's
-                # October would pay the same run twice.
-                keys = ["season", "player", "role"]
-                by = october.set_index(keys)
-                where = pd.MultiIndex.from_frame(scored[keys])
-                scored["postseason_points"] = (
-                    by["role_points"].reindex(where).to_numpy())
-                scored["postseason_games"] = (
-                    by["games"].reindex(where).to_numpy())
-                for column in counted:
-                    if column in october.columns:
-                        scored[f"post_{column}"] = (
-                            by[column].reindex(where).to_numpy())
-            for column in ("postseason_points", "postseason_games"):
-                scored[column] = pd.to_numeric(
-                    scored[column], errors="coerce").fillna(0.0)
+            scored = mlb.with_october(scored, scored_for("post"))
             return apply_bonus(scored, RULES["MLB"] if postseason else None)
 
         return LeagueSpec(

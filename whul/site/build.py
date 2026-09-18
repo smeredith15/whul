@@ -2105,7 +2105,8 @@ def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
     # calendar year of a contract at. The scorer applies both to a player's
     # counting production, so a box that showed only the lift stopped adding
     # up to the score the moment the scorer started applying the weight.
-    scale = lift * _contract_weight(row.get("season"))
+    weight = _contract_weight(row.get("season"))
+    scale = lift * weight
 
     build = {"Batter": _mlb_batter_section, "Pitcher": _mlb_pitcher_section}
     sections = [build[role](row, scale)]
@@ -2146,7 +2147,7 @@ def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
         sections = _summed_over_years(sections, years)
     panel = {"kind": "mlb", "head": _mlb_games_head(row, team_games),
              "sections": sections, "note": note}
-    posts = _mlb_posts(row, role, build)
+    posts = _mlb_posts(row, role, build, weight)
     if posts:
         panel["posts"] = posts
     if years:
@@ -2188,7 +2189,8 @@ def _box_points(year: dict, index: int, part: str, at: int) -> float:
     return 0.0 if at >= len(boxes) else float(boxes[at].get("points") or 0.0)
 
 
-def _mlb_posts(row: dict, role: str, build: dict) -> list[dict]:
+def _mlb_posts(row: dict, role: str, build: dict,
+               weight: float = 1.0) -> list[dict]:
     """October, in the same boxes as the summer.
 
     Unprorated, unlike the season above it, and the rule behind that is worth
@@ -2201,12 +2203,10 @@ def _mlb_posts(row: dict, role: str, build: dict) -> list[dict]:
     takes MULT_YEAR_N. The club side already works this way: a playoff game
     win and a division title are weighted and not prorated.
 
-    These boxes are built at face value because the figure they are checked
-    against is: no MLB player postseason reaches the store at all today -- the
-    nightly pull asks the Stats API for the regular season only -- so there is
-    no weighted bonus for them to add up to. Whoever wires October up for
-    players applies the weight in the scorer and passes it in here, and the
-    two move together rather than one of them moving first.
+    So these boxes take the weight and not the lift, which is what the scorer
+    does to the October line they add up to: `_mlb_players_live` weights the
+    postseason frame before the bonus is priced off it, and proration rebuilds
+    the total around the regular season alone.
     """
     entries = _bonus_list(row)
     if not entries or role not in build:
@@ -2216,7 +2216,7 @@ def _mlb_posts(row: dict, role: str, build: dict) -> list[dict]:
     if not figures:
         return []
     entry = entries[0]
-    made = build[role](figures, 1.0)
+    made = build[role](figures, weight)
     made.pop("label", None)
     games = _stat_number(entry, "games")
     made["name"] = "Playoffs"
