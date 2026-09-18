@@ -93,6 +93,15 @@ EXCLUDED_PATTERN = re.compile(r"exhibition|itf men", re.IGNORECASE)
 ATP_PATTERN = re.compile(r"atp\s*-\s*singles", re.IGNORECASE)
 WTA_PATTERN = re.compile(r"wta\s*-\s*singles", re.IGNORECASE)
 
+#: The team competitions, which are scored -- a Davis Cup win pays a flat 50
+#: and the benchmark's history is full of them -- and which this parser only
+#: recognizes inside a header that already said ATP or WTA singles. Whether
+#: Flashscore files them that way is the question `probe` now answers: if it
+#: does not, every tie is dropped before it is read, and a player is measured
+#: against a bar that includes points the feed never delivers.
+TEAM_EVENT_PATTERN = re.compile(
+    r"davis\s*cup|billie\s*jean\s*king|bjk\s*cup|united\s*cup", re.IGNORECASE)
+
 GRAND_SLAM_NAMES = ("Australian Open", "French Open", "Wimbledon", "US Open")
 
 #: Flashscore's round labels, several spellings each. Qualifying rounds are
@@ -454,13 +463,78 @@ def daily_update_cost() -> float:
     return time.monotonic() - started
 
 
+def _day(segment: str) -> str | None:
+    """The day a record is on, as the results reader reads it."""
+    try:
+        return date.fromtimestamp(int(_field(segment, "AD"))).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _what_was_dropped(raw: str) -> dict:
+    """Which headers this parser refused, and what was underneath them.
+
+    A count of what was kept says nothing about what was lost. This names the
+    headers that did not match, so a competition that is being dropped whole
+    is read off the feed rather than guessed at -- and for the team events,
+    which are scored and which the benchmark's history is full of, it shows
+    the records themselves: the fields, the slugs, and whether a rubber is a
+    singles or a doubles.
+    """
+    headers, under, current = [], {}, None
+    for segment in (s for s in str(raw).split("~") if s):
+        if segment.startswith("ZA\u00f7"):
+            current = _field(segment, "ZA") or ""
+            if current not in under:
+                headers.append(current)
+                under[current] = []
+            continue
+        if current is not None and segment.startswith("AA\u00f7"):
+            under[current].append(segment)
+
+    dropped = [h for h in headers if parse_tournament_header(f"ZA\u00f7{h}\u00ac") is None]
+    team = [h for h in dropped if TEAM_EVENT_PATTERN.search(h)]
+
+    def shown(segment: str) -> dict:
+        home, away = _field(segment, "WU"), _field(segment, "WV")
+        return {
+            "status": _field(segment, "AC"),
+            "when": _day(segment),
+            "WU": home, "WV": away,
+            "AE": _field(segment, "AE"), "AF": _field(segment, "AF"),
+            "names": f"{slug_to_name(home)} v {slug_to_name(away)}",
+            # A doubles rubber sits under the same header as the singles in a
+            # team competition, where the header test cannot see it. Whatever
+            # marks one has to be read off this rather than assumed.
+            "fields": sorted(set(re.findall(r"([A-Z]{2})\u00f7", segment))),
+        }
+
+    return {
+        # Dropping is ordinary -- doubles, qualifying, the Challenger tour --
+        # so this stage is never a failure. What it is for is the list.
+        "ok": True,
+        "dropped": f"{len(dropped)}/{len(headers)}",
+        "sample": sorted(dropped)[:25],
+        "team_events": team,
+        "team_event_records": sum(len(under[h]) for h in team),
+        "team_event_sample": [
+            {"header": h, **shown(s)} for h in team for s in under[h][:4]
+        ][:12],
+    }
+
+
 def probe(days: range | None = None) -> dict:
     """Check the feed is reachable and still parses, stage by stage."""
-    days = days or range(-2, 1)
+    # A week around today rather than one day two days ago. A probe asked
+    # whether a competition reaches this project has to cover the days that
+    # competition is played on, and `fetch_window` is what the pull itself
+    # uses -- one day was also all that was ever fetched, whatever the report
+    # said it covered.
+    days = days or range(-3, 5)
     report: dict = {"days": f"{days.start}..{days.stop - 1}", "stages": {}}
 
     try:
-        raw = _get(days.start)
+        raw = fetch_window(days)
     except Exception as exc:  # noqa: BLE001 -- the probe reports, it does not raise
         report["stages"]["fetch"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         return report
@@ -499,6 +573,8 @@ def probe(days: range | None = None) -> dict:
             "longer matches the feed's wording"
         )
         return report
+
+    report["stages"]["dropped"] = _what_was_dropped(raw)
 
     matches = list(iter_matches(raw))
     from_feed = sum(1 for m in matches if m["round"])
