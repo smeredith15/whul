@@ -4256,3 +4256,171 @@ def test_an_outcome_nobody_has_lost_yet_does_not_read_as_lost():
            "pts_reg_champ": 0.0}
     panel = site_build._counted_team_panel("NCAAF", row)
     assert [b["value"] for b in panel["outcomes"]] == ["—"] * 3
+
+
+def _driver_store(tmp_path, affiliation="Great Britain", car_number="44"):
+    """A rostered driver, with the car number his feed row carries."""
+    from datetime import date
+
+    from whul.store import open_store, rosters
+
+    store = open_store(str(tmp_path / "d.sqlite3"))
+    rosters.add_manager(store, "JM")
+    rosters.create_slots(store, "JM", "2026-27")
+    store.upsert("assets", [{
+        "asset_id": "d1", "asset_type": "Player", "display_name": "A Driver",
+        "league": "F1", "role": "Driver", "norm_key": "F1",
+        "affiliation": affiliation, "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    slot = store.query(
+        "SELECT slot_id FROM roster_slots WHERE season = ? AND category = ? "
+        "AND asset_type = 'Player' ORDER BY slot_index",
+        ("2026-27", "Motorsports"))
+    rosters.assign(store, slot.loc[0, "slot_id"], "d1", "2026-08-21")
+    if car_number:
+        store.record_stats(
+            [{"asset_id": "d1", "car_number": car_number, "total_points": 1.0}],
+            source="s", season="2026-27", as_of=date(2026, 9, 6), league="F1",
+        )
+    return store
+
+
+def test_a_driver_is_badged_with_his_country_not_his_car(tmp_path):
+    """His corner is a flag, and a flag has a country in it. `_identity` gives
+    his *line* the car number, which is right there -- a driver has no club --
+    and is a filename that can never exist: six drivers were being looked up as
+    `flag/-44.png`, so their real flags were never fetched and never reported
+    missing either."""
+    from whul.site.build import badge_names
+
+    assert badge_names(_driver_store(tmp_path), "2026-27")["d1"] == \
+        "Great Britain"
+
+
+def test_a_footballer_still_takes_the_feeds_club(tmp_path):
+    """The rule it is an exception to, kept honest: only an individual
+    athlete's badge comes off the sheet."""
+    from whul.site.build import badge_names
+
+    store = _badge_store(tmp_path, "Rennes", feed_team="Stade Rennais")
+    assert badge_names(store, "2026-27")["p1"] == "Stade Rennais"
+
+
+# --- what the auction bought -------------------------------------------------
+
+def _priced_store(tmp_path, *slots):
+    """A store holding priced slots: ``(slot_id, manager, category, cost)``."""
+    from whul.store import open_store, rosters
+
+    store = open_store(str(tmp_path / "c.sqlite3"))
+    for manager in {m for _, m, _, _ in slots}:
+        rosters.add_manager(store, manager)
+    store.upsert("roster_slots", [
+        {"slot_id": slot, "manager_id": manager, "season": "2026-27",
+         "category": category, "asset_type": "Player", "slot_index": index}
+        for index, (slot, manager, category, _) in enumerate(slots)
+    ], keys=("slot_id",))
+    store.upsert("assets", [
+        {"asset_id": f"a-{slot}", "asset_type": "Player",
+         "display_name": f"Player {slot}", "league": "NFL", "role": "",
+         "norm_key": "NFL", "affiliation": "", "active": 1,
+         "created_at": "2026-08-21"}
+        for slot, _, _, _ in slots
+    ], keys=("asset_id",))
+    store.upsert("slot_occupancy", [
+        {"slot_id": slot, "asset_id": f"a-{slot}", "start_date": "2026-08-21",
+         "end_date": None, "cost": cost, "note": ""}
+        for slot, _, _, cost in slots
+    ], keys=("slot_id", "start_date"))
+    store.conn.commit()
+    return store
+
+
+def _bars(*rows):
+    """The contribution frame, as `pipeline.contributions` returns it."""
+    return pd.DataFrame([
+        {"manager_id": manager, "category": category, "asset_type": "Player",
+         "slot_id": slot, "asset_id": f"a-{slot}", "score": score,
+         "counts": counts}
+        for slot, manager, category, score, counts in rows
+    ])
+
+
+def test_a_price_is_only_compared_inside_its_own_category(tmp_path):
+    """The five of them spent far more per NFL slot than per Olympics slot, and
+    the scores those slots return are not on the same footing either. Comparing
+    a raw price against a raw score would rank the categories, not the
+    managers."""
+    store = _priced_store(tmp_path,
+                          ("s1", "JM", "NFL", 100.0), ("s2", "SS", "NFL", 100.0),
+                          ("s3", "JM", "Olympics", 1.0), ("s4", "SS", "Olympics", 1.0))
+    priced = site_build._priced_slots(store, "2026-27", _bars(
+        ("s1", "JM", "NFL", 60.0, 1), ("s2", "SS", "NFL", 40.0, 1),
+        ("s3", "JM", "Olympics", 8.0, 1), ("s4", "SS", "Olympics", 2.0, 1),
+    )).set_index("slot_id")
+
+    # Half the category's money, so half its points are what the price bought.
+    assert priced.loc["s1", "expected"] == pytest.approx(50.0)
+    assert priced.loc["s1", "surplus"] == pytest.approx(10.0)
+    # And the cheap category is judged on its own terms rather than dismissed
+    # for being cheap: five points of Olympics beats its price by three.
+    assert priced.loc["s3", "expected"] == pytest.approx(5.0)
+    assert priced.loc["s3", "surplus"] == pytest.approx(3.0)
+
+
+def test_the_surpluses_cancel_out(tmp_path):
+    """A slot beats its price at another slot's expense, because the shares are
+    of one pot. A league-wide total of anything but zero means the arithmetic
+    is wrong, not that everybody did well."""
+    store = _priced_store(tmp_path,
+                          ("s1", "JM", "NFL", 150.0), ("s2", "SS", "NFL", 50.0))
+    priced = site_build._priced_slots(store, "2026-27", _bars(
+        ("s1", "JM", "NFL", 10.0, 1), ("s2", "SS", "NFL", 30.0, 1),
+    ))
+
+    assert priced["surplus"].sum() == pytest.approx(0.0)
+    rows = site_build._cost_rows(priced, ["JM", "SS"])
+    assert sum(r["surplus"] for r in rows) == pytest.approx(0.0)
+    # Ranked by it, so the table opens on whoever beat the room.
+    assert [r["manager"] for r in rows] == ["SS", "JM"]
+
+
+def test_a_benched_slot_is_still_money_spent(tmp_path):
+    """It is the whole reason to look: a manager can lead the standings and
+    have a third of his auction sitting out."""
+    store = _priced_store(tmp_path,
+                          ("s1", "JM", "NFL", 40.0), ("s2", "JM", "NFL", 60.0))
+    rows = site_build._cost_rows(site_build._priced_slots(store, "2026-27", _bars(
+        ("s1", "JM", "NFL", 30.0, 1), ("s2", "JM", "NFL", 20.0, 0),
+    )), ["JM"])
+
+    assert rows[0]["spend"] == 100.0
+    assert rows[0]["bench_spend"] == 60.0
+    assert rows[0]["counting"] == 30.0
+    assert rows[0]["score"] == 50.0
+
+
+def test_a_season_with_no_prices_says_so_rather_than_breaking(tmp_path):
+    """Every season before the costs were recorded, and any league that does
+    not run an auction at all."""
+    store = _priced_store(tmp_path, ("s1", "JM", "NFL", None))
+
+    priced = site_build._priced_slots(store, "2026-27",
+                                      _bars(("s1", "JM", "NFL", 30.0, 1)))
+
+    assert priced.empty
+    assert "No auction prices" in site_build._cost_table(
+        site_build._cost_rows(priced, ["JM"]))
+
+
+def test_the_cost_figure_is_closed_and_last(site):
+    """An argument about the auction, not part of the standings: it opens
+    closed, sits at the end of the page, and nothing above it moved to make
+    room."""
+    out, _ = site
+    page = (out / "results.html").read_text()
+    costs = page[page.index('id="costs"'):]
+
+    assert costs.startswith('id="costs" data-figure="costs">'), "not open"
+    assert 'href="#costs"' in page, "and it is in the index at the top"
+    assert page.index('id="everyone"') < page.index('id="costs"')

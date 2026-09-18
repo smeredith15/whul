@@ -317,6 +317,16 @@ def badge_names(store: Store, season: str, as_of=None) -> dict[str, str]:
     A club that changes spelling between the two therefore changes the crest's
     filename too. The old file goes stale rather than wrong; the fetch writes
     the new one and nothing points at the old.
+
+    An individual athlete is the exception, and takes the sheet's affiliation
+    whatever the feed says: his corner is his country's flag, and the feed has
+    no country in it. A driver's does not even have a club -- ``_identity``
+    gives his line the car number instead, which is the right answer for a line
+    under a name and a filename that can never exist for a badge. Six drivers
+    were being looked up as ``flag/-44.png``, so their real flags were never
+    fetched and never reported missing either. The rule is the one
+    ``_profile_payload`` applies to the corner itself; this is the same
+    decision rather than a second one.
     """
     day = as_of or store.scalar(
         "SELECT MAX(as_of) FROM raw_stats WHERE season = ?", (season,)
@@ -328,7 +338,8 @@ def badge_names(store: Store, season: str, as_of=None) -> dict[str, str]:
             from_feed = {row["asset_id"]: row for row in stats.to_dict("records")}
 
     rows = store.query(
-        "SELECT DISTINCT a.asset_id, a.league, a.norm_key, a.affiliation "
+        "SELECT DISTINCT a.asset_id, a.league, a.norm_key, a.affiliation, "
+        "a.asset_type, r.category "
         "FROM roster_slots r "
         "JOIN slot_occupancy o ON o.slot_id = r.slot_id AND o.end_date IS NULL "
         "JOIN assets a ON a.asset_id = o.asset_id "
@@ -340,8 +351,12 @@ def badge_names(store: Store, season: str, as_of=None) -> dict[str, str]:
             from_feed.get(row.asset_id, {}), str(row.league or ""),
             str(row.norm_key or ""), str(row.affiliation or ""),
         )
-        if who["team"]:
-            out[str(row.asset_id)] = who["team"]
+        badge = (str(row.affiliation or "").strip()
+                 if str(row.category or "") in INDIVIDUAL_CATEGORIES
+                 and str(row.asset_type or "") != "Team"
+                 else who["team"])
+        if badge:
+            out[str(row.asset_id)] = badge
     return out
 
 
@@ -3339,6 +3354,149 @@ def _feed_table(rows: list[dict], as_of: str) -> str:
     )
 
 
+def _priced_slots(store, season: str, bars):
+    """Every current slot with what it cost beside what it has returned.
+
+    The price is on the occupancy rather than the asset, so this reads what
+    the manager holding the slot today paid for it: a slot that changed hands
+    carries the new owner's price, which is the figure that manager is being
+    judged on.
+    """
+    import pandas as pd
+
+    if bars is None or bars.empty:
+        return pd.DataFrame()
+    paid = store.query(
+        "SELECT o.slot_id, o.cost FROM slot_occupancy o "
+        "JOIN roster_slots r ON r.slot_id = o.slot_id "
+        "WHERE r.season = ? AND o.end_date IS NULL", (season,),
+    )
+    if paid.empty:
+        return pd.DataFrame()
+    out = bars.merge(paid, on="slot_id", how="inner")
+    out["cost"] = pd.to_numeric(out["cost"], errors="coerce")
+    out = out[out["cost"].notna() & (out["cost"] > 0)]
+    if out.empty:
+        return out
+
+    # What the league paid for a point in this category, applied to this
+    # slot's share of it. A dollar does not buy the same thing everywhere --
+    # the five managers between them spent far more per NFL slot than per
+    # Olympics slot, and the scores those slots return are not on the same
+    # footing either -- so comparing a raw price against a raw score ranks
+    # categories rather than managers. The share is within a category, so
+    # what is left is the part a manager chose.
+    spent = out.groupby("category")["cost"].transform("sum")
+    earned = out.groupby("category")["score"].transform("sum")
+    share = out["cost"].divide(spent).where(spent > 0, 0.0)
+    out["expected"] = share * earned
+    out["surplus"] = out["score"] - out["expected"]
+    return out
+
+
+def _cost_rows(priced, managers) -> list[dict]:
+    """One row a manager: what they spent, what it returned, what it beat."""
+    if priced is None or priced.empty:
+        return []
+    rows = []
+    for manager in managers:
+        mine = priced[priced["manager_id"] == manager]
+        if mine.empty:
+            continue
+        spend = float(mine["cost"].sum())
+        counting = mine[mine["counts"] == 1]
+        rows.append({
+            "manager": manager,
+            "spend": spend,
+            "score": float(mine["score"].sum()),
+            "counting": float(counting["score"].sum()),
+            "bench_spend": spend - float(counting["cost"].sum()),
+            # Per hundred rather than per dollar: the prices are two and three
+            # figures and a column of 0.14s is a column nobody reads.
+            "per_hundred": (float(mine["score"].sum()) / spend * 100
+                            if spend else 0.0),
+            "surplus": float(mine["surplus"].sum()),
+        })
+    return sorted(rows, key=lambda r: -r["surplus"])
+
+
+#: How many buys the outlier list names at each end. Enough to be a finding,
+#: few enough that nobody scrolls.
+BUYS_SHOWN = 5
+
+
+def _cost_table(rows: list[dict]) -> str:
+    """The managers' side, ranked by what they beat the market by."""
+    if not rows:
+        return "<p class='sub'>No auction prices are recorded for this season.</p>"
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f'<td><span class="mgr">{escape(manager_name(row["manager"]))}</span></td>'
+            f'<td class="num">{row["spend"]:,.0f}</td>'
+            f'<td class="num">{row["bench_spend"]:,.0f}</td>'
+            f'<td class="num">{row["counting"]:,.1f}</td>'
+            f'<td class="num">{row["score"]:,.1f}</td>'
+            f'<td class="num">{row["per_hundred"]:,.1f}</td>'
+            f'<td class="num">{_signed(row["surplus"])}</td>'
+            "</tr>"
+        )
+    return (
+        "<table class='costs'><thead><tr><th>Manager</th>"
+        "<th class='num'>Spent</th><th class='num'>On the bench</th>"
+        "<th class='num'>Counting</th><th class='num'>All slots</th>"
+        "<th class='num'>Per 100</th><th class='num'>Vs price</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _signed(value: float) -> str:
+    """A surplus, with its sign and its colour. Zero is neither."""
+    text = f"{value:+,.1f}" if abs(value) >= 0.05 else "0.0"
+    if abs(value) < 0.05:
+        return f'<span class="flat">{text}</span>'
+    kind = "over" if value > 0 else "under"
+    return f'<span class="{kind}">{text}</span>'
+
+
+def _cost_buys(priced, profiles: dict[str, dict], managers) -> str:
+    """The buys at each end of the same arithmetic, named."""
+    if priced is None or priced.empty:
+        return ""
+    ordered = priced.sort_values("surplus", ascending=False)
+    best = ordered.head(BUYS_SHOWN)
+    worst = ordered.tail(BUYS_SHOWN).iloc[::-1]
+
+    def block(title: str, rows, kind: str) -> str:
+        made = []
+        for row in rows.itertuples():
+            profile = profiles.get(str(row.asset_id), {})
+            name = str(profile.get("name") or row.asset_id)
+            made.append(
+                "<tr>"
+                f'<td>{_asset_button(str(row.asset_id), name, profile=profile)}</td>'
+                f'<td class="owner">{escape(manager_name(row.manager_id))}</td>'
+                f'<td class="num">{float(row.cost):,.0f}</td>'
+                f'<td class="num">{float(row.score):,.1f}</td>'
+                f'<td class="num">{float(row.expected):,.1f}</td>'
+                f'<td class="num">{_signed(float(row.surplus))}</td>'
+                "</tr>"
+            )
+        return (
+            f"<h3 class='buys {kind}'>{escape(title)}</h3>"
+            "<table class='costs buys'><thead><tr><th>Asset</th><th>Manager</th>"
+            "<th class='num'>Cost</th><th class='num'>Score</th>"
+            "<th class='num'>Expected</th><th class='num'>Vs price</th>"
+            "</tr></thead>"
+            f"<tbody>{''.join(made)}</tbody></table>"
+        )
+
+    return (block("Beat their price", best, "over")
+            + block("Have not, yet", worst, "under"))
+
+
 def _figure(anchor: str, title: str, blurb: str, body: str, open_: bool = True) -> str:
     """One collapsible figure, addressable by anchor.
 
@@ -4267,12 +4425,29 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         _feed_table(_feed_rows(store, season, latest), latest),
         open_=False,
     )
+    priced = _priced_slots(store, season, bars)
+    costs_figure = _figure(
+        "costs", "What it cost",
+        "Closed by default, and off to one side: this is an argument about "
+        "the auction, not part of the standings. A price is only comparable "
+        "inside its own category -- the five of them spent far more per NFL "
+        "slot than per Olympics slot -- so <em>expected</em> is a slot's share "
+        "of what its category cost, applied to what that category has scored, "
+        "and <em>vs price</em> is what it has returned above or below that. "
+        "The shares sum to the category, so a league-wide surplus of zero is "
+        "the arithmetic working rather than a finding.",
+        _cost_table(_cost_rows(priced, managers))
+        + _cost_buys(priced, profiles, managers),
+        open_=False,
+    )
     results_body = (
         _figure_index([("progression", "Progression"),
                        ("slots", "Every counting slot"),
                        ("everyone", "Every scored asset"),
-                       ("feeds", "Where the numbers came from")])
+                       ("feeds", "Where the numbers came from"),
+                       ("costs", "What it cost")])
         + progression_figure + slots_figure + table_figure + feeds_figure
+        + costs_figure
         + _profile_payload(profiles) + _day_payload(breakdown)
     )
     (out / "results.html").write_text(
