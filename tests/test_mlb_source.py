@@ -821,3 +821,111 @@ def test_the_postseason_pull_asks_for_each_round_separately():
 
     assert asked == list(mlb.POSTSEASON_GAME_TYPES)
     assert out.empty
+
+
+# --- October, in the live pull ----------------------------------------------
+
+def _line(**over):
+    row = {"season": 2026, "PlayerName": "Test Batter", "AB": 0, "H": 0,
+           "2B": 0, "3B": 0, "HR": 0, "BB": 0, "HBP": 0, "SB": 0, "CS": 0,
+           "Off": 0, "Def": 0, "G": 150}
+    row.update(over)
+    return pd.DataFrame([row])
+
+
+def _pulls(monkeypatch, october=None, today=(2026, 10, 5)):
+    """The live MLB player source, with the feed and the calendar stubbed."""
+    import datetime as _dt
+
+    from whul import benchmark_sources
+    from whul.sources import mlb as source
+
+    asked = []
+
+    def batters(seasons, since=None, postseason=False, **kw):
+        asked.append(("bat", tuple(seasons), postseason))
+        if postseason:
+            return october if october is not None else pd.DataFrame()
+        return _line(H=150, AB=480, HR=40, G=140)
+
+    def pitchers(seasons, since=None, postseason=False, **kw):
+        asked.append(("pit", tuple(seasons), postseason))
+        return pd.DataFrame()
+
+    class _Day(_dt.date):
+        @classmethod
+        def today(cls):
+            return _dt.date(*today)
+
+    monkeypatch.setattr(source, "load_batters", batters)
+    monkeypatch.setattr(source, "load_pitchers", pitchers)
+    monkeypatch.setattr(_dt, "date", _Day)
+    load, score = benchmark_sources._mlb_players_live()
+    return load, score, asked
+
+
+def test_the_live_pull_asks_for_october(monkeypatch):
+    """The Scoring page promises MLB players 7.5% of a season for October and
+    the live pull asked the Stats API for the regular season only, so the
+    promise paid zero. `load_postseason_players` was written, tested and never
+    called."""
+    load, _, asked = _pulls(monkeypatch)
+
+    load([2026])
+
+    assert ("bat", (2026,), True) in asked
+    assert ("pit", (2026,), True) in asked
+
+
+def test_no_postseason_is_asked_for_in_july(monkeypatch):
+    """Four empty requests a group, every night, for a round nobody has
+    played. The gate opens a fortnight early rather than on the day, because a
+    cumulative feed catches up and a gate that never opens does not."""
+    load, _, asked = _pulls(monkeypatch, today=(2026, 7, 4))
+
+    load([2026])
+
+    assert not any(postseason for _, _, postseason in asked)
+
+
+def test_october_takes_the_weight_and_not_the_lift(monkeypatch):
+    """The two scalings are different questions. The lift is for the month a
+    league year opening in August is short of, and a playoff run is not short
+    of anything; the multiplier is what the benchmark prices this stretch of a
+    contract at, and October falls inside it like the rest."""
+    from whul.scoring.mlb import MULT_YEAR_N, score_players
+
+    october = _line(H=18, AB=55, HR=6, G=14)
+    load, score, _ = _pulls(monkeypatch, october=october)
+    raw = load([2026])
+
+    out = score(raw)
+    row = out.iloc[0]
+
+    # What the two frames are worth before either scaling.
+    summer = float(score_players(_line(H=150, AB=480, HR=40, G=140),
+                                 pd.DataFrame()).iloc[0]["role_points"])
+    autumn = float(score_players(october, pd.DataFrame()).iloc[0]["role_points"])
+
+    lift = float(row["proration_factor"])
+    assert row["role_points"] == pytest.approx(summer * MULT_YEAR_N * lift)
+    # The summer takes both scalings and October takes one: the bonus is
+    # priced off a weighted October rate with no lift anywhere in it. It is
+    # read off `postseason_pending` because nothing is credited until the
+    # World Series is over -- the test below -- and the figure is the same
+    # either way.
+    rate = autumn * MULT_YEAR_N / 14
+    assert row["postseason_pending"] == pytest.approx(rate * 12.15, rel=1e-3)
+    assert row["postseason_games"] == 14
+
+
+def test_october_is_held_until_the_world_series_is_over(monkeypatch):
+    """A rate off one playoff game projects a whole share of a season, and a
+    second game without production lowers it. Scores in this sport otherwise
+    only rise."""
+    load, score, _ = _pulls(monkeypatch, october=_line(H=18, AB=55, G=14))
+
+    row = score(load([2026])).iloc[0]
+
+    assert row["postseason_bonus"] == 0.0
+    assert row["postseason_pending"] > 0.0

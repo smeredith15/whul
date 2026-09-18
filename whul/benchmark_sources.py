@@ -182,6 +182,7 @@ def _mlb_players_live():
     """
     from whul.config.league import SEASON, season_start
     from whul.scoring import mlb
+    from whul.scoring.postseason import RULES, apply_bonus
     from whul.sources import mlb as source
 
     def load(seasons):
@@ -194,31 +195,93 @@ def _mlb_players_live():
             since = season_start("MLB") if year == opened else None
             frames.append(source.load_batters([year], since=since).assign(_phase="bat"))
             frames.append(source.load_pitchers([year], since=since).assign(_phase="pit"))
+            if not _october_is_possible(year):
+                continue
+            # October, asked for separately because the endpoint answers for
+            # one game type at a time, and checked before it is used: it
+            # ignores a gameType it does not understand and returns the whole
+            # year, which paid as a postseason rate is the largest
+            # overstatement this system can produce. See
+            # `_check_postseason_applied`.
+            for pull, role in ((source.load_batters, "bat"),
+                               (source.load_pitchers, "pit")):
+                october = pull([year], postseason=True)
+                if october is not None and not october.empty:
+                    frames.append(
+                        october.assign(_phase=role, _season_phase="post"))
         frames = [f for f in frames if f is not None and not f.empty]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def score(raw):
-        scored = mlb.score_players(
-            raw[raw["_phase"] == "bat"], raw[raw["_phase"] == "pit"])
+        phase = (raw["_season_phase"] if "_season_phase" in raw.columns
+                 else pd.Series("reg", index=raw.index)).fillna("reg")
+
+        def scored_for(want):
+            part = raw[phase == want]
+            if part.empty:
+                return None
+            return mlb.score_players(part[part["_phase"] == "bat"],
+                                     part[part["_phase"] == "pit"])
+
+        scored = scored_for("reg")
         if scored is None or scored.empty:
             return scored
-        # The same two weights the clubs take, for the same reason: this is one
-        # contract year and its two stretches are not worth the same. A batter's
-        # whole total is counting production, so the whole of it carries the
-        # weight -- there is no one-off in it to hold back.
+        # Both stretches at what the benchmark prices them at, and October at
+        # what it prices October at. A batter's whole total is counting
+        # production, so the whole of it carries the weight -- there is no
+        # one-off in it to hold back.
         #
         # The player benchmark is drawn from plain calendar seasons rather than
         # bisected contract years, and takes the weighting just the same: the
         # multipliers reconcile to one season by construction, so a weighted
         # window lifted to a full one lands on either bar.
-        scored = scored.copy()
-        weight = mlb.contract_weight(scored["season"])
-        for column in ("role_points", "total_points"):
-            if column in scored.columns:
-                scored[column] = scored[column] * weight
+        scored = _at_contract_weight(scored, mlb)
+        october = scored_for("post")
+        if october is not None and not october.empty:
+            october = _at_contract_weight(october, mlb)
+        scored = mlb.with_october(scored, october)
+
+        # Held until the World Series is over, not paid through October: a rate
+        # off one playoff game projects a whole share of a season, and a second
+        # game without production lowers it. `apply_bonus` decides that; what
+        # matters here is the order. The bonus joins the total *before*
+        # proration, and proration rebuilds the total around the columns it
+        # names -- so the postseason keeps the contract multiplier and never
+        # takes the lift. A playoff run is not short of the month a league year
+        # opening in August is short of, so nothing is owed it.
+        scored = apply_bonus(scored, RULES["MLB"])
         return _prorated(scored, "MLB")
 
     return load, score
+
+
+def _at_contract_weight(scored, mlb):
+    """One frame's points, at what the benchmark prices their season at."""
+    out = scored.copy()
+    weight = mlb.contract_weight(out["season"])
+    for column in ("role_points", "total_points"):
+        if column in out.columns:
+            out[column] = out[column] * weight
+    return out
+
+
+#: The earliest a postseason line can exist, as a day of September. The wild
+#: card round opens in the last days of the month; this is a fortnight early
+#: on purpose, because asking too soon costs four empty requests a group and
+#: asking too late loses a round nobody would notice was missing.
+OCTOBER_FROM = (9, 15)
+
+
+def _october_is_possible(season: int) -> bool:
+    """Whether a season could have played a postseason game by now.
+
+    A cumulative feed catches up, so a gate that opens late self-heals on the
+    next night; one that never opens does not. It is asked per season because
+    a league year holds two, and the second one's October falls outside it.
+    """
+    from datetime import date
+
+    return date.today() >= date(int(season), *OCTOBER_FROM)
 
 
 def _prorated(scored, league: str, columns: list[str] | None = None):

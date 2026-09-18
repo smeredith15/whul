@@ -1299,3 +1299,88 @@ def test_a_dropped_doubles_header_is_reported_but_not_as_a_team_event():
 
     assert out["sample"] == ["ATP - DOUBLES: Chengdu"]
     assert out["team_events"] == []
+
+
+# --- the team competitions --------------------------------------------------
+
+def _header(text: str):
+    return flashscore.parse_tournament_header(f"ZA÷{text}¬")
+
+
+def test_a_davis_cup_qualifier_is_not_a_qualifying_draw():
+    """The probe found Ben Shelton's tie filed as "Davis Cup - World Group
+    (World) - Qualification", and the word alone dropped it: from the fixture
+    a manager reads and from the result that pays him. The World Group
+    Qualifiers are a stage of the Davis Cup played by national sides, not the
+    draw a player comes through to reach a main draw, which is the only thing
+    that flag exists to drop."""
+    head = _header("ATP - SINGLES: Davis Cup - World Group (World) - Qualification")
+
+    assert head["is_qualifying"] is False
+    assert head["category"] == "International"
+    assert head["tournament"] == "Davis Cup - World Group"
+
+
+def test_a_real_qualifying_draw_is_still_dropped():
+    """The flag still does its job everywhere it was doing it."""
+    assert _header("ATP - SINGLES: US Open (USA), hard - Qualification")[
+        "is_qualifying"] is True
+
+
+def test_a_team_event_is_classified_before_the_word_finals():
+    """"Davis Cup - Finals" is the eight-nation week in November. It was the
+    fifth test, behind one for "finals", so it was priced as the ATP Finals --
+    a tour event worth several times what a tie is."""
+    assert _header("ATP - SINGLES: Davis Cup - Finals")["category"] == \
+        "International"
+    assert _header("WTA - SINGLES: Billie Jean King Cup - Finals")["category"] == \
+        "International"
+    # And the tour event itself is untouched.
+    assert _header("ATP - SINGLES: Nitto ATP Finals (Italy), hard (indoor)")[
+        "category"] == "Tour Finals"
+
+
+def test_a_tie_carries_no_round_because_it_is_not_a_draw():
+    """Every Davis Cup win is worth the same flat figure wherever in the tie it
+    fell, so there is no bracket position to read -- and reading the header's
+    tail as one turned the World Group Qualifiers into a first qualifying
+    round."""
+    assert _header("ATP - SINGLES: Davis Cup - World Group (World) - Qualification")[
+        "round"] == ""
+    assert _header("ATP - SINGLES: Rome (Italy), clay - Quarterfinal")["round"] == "QF"
+
+
+def test_a_doubles_rubber_stays_out():
+    """Flashscore files a tie's doubles under its own header, which is what
+    keeps a two-man team from being paid as a singles win."""
+    assert _header(
+        "ATP - DOUBLES: Davis Cup - World Group (World) - Qualification") is None
+
+
+def test_the_fixture_reader_keeps_a_tie_and_drops_its_doubles():
+    from whul.sources import flashscore_fixtures
+
+    raw = "~".join([
+        "ZA÷ATP - SINGLES: Davis Cup - World Group (World) - Qualification¬",
+        "AA÷q1¬AC÷1¬WU÷shelton-ben¬WV÷lehecka-jiri¬"
+        "AD÷1789000000¬",
+        "ZA÷ATP - DOUBLES: Davis Cup - World Group (World) - Qualification¬",
+        "AA÷q2¬AC÷1¬WU÷pavlasek-adam¬WV÷harrison-christian¬"
+        "AD÷1789000000¬",
+    ])
+
+    out = list(flashscore_fixtures.iter_tennis_fixtures(raw))
+
+    assert [(f["home_team"], f["away_team"]) for f in out] == \
+        [("Ben Shelton", "Jiri Lehecka")]
+    assert out[0]["competition"] == "Davis Cup - World Group"
+
+
+def test_a_tie_is_priceable_without_a_round_and_a_tour_match_is_not():
+    """The drop exists because a tour match's points *are* its bracket
+    position. A team event has no bracket and a flat price, so requiring one
+    of it dropped rubbers nobody could see going missing."""
+    assert flashscore.has_a_price(
+        {"round": "", "category": "International"}) is True
+    assert flashscore.has_a_price({"round": "", "category": "250"}) is False
+    assert flashscore.has_a_price({"round": "QF", "category": "250"}) is True

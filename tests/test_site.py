@@ -3366,14 +3366,21 @@ def test_a_league_year_inside_one_calendar_year_gets_no_toggle(monkeypatch):
 def test_a_baseball_playoff_section_is_the_same_boxes_and_adds_up():
     """The Scoring page has always promised MLB players 7.5% of a season for
     October, and the scorer paid zero because the postseason was never asked
-    for. It is now, and the section reconciles to what the scorer priced."""
+    for. It is now, and the section reconciles to what the scorer priced --
+    the October line at the contract multiplier, and not at the proration
+    lift. A playoff run is not short of the month a league year opening in
+    August is short of, so nothing is owed it."""
+    from whul.scoring.mlb import MULT_YEAR_N
+
+    priced = 142.7 * MULT_YEAR_N
     row = _batter(**{
         "post_h": 18, "post_ab": 55, "post_hr": 6, "post_doubles": 4,
         "post_triples": 0, "post_bb": 8, "post_hbp": 1, "post_sb": 1,
         "post_cs": 0, "post_games": 14,
-        "bonus_detail": [{"competition": "MLB", "games": 14.0, "points": 142.7,
-                          "share": 0.075, "scalar": 12.15, "adds": 123.8,
-                          "credited": False, "finishes": "2026-11-20"}],
+        "bonus_detail": [{"competition": "MLB", "games": 14.0,
+                          "points": priced, "share": 0.075, "scalar": 12.15,
+                          "adds": 123.8, "credited": False,
+                          "finishes": "2026-11-20"}],
     })
     panel = site_build._mlb_panel(row)
     season, post = panel["sections"][0], panel["posts"][0]
@@ -3385,15 +3392,16 @@ def test_a_baseball_playoff_section_is_the_same_boxes_and_adds_up():
     # it is excluded here exactly as it is in the season section.
     scored = sum(b["points"] or 0 for b in post["top"] + post["secondary"]
                  if not b.get("note"))
-    assert round(scored, 1) == 142.7
+    assert round(scored, 1) == round(priced, 1)
     assert post["total"]["points"] == 123.8
     assert post["total"]["muted"] is True
 
 
 def test_a_baseball_playoff_section_is_not_prorated():
-    """Proration scales `role_points` and nothing else, so the postseason line
-    the scorer carries is the raw one. Scaling it here would stop the section
-    adding up to the figure the scorer priced it at."""
+    """The lift exists because a league year opening in August is short a
+    month of the summer, and a playoff run is not short of anything. The
+    scorer rebuilds the total around the regular season alone, so a section
+    lifted here would stop adding up to the figure it priced October at."""
     entry = [{"competition": "MLB", "games": 14.0, "points": 142.7,
               "share": 0.075, "scalar": 12.15, "adds": 123.8,
               "credited": False, "finishes": "2026-11-20"}]

@@ -673,6 +673,51 @@ def _window_points(summary: pd.DataFrame,
     ).reset_index(drop=True)
 
 
+#: What a batter's and a pitcher's October must show, so the playoff section
+#: of a profile is the same boxes as the season above it. Named as the scorer
+#: names them, since that is the frame they are read back off.
+OCTOBER_COUNTED = ("h", "ab", "hr", "doubles", "triples", "bb", "hbp", "sb",
+                   "cs", "ip", "so", "sv", "hld", "games")
+
+
+def with_october(scored: pd.DataFrame,
+                 october: pd.DataFrame | None) -> pd.DataFrame:
+    """A season's players with their postseason beside it, in phase columns.
+
+    ``apply_bonus`` prices a postseason as a rate off the games played in it
+    and reads the four phase columns to do it, so this fills them. It also
+    carries each October count alongside its season one, because a bonus with
+    no line behind it is a number a manager cannot check.
+
+    Matched on the role as well as the player: a two-way player is two rows
+    here, and crediting his pitching with his batting's October would pay the
+    same run twice.
+
+    Nothing is weighted or prorated here. The caller decides what a stretch of
+    a contract year is worth and does it before this, which is the only place
+    the two weights are visible together.
+    """
+    out = scored.copy()
+    out["regular_points"] = out["total_points"]
+    out["regular_games"] = out["games"] if "games" in out.columns else 0
+    out["postseason_points"] = 0.0
+    out["postseason_games"] = 0.0
+
+    if october is not None and not october.empty:
+        keys = ["season", "player", "role"]
+        by = october.set_index(keys)
+        where = pd.MultiIndex.from_frame(out[keys])
+        out["postseason_points"] = by["role_points"].reindex(where).to_numpy()
+        out["postseason_games"] = by["games"].reindex(where).to_numpy()
+        for column in OCTOBER_COUNTED:
+            if column in october.columns:
+                out[f"post_{column}"] = by[column].reindex(where).to_numpy()
+
+    for column in ("postseason_points", "postseason_games"):
+        out[column] = pd.to_numeric(out[column], errors="coerce").fillna(0.0)
+    return out
+
+
 #: The lift a stored row was written under before the contract weights were
 #: applied to the live path. Rows carrying it are on the old rule; rows
 #: carrying the current one are already correct and must not be touched twice.

@@ -166,6 +166,23 @@ def parse_score(segment: str) -> str | None:
     return " ".join(sets) if sets else None
 
 
+def has_a_price(match: dict) -> bool:
+    """Whether the scorer can put a figure on this match.
+
+    A tour match with no round cannot be priced -- the points are the bracket
+    position, and there is nothing to read -- so it is dropped rather than
+    scored as nothing.
+
+    A team event is the exception, and it is not a small one: a Davis Cup
+    rubber pays a flat figure whoever it was played against and wherever in
+    the tie it fell, so a round would tell the scorer nothing. Requiring one
+    dropped every rubber whose tie the tournament pages had no bracket for,
+    while the benchmark counted the team events every player in its history
+    had ever played.
+    """
+    return bool(match.get("round")) or match.get("category") == INTERNATIONAL
+
+
 def parse_tournament_header(segment: str) -> dict | None:
     """One ZA header, or None for an event that is not main-tour singles."""
     raw = _field(segment, "ZA")
@@ -185,7 +202,15 @@ def parse_tournament_header(segment: str) -> dict | None:
     else:
         return None
 
-    if any(name in raw for name in GRAND_SLAM_NAMES):
+    # A team event is decided first, not last. It was the fifth test, behind
+    # one for "finals" -- so "Davis Cup - Finals", the eight-nation week in
+    # November, was priced as the ATP Finals: a tour event worth several times
+    # what a tie is. Nothing else here can be confused for a team event, so
+    # asking first costs nothing and settles it.
+    team_event = bool(TEAM_EVENT_PATTERN.search(raw))
+    if team_event:
+        category = INTERNATIONAL
+    elif any(name in raw for name in GRAND_SLAM_NAMES):
         category = GRAND_SLAM
     elif "masters" in lower or "1000" in lower:
         category = MASTERS_1000
@@ -193,8 +218,6 @@ def parse_tournament_header(segment: str) -> dict | None:
         category = TOUR_500
     elif "finals" in lower:
         category = TOUR_FINALS
-    elif re.search(r"davis cup|billie jean king|bjk cup|united cup", lower):
-        category = INTERNATIONAL
     else:
         category = TOUR_250
 
@@ -213,8 +236,22 @@ def parse_tournament_header(segment: str) -> dict | None:
         # The daily feed only sometimes ends its header with a round. When it
         # does not, the round comes from the tournament page -- see
         # ``fetch_round_map``.
-        "round": ROUND_MAP.get(suffix, ""),
-        "is_qualifying": "qualification" in lower,
+        #
+        # A team event has none. Its ties are not positions in a draw and it
+        # is not paid as though they were: every win is worth the same flat
+        # figure, and the stage the tie belongs to is part of the competition's
+        # own name. Reading one off the header's tail turned "Davis Cup -
+        # World Group - Qualification" into a first qualifying round.
+        "round": "" if team_event else ROUND_MAP.get(suffix, ""),
+        # And it is not qualifying, whatever its tail says. The World Group
+        # Qualifiers are a stage of the Davis Cup, played by national sides
+        # over a weekend in September; "qualification" here is not the draw a
+        # player has to come through to reach a main draw, which is the only
+        # thing this flag exists to drop. Reading it as one dropped the tie
+        # whole -- from the fixtures a manager reads and from the results that
+        # pay him -- while the benchmark's history counted the team events
+        # every player in it had ever played.
+        "is_qualifying": (not team_event) and "qualification" in lower,
         "slug": _field(segment, "ZL") or "",
     }
 
@@ -403,10 +440,8 @@ def load_matches(
     raw = fetch_window(days)
     rows = [m for m in iter_matches(raw) if not m["is_qualifying"]]
     rows = apply_rounds(rows)
-    # A match with no round cannot be priced -- there is no bracket position to
-    # pay for -- so it is dropped here rather than scored as nothing.
-    unrounded = [m for m in rows if not m["round"]]
-    rows = [m for m in rows if m["round"]]
+    unrounded = [m for m in rows if not has_a_price(m)]
+    rows = [m for m in rows if has_a_price(m)]
     frame = pd.DataFrame(rows)
     if verbose:
         print(f"flashscore: {len(rows)} completed main-draw matches in window", flush=True)
@@ -603,7 +638,7 @@ def probe(days: range | None = None) -> dict:
     from whul.sources import tennis_calendar
 
     frame = pd.DataFrame(
-        [m for m in matches if not m["is_qualifying"] and m["round"]]
+        [m for m in matches if not m["is_qualifying"] and has_a_price(m)]
     )
     resolved = tennis_calendar.resolve(frame)
     gaps = tennis_calendar.unresolved(frame)
