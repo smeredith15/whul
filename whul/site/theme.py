@@ -327,6 +327,23 @@ table.feeds .feed-never-pulled .state {
 }
 table.results tr[hidden] { display: none; }
 
+/* What the auction bought. A money column and a points column beside each
+   other invite a reader to divide one by the other, so the division is done
+   here and the two colours are the only tint: green where a slot has beaten
+   what its category charged for it, red where it has not. The sign is on the
+   number as well as in the colour -- a reader who cannot tell the two apart
+   still reads "+4.1". */
+table.costs { font-variant-numeric: tabular-nums; }
+table.costs .mgr, table.costs .owner { font-weight: 600; }
+table.costs .owner { color: var(--text-secondary); font-weight: 500; }
+table.costs .over { color: var(--ok); }
+table.costs .under { color: var(--alert); }
+table.costs .flat { color: var(--muted); }
+h3.buys {
+  margin: 18px 0 6px; font-size: 13px; font-weight: 600;
+  letter-spacing: .02em; color: var(--text-secondary);
+}
+
 /* A team's next game, between its name and its score. Deliberately quiet:
    it is context for the number beside it, not a number of its own, so it
    wears muted ink and never a series colour. The opponent truncates rather
