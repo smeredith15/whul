@@ -4424,3 +4424,49 @@ def test_the_cost_figure_is_closed_and_last(site):
     assert costs.startswith('id="costs" data-figure="costs">'), "not open"
     assert 'href="#costs"' in page, "and it is in the index at the top"
     assert page.index('id="everyone"') < page.index('id="costs"')
+
+
+# --- where two rosters met ----------------------------------------------------
+
+def test_the_meetings_figure_is_closed_and_in_the_index(site):
+    """A record, not part of the standings: it opens closed and sits with the
+    other asides rather than above the tables people came for."""
+    out, _ = site
+    page = (out / "results.html").read_text()
+
+    assert 'id="head-to-head" data-figure="head-to-head">' in page, "not open"
+    assert 'href="#head-to-head"' in page
+    assert page.index('id="everyone"') < page.index('id="head-to-head"')
+
+
+def test_a_meeting_puts_the_winner_on_the_left():
+    """The columns say "won by" and "lost by", and a table whose headings are
+    right for some rows and wrong for others is worse than one with none."""
+    import pandas as pd
+
+    found = pd.DataFrame([{
+        "date": "2026-09-10", "competition": "Champions League",
+        "a_id": "a1", "a_name": "RB Leipzig", "a_manager": "LS",
+        "a_league": "Bundesliga", "a_category": "Club Soccer Other",
+        "b_id": "b1", "b_name": "Como", "b_manager": "JM",
+        "b_league": "Serie A", "b_category": "Club Soccer Top 3",
+        "a_score": 1.0, "b_score": 4.0, "won": "b", "detail": "",
+    }])
+    html = site_build._head_to_head_table(found, {}, ["LS", "JM"])
+
+    # Como won, so Como is the first cell and the one marked.
+    assert html.index("Como") < html.index("RB Leipzig")
+    marked = html[html.index('class="beat"'):]
+    assert marked.index("Como") < marked.index("RB Leipzig")
+    # And the attribute keeps the ledger's answer, which the script tallies on.
+    assert 'data-won="b"' in html
+    assert 'data-one="LS"' in html and 'data-two="JM"' in html
+
+
+def test_a_season_with_no_meetings_says_so(tmp_path):
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "empty.sqlite3"))
+    said = site_build._head_to_head(store, "2026-27", {}, [])
+
+    assert "No two managers" in said

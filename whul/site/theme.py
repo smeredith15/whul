@@ -339,6 +339,16 @@ table.costs .owner { color: var(--text-secondary); font-weight: 500; }
 table.costs .over { color: var(--ok); }
 table.costs .under { color: var(--alert); }
 table.costs .flat { color: var(--muted); }
+/* Where two rosters met. The winner's cell carries the weight -- one side of
+   a fixture is the answer and the other is context -- and the score sits
+   between them so a reader's eye lands on it without a header to find. */
+table.h2h td.beat .nm, table.h2h td.beat button { font-weight: 600; }
+table.h2h td:not(.beat) .who { opacity: .72; }
+table.h2h .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+table.h2h .rowmeta { display: block; color: var(--muted); font-size: 11.5px; }
+table.h2h .h2hscore { font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.h2hrecords [data-record] { font-weight: 600; }
+
 h3.buys {
   margin: 18px 0 6px; font-size: 13px; font-weight: 600;
   letter-spacing: .02em; color: var(--text-secondary);

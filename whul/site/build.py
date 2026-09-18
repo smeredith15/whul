@@ -3497,6 +3497,136 @@ def _cost_buys(priced, profiles: dict[str, dict], managers) -> str:
             + block("Have not, yet", worst, "under"))
 
 
+def _head_to_head(store, season: str, profiles: dict[str, dict],
+                  managers: list[str]) -> str:
+    """Every fixture where two managers held both sides.
+
+    The one place this league has fixtures. Nothing here is scored -- a
+    meeting pays nobody -- and that is deliberate: a Premier League club faces
+    a rostered opponent in about half its games and a Serie A club in a fifth,
+    so points would reward the draft's league mix rather than either manager.
+    As a record it costs nothing and it is the part people argue about.
+
+    Filtered the same way the results table is, and independently of it: the
+    two answer different questions and a chip that emptied both at once would
+    be a surprise. A row matches on *either* side's league, because a meeting
+    can cross two -- Como play in Serie A, RB Leipzig in the Bundesliga, and
+    their Champions League tie belongs to anyone looking for either.
+    """
+    from whul import headtohead
+
+    return _head_to_head_table(
+        headtohead.meetings(store, season), profiles, managers)
+
+
+def _head_to_head_table(found, profiles: dict[str, dict],
+                        managers: list[str]) -> str:
+    """The meetings, as a filterable table. Split from the reading so the
+    rendering can be checked against a frame written by hand."""
+    if found is None or found.empty:
+        return ("<p class='sub'>No two managers have held both sides of the "
+                "same fixture yet.</p>")
+
+    leagues: set[str] = set()
+    groups: set[str] = set()
+    rows = []
+    for row in found.itertuples():
+        # The winner first, whichever end of the fixture the ledger wrote the
+        # row from. The columns say "won by" and "lost by", and a table whose
+        # headings are right for some rows and wrong for others is worse than
+        # one with no headings at all. A draw keeps the ledger's order and
+        # neither side is marked.
+        pair = [(row.a_id, row.a_name, row.a_manager, row.a_league),
+                (row.b_id, row.b_name, row.b_manager, row.b_league)]
+        if str(row.won) == "b":
+            pair.reverse()
+        sides = []
+        for asset_id, name, manager, league in pair:
+            leagues.add(str(league))
+            groups.add(umbrella_for(str(league)))
+            slot = theme.series_index(managers, str(manager)) + 1
+            sides.append(
+                f'<span class="who"><i class="swatch" '
+                f'style="background: var(--series-{slot})"></i>'
+                f'<button class="assetlink" data-asset="{escape(str(asset_id))}">'
+                f'{escape(str(name))}</button></span>'
+                f'<span class="rowmeta">{escape(manager_name(str(manager)))}</span>'
+            )
+        # The attribute keeps the ledger's own answer -- "a", "b" or "draw" --
+        # because the script tallies records from it against `data-one` and
+        # `data-two`, which stay in the ledger's order. Only the cells are
+        # reordered.
+        won = str(row.won)
+        settled = won in ("a", "b")
+        line = _h2h_line(row)
+        every = [str(row.a_league), str(row.b_league)]
+        every += [umbrella_for(lg) for lg in every]
+        rows.append(
+            f'<tr data-leagues="{escape("|".join(sorted(set(every))))}" '
+            f'data-one="{escape(str(row.a_manager))}" '
+            f'data-two="{escape(str(row.b_manager))}" '
+            f'data-won="{escape(won)}">'
+            f'<td class="when">{escape(str(row.date))}</td>'
+            f'<td class="{"beat" if settled else ""}">{sides[0]}</td>'
+            f'<td class="num h2hscore">{escape(line)}</td>'
+            f'<td>{sides[1]}</td>'
+            f'<td class="why">{escape(str(row.competition))}</td></tr>'
+        )
+
+    def chips(name: str, values: set[str], umbrellas: set[str]) -> str:
+        buttons = "".join(
+            f'<button class="chip{" umbrella" if v in umbrellas else ""}" '
+            f'data-filter="{name}" data-value="{escape(v)}" '
+            f'aria-pressed="false">{escape(v)}</button>'
+            for v in sorted(values | umbrellas) if v
+        )
+        return (f'<div class="chips" role="group" '
+                f'aria-label="Filter by {name}">{buttons}</div>')
+
+    # The pairings, above the fixtures and recomputed as the chips are
+    # clicked: unfiltered it is the season, filtered to one league it says who
+    # wins that league's meetings, which is the question the chips exist for.
+    pairs = "".join(
+        f'<tr data-pair="{escape(one)}|{escape(two)}" hidden>'
+        f'<td><span class="who"><i class="swatch" style="background: '
+        f'var(--series-{theme.series_index(managers, one) + 1})"></i>'
+        f'{escape(manager_name(one))}</span></td>'
+        f'<td class="num" data-record>0-0</td>'
+        f'<td><span class="who"><i class="swatch" style="background: '
+        f'var(--series-{theme.series_index(managers, two) + 1})"></i>'
+        f'{escape(manager_name(two))}</span></td></tr>'
+        for index, one in enumerate(managers) for two in managers[index + 1:]
+    )
+    return (
+        '<table class="costs h2hrecords" id="h2hrecords"><thead><tr>'
+        '<th>Manager</th><th class="num">Record</th><th>Manager</th>'
+        '</tr></thead>'
+        f'<tbody>{pairs}</tbody></table>'
+        f'{chips("h2hleague", leagues, groups - {""})}'
+        '<p class="sub filtercount" data-h2hcount>Showing every meeting.</p>'
+        '<table class="costs h2h" id="h2htable"><thead><tr>'
+        '<th>Date</th><th>Won by</th><th class="num">Score</th><th>Lost by</th>'
+        '<th>Competition</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table>'
+    )
+
+
+def _h2h_line(row) -> str:
+    """The score, whichever kind the sport keeps.
+
+    A game has two numbers and a tennis match has its sets; both are written
+    winner first, because the columns either side of this one are.
+    """
+    detail = str(getattr(row, "detail", "") or "")
+    if detail:
+        return detail
+    one, two = _stat_number(row._asdict(), "a_score"), _stat_number(row._asdict(), "b_score")
+    if one is None or two is None:
+        return "—"
+    high, low = (one, two) if one >= two else (two, one)
+    return f"{high:,.0f}–{low:,.0f}"
+
+
 def _figure(anchor: str, title: str, blurb: str, body: str, open_: bool = True) -> str:
     """One collapsible figure, addressable by anchor.
 
@@ -4425,6 +4555,18 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         _feed_table(_feed_rows(store, season, latest), latest),
         open_=False,
     )
+    meetings_figure = _figure(
+        "head-to-head", "Where two rosters met",
+        "The only fixtures this league has. Every match where two managers "
+        "held both sides, winner on the left. Nothing here is scored -- a "
+        "meeting pays nobody, and it could not fairly: a Premier League club "
+        "faces a rostered opponent in about half its games and a Serie A club "
+        "in a fifth, so points would reward the draft's league mix rather "
+        "than the manager. Filter by league or category; a tie between two "
+        "leagues answers to both, and the records above re-count as you go.",
+        _head_to_head(store, season, profiles, managers),
+        open_=False,
+    )
     priced = _priced_slots(store, season, bars)
     costs_figure = _figure(
         "costs", "What it cost",
@@ -4445,9 +4587,10 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
                        ("slots", "Every counting slot"),
                        ("everyone", "Every scored asset"),
                        ("feeds", "Where the numbers came from"),
+                       ("head-to-head", "Where two rosters met"),
                        ("costs", "What it cost")])
         + progression_figure + slots_figure + table_figure + feeds_figure
-        + costs_figure
+        + meetings_figure + costs_figure
         + _profile_payload(profiles) + _day_payload(breakdown)
     )
     (out / "results.html").write_text(
