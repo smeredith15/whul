@@ -550,6 +550,37 @@ def _settled_division_titles(summary: pd.DataFrame,
     return (won * PTS_DIV_CHAMP).where(done, 0.0)
 
 
+def contract_weight(seasons, opened: int | None = None) -> pd.Series:
+    """What each stretch of a *live* contract year is worth, by its season.
+
+    The same two weights the benchmark gives the two halves of a historical
+    one: the remainder of year N discounted for being partly known at draft
+    time, the pre-break stretch of year N+1 inflated so the pair reconcile to
+    a full season.
+
+    These were being left off the live path entirely, and the reason is worth
+    recording because it is easy to make again. In the benchmark the share and
+    the multiplier are written as one product::
+
+        reg_wins * SHARE_POST_ASB * BASE_REG_WIN * MULT_YEAR_N
+
+    and ``_window_points`` correctly reasoned that the *share* must not be
+    applied to a window the calendar has already cut -- that would shorten it
+    twice. It then dropped the multiplier with it, because the two were glued
+    together in the same expression. They are different things: a share carves
+    a season into stretches, a multiplier says what a stretch is worth. Only
+    the first had already been done by the start date.
+
+    The effect was a live figure weighting September 2026 and June 2027 alike,
+    measured against a bar built from stretches weighted 0.75 and 1.18.
+    """
+    from whul.config.league import SEASON
+
+    opened = SEASON.start.year if opened is None else int(opened)
+    years = pd.to_numeric(seasons, errors="coerce")
+    return years.map(lambda y: MULT_YEAR_N if y <= opened else MULT_YEAR_N1)
+
+
 def _window_points(summary: pd.DataFrame,
                    schedule: pd.DataFrame | None = None) -> pd.DataFrame:
     """Points for the games in front of us, as components a prorater can scale.
@@ -573,7 +604,11 @@ def _window_points(summary: pd.DataFrame,
     thought and was wrong: the benchmark pool *does* pay five points a title
     (see ``year_n_points``), so a club measured against that scale and never
     able to earn one was scored against a bar it could not reach.
+
+    What the shares must not do, ``contract_weight`` still must: see there for
+    why the multipliers went missing along with them.
     """
+    weight = contract_weight(summary["season"])
     out = pd.DataFrame({
         "season": summary["season"],
         "team": summary["team"],
@@ -598,17 +633,25 @@ def _window_points(summary: pd.DataFrame,
         "series_ws": summary["series_ws"],
         "is_division_champ": summary.get(
             "is_division_champ", pd.Series(0, index=summary.index)),
-        "pts_reg_wins": summary["reg_wins"] * BASE_REG_WIN,
-        "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN,
-        "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT,
-        "pts_run_diff": summary["run_diff"] * PTS_RUN_DIFF,
+        # Each at the weight its own stretch of the contract year carries. The
+        # share is not applied -- the start date has already cut the window to
+        # the stretch, and multiplying by the share as well would cut it twice.
+        "pts_reg_wins": summary["reg_wins"] * BASE_REG_WIN * weight,
+        "pts_big_wins": summary["reg_big_wins"] * PTS_BIG_WIN * weight,
+        "pts_shutouts": summary["shutouts"] * PTS_SHUTOUT * weight,
+        "pts_run_diff": summary["run_diff"] * PTS_RUN_DIFF * weight,
         # Nobody has won a division while the games are still being played --
         # an earlier rule paid four clubs for titles in the first three weeks
         # of a league year. The title lands when the season it belongs to has
         # been played out, and not before.
-        "pts_div_champ": _settled_division_titles(summary, schedule),
+        "pts_div_champ": _settled_division_titles(summary, schedule) * weight,
+        # Game wins take the year's weight and the series do not, which is what
+        # the benchmark does with them -- `_series_points` sits outside the
+        # `MULT_YEAR_N` product in `year_n_points`. Matched rather than tidied:
+        # the benchmark is frozen and the live figure is measured against it.
         "pts_playoff": (
-            summary["playoff_game_wins"] * BASE_PLAYOFF_WIN + _series_points(summary)
+            summary["playoff_game_wins"] * BASE_PLAYOFF_WIN * weight
+            + _series_points(summary)
         ),
     })
     out["total_points"] = out[[c for c in out.columns if c.startswith("pts_")]].sum(axis=1)
@@ -616,6 +659,135 @@ def _window_points(summary: pd.DataFrame,
     return out.sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True)
+
+
+#: The lift a stored row was written under before the contract weights were
+#: applied to the live path. Rows carrying it are on the old rule; rows
+#: carrying the current one are already correct and must not be touched twice.
+SUPERSEDED_LIFT = 162 / 133
+
+#: What a row already on the current lift reports. A caller restating a season
+#: has to tell that apart from a row it could not rebuild: the first is left
+#: alone and the second refuses the run, so the two must not be one string
+#: compared by eye.
+ALREADY_CURRENT = "already carries the current lift"
+
+
+def reweight_stored(figures: dict, lift: float,
+                    opened: int | None = None) -> tuple[dict, str]:
+    """A stored MLB row, rebuilt with the weights its benchmark was built with.
+
+    For the days already in the database when the live path started applying
+    ``contract_weight``. Nothing is fetched: every input the scorer used is on
+    the row beside its output, so the figures can be rebuilt from them exactly
+    as a re-ingest would -- and a feed that reports a season to date could not
+    be asked about those days anyway.
+
+    Returns ``(figures, problem)``. The problem is the point of it: each
+    component is first rebuilt *under the old rule* and checked against what is
+    stored, so a row whose arithmetic does not reproduce is refused rather than
+    rewritten on a guess. A row that cannot be rebuilt is a row this was never
+    meant to touch.
+    """
+    was = float(figures.get("proration_factor") or 0)
+    if abs(was - lift) < 1e-9:
+        return figures, ALREADY_CURRENT
+    if abs(was - SUPERSEDED_LIFT) > 1e-6:
+        return figures, (f"carries a lift of {was:.6f}, which is neither the "
+                         f"superseded {SUPERSEDED_LIFT:.6f} nor the current "
+                         f"{lift:.6f}")
+
+    weight = float(contract_weight(pd.Series([figures.get("season")]), opened).iloc[0])
+    out = dict(figures)
+    role = str(figures.get("role") or "").strip()
+
+    if role:
+        # A batter's or pitcher's whole total is counting production, so the
+        # whole of it carries the weight. The counts are unchanged and the
+        # points are rebuilt around them.
+        moved = _reweighted(figures.get("role_points"), was, weight, lift)
+        if moved is None:
+            return figures, "has no role_points to rebuild"
+        lines = figures.get("season_lines")
+        spans = {line.get("season") for line in lines or []
+                 if isinstance(line, dict)} - {None, figures.get("season")}
+        if spans:
+            # One total at one weight is only right while the row is one
+            # season. A row holding 2026 and 2027 lines holds two weights, and
+            # which part of the total belongs to which is not on the row.
+            return figures, (f"holds {figures.get('season')} and "
+                             f"{', '.join(str(s) for s in sorted(spans))} "
+                             f"lines, which carry different weights")
+        out["role_points"] = out["total_points"] = moved
+        if isinstance(lines, list):
+            out["season_lines"] = [
+                {**line,
+                 **{c: _reweighted(line.get(c), was, weight, lift)
+                    for c in ("role_points", "total_points")
+                    if _reweighted(line.get(c), was, weight, lift) is not None}}
+                for line in lines if isinstance(line, dict)
+            ]
+    else:
+        rebuilt, problem = _reweighted_club(figures, was, weight, lift)
+        if problem:
+            return figures, problem
+        out.update(rebuilt)
+        out["total_points"] = round(
+            sum(v for k, v in out.items()
+                if k.startswith("pts_") and isinstance(v, (int, float))), 10)
+
+    out["proration_factor"] = lift
+    return out, ""
+
+
+def _reweighted(value, was: float, weight: float, lift: float):
+    """One prorated figure, off the old lift and onto the weight and the new."""
+    if not isinstance(value, (int, float)) or value != value:
+        return None
+    return float(value) / was * weight * lift
+
+
+#: What a club's counting components are made of, so each can be rebuilt from
+#: the count beside it rather than scaled by a ratio and hoped over.
+CLUB_COMPONENTS: tuple[tuple[str, str, str], ...] = (
+    ("pts_reg_wins", "reg_wins", "BASE_REG_WIN"),
+    ("pts_big_wins", "reg_big_wins", "PTS_BIG_WIN"),
+    ("pts_shutouts", "shutouts", "PTS_SHUTOUT"),
+    ("pts_run_diff", "run_diff", "PTS_RUN_DIFF"),
+)
+
+
+def _reweighted_club(figures: dict, was: float, weight: float,
+                     lift: float) -> tuple[dict, str]:
+    """A club's components, each rebuilt from the count that produced it."""
+    units = {"BASE_REG_WIN": BASE_REG_WIN, "PTS_BIG_WIN": PTS_BIG_WIN,
+             "PTS_SHUTOUT": PTS_SHUTOUT, "PTS_RUN_DIFF": PTS_RUN_DIFF}
+    out: dict = {}
+    for points, count, unit in CLUB_COMPONENTS:
+        got, stored = figures.get(count), figures.get(points)
+        if not isinstance(got, (int, float)) or not isinstance(stored, (int, float)):
+            return {}, f"has no {count} to rebuild {points} from"
+        # The old figure, from the old rule, against what is on the row. If
+        # these disagree the row was not written by the rule this assumes.
+        if abs(float(got) * units[unit] * was - float(stored)) > 1e-6:
+            return {}, (f"{points} is {stored:,.4f} where {count} x {unit} x "
+                        f"{was:.4f} is {float(got) * units[unit] * was:,.4f}")
+        out[points] = float(got) * units[unit] * weight * lift
+
+    # Neither of these is prorated -- they happen once however long the window
+    # is -- so each takes the weight alone.
+    title = figures.get("pts_div_champ")
+    if isinstance(title, (int, float)):
+        out["pts_div_champ"] = float(title) * weight
+
+    wins, paid = figures.get("playoff_game_wins"), figures.get("pts_playoff")
+    if isinstance(wins, (int, float)) and isinstance(paid, (int, float)):
+        # The series are what is left once the game wins are taken out, and
+        # they carry no weight at all -- `year_n_points` leaves them outside
+        # its `MULT_YEAR_N` product, so the live figure does too.
+        series = float(paid) - float(wins) * BASE_PLAYOFF_WIN
+        out["pts_playoff"] = float(wins) * BASE_PLAYOFF_WIN * weight + series
+    return out, ""
 
 
 #: Window components that grow with games played, and so scale to a full

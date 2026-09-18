@@ -347,21 +347,65 @@ def test_dropping_advanced_terms_hurts_defenders_most():
     assert share(slugger) < 0.02
 
 
-def test_a_live_window_is_scored_at_face_value():
-    """The historical path splits a whole season into post- and pre-break
-    shares. A live pull is not a whole season to split -- the start date has
-    already cut it to the league year's window -- so multiplying by
-    SHARE_POST_ASB on top of that shortens it twice: once by the calendar, once
-    by arithmetic that no longer describes it."""
-    from whul.scoring.mlb import BASE_REG_WIN, score_teams
+def test_a_live_window_takes_the_weight_but_not_the_share():
+    """The two are different things and were glued into one expression.
+
+    A *share* carves a season into its post- and pre-break stretches, and the
+    start date has already done that to a live window -- applying it again
+    shortens the window twice, once by the calendar and once by arithmetic that
+    no longer describes it. A *multiplier* says what a stretch is worth, and
+    nothing else does that job: dropping it weighted September 2026 and June
+    2027 alike, against a bar built from stretches weighted 0.75 and 1.18."""
+    from whul.scoring.mlb import (
+        BASE_REG_WIN, MULT_YEAR_N, SHARE_POST_ASB, score_teams,
+    )
 
     schedule = pd.DataFrame([game("NYY", "BOS", 5, 1, season=2026)] * 20)
     assert score_teams(schedule).empty, "a benchmark needs both halves"
 
     live = score_teams(schedule, partial=True).set_index("team")
     assert set(live.index) == {"NYY", "BOS"}
-    assert live.loc["NYY", "pts_reg_wins"] == pytest.approx(20 * BASE_REG_WIN)
-    assert live.loc["NYY", "total_points"] >= live.loc["NYY", "pts_reg_wins"]
+    won = live.loc["NYY", "pts_reg_wins"]
+    assert won == pytest.approx(20 * BASE_REG_WIN * MULT_YEAR_N)
+    assert won != pytest.approx(20 * BASE_REG_WIN), "the multiplier went missing"
+    assert won != pytest.approx(20 * BASE_REG_WIN * SHARE_POST_ASB * MULT_YEAR_N), \
+        "the share was applied to a window the calendar had already cut"
+    assert live.loc["NYY", "total_points"] >= won
+
+
+def test_the_second_year_of_the_contract_is_inflated_not_discounted():
+    """Year N is discounted for being partly known at draft time and year N+1
+    is inflated so the pair reconcile to a full season. A live window spans
+    both, and which one a row belongs to is its season."""
+    from whul.scoring.mlb import (
+        BASE_REG_WIN, MULT_YEAR_N, MULT_YEAR_N1, score_teams,
+    )
+
+    both = pd.DataFrame([game("NYY", "BOS", 5, 1, season=2026)] * 10
+                        + [game("NYY", "BOS", 5, 1, season=2027)] * 10)
+    live = score_teams(both, partial=True).set_index(["season", "team"])
+    assert live.loc[(2026, "NYY"), "pts_reg_wins"] == pytest.approx(
+        10 * BASE_REG_WIN * MULT_YEAR_N)
+    assert live.loc[(2027, "NYY"), "pts_reg_wins"] == pytest.approx(
+        10 * BASE_REG_WIN * MULT_YEAR_N1)
+
+
+def test_a_whole_contract_year_reconciles_to_a_full_season():
+    """The property the whole arrangement rests on: a live year weighted and
+    lifted lands where the benchmark's own contract year does, so a live figure
+    and the frozen bar are the same kind of number."""
+    from whul.scoring.bisection import MLB as RULE
+    from whul.scoring.proration import built_in_rule
+
+    tail = RULE.share_post * 43 / (RULE.share_post * 186)   # 15 Aug, not the break
+    weighted = tail * RULE.mult_n + RULE.share_pre * RULE.mult_n1
+    lift = built_in_rule("MLB", "2026-27").factor
+    assert weighted * lift == pytest.approx(1.0, abs=0.005), (
+        f"a weighted window of {weighted:.4f} lifted by {lift:.4f} lands on "
+        f"{weighted * lift:.4f} of a season, not one"
+    )
+    # And the games-only lift, which is what it used to be, does not.
+    assert weighted * (162 / 133) == pytest.approx(1.045, abs=0.005)
 
 
 def test_the_window_separates_what_grows_from_what_happens_once():
@@ -507,7 +551,10 @@ def test_the_live_window_pays_a_division_title_once_the_season_is_over():
     reach."""
     out = mlb.score_teams(pd.DataFrame(PLAYED_OUT), partial=True,
                           divisions=AL_EAST).set_index("team")
-    assert out.loc["NYY", "pts_div_champ"] == pytest.approx(mlb.PTS_DIV_CHAMP)
+    # At the weight its own stretch carries, which is what `year_n_points`
+    # pays it: a title inside year N is `PTS_DIV_CHAMP * MULT_YEAR_N`.
+    assert out.loc["NYY", "pts_div_champ"] == pytest.approx(
+        mlb.PTS_DIV_CHAMP * mlb.MULT_YEAR_N)
     assert out.loc["BOS", "pts_div_champ"] == 0.0
 
 
@@ -569,3 +616,144 @@ def test_the_window_carries_games_played_without_scoring_it():
 
     assert out.loc["NYY", "games_played"] == 2
     assert "games_played" not in WINDOW_COUNTING, "a game count is not points"
+
+
+#: The lift the corrected rule carries: 139 season-equivalents of 162.
+CURRENT_LIFT = 162 / 139
+
+
+def stored_club(**changes):
+    """A club row as the old rule wrote it: counts, and points at face value
+    times the superseded lift."""
+    was = mlb.SUPERSEDED_LIFT
+    row = {
+        "season": 2026, "team": "Milwaukee Brewers",
+        "reg_wins": 20.0, "reg_big_wins": 6.0, "shutouts": 2.0,
+        "run_diff": 68.0, "playoff_game_wins": 0.0,
+        "pts_reg_wins": 20.0 * mlb.BASE_REG_WIN * was,
+        "pts_big_wins": 6.0 * mlb.PTS_BIG_WIN * was,
+        "pts_shutouts": 2.0 * mlb.PTS_SHUTOUT * was,
+        "pts_run_diff": 68.0 * mlb.PTS_RUN_DIFF * was,
+        "pts_div_champ": 0.0, "pts_playoff": 0.0,
+        "proration_factor": was,
+    }
+    row["total_points"] = sum(v for k, v in row.items() if k.startswith("pts_"))
+    return {**row, **changes}
+
+
+def stored_batter(**changes):
+    was = mlb.SUPERSEDED_LIFT
+    row = {
+        "role": "Batter", "season": 2026, "player": "Aaron Judge",
+        "role_points": 100.0, "total_points": 100.0,
+        "proration_factor": was,
+        "season_lines": [{"season": 2026, "role_points": 100.0,
+                          "total_points": 100.0, "proration_factor": was}],
+    }
+    return {**row, **changes}
+
+
+def test_a_stored_year_n_row_takes_the_weight_it_was_priced_at():
+    """0.75 of a season's price, lifted for the month the league year is
+    missing, instead of face value lifted by the superseded 162/133."""
+    out, problem = mlb.reweight_stored(stored_batter(), CURRENT_LIFT)
+
+    assert problem == ""
+    expected = 100.0 / mlb.SUPERSEDED_LIFT * mlb.MULT_YEAR_N * CURRENT_LIFT
+    assert out["role_points"] == pytest.approx(expected)
+    assert out["total_points"] == pytest.approx(expected)
+    assert out["season_lines"][0]["role_points"] == pytest.approx(expected)
+    assert out["proration_factor"] == pytest.approx(CURRENT_LIFT)
+
+
+def test_a_stored_year_n1_row_takes_the_larger_multiplier():
+    """The same row a season later is worth 1.181 of the base, not 0.75: the
+    whole of year N+1's first half falls inside the league year."""
+    out, problem = mlb.reweight_stored(
+        stored_batter(season=2027,
+                      season_lines=[{"season": 2027, "role_points": 100.0,
+                                     "total_points": 100.0}]),
+        CURRENT_LIFT, opened=2026,
+    )
+
+    assert problem == ""
+    assert out["role_points"] == pytest.approx(
+        100.0 / mlb.SUPERSEDED_LIFT * mlb.MULT_YEAR_N1 * CURRENT_LIFT)
+
+
+def test_restating_a_restated_row_leaves_it_alone():
+    """Run twice is run once: the second pass sees the current lift and says
+    so rather than weighting an already weighted total again."""
+    once, _ = mlb.reweight_stored(stored_batter(), CURRENT_LIFT)
+    twice, problem = mlb.reweight_stored(once, CURRENT_LIFT)
+
+    assert problem == mlb.ALREADY_CURRENT
+    assert twice["role_points"] == once["role_points"]
+
+
+def test_a_row_on_neither_lift_is_refused():
+    """Some third factor means the row was not written by the rule this
+    assumes, and rebuilding it would be a guess."""
+    _, problem = mlb.reweight_stored(stored_batter(proration_factor=1.4),
+                                     CURRENT_LIFT)
+
+    assert "neither the superseded" in problem
+
+
+def test_a_row_holding_two_seasons_is_refused():
+    """Two seasons carry two weights, and which part of one total belongs to
+    which is not on the row."""
+    row = stored_batter()
+    row["season_lines"].append({"season": 2027, "role_points": 20.0})
+
+    _, problem = mlb.reweight_stored(row, CURRENT_LIFT)
+
+    assert "different weights" in problem
+
+
+def test_a_clubs_components_are_rebuilt_from_its_counts():
+    """Not scaled by a ratio: each figure is recomputed from the count beside
+    it, so the points and the counts cannot drift apart."""
+    out, problem = mlb.reweight_stored(stored_club(), CURRENT_LIFT)
+
+    assert problem == ""
+    assert out["pts_reg_wins"] == pytest.approx(
+        20.0 * mlb.BASE_REG_WIN * mlb.MULT_YEAR_N * CURRENT_LIFT)
+    assert out["total_points"] == pytest.approx(
+        sum(v for k, v in out.items() if k.startswith("pts_")))
+    assert out["reg_wins"] == 20.0, "a count is not touched"
+
+
+def test_a_club_whose_points_do_not_follow_its_counts_is_refused():
+    """The only check available that the row was written by the rule this
+    undoes. A row that fails it is one this was never meant to touch."""
+    _, problem = mlb.reweight_stored(stored_club(pts_reg_wins=999.0),
+                                     CURRENT_LIFT)
+
+    assert "pts_reg_wins" in problem and "reg_wins" in problem
+
+
+def test_a_title_takes_the_weight_but_not_the_lift():
+    """A division is won once however long the window is, so proration never
+    touched it -- but the contract multiplier prices it like everything
+    else."""
+    out, problem = mlb.reweight_stored(
+        stored_club(pts_div_champ=mlb.PTS_DIV_CHAMP), CURRENT_LIFT)
+
+    assert problem == ""
+    assert out["pts_div_champ"] == pytest.approx(
+        mlb.PTS_DIV_CHAMP * mlb.MULT_YEAR_N)
+
+
+def test_a_playoff_run_keeps_its_series_outside_the_weight():
+    """``year_n_points`` leaves the series prices outside its multiplier, so
+    the restatement leaves them there too: only the game wins are weighted."""
+    wins, series = 3.0, mlb.PTS_SERIES["wc"] + mlb.PTS_SERIES["lds"]
+    out, problem = mlb.reweight_stored(
+        stored_club(playoff_game_wins=wins,
+                    pts_playoff=wins * mlb.BASE_PLAYOFF_WIN + series),
+        CURRENT_LIFT)
+
+    assert problem == ""
+    assert out["pts_playoff"] == pytest.approx(
+        wins * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + series)

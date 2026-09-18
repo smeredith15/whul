@@ -200,6 +200,22 @@ def _mlb_players_live():
     def score(raw):
         scored = mlb.score_players(
             raw[raw["_phase"] == "bat"], raw[raw["_phase"] == "pit"])
+        if scored is None or scored.empty:
+            return scored
+        # The same two weights the clubs take, for the same reason: this is one
+        # contract year and its two stretches are not worth the same. A batter's
+        # whole total is counting production, so the whole of it carries the
+        # weight -- there is no one-off in it to hold back.
+        #
+        # The player benchmark is drawn from plain calendar seasons rather than
+        # bisected contract years, and takes the weighting just the same: the
+        # multipliers reconcile to one season by construction, so a weighted
+        # window lifted to a full one lands on either bar.
+        scored = scored.copy()
+        weight = mlb.contract_weight(scored["season"])
+        for column in ("role_points", "total_points"):
+            if column in scored.columns:
+                scored[column] = scored[column] * weight
         return _prorated(scored, "MLB")
 
     return load, score

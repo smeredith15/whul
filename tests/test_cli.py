@@ -710,3 +710,214 @@ def test_a_restatement_that_moved_the_cliff_instead_of_removing_it(tmp_path, cap
     })
     assert _refuse_a_restatement_that_left_a_cliff(
         store, "2026-27", date(2026, 9, 13)) == 0
+
+
+#: What a stored 2026 figure moves by once it carries the year-N multiplier
+#: instead of the superseded lift: 0.75 x (162/139) / (162/133).
+RESTATED = 0.75 * 133 / 139
+
+#: What one 2026 count is worth, from its own price: the year-N multiplier and
+#: the corrected lift, with no old figure in it.
+PRICED = 0.75 * 162 / 139
+
+
+def _mlb_stored(tmp_path, days=("2026-09-10", "2026-09-11"), **changes):
+    """A store holding one MLB club, one MLB batter and one NFL club.
+
+    Every day carries the same figures, because what this command does to a
+    day does not depend on what the day holds -- and the NFL club is there to
+    show that a restatement of MLB leaves it where it was.
+    """
+    import json
+
+    from whul.scoring import mlb
+    from whul.store import open_store
+
+    was = mlb.SUPERSEDED_LIFT
+    club = {
+        "season": 2026, "team": "Milwaukee Brewers", "league": "MLB",
+        "reg_wins": 20.0, "reg_big_wins": 6.0, "shutouts": 2.0,
+        "run_diff": 68.0, "playoff_game_wins": 0.0,
+        "pts_reg_wins": 20.0 * mlb.BASE_REG_WIN * was,
+        "pts_big_wins": 6.0 * mlb.PTS_BIG_WIN * was,
+        "pts_shutouts": 2.0 * mlb.PTS_SHUTOUT * was,
+        "pts_run_diff": 68.0 * mlb.PTS_RUN_DIFF * was,
+        "pts_div_champ": 0.0, "pts_playoff": 0.0, "proration_factor": was,
+    }
+    club["total_points"] = sum(v for k, v in club.items()
+                               if k.startswith("pts_"))
+    batter = {
+        "season": 2026, "player": "Aaron Judge", "role": "Batter",
+        "league": "MLB", "role_points": 100.0, "total_points": 100.0,
+        "proration_factor": was,
+    }
+    batter.update(changes.pop("batter", {}))
+    passer = {"season": 2026, "team": "Buffalo Bills", "league": "NFL",
+              "total_points": 40.0}
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    store.upsert("assets", [
+        {"asset_id": "team-mlb", "asset_type": "Team", "display_name": "MIL",
+         "league": "MLB", "norm_key": "MLB", "created_at": "2026-08-21"},
+        {"asset_id": "player-mlb", "asset_type": "Player",
+         "display_name": "Judge", "league": "MLB", "norm_key": "MLB_Batter",
+         "created_at": "2026-08-21"},
+        {"asset_id": "team-nfl", "asset_type": "Team", "display_name": "BUF",
+         "league": "NFL", "norm_key": "NFL", "created_at": "2026-08-21"},
+    ], ["asset_id"])
+    store.upsert("benchmark_versions", [
+        {"version": "v1", "season": "2026-27", "quantile": 0.99, "managers": 5,
+         "computed_at": "2026-09-01", "frozen_at": "2026-09-01", "notes": ""},
+    ], ["version"])
+    store.upsert("benchmarks", [
+        {"version": "v1", "asset_type": kind, "norm_key": key,
+         "benchmark": 100.0, "pool_size": 50, "seasons": "2025"}
+        for kind, key in (("Team", "MLB"), ("Player", "MLB_Batter"),
+                          ("Team", "NFL"))
+    ], ["version", "asset_type", "norm_key"])
+
+    rows = (("team-mlb", "mlb-teams", "MLB", club),
+            ("player-mlb", "mlb", "MLB", batter),
+            ("team-nfl", "nfl", "NFL", passer))
+    store.upsert("raw_stats", [
+        {"season": "2026-27", "as_of": day, "asset_id": asset_id,
+         "source": source, "phase": "regular", "league": league,
+         "stats": json.dumps(payload), "fetched_at": day}
+        for day in days for asset_id, source, league, payload in rows
+    ], ["asset_id", "season", "as_of", "source", "phase"])
+    store.upsert("daily_scores", [
+        {"season": "2026-27", "as_of": day, "asset_id": asset_id,
+         "scaled_score": float(payload["total_points"]),
+         "league_points": float(payload["total_points"]),
+         "benchmark_version": "v1", "computed_at": day}
+        for day in days for asset_id, _, _, payload in rows
+    ], ["asset_id", "season", "as_of"])
+    store.conn.commit()
+    return store
+
+
+def _reweight(tmp_path, **kw):
+    import argparse
+
+    from whul import cli
+
+    args = argparse.Namespace(db=str(tmp_path / "whul.sqlite3"),
+                              season="2026-27", dry_run=False)
+    for k, v in kw.items():
+        setattr(args, k, v)
+    return cli.cmd_reweight_mlb(args)
+
+
+def _figures(tmp_path, asset_id: str, day: str) -> dict:
+    import json
+
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    row = store.query(
+        "SELECT stats FROM raw_stats WHERE as_of = ? AND asset_id = ?",
+        (day, asset_id))
+    return json.loads(row["stats"].iloc[0])
+
+
+def _score(tmp_path, asset_id: str, day: str) -> float:
+    from whul.store import open_store
+
+    store = open_store(str(tmp_path / "whul.sqlite3"))
+    row = store.query(
+        "SELECT scaled_score FROM daily_scores WHERE as_of = ? AND "
+        "asset_id = ?", (day, asset_id))
+    return float(row["scaled_score"].iloc[0])
+
+
+def test_every_stored_day_moves_together_so_the_ledger_shows_no_cliff(tmp_path):
+    """The whole point of restating rather than letting the fix take effect
+    from tomorrow: both days move by the same factor, so differencing them
+    gives what it always gave."""
+    _mlb_stored(tmp_path)
+
+    assert _reweight(tmp_path) == 0
+
+    for day in ("2026-09-10", "2026-09-11"):
+        assert _figures(tmp_path, "player-mlb", day)["total_points"] == \
+            pytest.approx(100.0 * RESTATED)
+        assert _score(tmp_path, "player-mlb", day) == \
+            pytest.approx(100.0 * RESTATED, abs=0.01)
+    assert _score(tmp_path, "player-mlb", "2026-09-11") == \
+        _score(tmp_path, "player-mlb", "2026-09-10"), "nothing to difference"
+
+
+def test_a_clubs_counts_survive_the_restatement(tmp_path):
+    """Only the prices move. A win the club won is still a win it won, and a
+    count that fell would be the one thing the ledger cannot explain."""
+    _mlb_stored(tmp_path)
+
+    assert _reweight(tmp_path) == 0
+
+    now = _figures(tmp_path, "team-mlb", "2026-09-11")
+    assert now["reg_wins"] == 20.0
+    assert now["pts_reg_wins"] == pytest.approx(20.0 * 2.0 * PRICED)
+    assert now["total_points"] == pytest.approx(
+        sum(v for k, v in now.items() if k.startswith("pts_")))
+
+
+def test_another_league_is_left_exactly_where_it_was(tmp_path):
+    """It reads only MLB rows and writes only MLB scores, so an NFL club on
+    the same days is untouched -- figures and score alike."""
+    _mlb_stored(tmp_path)
+
+    assert _reweight(tmp_path) == 0
+
+    assert _figures(tmp_path, "team-nfl", "2026-09-11")["total_points"] == 40.0
+    assert _score(tmp_path, "team-nfl", "2026-09-11") == pytest.approx(40.0)
+
+
+def test_running_it_twice_is_running_it_once(tmp_path, capsys):
+    """A row already on the current lift is left alone, so a second run cannot
+    weight an already weighted total again."""
+    _mlb_stored(tmp_path)
+
+    assert _reweight(tmp_path) == 0
+    was = _figures(tmp_path, "player-mlb", "2026-09-11")
+
+    assert _reweight(tmp_path) == 0
+    assert "already carries" in capsys.readouterr().out
+    assert _figures(tmp_path, "player-mlb", "2026-09-11") == was
+
+
+def test_dry_run_writes_nothing(tmp_path, capsys):
+    _mlb_stored(tmp_path)
+
+    assert _reweight(tmp_path, dry_run=True) == 0
+
+    assert "nothing was written" in capsys.readouterr().out
+    assert _figures(tmp_path, "player-mlb", "2026-09-11")["total_points"] == 100.0
+    assert _score(tmp_path, "player-mlb", "2026-09-11") == pytest.approx(100.0)
+
+
+def test_one_row_it_cannot_explain_refuses_the_whole_run(tmp_path, capsys):
+    """Half the season on each rule is worse than all of it on the old one, so
+    a row written by some other rule stops everything."""
+    _mlb_stored(tmp_path, batter={"proration_factor": 1.4})
+
+    assert _reweight(tmp_path) == 1
+    assert "REFUSED" in capsys.readouterr().err
+    assert _figures(tmp_path, "team-mlb", "2026-09-11")["pts_reg_wins"] == \
+        pytest.approx(20.0 * 2.0 * (162 / 133)), "the club is untouched too"
+
+
+def test_a_day_that_does_not_rescore_to_what_is_stored_refuses_the_run(
+    tmp_path, capsys
+):
+    """The only evidence available that the rescoring reproduces what the
+    scorer does. It is checked before anything is written, so a database that
+    fails it is left as it was rather than rolled back."""
+    store = _mlb_stored(tmp_path)
+    store.conn.execute(
+        "UPDATE daily_scores SET scaled_score = 999.0 WHERE asset_id = "
+        "'player-mlb' AND as_of = '2026-09-11'")
+    store.conn.commit()
+
+    assert _reweight(tmp_path) == 1
+    assert "not reproducing what the scorer does" in capsys.readouterr().err
+    assert _figures(tmp_path, "player-mlb", "2026-09-10")["total_points"] == 100.0

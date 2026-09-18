@@ -3240,7 +3240,11 @@ def test_a_competition_nobody_played_gets_no_section():
 # --- baseball, at whichever of the two jobs he does -------------------------
 
 def _batter(**over):
-    row = {"league": "MLB", "role": "Batter", "h": 150, "ab": 480, "hr": 44,
+    # A calendar year, because the boxes are priced at what the benchmark says
+    # that year of a contract is worth -- 0.75 for the season a league year
+    # opens inside -- and a row without one could be either.
+    row = {"league": "MLB", "role": "Batter", "season": 2026, "h": 150,
+           "ab": 480, "hr": 44,
            "doubles": 26, "triples": 6, "bb": 72, "hbp": 4, "sb": 18, "cs": 4,
            "offense": 38.2, "defense": -6.1, "proration_factor": 1.0}
     row.update(over)
@@ -3256,13 +3260,19 @@ def _pitcher_line(**over):
 
 
 def test_a_batters_boxes_add_up_to_what_the_scorer_gave_him():
-    from whul.scoring.mlb import BATTER_WEIGHTS, DEFENSE_FACTOR, OFFENSE_FACTOR
+    from whul.scoring.mlb import (
+        BATTER_WEIGHTS, DEFENSE_FACTOR, MULT_YEAR_N, OFFENSE_FACTOR,
+    )
 
     row = _batter()
     section = site_build._mlb_panel(row)["sections"][0]
     shown = sum(b["points"] or 0 for b in section["top"] + section["secondary"])
+    # At the scorer's own price for the year, which is what the score beneath
+    # the boxes is: counting production in the season a league year opens
+    # inside is worth 0.75 of the base.
     scored = (sum(row[c] * w for c, w in BATTER_WEIGHTS.items())
-              + row["offense"] * OFFENSE_FACTOR + row["defense"] * DEFENSE_FACTOR)
+              + row["offense"] * OFFENSE_FACTOR
+              + row["defense"] * DEFENSE_FACTOR) * MULT_YEAR_N
 
     # To a tenth per box: each is rounded for display before it is summed, and
     # ten of them can drift half a point off the figure printed underneath.
@@ -3272,7 +3282,7 @@ def test_a_batters_boxes_add_up_to_what_the_scorer_gave_him():
 def test_the_average_carries_the_points_of_what_is_behind_it():
     """The figure a hitter is known by is not scored and the five things behind
     it are, so it carries theirs and lists them down its side."""
-    from whul.scoring.mlb import BATTER_WEIGHTS
+    from whul.scoring.mlb import BATTER_WEIGHTS, MULT_YEAR_N
 
     box = site_build._mlb_panel(_batter())["sections"][0]["top"][0]
 
@@ -3280,9 +3290,9 @@ def test_the_average_carries_the_points_of_what_is_behind_it():
     assert box["value"] == ".312"
     assert box["aside"] == "150/480\n26 2B\n6 3B\n44 HR"
     assert box["points"] == round(
-        150 * BATTER_WEIGHTS["h"] + 480 * BATTER_WEIGHTS["ab"]
-        + 26 * BATTER_WEIGHTS["doubles"] + 6 * BATTER_WEIGHTS["triples"]
-        + 44 * BATTER_WEIGHTS["hr"], 1)
+        (150 * BATTER_WEIGHTS["h"] + 480 * BATTER_WEIGHTS["ab"]
+         + 26 * BATTER_WEIGHTS["doubles"] + 6 * BATTER_WEIGHTS["triples"]
+         + 44 * BATTER_WEIGHTS["hr"]) * MULT_YEAR_N, 1)
 
 
 def test_home_runs_are_shown_twice_and_counted_once():
@@ -3297,7 +3307,7 @@ def test_home_runs_are_shown_twice_and_counted_once():
 
 
 def test_a_steal_is_shown_against_what_it_cost():
-    from whul.scoring.mlb import BATTER_WEIGHTS
+    from whul.scoring.mlb import BATTER_WEIGHTS, MULT_YEAR_N
 
     rest = site_build._mlb_panel(_batter())["sections"][0]["secondary"]
     steals = next(b for b in rest if b["label"] == "SB")
@@ -3305,7 +3315,7 @@ def test_a_steal_is_shown_against_what_it_cost():
     assert steals["value"] == "18"
     assert steals["aside"] == "4 CS"
     assert steals["points"] == round(
-        18 * BATTER_WEIGHTS["sb"] + 4 * BATTER_WEIGHTS["cs"], 1)
+        (18 * BATTER_WEIGHTS["sb"] + 4 * BATTER_WEIGHTS["cs"]) * MULT_YEAR_N, 1)
 
 
 def test_a_league_year_spanning_two_seasons_can_be_read_a_season_at_a_time():
@@ -3402,6 +3412,32 @@ def test_a_batter_with_no_october_gets_no_playoff_section():
     assert "posts" not in site_build._mlb_panel(_batter())
 
 
+def test_a_year_is_priced_at_what_the_benchmark_says_that_year_is_worth():
+    """Both tabs used to be priced alike, which was right only while the
+    scorer priced them alike too. The season a league year opens inside is
+    worth 0.75 of the base and the season it closes in 1.181, so the same
+    forty hits are worth more in the second tab than the first."""
+    from whul.scoring.mlb import BATTER_WEIGHTS, MULT_YEAR_N, MULT_YEAR_N1
+
+    line = {"h": 40, "ab": 130, "hr": 6, "doubles": 8, "triples": 1,
+            "bb": 20, "hbp": 1, "sb": 5, "cs": 1, "offense": 2.0,
+            "defense": -1.0}
+    panel = site_build._mlb_panel(_batter(season_lines=[
+        {"season": 2026, **line}, {"season": 2027, **line},
+    ]))
+    average = {y["year"]: y["sections"][0]["top"][0]["points"]
+               for y in panel["years"]}
+
+    behind = sum(line[c] * BATTER_WEIGHTS[c]
+                 for c in ("h", "ab", "doubles", "triples", "hr"))
+    assert average["2026"] == round(behind * MULT_YEAR_N, 1)
+    assert average["2027"] == round(behind * MULT_YEAR_N1, 1)
+    # And the season above the tabs is the two of them added, not the summed
+    # counts priced once at one of the two multipliers.
+    assert panel["sections"][0]["top"][0]["points"] == pytest.approx(
+        average["2026"] + average["2027"], abs=0.1)
+
+
 def test_each_year_carries_what_it_is_worth():
     """The toggle changes the score beneath it, so each year has to know its
     own. Summed from the boxes rather than scored a second time: the live
@@ -3451,16 +3487,18 @@ def test_the_counting_boxes_carry_the_proration_the_score_does():
 def test_whip_carries_the_points_of_what_it_is_made_of():
     """It is not scored itself, and every other box is. The hits and walks are
     printed small beside it so the rate and the scoring agree in public."""
-    from whul.scoring.mlb import PITCHER_WEIGHTS
+    from whul.scoring.mlb import MULT_YEAR_N, PITCHER_WEIGHTS
 
     panel = site_build._mlb_panel(
-        {"league": "MLB", "role": "Pitcher", "proration_factor": 1.0,
+        {"league": "MLB", "role": "Pitcher", "season": 2026,
+         "proration_factor": 1.0,
          **{k: v for k, v in _pitcher_line().items() if k != "role"}})
     whip = next(b for b in panel["sections"][0]["top"] if b["label"] == "WHIP")
 
     assert whip["value"] == "0.96"
     assert whip["points"] == round(
-        62 * PITCHER_WEIGHTS["h"] + 26 * PITCHER_WEIGHTS["bb"], 1)
+        (62 * PITCHER_WEIGHTS["h"] + 26 * PITCHER_WEIGHTS["bb"])
+        * MULT_YEAR_N, 1)
     assert whip["aside"] == "62 H\n26 BB"
 
 

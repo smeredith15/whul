@@ -63,6 +63,17 @@ on:
         description: "Rebuild every day from the season start"
         type: boolean
         default: false
+      reweight_mlb:
+        description: >-
+          Put the stored MLB days on the contract-year weights. A one-off: the
+          scorer used to price a live window at face value and lift it for the
+          late start, where the benchmark prices the two calendar years inside
+          a league year at 0.75 and 1.181. Tick this once, after the scorer
+          was fixed, and every stored day moves with it so the ledger shows no
+          cliff. A row already on the current weights is left alone, so
+          ticking it again does nothing. Implies backfill.
+        type: boolean
+        default: false
       rescore:
         description: >-
           Restate every stored day against the frozen benchmark, before the
@@ -175,6 +186,15 @@ jobs:
         continue-on-error: true
         run: python -m whul.cli fixtures --season "$SEASON" --fetch
 
+      - name: Put the stored MLB days on the contract-year weights
+        if: ${{ inputs.reweight_mlb }}
+        # No feed is touched, and none could be: the MLB player feed reports a
+        # season to date and cannot be asked what it said three weeks ago. The
+        # inputs the scorer used are stored beside its outputs, so each row is
+        # rebuilt from them -- and refused, with the whole run, if the stored
+        # points cannot be reproduced from the counts beside them first.
+        run: python -m whul.cli reweight-mlb --season "$SEASON"
+
       - name: Restate the stored days against the frozen scale
         if: ${{ inputs.rescore }}
         # No feed is touched: the raw figures are already stored and only the
@@ -192,6 +212,7 @@ jobs:
         run: |
           if [ "${{ inputs.backfill }}" = "true" ] \
              || [ "${{ inputs.rescore }}" = "true" ] \
+             || [ "${{ inputs.reweight_mlb }}" = "true" ] \
              || [ -n "${{ inputs.since }}" ]; then
             python -m whul.cli rollup --season "$SEASON" --backfill
           else
