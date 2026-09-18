@@ -66,6 +66,10 @@ def tennis_finishes(events: pd.DataFrame) -> pd.DataFrame:
         if column not in work.columns:
             work[column] = ""
     work["_rank"] = work["round"].map(_round_rank)
+    # Not "_won": `itertuples` renames a leading underscore to a position, and
+    # the label reader below takes its fields by name.
+    work["wins"] = (work["result"].astype(str).str.upper() == "W").astype(int) \
+        if "result" in work.columns else 0
 
     # Winning the final and losing it are both matches in the round "F", so
     # the furthest round alone cannot tell a champion from a runner-up: Gauff
@@ -86,18 +90,39 @@ def tennis_finishes(events: pd.DataFrame) -> pd.DataFrame:
         date=("date", "max"),
         _rank=("_rank", "max"),
         matches=("event_points", "size"),
+        wins=("wins", "sum"),
     )
     grouped["round"] = grouped["_rank"].map(
         lambda r: ROUND_ORDER[r] if 0 <= r < len(ROUND_ORDER) else ""
     )
-    grouped["label"] = [
-        " ".join(part for part in (
-            str(row.league or ""), str(row.tournament or ""),
-            _tier(row.category), str(row.round or ""),
-        ) if part).strip()
-        for row in grouped.itertuples()
-    ]
-    return grouped.drop(columns=["_rank"])
+    grouped["label"] = [_label_for(row) for row in grouped.itertuples()]
+    return grouped.drop(columns=["_rank", "wins"])
+
+
+#: Tiers with no draw at all. A Davis Cup rubber is a tie between two nations,
+#: not a position in a bracket: there is no round to report and "International"
+#: on a line says less than the tournament's own name already does. So their
+#: finishes read as a record -- "Davis Cup - World Group 0-1" -- which is the
+#: only form in which a tie a player lost says anything at all.
+#:
+#: Narrower than ``RECORD_TIERS`` on purpose. The Tour Finals is a record too,
+#: but it has a knockout past its group, and a bare record there would lose the
+#: final.
+NO_DRAW = {"International"}
+
+
+def _label_for(row) -> str:
+    """One tournament's line: how far he got, or how the ties went."""
+    tier = _tier(row.category)
+    if tier in NO_DRAW:
+        played = int(row.matches)
+        won = int(row.wins)
+        parts = (str(row.league or ""), str(row.tournament or ""),
+                 f"{won}-{played - won}")
+    else:
+        parts = (str(row.league or ""), str(row.tournament or ""), tier,
+                 str(row.round or ""))
+    return " ".join(part for part in parts if part).strip()
 
 
 #: How a finishing position reads: 1st, 2nd, 3rd, 4th.

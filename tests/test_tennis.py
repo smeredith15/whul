@@ -662,3 +662,49 @@ def test_a_clean_draw_says_nothing():
         for i, rnd in enumerate(("R128", "R64", "R32"), start=1)
     ]))
     assert scorer.take_collisions() == []
+
+
+def _tie(round_name="", winner="Jiri Lehecka", loser="Ben Shelton"):
+    return pd.DataFrame([{
+        "tournament": "Davis Cup - World Group", "category": INTERNATIONAL,
+        "round": round_name, "season": 2026, "winner": winner, "loser": loser,
+        "score": "6-4 6-4", "tour": "ATP", "draw_size": None,
+        "date": "2026-09-18",
+    }])
+
+
+def test_a_tie_is_scored_although_it_has_no_round():
+    """A Davis Cup rubber is a tie between two nations, not a position in a
+    bracket: the feed carries no round for it and there is none to carry. It
+    pays the same flat figure wherever in the tie it fell, so nothing is
+    guessed by scoring it -- and requiring a round dropped every tie in the
+    feed while the benchmark's history counted the ones its players played."""
+    out = score_matches(_tie())
+
+    assert len(out) == 1
+    assert out.iloc[0]["win_points"] == INTERNATIONAL_WIN_POINTS
+    # Straight sets still pays what straight sets pays: the flat rate is what
+    # a win is worth, not what the match is.
+    assert out.iloc[0]["match_points"] == INTERNATIONAL_WIN_POINTS * 1.25
+
+
+def test_a_tour_match_with_no_round_is_still_dropped():
+    """The rule it is an exception to. A round this cannot read at a tour event
+    is a bracket position nobody can trace, and guessing one pays points for a
+    match that may never have been played."""
+    unreadable = _tie().assign(category=TOUR_250, tournament="Metz",
+                               draw_size=32)
+
+    assert score_matches(unreadable).empty
+
+
+def test_a_tie_gives_the_beaten_player_a_row():
+    """He lost, so it pays nothing and no total moves. It is still the
+    difference between a profile reading "Davis Cup 0-1" and one reading as
+    though he never played."""
+    out = match_events(_tie(), losses=True)
+    beaten = out[out["player"] == "Ben Shelton"].iloc[0]
+
+    assert beaten["result"] == "L"
+    assert beaten["event_points"] == 0.0
+    assert beaten["category"] == INTERNATIONAL
