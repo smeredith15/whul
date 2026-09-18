@@ -1330,6 +1330,228 @@ def cmd_retract_titles(args: argparse.Namespace) -> int:
     return 0
 
 
+#: How closely a rescored day must reproduce what is already stored for it
+#: before this will write anything -- the tenth of a point ``rescore`` and
+#: ``retract-titles`` use.
+REPRODUCES_WITHIN = 0.05
+
+#: How many of the largest moves to print. Enough to recognise the shape of
+#: the restatement without printing three hundred rows.
+MOVES_SHOWN = 10
+
+
+def cmd_reweight_mlb(args: argparse.Namespace) -> int:
+    """Put stored MLB figures on the weights their benchmark was built with.
+
+    The benchmark prices a contract year as 0.42 of a season at 0.75 and 0.58
+    of one at 1.181: year N is worth less per game than year N+1 because only
+    its last two months fall inside the league year. The live scorer applied
+    neither multiplier. It wrote every 2026 figure at face value and then
+    lifted the lot by a proration factor, so a September win was priced above
+    what the frozen scale says a September win is worth. ``contract_weight``
+    fixed the scorer, which fixes tomorrow. The days already stored keep the
+    old arithmetic, and the ledger -- which differences consecutive days --
+    would read the correction as every MLB asset losing a quarter of its
+    season overnight.
+
+    Nothing is fetched. The MLB player feed reports a season to date and
+    cannot be asked what it said on the 4th of September, so a re-ingest could
+    not restate those days even in principle. It does not need to: every input
+    the scorer used is stored beside its output, so the corrected figure is
+    arithmetic on the row. ``mlb.reweight_stored`` does that arithmetic, and
+    rebuilds each component under the *old* rule first so that a row whose
+    stored points it cannot reproduce is refused rather than rewritten on a
+    guess.
+
+    Three guards, because this rewrites stored figures, which almost nothing
+    here does:
+
+    * one bad row refuses the whole run. A restatement that skipped the rows
+      it could not explain would leave the ledger half on each rule, which is
+      worse than leaving it wholly on the old one.
+    * every affected day is rescored *before* anything is written, and every
+      MLB asset on it must come back within a tenth of its stored score. That
+      is the only evidence available that the rescoring reproduces what the
+      scorer does, and it is checked while nothing has been touched.
+    * a row already carrying the current lift is left alone, so running this
+      twice is running it once.
+
+    Written for one job, on one season, once. Run it with --dry-run first.
+    """
+    import json
+
+    from whul import pipeline
+    from whul.normalize import apply_benchmarks
+    from whul.scoring import mlb as mlb_scoring
+    from whul.scoring import proration
+    from whul.store import benchmarks as store_benchmarks
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    rule = (proration.load_rule(store, "MLB", args.season)
+            or proration.built_in_rule("MLB", args.season))
+    if rule is None:
+        print(f"\nNo proration rule for MLB in {args.season}, so there is no "
+              f"lift to restate onto.\n", file=sys.stderr)
+        return 1
+    lift = rule.factor
+
+    active = store_benchmarks.active_version(store, args.season)
+    if active is None:
+        print(f"\nNo frozen benchmark for {args.season}, so the days this "
+              f"touches could not be rescored.\n", file=sys.stderr)
+        return 1
+    bench = store_benchmarks.load(store, active.version)
+
+    # Source and phase are part of the key, not decoration: an asset can have
+    # a regular row and a postseason one on the same day, and an update
+    # matching only the date would write one payload over both.
+    raw = store.query(
+        "SELECT as_of, asset_id, source, phase, stats FROM raw_stats "
+        "WHERE season = ? AND league = 'MLB' ORDER BY as_of, asset_id",
+        (args.season,),
+    )
+    if raw.empty:
+        print(f"\nNo stored MLB figures for {args.season}.\n", file=sys.stderr)
+        return 1
+
+    edits, refused, already = [], [], 0
+    for row in raw.itertuples():
+        figures = json.loads(row.stats)
+        rebuilt, problem = mlb_scoring.reweight_stored(figures, lift)
+        if problem == mlb_scoring.ALREADY_CURRENT:
+            already += 1
+        elif problem:
+            refused.append((str(row.as_of), str(row.asset_id), problem))
+        else:
+            edits.append((str(row.as_of), str(row.asset_id), row.source,
+                          row.phase, figures, rebuilt))
+
+    if refused:
+        print(f"\n  REFUSED. {len(refused)} stored row(s) could not be rebuilt "
+              f"from what is on them:", file=sys.stderr)
+        for day, asset_id, problem in refused[:MOVES_SHOWN]:
+            print(f"    {day} {asset_id}: {problem}", file=sys.stderr)
+        print("\n  A row this cannot explain is a row it was never meant to "
+              "touch, and\n  restating the rest would leave the ledger half on "
+              "each rule. Nothing\n  was written.\n", file=sys.stderr)
+        return 1
+
+    if not edits:
+        print(f"\nEvery stored MLB row in {args.season} already carries the "
+              f"{lift:.6f} lift ({already} row(s)). Nothing to do.\n")
+        return 0
+
+    print(f"\nRestating {len(edits)} stored MLB row(s) in {args.season} onto "
+          f"the contract weights, then rescoring against {active.version}.\n")
+    if already:
+        print(f"  {already} row(s) already carry the {lift:.6f} lift and are "
+              f"left alone.\n")
+
+    by_day: dict = {}
+    for day, asset_id, _, _, was, now in edits:
+        by_day.setdefault(day, []).append(
+            (asset_id, _points(was), _points(now)))
+    for day in sorted(by_day):
+        rows = by_day[day]
+        before = sum(b for _, b, _ in rows)
+        after = sum(a for _, _, a in rows)
+        print(f"  {day}: {len(rows):>3} row(s), {before:>9.1f} -> "
+              f"{after:>9.1f} points")
+
+    newest = sorted(by_day)[-1]
+    print(f"\n  Largest moves on {newest}:")
+    for asset_id, before, after in sorted(
+        by_day[newest], key=lambda r: r[1] - r[2], reverse=True
+    )[:MOVES_SHOWN]:
+        print(f"    {asset_id:<38}{before:>9.2f} -> {after:>8.2f}")
+
+    assets = store.query("SELECT asset_id, asset_type, league FROM assets")
+    kinds = (dict(zip(assets["asset_id"], assets["asset_type"])),
+             dict(zip(assets["asset_id"], assets["league"])))
+    # Only MLB rows are edited and only MLB rows are written back, so the
+    # check covers exactly what this writes. Holding the other leagues to it
+    # would refuse the run over something it neither reads nor touches.
+    mine = {a for a, league in kinds[1].items() if league == "MLB"}
+
+    days = sorted(by_day)
+    wrong = []
+    for day in days:
+        stored = store.query(
+            "SELECT asset_id, scaled_score, benchmark_version FROM daily_scores "
+            "WHERE season = ? AND as_of = ?", (args.season, day),
+        )
+        # A day scored against an older scale is *meant* to come back
+        # different, so it has nothing to say about whether the rescoring
+        # works and is left out of the check rather than failing it.
+        stored = stored[stored["benchmark_version"] == active.version]
+        was = dict(zip(stored["asset_id"], stored["scaled_score"]))
+        rows = _rescore_day(store, args.season, day, bench, kinds,
+                            apply_benchmarks)
+        if rows is None or rows.empty:
+            continue
+        for row in rows.itertuples():
+            before = was.get(row.asset_id)
+            if before is None or row.asset_id not in mine:
+                continue
+            if abs(float(row.scaled_score) - float(before)) > REPRODUCES_WITHIN:
+                wrong.append((day, str(row.asset_id), float(before),
+                              float(row.scaled_score)))
+
+    if wrong:
+        print(f"\n  REFUSED. {len(wrong)} MLB asset-day(s) do not come back as "
+              f"stored even before the restatement:", file=sys.stderr)
+        for day, asset_id, before, now in wrong[:MOVES_SHOWN]:
+            print(f"    {day} {asset_id}: {before:.2f} -> {now:.2f}",
+                  file=sys.stderr)
+        print("\n  That means the rescoring is not reproducing what the scorer "
+              "does, so\n  the restated rows could not be trusted either. "
+              "Nothing was written.\n", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        print("\n  Every affected day rescores to what is stored for it.")
+        print("\n  --dry-run, so nothing was written.\n")
+        return 0
+
+    for day, asset_id, source, phase, _, rebuilt in edits:
+        store.conn.execute(
+            "UPDATE raw_stats SET stats = ? WHERE season = ? AND as_of = ? "
+            "AND asset_id = ? AND source = ? AND phase = ?",
+            (json.dumps(rebuilt), args.season, day, asset_id, source, phase),
+        )
+
+    written = 0
+    for day in days:
+        rows = _rescore_day(store, args.season, day, bench, kinds,
+                            apply_benchmarks)
+        if rows is None or rows.empty:
+            continue
+        rows = rows[rows["asset_id"].isin(mine)]
+        if rows.empty:
+            continue
+        written += pipeline.write_daily_scores(
+            store, rows.assign(total_points=rows["league_points"]),
+            args.season, day, active.version,
+        )
+    store.conn.commit()
+
+    print(f"\n  {len(edits)} stored row(s) restated; {written} score(s) "
+          f"rewritten across {len(days)} day(s).")
+    print(f"\n  Now run `rollup --backfill` to rebuild the standings from "
+          f"them.\n")
+    return 0
+
+
+def _points(figures: dict) -> float:
+    """A stored row's total, as a number whatever the payload put there."""
+    try:
+        total = float(figures.get("total_points"))
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if total != total else total
+
+
 def _seed_from_typed_results(args, path, source, keys) -> int:
     """Results typed by hand, checked before anything is written.
 
@@ -3854,6 +4076,19 @@ def main(argv: list[str] | None = None) -> int:
         help="say what would move without writing anything",
     )
     rescore.set_defaults(func=cmd_rescore)
+
+    reweight = sub.add_parser(
+        "reweight-mlb",
+        help="restate stored MLB figures onto the contract-year weights",
+    )
+    reweight.add_argument("--db", default="data/whul.sqlite3",
+                          help="database path")
+    reweight.add_argument("--season", default="2026-27")
+    reweight.add_argument(
+        "--dry-run", action="store_true",
+        help="say what would move without writing anything",
+    )
+    reweight.set_defaults(func=cmd_reweight_mlb)
 
     retract = sub.add_parser(
         "retract-titles",

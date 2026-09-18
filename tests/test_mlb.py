@@ -616,3 +616,144 @@ def test_the_window_carries_games_played_without_scoring_it():
 
     assert out.loc["NYY", "games_played"] == 2
     assert "games_played" not in WINDOW_COUNTING, "a game count is not points"
+
+
+#: The lift the corrected rule carries: 139 season-equivalents of 162.
+CURRENT_LIFT = 162 / 139
+
+
+def stored_club(**changes):
+    """A club row as the old rule wrote it: counts, and points at face value
+    times the superseded lift."""
+    was = mlb.SUPERSEDED_LIFT
+    row = {
+        "season": 2026, "team": "Milwaukee Brewers",
+        "reg_wins": 20.0, "reg_big_wins": 6.0, "shutouts": 2.0,
+        "run_diff": 68.0, "playoff_game_wins": 0.0,
+        "pts_reg_wins": 20.0 * mlb.BASE_REG_WIN * was,
+        "pts_big_wins": 6.0 * mlb.PTS_BIG_WIN * was,
+        "pts_shutouts": 2.0 * mlb.PTS_SHUTOUT * was,
+        "pts_run_diff": 68.0 * mlb.PTS_RUN_DIFF * was,
+        "pts_div_champ": 0.0, "pts_playoff": 0.0,
+        "proration_factor": was,
+    }
+    row["total_points"] = sum(v for k, v in row.items() if k.startswith("pts_"))
+    return {**row, **changes}
+
+
+def stored_batter(**changes):
+    was = mlb.SUPERSEDED_LIFT
+    row = {
+        "role": "Batter", "season": 2026, "player": "Aaron Judge",
+        "role_points": 100.0, "total_points": 100.0,
+        "proration_factor": was,
+        "season_lines": [{"season": 2026, "role_points": 100.0,
+                          "total_points": 100.0, "proration_factor": was}],
+    }
+    return {**row, **changes}
+
+
+def test_a_stored_year_n_row_takes_the_weight_it_was_priced_at():
+    """0.75 of a season's price, lifted for the month the league year is
+    missing, instead of face value lifted by the superseded 162/133."""
+    out, problem = mlb.reweight_stored(stored_batter(), CURRENT_LIFT)
+
+    assert problem == ""
+    expected = 100.0 / mlb.SUPERSEDED_LIFT * mlb.MULT_YEAR_N * CURRENT_LIFT
+    assert out["role_points"] == pytest.approx(expected)
+    assert out["total_points"] == pytest.approx(expected)
+    assert out["season_lines"][0]["role_points"] == pytest.approx(expected)
+    assert out["proration_factor"] == pytest.approx(CURRENT_LIFT)
+
+
+def test_a_stored_year_n1_row_takes_the_larger_multiplier():
+    """The same row a season later is worth 1.181 of the base, not 0.75: the
+    whole of year N+1's first half falls inside the league year."""
+    out, problem = mlb.reweight_stored(
+        stored_batter(season=2027,
+                      season_lines=[{"season": 2027, "role_points": 100.0,
+                                     "total_points": 100.0}]),
+        CURRENT_LIFT, opened=2026,
+    )
+
+    assert problem == ""
+    assert out["role_points"] == pytest.approx(
+        100.0 / mlb.SUPERSEDED_LIFT * mlb.MULT_YEAR_N1 * CURRENT_LIFT)
+
+
+def test_restating_a_restated_row_leaves_it_alone():
+    """Run twice is run once: the second pass sees the current lift and says
+    so rather than weighting an already weighted total again."""
+    once, _ = mlb.reweight_stored(stored_batter(), CURRENT_LIFT)
+    twice, problem = mlb.reweight_stored(once, CURRENT_LIFT)
+
+    assert problem == mlb.ALREADY_CURRENT
+    assert twice["role_points"] == once["role_points"]
+
+
+def test_a_row_on_neither_lift_is_refused():
+    """Some third factor means the row was not written by the rule this
+    assumes, and rebuilding it would be a guess."""
+    _, problem = mlb.reweight_stored(stored_batter(proration_factor=1.4),
+                                     CURRENT_LIFT)
+
+    assert "neither the superseded" in problem
+
+
+def test_a_row_holding_two_seasons_is_refused():
+    """Two seasons carry two weights, and which part of one total belongs to
+    which is not on the row."""
+    row = stored_batter()
+    row["season_lines"].append({"season": 2027, "role_points": 20.0})
+
+    _, problem = mlb.reweight_stored(row, CURRENT_LIFT)
+
+    assert "different weights" in problem
+
+
+def test_a_clubs_components_are_rebuilt_from_its_counts():
+    """Not scaled by a ratio: each figure is recomputed from the count beside
+    it, so the points and the counts cannot drift apart."""
+    out, problem = mlb.reweight_stored(stored_club(), CURRENT_LIFT)
+
+    assert problem == ""
+    assert out["pts_reg_wins"] == pytest.approx(
+        20.0 * mlb.BASE_REG_WIN * mlb.MULT_YEAR_N * CURRENT_LIFT)
+    assert out["total_points"] == pytest.approx(
+        sum(v for k, v in out.items() if k.startswith("pts_")))
+    assert out["reg_wins"] == 20.0, "a count is not touched"
+
+
+def test_a_club_whose_points_do_not_follow_its_counts_is_refused():
+    """The only check available that the row was written by the rule this
+    undoes. A row that fails it is one this was never meant to touch."""
+    _, problem = mlb.reweight_stored(stored_club(pts_reg_wins=999.0),
+                                     CURRENT_LIFT)
+
+    assert "pts_reg_wins" in problem and "reg_wins" in problem
+
+
+def test_a_title_takes_the_weight_but_not_the_lift():
+    """A division is won once however long the window is, so proration never
+    touched it -- but the contract multiplier prices it like everything
+    else."""
+    out, problem = mlb.reweight_stored(
+        stored_club(pts_div_champ=mlb.PTS_DIV_CHAMP), CURRENT_LIFT)
+
+    assert problem == ""
+    assert out["pts_div_champ"] == pytest.approx(
+        mlb.PTS_DIV_CHAMP * mlb.MULT_YEAR_N)
+
+
+def test_a_playoff_run_keeps_its_series_outside_the_weight():
+    """``year_n_points`` leaves the series prices outside its multiplier, so
+    the restatement leaves them there too: only the game wins are weighted."""
+    wins, series = 3.0, mlb.PTS_SERIES["wc"] + mlb.PTS_SERIES["lds"]
+    out, problem = mlb.reweight_stored(
+        stored_club(playoff_game_wins=wins,
+                    pts_playoff=wins * mlb.BASE_PLAYOFF_WIN + series),
+        CURRENT_LIFT)
+
+    assert problem == ""
+    assert out["pts_playoff"] == pytest.approx(
+        wins * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + series)

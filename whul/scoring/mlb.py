@@ -661,6 +661,135 @@ def _window_points(summary: pd.DataFrame,
     ).reset_index(drop=True)
 
 
+#: The lift a stored row was written under before the contract weights were
+#: applied to the live path. Rows carrying it are on the old rule; rows
+#: carrying the current one are already correct and must not be touched twice.
+SUPERSEDED_LIFT = 162 / 133
+
+#: What a row already on the current lift reports. A caller restating a season
+#: has to tell that apart from a row it could not rebuild: the first is left
+#: alone and the second refuses the run, so the two must not be one string
+#: compared by eye.
+ALREADY_CURRENT = "already carries the current lift"
+
+
+def reweight_stored(figures: dict, lift: float,
+                    opened: int | None = None) -> tuple[dict, str]:
+    """A stored MLB row, rebuilt with the weights its benchmark was built with.
+
+    For the days already in the database when the live path started applying
+    ``contract_weight``. Nothing is fetched: every input the scorer used is on
+    the row beside its output, so the figures can be rebuilt from them exactly
+    as a re-ingest would -- and a feed that reports a season to date could not
+    be asked about those days anyway.
+
+    Returns ``(figures, problem)``. The problem is the point of it: each
+    component is first rebuilt *under the old rule* and checked against what is
+    stored, so a row whose arithmetic does not reproduce is refused rather than
+    rewritten on a guess. A row that cannot be rebuilt is a row this was never
+    meant to touch.
+    """
+    was = float(figures.get("proration_factor") or 0)
+    if abs(was - lift) < 1e-9:
+        return figures, ALREADY_CURRENT
+    if abs(was - SUPERSEDED_LIFT) > 1e-6:
+        return figures, (f"carries a lift of {was:.6f}, which is neither the "
+                         f"superseded {SUPERSEDED_LIFT:.6f} nor the current "
+                         f"{lift:.6f}")
+
+    weight = float(contract_weight(pd.Series([figures.get("season")]), opened).iloc[0])
+    out = dict(figures)
+    role = str(figures.get("role") or "").strip()
+
+    if role:
+        # A batter's or pitcher's whole total is counting production, so the
+        # whole of it carries the weight. The counts are unchanged and the
+        # points are rebuilt around them.
+        moved = _reweighted(figures.get("role_points"), was, weight, lift)
+        if moved is None:
+            return figures, "has no role_points to rebuild"
+        lines = figures.get("season_lines")
+        spans = {line.get("season") for line in lines or []
+                 if isinstance(line, dict)} - {None, figures.get("season")}
+        if spans:
+            # One total at one weight is only right while the row is one
+            # season. A row holding 2026 and 2027 lines holds two weights, and
+            # which part of the total belongs to which is not on the row.
+            return figures, (f"holds {figures.get('season')} and "
+                             f"{', '.join(str(s) for s in sorted(spans))} "
+                             f"lines, which carry different weights")
+        out["role_points"] = out["total_points"] = moved
+        if isinstance(lines, list):
+            out["season_lines"] = [
+                {**line,
+                 **{c: _reweighted(line.get(c), was, weight, lift)
+                    for c in ("role_points", "total_points")
+                    if _reweighted(line.get(c), was, weight, lift) is not None}}
+                for line in lines if isinstance(line, dict)
+            ]
+    else:
+        rebuilt, problem = _reweighted_club(figures, was, weight, lift)
+        if problem:
+            return figures, problem
+        out.update(rebuilt)
+        out["total_points"] = round(
+            sum(v for k, v in out.items()
+                if k.startswith("pts_") and isinstance(v, (int, float))), 10)
+
+    out["proration_factor"] = lift
+    return out, ""
+
+
+def _reweighted(value, was: float, weight: float, lift: float):
+    """One prorated figure, off the old lift and onto the weight and the new."""
+    if not isinstance(value, (int, float)) or value != value:
+        return None
+    return float(value) / was * weight * lift
+
+
+#: What a club's counting components are made of, so each can be rebuilt from
+#: the count beside it rather than scaled by a ratio and hoped over.
+CLUB_COMPONENTS: tuple[tuple[str, str, str], ...] = (
+    ("pts_reg_wins", "reg_wins", "BASE_REG_WIN"),
+    ("pts_big_wins", "reg_big_wins", "PTS_BIG_WIN"),
+    ("pts_shutouts", "shutouts", "PTS_SHUTOUT"),
+    ("pts_run_diff", "run_diff", "PTS_RUN_DIFF"),
+)
+
+
+def _reweighted_club(figures: dict, was: float, weight: float,
+                     lift: float) -> tuple[dict, str]:
+    """A club's components, each rebuilt from the count that produced it."""
+    units = {"BASE_REG_WIN": BASE_REG_WIN, "PTS_BIG_WIN": PTS_BIG_WIN,
+             "PTS_SHUTOUT": PTS_SHUTOUT, "PTS_RUN_DIFF": PTS_RUN_DIFF}
+    out: dict = {}
+    for points, count, unit in CLUB_COMPONENTS:
+        got, stored = figures.get(count), figures.get(points)
+        if not isinstance(got, (int, float)) or not isinstance(stored, (int, float)):
+            return {}, f"has no {count} to rebuild {points} from"
+        # The old figure, from the old rule, against what is on the row. If
+        # these disagree the row was not written by the rule this assumes.
+        if abs(float(got) * units[unit] * was - float(stored)) > 1e-6:
+            return {}, (f"{points} is {stored:,.4f} where {count} x {unit} x "
+                        f"{was:.4f} is {float(got) * units[unit] * was:,.4f}")
+        out[points] = float(got) * units[unit] * weight * lift
+
+    # Neither of these is prorated -- they happen once however long the window
+    # is -- so each takes the weight alone.
+    title = figures.get("pts_div_champ")
+    if isinstance(title, (int, float)):
+        out["pts_div_champ"] = float(title) * weight
+
+    wins, paid = figures.get("playoff_game_wins"), figures.get("pts_playoff")
+    if isinstance(wins, (int, float)) and isinstance(paid, (int, float)):
+        # The series are what is left once the game wins are taken out, and
+        # they carry no weight at all -- `year_n_points` leaves them outside
+        # its `MULT_YEAR_N` product, so the live figure does too.
+        series = float(paid) - float(wins) * BASE_PLAYOFF_WIN
+        out["pts_playoff"] = float(wins) * BASE_PLAYOFF_WIN * weight + series
+    return out, ""
+
+
 #: Window components that grow with games played, and so scale to a full
 #: season. The others -- a division title, a playoff run -- happen once.
 WINDOW_COUNTING = ("pts_reg_wins", "pts_big_wins", "pts_shutouts", "pts_run_diff")

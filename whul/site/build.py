@@ -2063,6 +2063,30 @@ def _mlb_team_by_year(row: dict) -> list[dict]:
     return out
 
 
+def _contract_weight(season) -> float:
+    """What the benchmark prices one calendar year of a live contract at.
+
+    A league year runs from July to July, so it holds the tail of one season
+    and the front of the next, and the benchmark does not price them alike:
+    year N is worth 0.75 of the base and year N+1 1.181, because only two
+    months of year N fall inside the year while nearly five of year N+1 do.
+
+    A row with no readable season is this league year's opening one. That is
+    the only season a live feed reports without saying which it is, and
+    guessing the other way would price a September box at year N+1.
+    """
+    import pandas as pd
+
+    from whul.config.league import SEASON
+    from whul.scoring.mlb import contract_weight
+
+    try:
+        year = int(season)
+    except (TypeError, ValueError):
+        year = SEASON.start.year
+    return float(contract_weight(pd.Series([year])).iloc[0])
+
+
 def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
     """A baseball player, at whichever of the two jobs he does -- or both.
 
@@ -2074,8 +2098,14 @@ def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
     role = str(row.get("role") or "").strip()
     if role not in ("Batter", "Pitcher"):
         return None
-    scale = _stat_number(row, "proration_factor")
-    scale = 1.0 if not scale else scale
+    lift = _stat_number(row, "proration_factor")
+    lift = 1.0 if not lift else lift
+    # Two factors, not one. The lift is for the month the league year is
+    # missing off the front; the weight is what the benchmark prices this
+    # calendar year of a contract at. The scorer applies both to a player's
+    # counting production, so a box that showed only the lift stopped adding
+    # up to the score the moment the scorer started applying the weight.
+    scale = lift * _contract_weight(row.get("season"))
 
     build = {"Batter": _mlb_batter_section, "Pitcher": _mlb_pitcher_section}
     sections = [build[role](row, scale)]
@@ -2111,15 +2141,51 @@ def _mlb_panel(row: dict, team_games: float | None = None) -> dict | None:
                 f"{worth:,.1f} normalized, worth "
                 f"{worth * 0.5:,.1f} after the half a second role is taxed."
             )
+    years = _mlb_by_year(row, second, role, other, lift, build)
+    if years and _season_lines(row):
+        sections = _summed_over_years(sections, years)
     panel = {"kind": "mlb", "head": _mlb_games_head(row, team_games),
              "sections": sections, "note": note}
     posts = _mlb_posts(row, role, build)
     if posts:
         panel["posts"] = posts
-    years = _mlb_by_year(row, second, role, other, scale, build)
     if years:
         panel["years"] = years
     return panel
+
+
+def _summed_over_years(sections: list, years: list) -> list:
+    """The league year's boxes, priced the way the years inside it were.
+
+    A count belongs to the whole league year and its price does not: the two
+    calendar years inside one are not worth the same per game, so pricing the
+    summed count once -- at either year's multiplier -- sets the boxes against
+    a total the scorer built year by year. The counts stay the row's and the
+    points come from the tabs, which is the only arrangement in which the page
+    and the standings agree. While a league year holds one season it changes
+    nothing, which is why it is written now rather than found in April.
+    """
+    out = []
+    for index, section in enumerate(sections):
+        made = dict(section)
+        for part in ("top", "secondary"):
+            made[part] = [
+                box if box.get("points") is None else
+                {**box, "points": round(sum(
+                    _box_points(year, index, part, at) for year in years), 1)}
+                for at, box in enumerate(section.get(part, []))
+            ]
+        out.append(made)
+    return out
+
+
+def _box_points(year: dict, index: int, part: str, at: int) -> float:
+    """One year's price for one box, or nothing where that year has no box."""
+    sections = year.get("sections", [])
+    if index >= len(sections):
+        return 0.0
+    boxes = sections[index].get(part, [])
+    return 0.0 if at >= len(boxes) else float(boxes[at].get("points") or 0.0)
 
 
 def _mlb_posts(row: dict, role: str, build: dict) -> list[dict]:
@@ -2165,7 +2231,7 @@ def _season_lines(figures) -> dict:
     return out
 
 
-def _mlb_by_year(row: dict, second, role: str, other: str, scale: float,
+def _mlb_by_year(row: dict, second, role: str, other: str, lift: float,
                  build: dict) -> list[dict]:
     """The same boxes, one set a calendar season, where there is more than one.
 
@@ -2195,6 +2261,9 @@ def _mlb_by_year(row: dict, second, role: str, other: str, scale: float,
     )
     out = []
     for year in years:
+        # Each year at its own price: 2026 is worth 0.75 of the base and 2027
+        # 1.181, so one scale across both tabs would put one of them wrong.
+        scale = lift * _contract_weight(year)
         sections = [build[role](primary.get(year, {}), scale)]
         if shows_second:
             sections.append(build[other](secondary.get(year, {}), scale))
@@ -2207,11 +2276,11 @@ def _section_points(sections: list) -> float:
     """What one calendar season's boxes come to.
 
     The figure the strip shows while that year is selected, and it is a sum of
-    the boxes rather than a second scoring of them: the live player path
-    prorates by one factor and does not carry the bisection weights -- those
-    govern the historical team path, where a whole season really is split into
-    its two shares. So the years add to the total, and this was measured
-    against every rostered batter and pitcher rather than assumed.
+    the boxes rather than a second scoring of them. That holds only because
+    each year's boxes are built at that year's own scale -- the lift for the
+    missing month and the multiplier the benchmark prices that calendar year
+    at. They used to be built at one scale for both, which was right only
+    while the scorer applied no multiplier either.
 
     A box whose points are counted elsewhere is skipped, the same way it is
     skipped when the section is checked against the score: home runs are in
