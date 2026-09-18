@@ -420,8 +420,16 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     # Qualifying and unreadable rounds are dropped before anything is scored:
     # they must not pad a player's round set either, or a missing qualifying
     # result would read as a main-draw bye.
-    scorable = work["round"].isin([RR, R128, R64, R32, R16, QF, SF, F])
-    work = work[scorable].copy()
+    #
+    # A team event is the exception, and it is not an edge case: a Davis Cup
+    # rubber is a tie between two nations, not a position in a bracket. It pays
+    # the same flat figure wherever in the tie it fell, so there is no round to
+    # read and nothing is guessed by scoring it without one. Requiring one
+    # dropped every tie the feed carried -- Ben Shelton's loss to Jiri Lehecka
+    # reached the ledger and stopped here -- while the benchmark's history
+    # counted the team events every player in it had ever played.
+    ladder = work["round"].isin([RR, R128, R64, R32, R16, QF, SF, F])
+    work = work[ladder | (work["tier"] == "INTERNATIONAL")].copy()
     if work.empty:
         return pd.DataFrame()
 

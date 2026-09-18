@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from whul.scoring import finishes
+from whul.scoring.tennis import INTERNATIONAL_WIN_POINTS
 
 
 def match(round_, points, tournament="Winston Salem", category="ATP 250",
@@ -234,3 +235,42 @@ def test_a_tier_entered_more_than_once_is_counted_not_listed():
         ("Doha", "250", "SF", "R", ME, 32, "6-4 6-4"),
     ))
     assert tiers["ATP 250"]["note"] == "W ×2 · SF"
+
+
+def test_a_tie_reads_as_a_record_rather_than_a_round():
+    """Ben Shelton lost to Jiri Lehecka in the World Group and nothing about
+    his score could say so: a loss pays nothing, and the line that would have
+    said he played said "International" and a blank round. A tie has no draw
+    position, so the record is the result."""
+    out = finishes.summarize(_rows(
+        ("Davis Cup - World Group", "International", "", "J. Lehecka", ME,
+         None, "6-4 6-4"),
+    ))[ME]
+
+    assert [f["label"] for f in out] == ["ATP Davis Cup - World Group 0-1"]
+    assert out[0]["points"] == 0.0
+
+
+def test_a_tie_a_player_lost_still_fills_his_team_events_box():
+    """Zero is the honest answer for a tie he lost -- only wins pay -- and a
+    dash is the wrong one: one says he earned nothing there, the other that
+    there is nothing to say."""
+    box = _by_label(_rows(
+        ("Davis Cup - World Group", "International", "", "J. Lehecka", ME,
+         None, "6-4 6-4"),
+    ))["Team Events"]
+
+    assert box["points"] == 0.0
+    assert box["note"] == "0-1"
+    assert box["entered"] == 1
+
+
+def test_a_record_counts_both_sides_of_a_tie():
+    """Two rubbers in a weekend is the shape a tie actually comes in."""
+    box = _by_label(_rows(
+        ("Davis Cup - World Group", "International", "", ME, "A", None, "6-4 6-4"),
+        ("Davis Cup - World Group", "International", "", "B", ME, None, "6-4 6-4"),
+    ))["Team Events"]
+
+    assert box["note"] == "1-1"
+    assert box["points"] == INTERNATIONAL_WIN_POINTS
