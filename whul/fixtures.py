@@ -814,6 +814,76 @@ def alias_index() -> dict[str, str]:
 ALIASES = alias_index()
 
 
+#: Leagues whose only source of a played game with an opponent in it is the
+#: fixture feed. The NHL's own stats API reports season totals and carries no
+#: schedule at all, so nothing else in this project can say who a club beat.
+#: Everywhere else already has a game source of its own and this would be a
+#: second copy of one.
+#:
+#: The source key is the league's, not the feed's: the ledger is read by asset
+#: name and a hockey payload carries thirty leagues nobody drafted.
+RESULTS_FOR: dict[str, str] = {"NHL": "nhl-games"}
+
+#: What a recorded result is keyed on. The feed's own id for the match, which
+#: is stable across the nights it is served, plus the date -- so a match id
+#: reused between seasons cannot fold two games onto one row.
+RESULT_KEYS = ("game_date", "match_uid")
+
+
+def _remember_results(store, season: str, played, wanted: dict,
+                      verbose: bool = True) -> int:
+    """Write down the games the fixture feed carried but nothing read.
+
+    The same payload that says what a club plays next says what it just
+    played, and until now the second half was parsed and dropped. It is kept
+    here rather than in a source of its own because this is where the payload
+    already is: asking twice would double a nightly cost for something
+    already in hand.
+
+    Only games with a rostered club in them, and the rostered side is written
+    under the roster's spelling rather than the feed's, so what lands in the
+    ledger is readable by anything that knows the roster. Games between two
+    clubs nobody holds are a hockey league in Kazakhstan.
+    """
+    from whul.store import feed_ledger
+
+    if played is None or played.empty:
+        return 0
+    written = 0
+    for league, source in RESULTS_FOR.items():
+        # Narrowed to the one league before a name is read, so what is filed
+        # under a league's source is a game that league played. The payload is
+        # a sport, not a league: thirty of them arrive in the same request.
+        mine = {k: v for k, v in wanted.items() if v[1] == league}
+        if not mine:
+            continue
+        keep = []
+        for row in played.itertuples():
+            country = str(getattr(row, "country", "") or "")
+            named = [match_team(side, mine, country)
+                     for side in (str(row.home_team), str(row.away_team))]
+            if not any(named):
+                continue
+            keep.append({
+                "season": season,
+                "match_uid": str(row.match_uid),
+                "game_date": str(row.game_date),
+                "home_team": named[0] or str(row.home_team),
+                "away_team": named[1] or str(row.away_team),
+                "home_score": getattr(row, "home_score", None),
+                "away_score": getattr(row, "away_score", None),
+                "won": str(getattr(row, "won", "") or ""),
+                "competition": str(getattr(row, "competition", "") or ""),
+            })
+        if keep:
+            written += feed_ledger.record(
+                store, source, pd.DataFrame(keep), RESULT_KEYS)
+    if written and verbose:
+        print(f"  {written} played game(s) recorded for the head-to-head "
+              "record", flush=True)
+    return written
+
+
 def match_team(name: str, wanted: dict[str, tuple[str, str]],
                country: str = "") -> str | None:
     """The roster's spelling of a club the feed named, or None.
@@ -919,11 +989,15 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
         if not here:
             continue
         try:
-            upcoming = feed.load_upcoming(sport, verbose=verbose)
+            # Both halves of the one payload: what is still to play, and what
+            # has been. The second is what the head-to-head record reads for
+            # the leagues that have no game source of their own.
+            upcoming, played = feed.load_window(sport, verbose=verbose)
         except Exception as exc:  # noqa: BLE001 -- one sport must not lose the rest
             print(f"  flashscore sport {sport}: {type(exc).__name__}: {exc}",
                   flush=True)
-            upcoming = pd.DataFrame()
+            upcoming, played = pd.DataFrame(), pd.DataFrame()
+        _remember_results(store, season, played, here, verbose)
         # The day feed is a week wide, which is no window at all for a league
         # that opens in six weeks: the NHL and the NBA were blank through
         # September while the feed worked perfectly. Their own season pages

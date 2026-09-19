@@ -42,7 +42,7 @@ import requests
 
 from whul.sources.flashscore import (
     PAGE_HEADERS, REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_HOCKEY,
-    SPORT_SOCCER, SPORT_TENNIS, TIMEOUT, _field, _get,
+    SPORT_SOCCER, SPORT_TENNIS, STATUS_COMPLETED, TIMEOUT, _field, _get,
     parse_tournament_header, slug_to_name,
 )
 
@@ -234,6 +234,111 @@ def fetch_window(sport: int, days: range = AHEAD, verbose: bool = True) -> str:
     return "~".join(chunks)
 
 
+#: A hockey day is asked for backwards as well as forwards. The NHL's own
+#: stats API reports season totals and carries no schedule at all, so this
+#: feed is the only place a played NHL game with an opponent in it exists --
+#: and the payload that carries next week's fixtures carries last week's
+#: results in the same request. Three days is enough to survive a couple of
+#: missed nights; the ledger keeps what it has already seen.
+WINDOWS: dict[int, range] = {SPORT_HOCKEY: range(-3, 8)}
+
+
+def window_for(sport: int) -> range:
+    return WINDOWS.get(sport, AHEAD)
+
+
+def iter_results(raw: str):
+    """One dict per *completed* match, which `iter_fixtures` throws away.
+
+    The winner comes from the feed's own ``AS`` code rather than from the
+    score -- the same field `whul.sources.flashscore` reads for tennis -- and
+    the score is believed only where it agrees with it. A score field that
+    turns out not to be a score reads as a disagreement and is dropped, which
+    leaves a result with a winner and no numbers: less than was hoped for, and
+    never a game credited to the side that lost it.
+    """
+    competition = ""
+    country = ""
+    for segment in (s for s in str(raw).split("~") if s):
+        if segment.startswith("ZA÷"):
+            header = _field(segment, "ZA") or ""
+            competition = competition_of(header)
+            country = country_of(header)
+            continue
+        if not segment.startswith("AA÷"):
+            continue
+        if (_field(segment, "AC") or "") != STATUS_COMPLETED:
+            continue
+        home = (_field(segment, "AE") or "").strip()
+        away = (_field(segment, "AF") or "").strip()
+        when = _when(segment)
+        if not home or not away or when is None:
+            continue
+        if RESERVE_PATTERN.search(home) or RESERVE_PATTERN.search(away):
+            continue
+        code = _field(segment, "AS")
+        won = "home" if code == "1" else "away" if code == "2" else \
+              "draw" if code == "3" else ""
+        if not won:
+            continue
+        here, there = _score(segment, won)
+        yield {
+            "match_uid": _field(segment, "AA") or "",
+            "game_date": when.isoformat(),
+            "home_team": home,
+            "away_team": away,
+            "competition": competition,
+            "country": country,
+            "home_score": here,
+            "away_score": there,
+            "won": won,
+        }
+
+
+def _score(segment: str, won: str) -> tuple[float | None, float | None]:
+    """The goals either side scored, where they can be trusted.
+
+    ``AG`` and ``AH`` are where this feed puts them, which is a reading of the
+    format rather than a documented fact -- so it is checked against the
+    winner the feed named separately. Two numbers that disagree with the
+    winner are two numbers that are not the score.
+    """
+    try:
+        here = float(_field(segment, "AG"))
+        there = float(_field(segment, "AH"))
+    except (TypeError, ValueError):
+        return None, None
+    says = "home" if here > there else "away" if there > here else "draw"
+    return (here, there) if says == won else (None, None)
+
+
+def load_window(sport: int, days: range | None = None,
+                verbose: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One fetch, both halves: what is still to play, and what was played.
+
+    Split here rather than in two calls because they come out of the same
+    request. Asking twice would double a nightly cost for a payload that was
+    already in hand.
+    """
+    raw = fetch_window(sport, days or window_for(sport), verbose=verbose)
+    reader = iter_tennis_fixtures if sport == SPORT_TENNIS else iter_fixtures
+    ahead = _frame(list(reader(raw)))
+    played = _frame([] if sport == SPORT_TENNIS else list(iter_results(raw)))
+    if verbose:
+        competitions = sorted({r for r in ahead.get("competition", []) if r})
+        print(f"  flashscore sport {sport}: {len(ahead)} upcoming match(es) "
+              f"across {len(competitions)} competition(s), "
+              f"{len(played)} played", flush=True)
+    return ahead, played
+
+
+def _frame(rows: list) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    return frame.drop_duplicates(subset=["match_uid"]).reset_index(drop=True)
+
+
 def load_upcoming(sport: int, days: range = AHEAD, verbose: bool = True) -> pd.DataFrame:
     """Every upcoming match one sport has in the window, unfiltered.
 
@@ -241,17 +346,7 @@ def load_upcoming(sport: int, days: range = AHEAD, verbose: bool = True) -> pd.D
     to keep right than a competition table and indifferent to a club playing in
     a competition nobody listed.
     """
-    raw = fetch_window(sport, days, verbose=verbose)
-    reader = iter_tennis_fixtures if sport == SPORT_TENNIS else iter_fixtures
-    rows = list(reader(raw))
-    if verbose:
-        competitions = sorted({r["competition"] for r in rows if r["competition"]})
-        print(f"  flashscore sport {sport}: {len(rows)} upcoming match(es) "
-              f"across {len(competitions)} competition(s)", flush=True)
-    if not rows:
-        return pd.DataFrame()
-    frame = pd.DataFrame(rows)
-    return frame.drop_duplicates(subset=["match_uid"]).reset_index(drop=True)
+    return load_window(sport, days, verbose=verbose)[0]
 
 
 # --- a league's own season page --------------------------------------------

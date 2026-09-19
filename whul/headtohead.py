@@ -247,6 +247,12 @@ def _meeting(day: str, row: dict, first: Side, second: Side,
               "b" if second.score > first.score else "draw"
     elif row.get("winner"):
         won = "a"
+    elif str(row.get("won") or "") in ("home", "away", "draw"):
+        # A feed that names its winner outright and its score not at all, or
+        # not believably. The NHL arrives this way: Flashscore's own `AS` code
+        # is the winner and the numbers beside it are only used where they
+        # agree with it.
+        won = {"home": "a", "away": "b", "draw": "draw"}[str(row["won"])]
     return {
         "date": day,
         # Both, because a meeting can cross them: Como play in Serie A and RB
