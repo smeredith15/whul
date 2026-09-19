@@ -837,47 +837,89 @@ SCRIPT = """\
   // to, so a Champions League tie between a Serie A club and a Bundesliga one
   // answers to a reader looking for either.
   var pickedH2H = {};
+  var pickedMgr = {};
+
+  function chosen(picked) {
+    var out = [];
+    for (var k in picked) if (picked[k]) out.push(k);
+    return out;
+  }
+
+  // Which meetings a manager pick keeps. One manager means every meeting they
+  // played; two or more means the meetings *between* them, which is what a
+  // grid cell makes a reader want to ask for and is the only reading under
+  // which picking three managers says anything at all.
+  function managerOk(row, who) {
+    if (!who.length) return true;
+    var one = row.dataset.one, two = row.dataset.two;
+    if (who.length === 1) return one === who[0] || two === who[0];
+    return pickedMgr[one] && pickedMgr[two];
+  }
+
+  function record(slot, flip) {
+    var win = flip ? slot[1] : slot[0], loss = flip ? slot[0] : slot[1];
+    // Draws only where there are some: "2-1" reads cleanly and "2-1-0" makes
+    // a reader wonder which sport has three outcomes.
+    return slot[2] ? win + '-' + loss + '-' + slot[2] : win + '-' + loss;
+  }
+
   function applyH2H() {
     var table = document.getElementById('h2htable');
     if (!table) return;
-    var any = false;
-    for (var k in pickedH2H) if (pickedH2H[k]) any = true;
+    var leagues = chosen(pickedH2H), who = chosen(pickedMgr);
     var shown = 0, total = 0;
     var tally = {};
     table.querySelectorAll('tbody tr').forEach(function (row) {
       total++;
       var ok = true;
-      if (any) {
+      if (leagues.length) {
         ok = false;
         (row.dataset.leagues || '').split('|').forEach(function (name) {
           if (pickedH2H[name]) ok = true;
         });
       }
-      row.hidden = !ok;
-      if (!ok) return;
-      shown++;
-      var one = row.dataset.one, two = row.dataset.two;
-      var key = one < two ? one + '|' + two : two + '|' + one;
-      var slot = tally[key] || (tally[key] = [0, 0, 0]);
-      if (row.dataset.won === 'draw') slot[2]++;
-      else {
-        var winner = row.dataset.won === 'a' ? one : two;
-        slot[winner === key.split('|')[0] ? 0 : 1]++;
+      // The grid is tallied from the league filter alone. Narrowing it by
+      // manager too would be filtering the manager dimension by itself: pick
+      // a cell and the other nineteen would empty, which is not what a
+      // standings does when you ask about one fixture in it.
+      if (ok) {
+        var one = row.dataset.one, two = row.dataset.two;
+        var key = one < two ? one + '|' + two : two + '|' + one;
+        var slot = tally[key] || (tally[key] = [0, 0, 0]);
+        if (row.dataset.won === 'draw') slot[2]++;
+        else {
+          var winner = row.dataset.won === 'a' ? one : two;
+          slot[winner === key.split('|')[0] ? 0 : 1]++;
+        }
       }
+      row.hidden = !(ok && managerOk(row, who));
+      if (!row.hidden) shown++;
     });
-    var records = document.getElementById('h2hrecords');
-    if (records) {
-      records.querySelectorAll('tbody tr').forEach(function (row) {
-        var slot = tally[row.dataset.pair];
-        row.hidden = !slot;
+
+    var grid = document.getElementById('h2hgrid');
+    if (grid) {
+      var totals = {};
+      grid.querySelectorAll('button[data-cell]').forEach(function (cell) {
+        var ends = cell.dataset.cell.split('|'), one = ends[0], two = ends[1];
+        var key = one < two ? one + '|' + two : two + '|' + one;
+        var slot = tally[key];
+        var blank = cell.parentNode.querySelector('[data-empty]');
+        cell.hidden = !slot;
+        if (blank) blank.hidden = !!slot;
         if (!slot) return;
-        // Draws only where there are some: "2-1" reads cleanly and "2-1-0"
-        // makes a reader wonder which sport has three outcomes.
-        row.querySelector('[data-record]').textContent =
-          slot[2] ? slot[0] + '-' + slot[1] + '-' + slot[2]
-                  : slot[0] + '-' + slot[1];
+        var flip = key.split('|')[0] !== one;
+        cell.textContent = record(slot, flip);
+        var mine = totals[one] || (totals[one] = [0, 0, 0]);
+        mine[0] += flip ? slot[1] : slot[0];
+        mine[1] += flip ? slot[0] : slot[1];
+        mine[2] += slot[2];
+      });
+      grid.querySelectorAll('[data-all]').forEach(function (box) {
+        var slot = totals[box.dataset.all];
+        box.textContent = slot ? record(slot, false) : '—';
       });
     }
+
     var count = document.querySelector('[data-h2hcount]');
     if (count) {
       count.textContent = shown === total
@@ -885,12 +927,38 @@ SCRIPT = """\
         : 'Showing ' + shown + ' of ' + total + '.';
     }
   }
-  document.querySelectorAll('.chip[data-filter="h2hleague"]').forEach(function (chip) {
-    chip.addEventListener('click', function () {
-      var value = chip.dataset.value;
-      pickedH2H[value] = !pickedH2H[value];
-      chip.setAttribute('aria-pressed', pickedH2H[value] ? 'true' : 'false');
+
+  function bindChips(name, picked) {
+    document.querySelectorAll('.chip[data-filter="' + name + '"]').forEach(
+      function (chip) {
+        chip.addEventListener('click', function () {
+          var value = chip.dataset.value;
+          picked[value] = !picked[value];
+          chip.setAttribute('aria-pressed', picked[value] ? 'true' : 'false');
+          applyH2H();
+        });
+      });
+  }
+  bindChips('h2hleague', pickedH2H);
+  bindChips('h2hmanager', pickedMgr);
+
+  // A cell is a question: "what were these two?" Clicking one asks it of the
+  // table below rather than making the reader find two chips to press.
+  document.querySelectorAll('#h2hgrid button[data-pair]').forEach(function (cell) {
+    cell.addEventListener('click', function () {
+      var ends = cell.dataset.pair.split(',');
+      pickedMgr = {};
+      ends.forEach(function (who) { pickedMgr[who] = true; });
+      document.querySelectorAll('.chip[data-filter="h2hmanager"]').forEach(
+        function (chip) {
+          chip.setAttribute('aria-pressed',
+            pickedMgr[chip.dataset.value] ? 'true' : 'false');
+        });
       applyH2H();
+      var list = document.getElementById('h2htable');
+      if (list && list.scrollIntoView) {
+        list.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
     });
   });
   applyH2H();
