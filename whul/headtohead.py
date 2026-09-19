@@ -96,7 +96,8 @@ def _number(value) -> float | None:
 
 
 def _day(row: dict) -> str:
-    for key in ("game_date", "date", "match_date"):
+    """The day a fixture was played, whatever the feed calls that column."""
+    for key in ("game_date", "date", "match_date", "gameday"):
         value = row.get(key)
         if value:
             return str(value)[:10]
@@ -120,25 +121,41 @@ def _holders(store: Store, season: str) -> pd.DataFrame:
     )
 
 
-def _spellings(store: Store, held: pd.DataFrame) -> dict[str, str]:
-    """``{name as anything calls it: asset_id}``.
+def _spellings(store: Store, held: pd.DataFrame) -> tuple[dict, dict]:
+    """How to turn a name in a feed row into an asset id.
 
-    Three spellings of one asset reach this: the roster's, the feed's, and the
-    feed's reduced to its distinguishing words. The alias table is what makes
-    the second work -- the tennis feed files Carlos Alcaraz as "Carlos Alcaraz
-    Garfia", and a lookup on display names alone loses every match he played.
+    Two maps, and the order they are tried in is the point. The first is per
+    source: the alias table records what each feed calls an asset, and those
+    names are only meaningful inside the feed that uses them -- nflverse files
+    the Rams as "LA", which is a club in more than one sport. The second is
+    the roster's own spellings, which are safe everywhere.
+
+    The alias table is what makes a feed's own name work at all: tennis files
+    Carlos Alcaraz as "Carlos Alcaraz Garfia", and a lookup on roster names
+    alone loses every match he played.
     """
-    out: dict[str, str] = {}
-    for row in held.itertuples():
-        for key in _keys(str(row.display_name)):
-            out.setdefault(key, str(row.asset_id))
     known = set(held["asset_id"].astype(str))
+    mine: dict[str, dict[str, str]] = {}
     for source in _ledger_sources(store):
         for feed_name, asset_id in load_aliases(store, source).items():
             if str(asset_id) in known:
                 for key in _keys(str(feed_name)):
-                    out.setdefault(key, str(asset_id))
-    return out
+                    mine.setdefault(source, {}).setdefault(key, str(asset_id))
+
+    anywhere: dict[str, str] = {}
+    for row in held.itertuples():
+        for key in _keys(str(row.display_name)):
+            anywhere.setdefault(key, str(row.asset_id))
+    return mine, anywhere
+
+
+def _asset_for(name: str, source: str, mine: dict, anywhere: dict) -> str | None:
+    """One side of a fixture, as the feed that wrote it spells it."""
+    for key in _keys(name):
+        found = mine.get(source, {}).get(key) or anywhere.get(key)
+        if found:
+            return found
+    return None
 
 
 def _keys(name: str) -> tuple[str, ...]:
@@ -162,7 +179,7 @@ def meetings(store: Store, season: str) -> pd.DataFrame:
     held = _holders(store, season)
     if held.empty:
         return empty
-    spellings = _spellings(store, held)
+    mine, anywhere = _spellings(store, held)
     by_id = {str(r.asset_id): r for r in held.itertuples()}
 
     rows = store.query("SELECT source, payload FROM feed_rows")
@@ -180,11 +197,8 @@ def meetings(store: Store, season: str) -> pd.DataFrame:
             continue
         first, second, key = read
         day = _day(row)
-        pair = []
-        for side in (first, second):
-            asset_id = next((spellings[k] for k in _keys(side.name)
-                             if k in spellings), None)
-            pair.append(asset_id)
+        pair = [_asset_for(side.name, str(source), mine, anywhere)
+                for side in (first, second)]
         if not all(pair):
             continue
         one, two = (_owner(by_id, held, asset_id, day) for asset_id in pair)

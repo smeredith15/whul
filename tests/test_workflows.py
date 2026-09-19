@@ -109,3 +109,33 @@ def test_the_orphan_save_does_not_swallow_the_unstage(path):
         f"{path.name}: {bad} -- `|| true` hides an unstage that failed, which "
         f"is precisely how the whole repository reached the data branch"
     )
+
+
+def test_the_fixtures_probe_offers_the_sports_the_command_accepts():
+    """Two lists of the same five words, in a YAML file and an argparse call.
+    A sport added to one and not the other is a dropdown entry that fails the
+    run with "invalid choice" -- or a feed nobody can ask about.
+
+    Read off `--help` rather than out of the module, because `--help` is what
+    the workflow is actually talking to.
+    """
+    import contextlib
+    import io
+    import re as _re
+
+    from whul.cli import main
+
+    spec = yaml.safe_load(
+        (Path(__file__).resolve().parents[1]
+         / ".github/workflows/probe-fixtures.yml").read_text())
+    offered = set(spec[True]["workflow_dispatch"]["inputs"]["sport"]["options"])
+
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said), pytest.raises(SystemExit):
+        main(["fixtures", "--help"])
+    found = _re.search(r"--sport \{([^}]+)\}", said.getvalue())
+
+    assert found, "the fixtures command no longer takes --sport"
+    # "all" is the absence of the flag, which the workflow spells out rather
+    # than passing through.
+    assert offered - {"all"} == set(found.group(1).split(","))
