@@ -3988,11 +3988,14 @@ def _figure(anchor: str, title: str, blurb: str, body: str, open_: bool = True) 
     and a page of three open ones is long. Letting them choose once is the only
     answer that suits both.
     """
+    # A figure whose table explains itself gets no paragraph at all, rather
+    # than an empty one holding open a gap where a sentence used to be.
+    said = f'<p class="sub">{blurb}</p>' if blurb else ""
     return f"""
 <details class="figure" id="{anchor}" data-figure="{anchor}"{" open" if open_ else ""}>
   <summary><h2>{escape(title)}</h2></summary>
   <div class="figurebody">
-    <p class="sub">{blurb}</p>
+    {said}
     {body}
   </div>
 </details>"""
@@ -4717,11 +4720,6 @@ def _fixture_board(store, season, latest, profiles, managers) -> str:
     return f"""
 <div class="card" id="fixtures">
   <h2>Who plays whom</h2>
-  <p class="sub">The next {fixtures.BOARD_DAYS} days, every fixture with a
-    drafted asset in it, both sides named. The faces under each side are the
-    assets somebody holds, badged with their owner; click one for its profile.
-    Pick an owner to see only the fixtures they have somebody in. Anything
-    further out is on the roster pages, in each asset's own Next column.</p>
   <div class="chips" role="group" aria-label="Filter by owner">{chips}</div>
   <div class="board">{"".join(blocks)}</div>
   <p class="sub board-empty" hidden>No upcoming fixture has one of theirs in
@@ -4861,14 +4859,7 @@ def _quarters_figure(store, season: str, progression, managers: list[str],
         for i, q in enumerate(started)
     )
     return _figure(
-        "quarters", "Quarter by quarter",
-        "Four seasons inside one. A quarter is mostly whichever sports are in "
-        "season for it, so whoever wins one need not be near the top of "
-        "another — and the running total above cannot show that, because by "
-        "April a strong autumn and a strong spring look identical. Each line "
-        "starts from zero on the day its quarter opened. The boundaries are 15 "
-        "October, 15 January and 15 April; the first quarter is short this "
-        "season because the draft was in August.",
+        "quarters", "Quarter by quarter", "",
         f'<div class="chips" role="group" aria-label="Quarter">{chips}</div>'
         + "".join(panels),
         open_=False,
@@ -4979,11 +4970,8 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 {tiles}
 <div class="card">
   <h2>Standings</h2>
-  <p class="sub">Season-to-date, best ball: each manager's counting slots only.
-    A superscript is what a playoff or European run has earned that is not in
-    the score yet, held until that competition finishes. The bench is what best
-    ball is not counting, and never will. Click a name to see how a score was
-    arrived at.</p>
+  <p class="sub">Season-long best ball. A superscript is what a playoff or
+    European run has earned, held until that competition finishes.</p>
   {_standings_table(today, mvps, managers,
                     pipeline.bench_by_manager(store, season, latest),
                     pipeline.held_by_manager(store, season, latest))}
