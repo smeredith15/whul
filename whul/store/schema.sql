@@ -361,3 +361,43 @@ CREATE TABLE IF NOT EXISTS club_games (
 );
 
 CREATE INDEX IF NOT EXISTS club_games_day_idx ON club_games (season, as_of);
+
+-- Every bid placed in the auction, winning and losing alike.
+--
+-- The roster records what an asset cost; this records what it was *worth to
+-- everyone else*, which is a different fact and the one a price cannot be read
+-- without. A club bought for $200 with nobody else bidding and a club bought
+-- for $200 over a $195 rival are the same number and opposite events, and the
+-- roster cannot tell them apart.
+--
+-- Losing bids are kept, and so are bids on assets nobody ended up holding --
+-- those rows are most of the market information here. `asset_id` is therefore
+-- allowed to be blank: the row is still a bid, still counts toward how
+-- contested that name was, and still says what the manager was willing to pay.
+--
+-- Keyed on the league's own spelling of the name plus the round, because two
+-- different assets share a name often enough to matter: England field a men's
+-- and a women's side, Notre Dame an NCAAF and an NCAAW one, and one manager
+-- won both halves of each pair.
+CREATE TABLE IF NOT EXISTS draft_bids (
+    season      TEXT NOT NULL,
+    round       INTEGER NOT NULL,
+    name_key    TEXT NOT NULL,
+    league      TEXT NOT NULL,
+    manager_id  TEXT NOT NULL,
+    asset_id    TEXT NOT NULL DEFAULT '',
+    name        TEXT NOT NULL,
+    asset_type  TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT '',
+    bid         REAL NOT NULL,
+    -- won / outbid / rejected. A rejected bid never competed for anything --
+    -- the manager's roster was already full when it was read -- so it counts
+    -- toward what they wanted and not toward what anything cost.
+    status      TEXT NOT NULL,
+    note        TEXT NOT NULL DEFAULT '',
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (season, round, name_key, league, manager_id)
+);
+
+CREATE INDEX IF NOT EXISTS draft_bids_asset_idx ON draft_bids (season, asset_id);
+CREATE INDEX IF NOT EXISTS draft_bids_round_idx ON draft_bids (season, round);

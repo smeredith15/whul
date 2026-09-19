@@ -147,6 +147,26 @@ jobs:
         # the site on the next run without anyone having to remember a step.
         run: python -m whul.cli import-rosters --season 2026-27 --write
 
+      - name: Refresh the auction's bid logs
+        # One file a round, with the round in the filename. The roster carries
+        # what each asset cost; these carry what everybody else was willing to
+        # pay, which is the only thing that makes a price readable -- $200 with
+        # nobody else bidding and $200 over a $195 rival are the same figure
+        # and opposite events.
+        #
+        # Not fatal, and after the roster import rather than before it: the
+        # names are matched against what is actually held, so an import that
+        # ran on a stale roster would report matches it should not have made.
+        run: |
+          set -o pipefail
+          logs=$(ls draft/All_Bids_Log_Round_*.xlsx 2>/dev/null || true)
+          if [ -n "$logs" ]; then
+            python -m whul.cli import-bids --season "$SEASON" --write $logs || \
+              echo "  Bid logs not imported. The prices stand; the market does not."
+          else
+            echo "  No bid logs in draft/, so nothing to import."
+          fi
+
       - name: Drop assets the spreadsheet no longer holds
         # Only after the import, and only if it succeeded -- the step above
         # exits non-zero on a sheet it could not read, which stops the job

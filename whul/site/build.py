@@ -3354,13 +3354,17 @@ def _feed_table(rows: list[dict], as_of: str) -> str:
     )
 
 
-def _priced_slots(store, season: str, bars):
-    """Every current slot with what it cost beside what it has returned.
+def _slot_prices(store, season: str, bars):
+    """Every current slot with what it cost, the free ones included.
 
     The price is on the occupancy rather than the asset, so this reads what
     the manager holding the slot today paid for it: a slot that changed hands
     carries the new owner's price, which is the figure that manager is being
     judged on.
+
+    A slot that cost nothing is kept here and dropped by `_priced_slots`. The
+    snake round filled twenty-five of them, and they are the only measurement
+    this league has of what a slot returns for no money at all.
     """
     import pandas as pd
 
@@ -3374,8 +3378,22 @@ def _priced_slots(store, season: str, bars):
     if paid.empty:
         return pd.DataFrame()
     out = bars.merge(paid, on="slot_id", how="inner")
-    out["cost"] = pd.to_numeric(out["cost"], errors="coerce")
-    out = out[out["cost"].notna() & (out["cost"] > 0)]
+    out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0.0)
+    return out
+
+
+def _priced_slots(store, season: str, bars):
+    """The slots somebody paid for, with what the price bought.
+
+    Free slots are out: a share-of-spend model divides by what a category
+    cost, and a slot with no price in it has no share to be judged on.
+    """
+    import pandas as pd
+
+    out = _slot_prices(store, season, bars)
+    if out is None or out.empty:
+        return pd.DataFrame()
+    out = out[out["cost"] > 0]
     if out.empty:
         return out
 
@@ -3452,6 +3470,27 @@ def _cost_table(rows: list[dict]) -> str:
     )
 
 
+def _whole(value) -> str:
+    """A count, or an em dash where the log has nothing to say."""
+    try:
+        return f"{int(float(value)):,}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _rival(value) -> str:
+    """The best losing bid. Nobody is not zero -- say so in words.
+
+    Four fifths of the assets in this auction drew a single bid, so a column
+    of zeroes here would be the normal case wearing the look of a finding.
+    """
+    try:
+        offer = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{offer:,.0f}" if offer > 0 else "<span class='flat'>nobody</span>"
+
+
 def _signed(value: float) -> str:
     """A surplus, with its sign and its colour. Zero is neither."""
     text = f"{value:+,.1f}" if abs(value) >= 0.05 else "0.0"
@@ -3478,7 +3517,9 @@ def _cost_buys(priced, profiles: dict[str, dict], managers) -> str:
                 "<tr>"
                 f'<td>{_asset_button(str(row.asset_id), name, profile=profile)}</td>'
                 f'<td class="owner">{escape(manager_name(row.manager_id))}</td>'
+                f'<td class="num">{_whole(getattr(row, "round", None))}</td>'
                 f'<td class="num">{float(row.cost):,.0f}</td>'
+                f'<td class="num">{_rival(getattr(row, "field", None))}</td>'
                 f'<td class="num">{float(row.score):,.1f}</td>'
                 f'<td class="num">{float(row.expected):,.1f}</td>'
                 f'<td class="num">{_signed(float(row.surplus))}</td>'
@@ -3487,7 +3528,8 @@ def _cost_buys(priced, profiles: dict[str, dict], managers) -> str:
         return (
             f"<h3 class='buys {kind}'>{escape(title)}</h3>"
             "<table class='costs buys'><thead><tr><th>Asset</th><th>Manager</th>"
-            "<th class='num'>Cost</th><th class='num'>Score</th>"
+            "<th class='num'>Round</th><th class='num'>Cost</th>"
+            "<th class='num'>Next best bid</th><th class='num'>Score</th>"
             "<th class='num'>Expected</th><th class='num'>Vs price</th>"
             "</tr></thead>"
             f"<tbody>{''.join(made)}</tbody></table>"
@@ -3495,6 +3537,264 @@ def _cost_buys(priced, profiles: dict[str, dict], managers) -> str:
 
     return (block("Beat their price", best, "over")
             + block("Have not, yet", worst, "under"))
+
+
+def _market_table(frame) -> str:
+    """How each manager bought, before any question of what it scored.
+
+    Every column here was settled on the day the draft ended. That is the
+    point of it: a buy can be judged months before the season that decides
+    whether it was a good one, and three of these five have not started.
+    """
+    if frame is None or frame.empty:
+        return ""
+    body = []
+    for row in frame.sort_values("premium").itertuples():
+        body.append(
+            "<tr>"
+            f'<td><span class="mgr">{escape(manager_name(str(row.manager)))}</span></td>'
+            f'<td class="num">{int(row.slots)}</td>'
+            f'<td class="num">{float(row.spend):,.0f}</td>'
+            f'<td class="num">{int(row.contested)}</td>'
+            f'<td class="num">{float(row.premium):,.0f}</td>'
+            f'<td class="num">{float(row.roster_open):,.0f}</td>'
+            f'<td class="num">{_signed(float(row.over_free))}</td>'
+            "</tr>"
+        )
+    return (
+        "<table class='costs'><thead><tr><th>Manager</th>"
+        "<th class='num'>Bought</th><th class='num'>Spent</th>"
+        "<th class='num'>Contested</th><th class='num'>Bid against nobody</th>"
+        "<th class='num'>Roster still empty</th>"
+        "<th class='num'>Over a free pick</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _round_table(frame) -> str:
+    """What each round cost and what it has returned."""
+    if frame is None or frame.empty:
+        return ""
+    body = []
+    for row in frame.itertuples():
+        contested = int(row.contested)
+        body.append(
+            "<tr>"
+            f'<td><span class="mgr">Round {int(row.round)}</span></td>'
+            f'<td class="num">{int(row.slots)}</td>'
+            f'<td class="num">{float(row.spend):,.0f}</td>'
+            f'<td class="num">{float(row.per_asset):,.0f}</td>'
+            f'<td class="num">{float(row.median):,.0f}</td>'
+            f'<td class="num">{contested}</td>'
+            f'<td class="num">{float(row.premium):,.0f}</td>'
+            f'<td class="num">{float(getattr(row, "roster_open", 0) or 0):,.0f}</td>'
+            f'<td class="num">{float(row.score):,.1f}</td>'
+            f'<td class="num">{float(row.per_hundred):,.1f}</td>'
+            "</tr>"
+        )
+    return (
+        "<table class='costs'><thead><tr><th>Round</th>"
+        "<th class='num'>Assets</th><th class='num'>Spent</th>"
+        "<th class='num'>Per asset</th><th class='num'>Median price</th>"
+        "<th class='num'>Contested</th><th class='num'>Bid against nobody</th>"
+        "<th class='num'>Roster still empty</th>"
+        "<th class='num'>Scored</th><th class='num'>Per 100</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _scarcity_table(frame) -> str:
+    """What each category cost, beside what a free slot in it returned."""
+    if frame is None or frame.empty:
+        return ""
+    body = []
+    for row in frame.itertuples():
+        free = getattr(row, "free_slots", None)
+        free_n = "" if free is None or free != free else f"{int(free)}"
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.category))}</td>"
+            f'<td class="num">{int(row.slots)}</td>'
+            f'<td class="num">{float(row.spend):,.0f}</td>'
+            f'<td class="num">{float(row.per_slot):,.0f}</td>'
+            f'<td class="num">{float(row.scored):,.1f}</td>'
+            f'<td class="num">{float(row.replacement):,.1f}'
+            f'{f" <span class=ago>({free_n})</span>" if free_n else ""}</td>'
+            f'<td class="num">{_signed(float(row.over_free))}</td>'
+            f'<td class="num">{float(row.spread):,.1f}</td>'
+            "</tr>"
+        )
+    return (
+        "<table class='costs'><thead><tr><th>Category</th>"
+        "<th class='num'>Slots</th><th class='num'>Spent</th>"
+        "<th class='num'>Per slot</th><th class='num'>A paid slot</th>"
+        "<th class='num'>A free one</th><th class='num'>Difference</th>"
+        "<th class='num'>Best over free</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _costs(store, season: str, bars, profiles: dict[str, dict],
+           managers: list[str]) -> str:
+    """The auction, in one collapsed section, in two halves.
+
+    The halves answer different questions and only one of them can be answered
+    yet. *How they bought* was settled the day the draft ended and is complete
+    now. *What it returned* needs seasons that in September have mostly not
+    started -- six of these fifteen categories score nothing at all -- so those
+    tables will say more in March than they do today, and saying so is better
+    than a page of zeroes that reads like a verdict.
+    """
+    from whul import draft
+
+    everything = _slot_prices(store, season, bars)
+    priced = _priced_slots(store, season, bars)
+    valued = draft.value(store, season, priced, everything=everything)
+
+    # The log is what the first three tables are made of, so its absence is
+    # the gate rather than an empty table: a season imported before the bid
+    # logs existed still has prices, and they are still worth showing.
+    facts = draft.market(store, season)
+    logged = not facts.empty
+    bought = _market_table(draft.by_manager(valued, managers)) if logged else ""
+    rounds = _round_table(draft.by_round(facts, valued)) if logged else ""
+    scarcity = _scarcity_table(draft.categories(everything))
+    body = "" if logged else (
+        "<p class='sub'>No bid log has been imported for this season, so the "
+        "prices below are winning bids with nothing beside them: what the "
+        "field would have paid, how contested each was and which round it "
+        "went in are all in that file and nowhere else.</p>"
+    )
+    if bought:
+        body += (
+            "<h3 class='buys'>How they bought</h3>"
+            "<p class='sub'>Every figure in this table was settled on the day "
+            "the draft ended. <em>Bid against nobody</em> is the money spent "
+            "above the next-best offer, which in a sealed auction is what a "
+            "manager's own number cost them -- four assets in five drew a "
+            "single bid, so for most of the board it is the whole price less "
+            "a dollar. <em>Roster still empty</em> averages how many of their "
+            "sixty slots were unfilled at the moment of each buy -- context "
+            "for a heavy price rather than a verdict on one. Nothing here "
+            "counts a buy as forced: nobody knew how many rounds there would "
+            "be, and slots were left open on purpose for the snake.</p>"
+            + bought
+        )
+    if rounds:
+        body += (
+            "<h3 class='buys'>Round by round</h3>"
+            "<p class='sub'>The rounds are not alike, and the third least "
+            "of all: the board thinned, the rollover did not, and what was "
+            "left cost half as much again per asset as round one and nearly "
+            "twice what round two did. That is where heavy spending shows up "
+            "-- a manager still holding money and slots when the cheap assets "
+            "had gone. What a dollar bought changes with both the budget and "
+            "the board, and one season cannot separate the two, so this says "
+            "what each round went on rather than converting between them. "
+            "This is the auction's money, not the roster's: three assets "
+            "changed hands before the season opened and one was released, and "
+            "a round is charged what it actually cost at the time.</p>"
+            + rounds
+        )
+    contested = _contested_table(facts, profiles)
+    if contested:
+        live = int(facts["contested"].sum())
+        body += (
+            "<h3 class='buys'>Where there was a market</h3>"
+            f"<p class='sub'>An auction discovers a price when two people want "
+            f"the same thing, and across three rounds that happened "
+            f"{live} times out of {len(facts)}. Everywhere else a winning bid "
+            "is one manager's opinion with nothing to check it against. These "
+            "are the most-wanted assets on the board, by what the five of them "
+            "put up between them.</p>"
+            + contested
+        )
+    if scarcity:
+        body += (
+            "<h3 class='buys'>What each category was worth</h3>"
+            "<p class='sub'>The snake round is the experiment nobody designed: "
+            "twenty-five slots filled at no cost, in the same categories as "
+            "everything else. <em>A free one</em> is what those returned, with "
+            "how many there were beside it, and it is the only measurement "
+            "this league has of what a slot is worth for nothing. A category "
+            "where the difference is negative is one where the money has so "
+            "far bought less than the snake did. Where a category has no free "
+            "pick the worst rostered asset stands in, which understates it: "
+            "the first undrafted asset sits below the last drafted one.</p>"
+            + scarcity
+        )
+    body += (
+        "<h3 class='buys'>What it returned</h3>"
+        "<p class='sub'>A price is only comparable inside its own category -- "
+        "the five of them spent far more per NFL slot than per Olympics slot "
+        "-- so <em>expected</em> is a slot's share of what its category cost, "
+        "applied to what that category has scored, and <em>vs price</em> is "
+        "what it has returned above or below that. The shares sum to the "
+        "category, so a league-wide surplus of zero is the arithmetic working "
+        "rather than a finding.</p>"
+        + _cost_table(_cost_rows(valued, managers))
+        + _cost_buys(valued, profiles, managers)
+    )
+    return _figure(
+        "costs", "What it cost",
+        "Closed by default, and off to one side: this is an argument about "
+        "the auction, not part of the standings. The first tables are about "
+        "the buying and are already complete; the last are about the returns "
+        "and are four weeks into a year.",
+        body, open_=False,
+    )
+
+
+#: How many contested assets the market table names. Sixty of the board's two
+#: hundred and seventy-seven drew a second bid at all, so this is a real list
+#: rather than a top slice of a long one.
+CONTESTED_SHOWN = 12
+
+
+def _contested_table(facts, profiles: dict[str, dict]) -> str:
+    """The assets a second manager bid on -- the only real prices in the file.
+
+    An auction discovers a price by two people wanting the same thing, and in
+    three rounds that happened sixty times out of two hundred and seventy-seven.
+    Everywhere else the winning bid is one manager's opinion with nothing to
+    check it against, so these rows are worth separating out: they are the part
+    of the draft that behaved like a market.
+    """
+    if facts is None or facts.empty:
+        return ""
+    live = facts[facts["contested"] == 1].copy()
+    if live.empty:
+        return ""
+    live = live.sort_values(["demand", "bidders"], ascending=False)
+    body = []
+    for row in live.head(CONTESTED_SHOWN).itertuples():
+        profile = profiles.get(str(row.asset_id), {})
+        name = str(profile.get("name") or row.name)
+        cell = (_asset_button(str(row.asset_id), name, profile=profile)
+                if row.asset_id else escape(name))
+        body.append(
+            "<tr>"
+            f"<td>{cell}</td>"
+            f'<td class="owner">{escape(manager_name(str(row.winner)))}</td>'
+            f'<td class="num">{int(row.round)}</td>'
+            f'<td class="num">{int(row.bidders)}</td>'
+            f'<td class="num">{float(row.demand):,.0f}</td>'
+            f'<td class="num">{float(row.paid):,.0f}</td>'
+            f'<td class="num">{float(row.field):,.0f}</td>'
+            f'<td class="num">{float(row.premium):,.0f}</td>'
+            "</tr>"
+        )
+    return (
+        "<table class='costs buys'><thead><tr><th>Asset</th><th>Won by</th>"
+        "<th class='num'>Round</th><th class='num'>Bidders</th>"
+        "<th class='num'>Bid in total</th><th class='num'>Paid</th>"
+        "<th class='num'>Next best</th><th class='num'>Margin</th>"
+        "</tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
 
 
 def _head_to_head(store, season: str, profiles: dict[str, dict],
@@ -4567,21 +4867,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         _head_to_head(store, season, profiles, managers),
         open_=False,
     )
-    priced = _priced_slots(store, season, bars)
-    costs_figure = _figure(
-        "costs", "What it cost",
-        "Closed by default, and off to one side: this is an argument about "
-        "the auction, not part of the standings. A price is only comparable "
-        "inside its own category -- the five of them spent far more per NFL "
-        "slot than per Olympics slot -- so <em>expected</em> is a slot's share "
-        "of what its category cost, applied to what that category has scored, "
-        "and <em>vs price</em> is what it has returned above or below that. "
-        "The shares sum to the category, so a league-wide surplus of zero is "
-        "the arithmetic working rather than a finding.",
-        _cost_table(_cost_rows(priced, managers))
-        + _cost_buys(priced, profiles, managers),
-        open_=False,
-    )
+    costs_figure = _costs(store, season, bars, profiles, managers)
     results_body = (
         _figure_index([("progression", "Progression"),
                        ("slots", "Every counting slot"),

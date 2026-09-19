@@ -742,6 +742,34 @@ def cmd_import_rosters(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_bids(args: argparse.Namespace) -> int:
+    """Read the auction's bid logs -- the losing bids as well as the winning.
+
+    One file a round, with the round in the filename. The roster already knows
+    what everything cost; this is the only record of what anybody else was
+    willing to pay, and without it a price cannot be read.
+    """
+    from whul.draft_bids import run
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    try:
+        report = run(store, args.season, args.paths, dry_run=not args.write)
+    except (FileNotFoundError, ImportError) as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
+
+    print(f"\n{report}\n")
+    if report.problems:
+        print("Nothing was written.\n", file=sys.stderr)
+        return 1
+    if not args.write:
+        print("Looks right? Re-run with --write.\n")
+    else:
+        print("Next: `python -m whul.cli site`\n")
+    return 0
+
+
 def cmd_admin(args: argparse.Namespace) -> int:
     """Serve the local admin page.
 
@@ -4010,6 +4038,20 @@ def main(argv: list[str] | None = None) -> int:
         help="actually remove them; without it the run only reports",
     )
     prune.set_defaults(func=cmd_prune_assets)
+
+    bids = sub.add_parser(
+        "import-bids",
+        help="read the auction bid logs, losing bids included",
+    )
+    bids.add_argument("paths", nargs="+", metavar="file",
+                      help="one log a round; the round comes from the filename")
+    bids.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    bids.add_argument("--season", default="2026-27", help="season to import into")
+    bids.add_argument(
+        "--write", action="store_true",
+        help="actually write; without it the run only reports what it found",
+    )
+    bids.set_defaults(func=cmd_import_bids)
 
     admin = sub.add_parser("admin", help="local page for trades and corrections")
     admin.add_argument("--db", default="data/whul.sqlite3", help="database path")

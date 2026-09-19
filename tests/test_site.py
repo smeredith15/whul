@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from whul import simulate
+from whul import draft, simulate
 from whul.site import charts, images, rulebook, theme
 from whul.site.build import build
 from whul.store import open_store
@@ -4470,3 +4470,89 @@ def test_a_season_with_no_meetings_says_so(tmp_path):
     said = site_build._head_to_head(store, "2026-27", {}, [])
 
     assert "No two managers" in said
+
+
+# --- the auction's own record, on the same page -----------------------------
+
+def _bid_rows(store, *rows):
+    """``(name, manager, bid, status, round, category, asset_id)`` in the ledger."""
+    store.upsert("draft_bids", [
+        {"season": "2026-27", "round": rnd, "name_key": name.lower(),
+         "league": category, "manager_id": manager, "asset_id": asset,
+         "name": name, "asset_type": "Player", "category": category,
+         "bid": bid, "status": status, "note": "", "recorded_at": "2026-08-21"}
+        for name, manager, bid, status, rnd, category, asset in rows
+    ], keys=("season", "round", "name_key", "league", "manager_id"))
+    store.conn.commit()
+    return store
+
+
+def test_a_free_slot_is_kept_for_the_market_and_dropped_for_the_share(tmp_path):
+    """Two frames from one query. A share-of-spend model cannot judge a slot
+    with no price in it, and the replacement level cannot be measured without
+    one."""
+    store = _priced_store(tmp_path,
+                          ("s1", "JM", "NFL", 100.0), ("s2", "SS", "NFL", 0.0))
+    bars = _bars(("s1", "JM", "NFL", 10.0, 1), ("s2", "SS", "NFL", 4.0, 1))
+
+    assert len(site_build._slot_prices(store, "2026-27", bars)) == 2
+    assert list(site_build._priced_slots(store, "2026-27", bars)["slot_id"]) == ["s1"]
+
+
+def test_a_buy_carries_the_round_and_what_the_field_offered(tmp_path):
+    store = _bid_rows(
+        _priced_store(tmp_path, ("s1", "JM", "NFL", 100.0),
+                      ("s2", "SS", "NFL", 60.0)),
+        ("Alpha", "JM", 100, "won", 2, "NFL", "a-s1"),
+        ("Alpha", "SS", 75, "outbid", 2, "NFL", "a-s1"),
+        ("Beta", "SS", 60, "won", 3, "NFL", "a-s2"),
+    )
+    priced = site_build._priced_slots(store, "2026-27", _bars(
+        ("s1", "JM", "NFL", 10.0, 1), ("s2", "SS", "NFL", 4.0, 1)))
+    out = site_build._cost_buys(
+        draft.value(store, "2026-27", priced), {}, ["JM", "SS"])
+
+    assert "<th class='num'>Round</th>" in out
+    assert "<th class='num'>Next best bid</th>" in out
+    assert ">75<" in out
+    # The uncontested buy says so in words. Four assets in five drew a single
+    # bid, so a column of zeroes here would be the normal case wearing the
+    # look of a finding.
+    assert "nobody" in out
+
+
+def test_a_market_table_is_left_out_when_no_log_was_imported(tmp_path):
+    """Every season before the bid logs existed. The prices are still there
+    and the page says what it can."""
+    store = _priced_store(tmp_path, ("s1", "JM", "NFL", 100.0))
+    bars = _bars(("s1", "JM", "NFL", 10.0, 1))
+    out = site_build._costs(store, "2026-27", bars, {}, ["JM"])
+
+    assert "No bid log has been imported" in out
+    assert "How they bought" not in out
+    # And what does not need the log is still there.
+    assert "What it returned" in out
+
+
+def test_the_market_tables_appear_once_a_log_is_there(tmp_path):
+    store = _bid_rows(
+        _priced_store(tmp_path, ("s1", "JM", "NFL", 100.0),
+                      ("s2", "SS", "NFL", 0.0)),
+        ("Alpha", "JM", 100, "won", 1, "NFL", "a-s1"),
+        ("Alpha", "SS", 40, "outbid", 1, "NFL", "a-s1"),
+    )
+    out = site_build._costs(store, "2026-27", _bars(
+        ("s1", "JM", "NFL", 10.0, 1), ("s2", "SS", "NFL", 4.0, 1)), {}, ["JM", "SS"])
+
+    assert "How they bought" in out
+    assert "Round by round" in out
+    assert "Where there was a market" in out
+    assert "What each category was worth" in out
+    # Still one collapsible section, not five.
+    assert out.count("<details") == 1
+
+
+def test_a_rival_that_does_not_exist_is_not_a_bid_of_zero():
+    assert "nobody" in site_build._rival(0)
+    assert site_build._rival(None) == "—"
+    assert site_build._rival(75) == "75"

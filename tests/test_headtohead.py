@@ -272,3 +272,56 @@ def test_a_feeds_own_name_does_not_leak_into_another_feed(tmp_path):
     store.conn.commit()
 
     assert headtohead.meetings(store, SEASON).empty
+
+
+TWO_CLUBS_NHL = [("a-oilers", "Edmonton Oilers", "NHL", "JM"),
+                 ("a-flames", "Calgary Flames", "NHL", "SS")]
+
+
+def test_a_feed_that_names_its_winner_outright_is_read(tmp_path):
+    """The NHL arrives this way. Its fixture feed states the winner in a field
+    of its own and puts numbers beside it that are a reading of the format
+    rather than a documented score, so the numbers are dropped where they
+    disagree -- leaving a result with a winner and no score, which is still a
+    meeting."""
+    store = _store(tmp_path, TWO_CLUBS_NHL, [
+        ("nhl-games", {"match_uid": "h1", "game_date": "2026-10-08",
+                       "home_team": "Edmonton Oilers",
+                       "away_team": "Calgary Flames",
+                       "home_score": None, "away_score": None,
+                       "won": "away", "competition": "NHL"}),
+    ])
+
+    out = headtohead.meetings(store, SEASON)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert (row["a_name"], row["b_name"]) == ("Edmonton Oilers", "Calgary Flames")
+    assert row["won"] == "b"
+
+
+def test_a_named_winner_does_not_override_a_score_that_is_there(tmp_path):
+    """Where the feed kept both, the score is the finer record: it says by how
+    much. The named winner is what fills the gap, not what replaces it."""
+    store = _store(tmp_path, TWO_CLUBS_NHL, [
+        ("nhl-games", {"match_uid": "h2", "game_date": "2026-10-09",
+                       "home_team": "Edmonton Oilers",
+                       "away_team": "Calgary Flames",
+                       "home_score": 3, "away_score": 1,
+                       "won": "home", "competition": "NHL"}),
+    ])
+
+    row = headtohead.meetings(store, SEASON).iloc[0]
+    assert row["won"] == "a"
+    assert (row["a_score"], row["b_score"]) == (3, 1)
+
+
+def test_a_named_draw_is_neither_side_winning(tmp_path):
+    store = _store(tmp_path, TWO_CLUBS_NHL, [
+        ("nhl-games", {"match_uid": "h3", "game_date": "2026-10-10",
+                       "home_team": "Edmonton Oilers",
+                       "away_team": "Calgary Flames",
+                       "home_score": None, "away_score": None,
+                       "won": "draw", "competition": "NHL"}),
+    ])
+    assert headtohead.meetings(store, SEASON).iloc[0]["won"] == "draw"

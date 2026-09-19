@@ -37,6 +37,19 @@ def payload(*records: str) -> str:
 SOON = date(2026, 9, 20)
 
 
+def window_of(upcoming):
+    """Adapt a stub that only cares about fixtures to ``load_window``.
+
+    One fetch now yields both halves -- the games ahead and the games already
+    played -- so a test about what a fixture becomes hands back an empty
+    played frame rather than pretending the feed carries nothing.
+    """
+    def load_window(sport, days=None, verbose=True):
+        return upcoming(sport), pd.DataFrame()
+
+    return load_window
+
+
 # --- the parse --------------------------------------------------------------
 
 def test_an_upcoming_match_is_read_with_its_teams_and_date():
@@ -265,8 +278,8 @@ def test_only_the_rostered_side_of_a_tie_becomes_a_row(monkeypatch):
     raw = payload(header("ENGLAND: Premier League"),
                   match("a1", "Arsenal", "Chelsea", SOON))
     monkeypatch.setattr(
-        feed, "load_upcoming",
-        lambda sport, days=None, verbose=True: pd.DataFrame(list(feed.iter_fixtures(raw))),
+        feed, "load_window",
+        window_of(lambda sport: pd.DataFrame(list(feed.iter_fixtures(raw)))),
     )
     fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
                             leagues=["Premier League"], verbose=False)
@@ -282,7 +295,7 @@ def test_a_sport_that_fails_does_not_lose_the_others(monkeypatch):
     def explode(sport, days=None, verbose=True):
         raise RuntimeError("feed down")
 
-    monkeypatch.setattr(feed, "load_upcoming", explode)
+    monkeypatch.setattr(feed, "load_window", explode)
     # Must return rather than raise: a fixture is a convenience on a page.
     assert fixtures.from_flashscore(
         store, "2026-27", date(2026, 9, 8), verbose=False) == {}
@@ -424,9 +437,8 @@ def test_a_tennis_fixture_reaches_the_player_and_shows_the_round(monkeypatch):
         tennis_match("t1", "sinner-jannik", "alcaraz-carlos", SOON),
     )
     monkeypatch.setattr(
-        feed, "load_upcoming",
-        lambda sport, days=None, verbose=True:
-            pd.DataFrame(list(feed.iter_tennis_fixtures(raw))),
+        feed, "load_window",
+        window_of(lambda sport: pd.DataFrame(list(feed.iter_tennis_fixtures(raw)))),
     )
     fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
                              leagues=["ATP"], verbose=False)
@@ -484,12 +496,16 @@ def pull_soccer(store, monkeypatch, raw, leagues, sport=None):
     sports apart cannot test that it does.
     """
     only = feed.SPORTS[leagues[0]] if sport is None else sport
-    monkeypatch.setattr(
-        feed, "load_upcoming",
-        lambda s, days=None, verbose=True:
-            pd.DataFrame(list(feed.iter_fixtures(raw))) if s == only
-            else pd.DataFrame(),
-    )
+
+    def window(s, days=None, verbose=True):
+        # Both halves, as the real one returns them: the payload that carries
+        # next week's fixtures carries last week's results.
+        if s != only:
+            return pd.DataFrame(), pd.DataFrame()
+        return (pd.DataFrame(list(feed.iter_fixtures(raw))),
+                pd.DataFrame(list(feed.iter_results(raw))))
+
+    monkeypatch.setattr(feed, "load_window", window)
     # The season pages are a separate fetch and a separate test; stubbed here
     # so a unit test never reaches the network.
     monkeypatch.setattr(
@@ -644,8 +660,8 @@ def test_the_season_page_fills_a_league_the_week_cannot_reach(monkeypatch):
              league="NHL")
     raw = payload(page_record("h1", "Edmonton Oilers", "Calgary Flames",
                               date(2026, 10, 8)))
-    monkeypatch.setattr(feed, "load_upcoming",
-                        lambda s, days=None, verbose=True: pd.DataFrame())
+    monkeypatch.setattr(feed, "load_window",
+                        window_of(lambda s: pd.DataFrame()))
     monkeypatch.setattr(
         feed, "load_season",
         lambda league, session=None, verbose=True:
@@ -666,12 +682,13 @@ def test_the_week_and_the_season_page_do_not_double_a_match(monkeypatch):
              league="NHL")
     both = payload(match("h1", "Edmonton Oilers", "Calgary Flames", SOON))
     monkeypatch.setattr(
-        feed, "load_upcoming",
-        lambda s, days=None, verbose=True:
-            pd.DataFrame(list(feed.iter_fixtures(
-                payload(header("USA: NHL"),
-                        match("h1", "Edmonton Oilers", "Calgary Flames", SOON)))))
-            if s == feed.SPORTS["NHL"] else pd.DataFrame(),
+        feed, "load_window",
+        window_of(
+            lambda s:
+                pd.DataFrame(list(feed.iter_fixtures(
+                    payload(header("USA: NHL"),
+                            match("h1", "Edmonton Oilers", "Calgary Flames", SOON)))))
+                if s == feed.SPORTS["NHL"] else pd.DataFrame()),
     )
     monkeypatch.setattr(
         feed, "load_season",
@@ -693,12 +710,13 @@ def test_a_season_page_that_will_not_load_loses_nothing_else(monkeypatch):
         raise RuntimeError("403")
 
     monkeypatch.setattr(
-        feed, "load_upcoming",
-        lambda s, days=None, verbose=True:
-            pd.DataFrame(list(feed.iter_fixtures(
-                payload(header("USA: NHL"),
-                        match("h1", "Edmonton Oilers", "Calgary Flames", SOON)))))
-            if s == feed.SPORTS["NHL"] else pd.DataFrame(),
+        feed, "load_window",
+        window_of(
+            lambda s:
+                pd.DataFrame(list(feed.iter_fixtures(
+                    payload(header("USA: NHL"),
+                            match("h1", "Edmonton Oilers", "Calgary Flames", SOON)))))
+                if s == feed.SPORTS["NHL"] else pd.DataFrame()),
     )
     monkeypatch.setattr(feed, "load_season", boom)
     fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
@@ -755,3 +773,108 @@ def test_a_club_that_matched_nothing_is_told_what_the_feed_did_show(capsys):
     # Nothing said about a club that found its fixture.
     _say_what_the_feed_called_them(wanted, lambda key: True, spoken)
     assert capsys.readouterr().out == ""
+
+
+# --- the other half of the payload: games already played --------------------
+
+def result(uid, home, away, when, code, here=None, there=None) -> str:
+    """A completed record, as the day feed serves one."""
+    scored = "" if here is None else f"AG÷{here}¬AH÷{there}¬"
+    return (f"AA÷{uid}¬AD÷{stamp(when)}¬AC÷3¬"
+            f"AE÷{home}¬AF÷{away}¬{scored}AS÷{code}¬")
+
+
+PLAYED = date(2026, 9, 6)
+
+
+def test_a_finished_match_is_read_as_a_result():
+    """The inverse of `iter_fixtures`, off the same payload: what it throws
+    away is the only record of who beat whom the NHL has."""
+    raw = payload(header("USA: NHL"),
+                  match("h1", "Edmonton Oilers", "Calgary Flames", SOON),
+                  result("h2", "Boston Bruins", "Montreal Canadiens",
+                         PLAYED, "1", 4, 2))
+    got = list(feed.iter_results(raw))
+    assert len(got) == 1
+    assert got[0]["home_team"] == "Boston Bruins"
+    assert got[0]["away_team"] == "Montreal Canadiens"
+    assert got[0]["game_date"] == "2026-09-06"
+    assert got[0]["competition"] == "NHL"
+    assert got[0]["won"] == "home"
+    assert (got[0]["home_score"], got[0]["away_score"]) == (4, 2)
+
+
+def test_the_winner_is_the_feeds_own_code_and_not_the_score():
+    """`AG`/`AH` are a reading of the format rather than a documented fact.
+    Two numbers that disagree with the winner the feed named separately are
+    two numbers that are not the score, so the winner survives and they do
+    not."""
+    raw = payload(header("USA: NHL"),
+                  result("h3", "Boston Bruins", "Montreal Canadiens",
+                         PLAYED, "2", 4, 2))
+    got = list(feed.iter_results(raw))
+    assert got[0]["won"] == "away"
+    assert got[0]["home_score"] is None and got[0]["away_score"] is None
+
+
+def test_a_result_the_feed_will_not_name_a_winner_for_is_not_a_result():
+    raw = payload(header("USA: NHL"),
+                  result("h4", "Boston Bruins", "Montreal Canadiens",
+                         PLAYED, "", 4, 2))
+    assert list(feed.iter_results(raw)) == []
+
+
+def test_a_draw_keeps_its_equal_score():
+    raw = payload(header("ENGLAND: Premier League"),
+                  result("a9", "Arsenal", "Chelsea", PLAYED, "3", 1, 1))
+    got = list(feed.iter_results(raw))
+    assert got[0]["won"] == "draw"
+    assert (got[0]["home_score"], got[0]["away_score"]) == (1, 1)
+
+
+def test_a_played_game_reaches_the_ledger_under_the_rosters_spelling(monkeypatch):
+    """What the head-to-head table reads. The feed's own spelling of a club is
+    not the roster's, and a ledger nothing can look a name up in is a ledger
+    nothing reads."""
+    from whul.store import feed_ledger
+
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    raw = payload(header("USA: NHL"),
+                  result("h5", "Edmonton", "Calgary Flames", PLAYED, "1", 3, 1))
+    pull_soccer(store, monkeypatch, raw, ["NHL"])
+
+    kept = feed_ledger.load(store, "nhl-games")
+    assert len(kept) == 1
+    assert kept.iloc[0]["home_team"] == "Edmonton Oilers"
+    assert kept.iloc[0]["away_team"] == "Calgary Flames"
+    assert kept.iloc[0]["won"] == "home"
+
+
+def test_a_game_between_two_clubs_nobody_holds_is_not_written_down(monkeypatch):
+    """One hockey payload is thirty leagues. Keeping all of it would file a
+    night in Kazakhstan under the NHL."""
+    from whul.store import feed_ledger
+
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    raw = payload(header("USA: NHL"),
+                  result("h6", "Barys Astana", "Avangard Omsk", PLAYED, "1", 3, 1))
+    pull_soccer(store, monkeypatch, raw, ["NHL"])
+    assert feed_ledger.load(store, "nhl-games").empty
+
+
+def test_a_league_with_a_game_source_of_its_own_does_not_get_a_second(monkeypatch):
+    """Only the leagues in `RESULTS_FOR` are recorded here. Everywhere else
+    already has a source that knows what a game is, and a second copy would
+    double every meeting in the table."""
+    from whul.store import feed_ledger
+
+    store = open_store(":memory:")
+    rostered(store, "team-arsenal", "Team", "Arsenal")
+    raw = payload(header("ENGLAND: Premier League"),
+                  result("a1", "Arsenal", "Chelsea", PLAYED, "1", 2, 0))
+    pull_soccer(store, monkeypatch, raw, ["Premier League"])
+    assert feed_ledger.load(store, "nhl-games").empty
