@@ -695,6 +695,123 @@ def _postseason() -> Rules:
     )
 
 
+# --- shapes for a bigger league -------------------------------------------
+#
+# None of this is in force. It is written down because it was worked out
+# carefully, and a decision worked out carefully and then remembered from a
+# conversation is a decision that gets re-litigated every August.
+
+#: What a seat in the top flight is set to return, in expectation, when the
+#: league runs two tiers at different buy-ins. Everything else in that
+#: structure falls out of it, which is the point: fixed percentages only
+#: balance at one ratio of tier sizes, and the sizes are not known in advance.
+TOP_FLIGHT_PREMIUM = 0.06
+
+#: Champion / runner-up / third, as shares of their own flight's prize pool.
+TOP_FLIGHT_PLACES = (0.72, 0.21, 0.07)
+BOTTOM_FLIGHT_PLACES = (0.63, 0.37)
+
+#: A quarter's prize, in every structure. Held constant on purpose: it is what
+#: makes the quarters mean the same thing however the league is organised, and
+#: it is always league-wide, never inside a division.
+QUARTER_SHARE = 0.05
+
+
+def _two_tier_shares(n_top: int, n_bot: int,
+                     top_buy: float = 100.0, bot_buy: float = 50.0):
+    """Shares of the whole pot for a two-tier league of these sizes.
+
+    Derived rather than declared. A fixed table balances at one ratio and
+    inverts either side of it: 44/13/4 to the top and 12/7 to the bottom is
+    right at six and five, and at seven and four the same numbers hand the
+    bottom flight a better return than the top, because nineteen per cent of
+    the pot split four ways beats it split five ways.
+    """
+    pot = n_top * top_buy + n_bot * bot_buy
+    quarters = 4 * QUARTER_SHARE
+    # The top flight is assumed to take about seven quarters in ten, being the
+    # stronger field. It is an assumption and it only moves the split a little.
+    top_pool = (n_top * top_buy * (1 + TOP_FLIGHT_PREMIUM)
+                - pot * quarters * 0.70) / pot
+    return top_pool, 1 - quarters - top_pool
+
+
+def _structures() -> Rules:
+    top, bottom = _two_tier_shares(6, 5)
+    t = [top * share for share in TOP_FLIGHT_PLACES]
+    b = [bottom * share for share in BOTTOM_FLIGHT_PLACES]
+    return Rules(
+        "structures", "If the league ever plays for money",
+        "Nothing here is in force and nothing was played for this season. It "
+        "is written down because it was worked out rather than guessed, and a "
+        "decision remembered from a conversation is a decision argued again "
+        "every August. Which shape applies depends on how many managers turn "
+        "up, which is not knowable until they do.",
+        [
+            Heading("In every shape"),
+            f"Each quarter — {num(QUARTER_SHARE * 100)}% of the pot, "
+            f"{num(QUARTER_SHARE * 400)}% across the four",
+            "Always league-wide, never inside a division: the quarters are "
+            "what make two divisions one league",
+            Heading("One division (eight managers or fewer)"),
+            "Everyone pays the same, so every split returns the buy-in on "
+            "average — the shape is only about how many people still have "
+            "something to play for in April",
+            "Under seven managers — champion 58%, runner-up 22%",
+            "Seven or more — champion 50%, runner-up 18%, third 12%",
+            "Two places under seven because three of five is most of the "
+            "field, and a third place that pays back most of the buy-in is a "
+            "refund rather than a prize",
+            Heading("Two tiers, promotion and relegation (nine or more)"),
+            "$100 in the top flight, $50 in the bottom",
+            f"A top-flight seat is set to return {num(TOP_FLIGHT_PREMIUM * 100)}% "
+            "in expectation; the bottom flight takes the rest, which lands "
+            "between −12% and −21% depending on the sizes",
+            f"At six and five that is champion {round(t[0] * 100)}%, runner-up "
+            f"{round(t[1] * 100)}%, third {round(t[2] * 100)}% in the top "
+            f"flight, and champion {round(b[0] * 100)}%, runner-up "
+            f"{round(b[1] * 100)}% in the bottom",
+            "The percentages are derived from the sizes each year, not fixed",
+            Heading("Two parallel divisions of equal standing"),
+            "Everyone pays $100; the divisions exist to keep each one small, "
+            "not to rank them",
+            "6% to the best total score in the league, either division",
+            "The remaining 74% split between divisions in proportion to what "
+            "each put in, then 76% to that division's champion and 24% to its "
+            "runner-up",
+            "Proportional because the bigger division's title is both worth "
+            "more and harder to win, and those cancel exactly — so division "
+            "size changes nobody's expected return",
+        ],
+        [
+            "Why the quarters are the same everywhere. They are the one part "
+            "of the pot a manager out of the title race is still playing for, "
+            "and in a two-tier league they are the only prize the bottom "
+            "flight competes for on level terms. Prorating them by buy-in was "
+            "considered and rejected: it takes from the flight paying half and "
+            "gives to the flight paying full, which is the opposite of what it "
+            "looks like it does.",
+            "Why the bottom flight still loses money. It puts in about 29% of "
+            "the pot and can reach at most 30% of it, so a bottom-flight "
+            "season is a bad bet in cash terms. That is deliberate — it is "
+            "what relegation costs — and the real prize there is promotion. "
+            "Making it an even bet would need a buy-in nearer $23 than $50.",
+            "Why a third place at 4% is only just worth having. It is about "
+            "$34 against a $100 buy-in. Folding it into the runner-up would "
+            "pay two places out of six rather than three, which may read "
+            "better.",
+            "The quarters are already computed and shown on the standings "
+            "page. Nothing on that page mentions money, because none of this "
+            "is in force.",
+        ],
+    )
+
+
+def structures() -> list[Rules]:
+    """League shapes and prize splits, written down but not in force."""
+    return [_structures()]
+
+
 def sections() -> list[Rules]:
     """Every asset type, in roster order."""
     return [

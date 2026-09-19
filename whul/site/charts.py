@@ -939,6 +939,25 @@ SCRIPT = """\
         });
       });
   }
+  // --- the quarter panels -----------------------------------------------
+  // One at a time, and exactly one: these are not filters but pages of the
+  // same thing, so pressing a chip moves to that quarter rather than adding
+  // it. The live quarter is the one open on arrival.
+  document.querySelectorAll('.chip[data-filter="quarter"]').forEach(
+    function (chip) {
+      chip.addEventListener('click', function () {
+        var want = chip.dataset.value;
+        document.querySelectorAll('.quarterpanel').forEach(function (panel) {
+          panel.hidden = panel.dataset.quarter !== want;
+        });
+        document.querySelectorAll('.chip[data-filter="quarter"]').forEach(
+          function (other) {
+            other.setAttribute('aria-pressed',
+              other.dataset.value === want ? 'true' : 'false');
+          });
+      });
+    });
+
   bindChips('h2hleague', pickedH2H);
   bindChips('h2hmanager', pickedMgr);
 

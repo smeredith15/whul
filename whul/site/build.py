@@ -4730,6 +4730,151 @@ def _fixture_board(store, season, latest, profiles, managers) -> str:
 """
 
 
+#: The condensed chart beside the quarterly table. Half the width of the
+#: progression chart because it sits in a column, and shorter because a quarter
+#: of a season has a quarter of the shape to show.
+QUARTER_CHART = (520, 260)
+
+
+def _quarter_runs(progression, managers: list[str], quarter):
+    """Each manager's gain inside one quarter, day by day, from zero.
+
+    Rebased rather than absolute. The season total says who is winning the
+    league, which the standings above already say; what a quarter asks is who
+    has gained most *since it opened*, and a line that starts at last quarter's
+    total buries that under the answer to a different question.
+    """
+    import pandas as pd
+
+    if progression is None or progression.empty:
+        return [], {}
+    inside = progression[(progression["as_of"] >= quarter.start)
+                         & (progression["as_of"] <= quarter.end)]
+    if inside.empty:
+        return [], {}
+    days = sorted(inside["as_of"].unique())
+    # The last day before the quarter opened is the baseline. Q1 has none --
+    # the league year starts with it -- so its baseline is zero, which is also
+    # what a manager had.
+    before = progression[progression["as_of"] < quarter.start]
+    base = {}
+    if not before.empty:
+        last = before["as_of"].max()
+        base = {str(r.manager_id): float(r.total)
+                for r in before[before["as_of"] == last].itertuples()}
+    runs = {}
+    for manager in managers:
+        mine = inside[inside["manager_id"] == manager].set_index("as_of")
+        start = base.get(manager, 0.0)
+        runs[manager] = [
+            float(mine.loc[d, "total"]) - start if d in mine.index else 0.0
+            for d in days
+        ]
+    return days, runs
+
+
+def _quarter_table(runs: dict, managers: list[str], slotted, days) -> str:
+    """Who has gained most inside the quarter, and how fast.
+
+    Keyed on the manager id throughout. ``slotted`` carries display names and
+    colours in the same order as ``managers``, which is how every other table
+    on this page pairs them, and pairing them any other way puts a colour
+    beside the wrong name.
+    """
+    if not runs or not days:
+        return "<p class='sub'>Nothing scored in this quarter yet.</p>"
+
+    def gain(key: str) -> float:
+        run = runs.get(key) or [0.0]
+        return float(run[-1])
+
+    order = sorted(zip(managers, slotted), key=lambda pair: -gain(pair[0]))
+    body = []
+    for place, (key, (name, slot)) in enumerate(order, start=1):
+        gained = gain(key)
+        per_day = gained / max(len(days), 1)
+        body.append(
+            "<tr>"
+            f'<td class="num rank">{place}</td>'
+            f'<td><span class="who"><i class="swatch" style="background: '
+            f'var(--series-{slot})"></i>{escape(name)}</span></td>'
+            f'<td class="num">{gained:,.1f}</td>'
+            f'<td class="num">{per_day:,.2f}</td>'
+            "</tr>"
+        )
+    return (
+        "<table class='costs quarters'><thead><tr><th class='num'></th>"
+        "<th>Manager</th><th class='num'>Gained</th>"
+        "<th class='num'>A day</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table>"
+    )
+
+
+def _quarters_figure(store, season: str, progression, managers: list[str],
+                     slotted, latest) -> str:
+    """Each quarter of the league year on its own terms.
+
+    Four separate seasons inside one, and they are not alike: a quarter is
+    mostly whichever sports are in season for it, so the manager who wins one
+    need not be anywhere near the top of another. The season standings cannot
+    show that -- a running total only ever goes up, and by April a strong
+    autumn is indistinguishable from a strong spring.
+
+    Chips rather than four panels: only one quarter is live at a time, and the
+    ones before it are worth a look rather than a column each.
+    """
+    from whul.config.league import quarters as season_quarters
+
+    started = [q for q in season_quarters() if q.start <= latest]
+    if not started:
+        return ""
+    panels = []
+    for index, quarter in enumerate(started):
+        days, runs = _quarter_runs(progression, managers, quarter)
+        series = [
+            charts.Series(name=name, slot=slot, values=runs.get(key, []))
+            for (name, slot), key in zip(slotted, managers)
+        ] if runs else []
+        width, height = QUARTER_CHART
+        chart = (charts.progression_chart(
+            days, series, width=width, height=height,
+            chart_id=f"quarter-{quarter.label.lower()}")
+            if days and series else
+            "<p class='sub'>Nothing scored in this quarter yet.</p>")
+        live = " — in progress" if quarter.holds(latest) else ""
+        panels.append(
+            f'<div class="quarterpanel" data-quarter="{escape(quarter.label)}"'
+            f'{"" if index == len(started) - 1 else " hidden"}>'
+            f'<p class="sub">{escape(quarter.label)}: '
+            f'{quarter.start:%-d %B %Y} to {quarter.end:%-d %B %Y}'
+            f'{live}.</p>'
+            f'<div class="twoup"><div class="quarterchart">{chart}</div>'
+            f'<div class="quartertable">'
+            f'{_quarter_table(runs, managers, slotted, days)}</div>'
+            "</div></div>"
+        )
+    chips = "".join(
+        f'<button class="chip" data-filter="quarter" '
+        f'data-value="{escape(q.label)}" '
+        f'aria-pressed="{"true" if i == len(started) - 1 else "false"}">'
+        f'{escape(q.label)}</button>'
+        for i, q in enumerate(started)
+    )
+    return _figure(
+        "quarters", "Quarter by quarter",
+        "Four seasons inside one. A quarter is mostly whichever sports are in "
+        "season for it, so whoever wins one need not be near the top of "
+        "another — and the running total above cannot show that, because by "
+        "April a strong autumn and a strong spring look identical. Each line "
+        "starts from zero on the day its quarter opened. The boundaries are 15 "
+        "October, 15 January and 15 April; the first quarter is short this "
+        "season because the draft was in August.",
+        f'<div class="chips" role="group" aria-label="Quarter">{chips}</div>'
+        + "".join(panels),
+        open_=False,
+    )
+
+
 def _write_index(out, season, today, progression, bars, managers, slotted,
                  latest, stamp, simulated, profiles, store) -> None:
     leader = today.iloc[0]
@@ -4854,6 +4999,8 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
                breakdown=progression_keys)}
   <p class="sub">Click any figure in the table for the day it came from.</p>
 </div>
+
+{_quarters_figure(store, season, progression, managers, slotted, latest)}
 
 {_fixture_board(store, season, latest, profiles, managers)}
 
@@ -5125,8 +5272,13 @@ def _uncovered(store, season: str, version) -> list[tuple[str, str, int]]:
     ]
 
 
-def _rules_section(rules) -> str:
-    """One asset type's rules, collapsed until a reader asks for it."""
+def _rules_body(rules, intro: bool = True) -> str:
+    """One block's rules, without the collapsible wrapper.
+
+    Split out because a section that is the only thing inside its own figure
+    does not want a second heading and a second copy of its intro; the figure
+    above it has already said both.
+    """
     lines = []
     for line in rules.lines:
         if isinstance(line, rulebook.Heading):
@@ -5134,13 +5286,20 @@ def _rules_section(rules) -> str:
         else:
             lines.append(f"<li>{escape(line)}</li>")
     notes = "".join(f"<li>{escape(note)}</li>" for note in rules.notes)
+    return (
+        (f'<p class="sub">{escape(rules.intro)}</p>' if intro else "")
+        + f'<ul class="rulelist">{"".join(lines)}</ul>'
+        + (f'<ul class="rulenotes">{notes}</ul>' if notes else "")
+    )
+
+
+def _rules_section(rules) -> str:
+    """One asset type's rules, collapsed until a reader asks for it."""
     return f"""
 <details class="rules" id="{rules.slug}">
   <summary>{escape(rules.title)}</summary>
   <div class="rulebody">
-    <p class="sub">{escape(rules.intro)}</p>
-    <ul class="rulelist">{"".join(lines)}</ul>
-    {f'<ul class="rulenotes">{notes}</ul>' if notes else ""}
+    {_rules_body(rules)}
   </div>
 </details>"""
 
@@ -5250,6 +5409,16 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=(),
     "What each thing that happens on the field is worth, before any of the "
     "above. Open the sport you care about.",
     _rulebook(),
+    open_=False,
+)}
+
+{_figure(
+    "structures",
+    "If the league ever plays for money",
+    "Nothing here is in force and nothing was played for this season. It is "
+    "written down so that a decision worked out carefully is not argued again "
+    "from memory every August.",
+    "".join(_rules_body(rules, intro=False) for rules in rulebook.structures()),
     open_=False,
 )}
 

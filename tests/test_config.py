@@ -338,3 +338,59 @@ def test_both_copies_of_the_league_list_agree():
     sees the leagues they expect while the nightly run pulls a shorter list."""
     shown, scheduled = _publish_league_lists()
     assert shown == scheduled
+
+
+# --- the season's quarters --------------------------------------------------
+
+def test_the_quarters_break_on_the_declared_days():
+    from whul.config.league import SEASON, quarters
+
+    got = quarters()
+    assert [q.label for q in got] == ["Q1", "Q2", "Q3", "Q4"]
+    assert got[0].start == SEASON.start
+    assert got[-1].end == SEASON.end
+    assert [(q.start.month, q.start.day) for q in got[1:]] == [(10, 15), (1, 15), (4, 15)]
+
+
+def test_the_quarters_meet_without_a_gap_or_an_overlap():
+    from datetime import timedelta
+
+    from whul.config.league import quarters
+
+    got = quarters()
+    for earlier, later in zip(got, got[1:]):
+        assert earlier.end + timedelta(days=1) == later.start
+
+
+def test_a_boundary_belongs_to_the_first_year_it_falls_after_the_opening():
+    """The boundaries are months and days, so 15 October is the autumn the
+    league year opened in and 15 January is the winter after it."""
+    from whul.config.league import quarters
+
+    got = quarters()
+    assert got[1].start.year == 2026     # 15 October, that autumn
+    assert got[2].start.year == 2027     # 15 January, the following winter
+    assert got[3].start.year == 2027
+
+
+def test_the_first_quarter_is_short_when_the_draft_is_late():
+    """Not a quarter of a year. The draft happened in August and the season
+    did not start over to suit it."""
+    from whul.config.league import quarters
+
+    got = quarters()
+    assert (got[0].end - got[0].start).days < (got[1].end - got[1].start).days
+
+
+def test_a_day_knows_which_quarter_it_is_in():
+    from datetime import date
+
+    from whul.config.league import quarter_of
+
+    assert quarter_of(date(2026, 9, 19)).label == "Q1"
+    assert quarter_of(date(2026, 10, 14)).label == "Q1"
+    assert quarter_of(date(2026, 10, 15)).label == "Q2"
+    assert quarter_of(date(2027, 4, 15)).label == "Q4"
+    # Outside the league year entirely.
+    assert quarter_of(date(2026, 1, 1)) is None
+    assert quarter_of(date(2027, 8, 1)) is None
