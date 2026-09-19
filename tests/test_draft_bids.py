@@ -101,7 +101,7 @@ def test_a_bid_on_an_asset_nobody_drafted_is_kept_without_an_id(tmp_path):
     assert rows[0]["asset_id"] == ""
     assert report.resolved == 0
     # Not a complaint: only an unmatched *winner* is worth a line.
-    assert report.unresolved == []
+    assert report.released == []
 
 
 def test_a_winner_nobody_holds_is_reported(tmp_path):
@@ -109,8 +109,8 @@ def test_a_winner_nobody_holds_is_reported(tmp_path):
     _, report = draft_bids.plan(store, SEASON, {1: log(
         ("Everton", "Premier League", "Team", "JM", 12, "Won"),
     )})
-    assert len(report.unresolved) == 1
-    assert "Everton" in report.unresolved[0]
+    assert len(report.released) == 1
+    assert "Everton" in report.released[0]
 
 
 # --- matching a name to an asset --------------------------------------------
@@ -327,5 +327,22 @@ def test_a_released_asset_keeps_its_bid(tmp_path):
         ("Casper Ruud", "Tennis", "Player", "SS", 1, "Won"),
     )})
     assert len(rows) == 2
-    assert len(report.unresolved) == 1
-    assert "nobody holds them now" in report.unresolved[0]
+    assert len(report.released) == 1
+    assert "nobody holds it now" in report.released[0]
+
+
+def test_an_asset_won_twice_was_dropped_in_between(tmp_path):
+    """The 49ers went for $11 in round two, were released, and went again for
+    $1 in round three. Only the last win can be the one behind the slot, and
+    the first is a drop like any other -- the money was spent either way."""
+    store = _store(tmp_path, [
+        ("team-49ers", "San Francisco 49ers", "Team", "NFL", "NFL", "TG", 1.0),
+    ])
+    _, report = draft_bids.plan(store, SEASON, {
+        2: log(("San Francisco 49ers", "NFL", "Team", "SM", 11, "Won")),
+        3: log(("San Francisco 49ers", "NFL", "Team", "TG", 1, "Won")),
+    })
+    assert report.moved == [] and report.disagreements == []
+    assert len(report.released) == 1
+    assert "SM won it in round 2 for $11" in report.released[0]
+    assert "went again in round 3" in report.released[0]

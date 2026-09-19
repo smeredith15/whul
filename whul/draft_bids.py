@@ -64,7 +64,7 @@ class BidReport:
     by_name: int = 0
     by_alias: int = 0
     by_price: int = 0
-    unresolved: list[str] = field(default_factory=list)
+    released: list[str] = field(default_factory=list)
     moved: list[str] = field(default_factory=list)
     disagreements: list[str] = field(default_factory=list)
     unbid: list[str] = field(default_factory=list)
@@ -79,13 +79,13 @@ class BidReport:
             f"(by name {self.by_name}, by alias {self.by_alias}, "
             f"by manager and price {self.by_price})"
         )
-        if self.unresolved:
-            out.append(f"  Won and not held ({len(self.unresolved)}) -- released "
-                       "between rounds, most likely; assets could be dropped. "
-                       "The bid is kept either way:")
-            out += [f"    {line}" for line in self.unresolved[:SHOWN]]
-            if len(self.unresolved) > SHOWN:
-                out.append(f"    ... and {len(self.unresolved) - SHOWN} more")
+        if self.released:
+            out.append(f"  Won and not held ({len(self.released)}) -- dropped "
+                       "between rounds; assets could be. The bid is kept "
+                       "either way, because the money was spent:")
+            out += [f"    {line}" for line in sorted(self.released)[:SHOWN]]
+            if len(self.released) > SHOWN:
+                out.append(f"    ... and {len(self.released) - SHOWN} more")
         if self.moved:
             out.append(f"  Changed hands ({len(self.moved)}) -- won by one "
                        "manager and held by another. All of the 2026-27 ones "
@@ -313,10 +313,9 @@ def plan(store: Store, season: str, logs: dict[int, pd.DataFrame]) -> tuple[list
         if row["asset_id"]:
             report.resolved += 1
         elif row["status"] == "won":
-            report.unresolved.append(
-                f"round {row['round']}: {row['manager_id']} won "
-                f"{row['name']!r} ({row['league']}) for ${row['bid']:,.0f} "
-                "and nobody holds them now")
+            report.released.append(
+                f"{row['name']}: {row['manager_id']} won it in round "
+                f"{row['round']} for ${row['bid']:,.0f} and nobody holds it now")
     _check_against_roster(store, season, rows, report)
     return rows, report
 
@@ -357,11 +356,17 @@ def _check_against_roster(store: Store, season: str, rows: list[dict],
     before the season opened, so the roster's single dated occupancy is the
     whole truth and there is nothing to backdate.
 
-    What is worth a second look is the other shape: the same manager holding
-    an asset at a price he did not bid. Nobody else was involved, so nothing
-    can have moved, which leaves an entry error.
+    An asset won twice is the third shape, and it is a drop rather than
+    either: the 49ers went for $11 in round two, were released, and went
+    again for $1 in round three. Only the last win can be the one behind the
+    slot, so the earlier ones are reported the way a release is -- the money
+    was spent whether or not it lasted.
 
-    Said rather than fixed, either way. The roster is what the league plays
+    What is worth a second look is the remaining shape: the same manager
+    holding an asset at a price he did not bid. Nobody else was involved, so
+    nothing can have moved, which leaves an entry error.
+
+    Said rather than fixed, throughout. The roster is what the league plays
     by, so it wins, and the difference is printed for someone who knows.
     """
     held = store.query(
@@ -371,7 +376,21 @@ def _check_against_roster(store: Store, season: str, rows: list[dict],
         "JOIN assets a ON a.asset_id = o.asset_id "
         "WHERE r.season = ?", (season,),
     )
-    wins = {r["asset_id"]: r for r in rows if r["status"] == "won" and r["asset_id"]}
+    every: dict[str, list[dict]] = {}
+    for row in rows:
+        if row["status"] == "won" and row["asset_id"]:
+            every.setdefault(str(row["asset_id"]), []).append(row)
+    wins = {}
+    for asset_id, found in every.items():
+        found.sort(key=lambda r: int(r["round"]))
+        wins[asset_id] = found[-1]
+        # An asset cannot have been bought twice and kept twice. Everything
+        # before the last win was dropped, whoever won it.
+        for gone in found[:-1]:
+            report.released.append(
+                f"{gone['name']}: {gone['manager_id']} won it in round "
+                f"{gone['round']} for ${gone['bid']:,.0f} and it went again "
+                f"in round {found[-1]['round']}")
     for row in held.itertuples():
         cost = _number(row.cost) or 0.0
         win = wins.get(str(row.asset_id))
