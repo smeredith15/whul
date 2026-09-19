@@ -119,32 +119,42 @@ def test_no_bids_is_an_empty_frame_with_its_columns(tmp_path):
 
 # --- what the buyer still needed --------------------------------------------
 
-def test_pressure_counts_down_as_the_slots_fill(tmp_path):
+def test_the_open_seats_count_down_as_they_fill(tmp_path):
     """Need is a fact about the moment. The MLB team cap is two, so the first
-    buy is made with two open and three rounds to go and the second with one
-    open and two."""
+    buy is made with two of them open and the second with one."""
     store = _store(tmp_path, [
         bid("Brewers", "JM", 200, rnd=1),
         bid("Dodgers", "JM", 100, rnd=2),
     ])
-    out = draft.pressure(store, SEASON, rounds=3).sort_values("round")
+    out = draft.needs(store, SEASON).sort_values("round")
     assert list(out["open_before"]) == [2, 1]
-    assert list(out["rounds_left"]) == [3, 2]
-    assert [round(p, 3) for p in out["pressure"]] == [0.667, 0.5]
 
 
-def test_the_last_round_leaves_one(tmp_path):
-    """A slot open in the final round has to be filled now or not at all, so
-    pressure there is the count itself."""
+def test_the_whole_roster_counts_down_too(tmp_path):
+    """The number that says whether a heavy price was a manager still
+    building or one nearly done."""
+    store = _store(tmp_path, [
+        bid("Brewers", "JM", 200, rnd=1),
+        bid("Dodgers", "JM", 100, rnd=2),
+    ])
+    out = draft.needs(store, SEASON).sort_values("round")
+    assert list(out["roster_open"]) == [draft.ROSTER_SLOTS,
+                                        draft.ROSTER_SLOTS - 1]
+
+
+def test_nothing_is_divided_by_the_rounds_that_turned_out_to_happen(tmp_path):
+    """Hindsight wearing a constraint's clothes. Nobody knew there would be
+    exactly three rounds, and slots were left open on purpose for the snake,
+    so a buy made with a category empty was never forced."""
     store = _store(tmp_path, [bid("Brewers", "JM", 200, rnd=3)])
-    row = draft.pressure(store, SEASON, rounds=3).iloc[0]
-    assert row["rounds_left"] == 1 and row["pressure"] == 2
+    assert "rounds_left" not in draft.needs(store, SEASON).columns
+    assert "pressure" not in draft.needs(store, SEASON).columns
 
 
-def test_a_losing_bid_carries_no_pressure(tmp_path):
+def test_a_losing_bid_fills_no_seat(tmp_path):
     """It filled nothing, so it moved nothing."""
     store = _store(tmp_path, [bid("Brewers", "JM", 200, status="outbid")])
-    assert draft.pressure(store, SEASON).empty
+    assert draft.needs(store, SEASON).empty
 
 
 # --- what a slot was worth for nothing --------------------------------------
@@ -197,7 +207,7 @@ def test_a_category_whose_money_bought_nothing_reads_negative(tmp_path):
 
 # --- the whole thing together -----------------------------------------------
 
-def test_a_priced_slot_picks_up_the_market_and_the_pressure(tmp_path):
+def test_a_priced_slot_picks_up_the_market_and_what_was_left_to_fill(tmp_path):
     store = _store(tmp_path, [
         bid("Brewers", "JM", 200, rnd=1, asset="a0"),
         bid("Brewers", "SS", 15, status="outbid", rnd=1, asset="a0"),
@@ -207,7 +217,7 @@ def test_a_priced_slot_picks_up_the_market_and_the_pressure(tmp_path):
     row = out.iloc[0]
     assert row["round"] == 1 and row["field"] == 15 and row["contested"] == 1
     assert row["premium"] == 185
-    assert row["open_before"] == 2
+    assert row["open_before"] == 2 and row["roster_open"] == draft.ROSTER_SLOTS
 
 def test_a_slot_nobody_bid_for_keeps_its_score_and_gets_blanks(tmp_path):
     """The snake picks were not bid for, and saying so is better than a zero
@@ -240,3 +250,5 @@ def test_the_rounds_do_not_look_alike(tmp_path):
     assert list(out["round"]) == [1, 2]
     assert list(out["spend"]) == [200, 20]
     assert [round(v, 1) for v in out["per_hundred"]] == [5.0, 50.0]
+    # The clearest reading of a round's economy: what one asset cost in it.
+    assert list(out["per_asset"]) == [200, 20]

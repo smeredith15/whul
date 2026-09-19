@@ -208,15 +208,6 @@ def test_a_traded_asset_is_reported_and_not_corrected(tmp_path):
     assert rows[0]["manager_id"] == "SM" and rows[0]["bid"] == 40
 
 
-def test_a_manager_that_differs_at_the_same_price_is_reported(tmp_path):
-    store = _store(tmp_path, TWO_CLUBS)
-    _, report = draft_bids.plan(store, SEASON, {1: log(
-        ("Arsenal", "Premier League", "Team", "SS", 40, "Won"),
-    )})
-    assert len(report.disagreements) == 1
-    assert "JM holds it" in report.disagreements[0]
-
-
 def test_an_asset_with_a_price_and_no_bid_is_reported(tmp_path):
     store = _store(tmp_path, TWO_CLUBS)
     _, report = draft_bids.plan(store, SEASON, {1: log(
@@ -292,3 +283,48 @@ def test_the_logs_in_the_repo_are_named_so_the_round_can_be_read():
     logs = sorted(Path("draft").glob("All_Bids_Log_Round_*.xlsx"))
     assert logs, "no bid logs in draft/"
     assert [draft_bids.round_of(p) for p in logs] == list(range(1, len(logs) + 1))
+
+
+def test_an_asset_that_changed_hands_is_not_called_a_disagreement(tmp_path):
+    """João Pedro and Chelsea were transferred at the price they were bid at.
+    The price travelled with the asset, which is what a transfer does and what
+    a mistyped initial does not."""
+    store = _store(tmp_path, [
+        ("player-pedro", "João Pedro", "Player", "Premier League",
+         "Club Soccer Top 3", "TG", 38.0),
+    ])
+    _, report = draft_bids.plan(store, SEASON, {3: log(
+        ("João Pedro", "Premier League", "Player", "SM", 38, "Won"),
+    )})
+    assert report.disagreements == []
+    assert len(report.moved) == 1
+    assert "SM won it" in report.moved[0] and "TG holds it" in report.moved[0]
+
+
+def test_a_price_that_moved_is_still_a_disagreement(tmp_path):
+    """Harry Kane went for $40 and moved for $100. A new figure is a trade
+    struck at a new figure or an entry error, and only the league knows."""
+    store = _store(tmp_path, [
+        ("player-kane", "Harry Kane", "Player", "Bundesliga",
+         "Club Soccer Other", "SS", 100.0),
+    ])
+    _, report = draft_bids.plan(store, SEASON, {1: log(
+        ("Harry Kane", "Bundesliga", "Player", "SM", 40, "Won"),
+    )})
+    assert report.moved == [] and len(report.disagreements) == 1
+
+
+def test_a_released_asset_keeps_its_bid(tmp_path):
+    """Shelby won Casper Ruud for a dollar and dropped him when he turned out
+    to be injured; assets could be released between rounds. The auction still
+    happened, so the bid stays."""
+    store = _store(tmp_path, [
+        ("player-fils", "Arthur Fils", "Player", "ATP", "Tennis", "SS", 75.0),
+    ])
+    rows, report = draft_bids.plan(store, SEASON, {1: log(
+        ("Arthur Fils", "ATP", "Player", "SS", 75, "Won"),
+        ("Casper Ruud", "Tennis", "Player", "SS", 1, "Won"),
+    )})
+    assert len(rows) == 2
+    assert len(report.unresolved) == 1
+    assert "nobody holds them now" in report.unresolved[0]

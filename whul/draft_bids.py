@@ -65,6 +65,7 @@ class BidReport:
     by_alias: int = 0
     by_price: int = 0
     unresolved: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)
     disagreements: list[str] = field(default_factory=list)
     unbid: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
@@ -79,15 +80,21 @@ class BidReport:
             f"by manager and price {self.by_price})"
         )
         if self.unresolved:
-            out.append(f"  Named nobody on any roster ({len(self.unresolved)}) -- "
-                       "kept, because a losing bid on an undrafted asset is "
-                       "still what somebody was willing to pay:")
+            out.append(f"  Won and not held ({len(self.unresolved)}) -- released "
+                       "between rounds, most likely; assets could be dropped. "
+                       "The bid is kept either way:")
             out += [f"    {line}" for line in self.unresolved[:SHOWN]]
             if len(self.unresolved) > SHOWN:
                 out.append(f"    ... and {len(self.unresolved) - SHOWN} more")
+        if self.moved:
+            out.append(f"  Changed hands ({len(self.moved)}) -- won by one "
+                       "manager and held by another at the same price, which "
+                       "is what a transfer looks like from here:")
+            out += [f"    {line}" for line in self.moved]
         if self.disagreements:
-            out.append(f"  The roster and the log disagree ({len(self.disagreements)}). "
-                       "The roster wins; nothing here was changed:")
+            out.append(f"  The roster and the log disagree on a price "
+                       f"({len(self.disagreements)}). The roster wins; nothing "
+                       "here was changed:")
             out += [f"    {line}" for line in self.disagreements]
         if self.unbid:
             out.append(f"  Held but never bid for ({len(self.unbid)}):")
@@ -309,7 +316,7 @@ def plan(store: Store, season: str, logs: dict[int, pd.DataFrame]) -> tuple[list
             report.unresolved.append(
                 f"round {row['round']}: {row['manager_id']} won "
                 f"{row['name']!r} ({row['league']}) for ${row['bid']:,.0f} "
-                "-- no rostered asset of that name")
+                "and nobody holds them now")
     _check_against_roster(store, season, rows, report)
     return rows, report
 
@@ -343,11 +350,15 @@ def _check_against_roster(store: Store, season: str, rows: list[dict],
                           report: BidReport) -> None:
     """Say where the log and the roster tell different stories.
 
-    Said rather than fixed. A price that differs is a trade; a manager that
-    differs is a trade entered by editing the draft sheet, which is how Shai
-    Gilgeous-Alexander came to be JM's and is indistinguishable here from a
-    mistyped initial. The roster is what the league plays by, so it wins, and
-    the disagreement is printed for someone who knows which it was.
+    Two different stories, and they are worth separating. An asset held by
+    someone other than the manager who won it, *at the price he won it for*,
+    has changed hands: the price travelled with the asset, which is what a
+    transfer does and what a mistyped initial does not. A price that differs
+    is a trade struck at a new figure -- Harry Kane went for $40 and moved for
+    $100 -- or an entry error, and only the league knows which.
+
+    Said rather than fixed, either way. The roster is what the league plays
+    by, so it wins, and the difference is printed for someone who knows.
     """
     held = store.query(
         "SELECT o.asset_id, r.manager_id, o.cost, a.display_name "
@@ -371,10 +382,9 @@ def _check_against_roster(store: Store, season: str, rows: list[dict],
                 f"${cost:,.0f}, the log says {win['manager_id']} won it for "
                 f"${win['bid']:,.0f} in round {win['round']}")
         elif str(win["manager_id"]) != str(row.manager_id):
-            report.disagreements.append(
-                f"{row.display_name} (${cost:,.0f}): the roster says "
-                f"{row.manager_id} holds it, the log says {win['manager_id']} "
-                f"won it in round {win['round']}")
+            report.moved.append(
+                f"{row.display_name} (${cost:,.0f}): {win['manager_id']} won "
+                f"it in round {win['round']}, {row.manager_id} holds it")
 
 
 def apply(store: Store, season: str, rows: list[dict]) -> int:

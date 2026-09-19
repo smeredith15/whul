@@ -3557,7 +3557,7 @@ def _market_table(frame) -> str:
             f'<td class="num">{float(row.spend):,.0f}</td>'
             f'<td class="num">{int(row.contested)}</td>'
             f'<td class="num">{float(row.premium):,.0f}</td>'
-            f'<td class="num">{float(row.pressure):,.2f}</td>'
+            f'<td class="num">{float(row.roster_open):,.0f}</td>'
             f'<td class="num">{_signed(float(row.over_free))}</td>'
             "</tr>"
         )
@@ -3565,7 +3565,7 @@ def _market_table(frame) -> str:
         "<table class='costs'><thead><tr><th>Manager</th>"
         "<th class='num'>Bought</th><th class='num'>Spent</th>"
         "<th class='num'>Contested</th><th class='num'>Bid against nobody</th>"
-        "<th class='num'>Slots left to fill</th>"
+        "<th class='num'>Roster still empty</th>"
         "<th class='num'>Over a free pick</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
@@ -3584,10 +3584,11 @@ def _round_table(frame) -> str:
             f'<td><span class="mgr">Round {int(row.round)}</span></td>'
             f'<td class="num">{int(row.slots)}</td>'
             f'<td class="num">{float(row.spend):,.0f}</td>'
+            f'<td class="num">{float(row.per_asset):,.0f}</td>'
             f'<td class="num">{float(row.median):,.0f}</td>'
             f'<td class="num">{contested}</td>'
             f'<td class="num">{float(row.premium):,.0f}</td>'
-            f'<td class="num">{float(getattr(row, "pressure", 0) or 0):,.2f}</td>'
+            f'<td class="num">{float(getattr(row, "roster_open", 0) or 0):,.0f}</td>'
             f'<td class="num">{float(row.score):,.1f}</td>'
             f'<td class="num">{float(row.per_hundred):,.1f}</td>'
             "</tr>"
@@ -3595,9 +3596,9 @@ def _round_table(frame) -> str:
     return (
         "<table class='costs'><thead><tr><th>Round</th>"
         "<th class='num'>Assets</th><th class='num'>Spent</th>"
-        "<th class='num'>Median price</th><th class='num'>Contested</th>"
-        "<th class='num'>Bid against nobody</th>"
-        "<th class='num'>Slots left to fill</th>"
+        "<th class='num'>Per asset</th><th class='num'>Median price</th>"
+        "<th class='num'>Contested</th><th class='num'>Bid against nobody</th>"
+        "<th class='num'>Roster still empty</th>"
         "<th class='num'>Scored</th><th class='num'>Per 100</th>"
         "</tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
@@ -3675,19 +3676,24 @@ def _costs(store, season: str, bars, profiles: dict[str, dict],
             "above the next-best offer, which in a sealed auction is what a "
             "manager's own number cost them -- four assets in five drew a "
             "single bid, so for most of the board it is the whole price less "
-            "a dollar. <em>Slots left to fill</em> averages how many of a "
-            "category a manager still had open per round remaining when they "
-            "bought: above one, the board was going to run out before the "
-            "slots did.</p>"
+            "a dollar. <em>Roster still empty</em> averages how many of their "
+            "sixty slots were unfilled at the moment of each buy -- context "
+            "for a heavy price rather than a verdict on one. Nothing here "
+            "counts a buy as forced: nobody knew how many rounds there would "
+            "be, and slots were left open on purpose for the snake.</p>"
             + bought
         )
     if rounds:
         body += (
             "<h3 class='buys'>Round by round</h3>"
-            "<p class='sub'>The rounds are not alike. What a dollar bought "
-            "changes with both the budget and what was left on the board, and "
-            "one season cannot separate the two -- so this says what each "
-            "round went on rather than converting between them.</p>"
+            "<p class='sub'>The rounds are not alike, and the third least "
+            "of all: the board thinned, the rollover did not, and what was "
+            "left cost half as much again per asset as round one and three "
+            "times what round two did. That is where heavy spending shows up "
+            "-- a manager still holding money and slots when the cheap assets "
+            "had gone. What a dollar bought changes with both the budget and "
+            "the board, and one season cannot separate the two, so this says "
+            "what each round went on rather than converting between them.</p>"
             + rounds
         )
     contested = _contested_table(facts, profiles)

@@ -11,8 +11,8 @@ records both as 200. Five things separate them, and all five are in the log:
   put up between them;
 * **when it went** -- a round-one dollar and a round-three dollar bought
   different things, because the board and the budgets were different;
-* **what the manager still needed** -- a slot you must fill before the draft
-  ends is not a slot you chose to fill.
+* **what the manager still needed** -- $200 with fifty slots still open is a
+  different act from $200 with five, whatever it buys.
 
 Nothing here scores a manager. It measures the purchase, and the purchase can
 be measured on the day the draft ends -- months before the seasons that decide
@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from whul.config.league import ALL_SLOTS
+from whul.config.league import ALL_SLOTS, active_slots
 from whul.draft_bids import LIVE
 from whul.store.db import Store
 
@@ -93,27 +93,35 @@ def market(store: Store, season: str) -> pd.DataFrame:
 
 
 #: One row per winning bid, saying what the manager still had to fill.
-PRESSURE_COLUMNS = (
+NEEDS_COLUMNS = (
     "asset_id", "name_key", "league", "round", "manager_id", "category",
-    "asset_type", "open_before", "rounds_left", "pressure",
+    "asset_type", "open_before", "roster_open",
 )
 
+#: Every slot a manager has to fill, which is what `roster_open` counts down
+#: from. The inactive groups are left out because nobody was filling them.
+ROSTER_SLOTS = sum(g.cap for g in active_slots(ALL_SLOTS))
 
-def pressure(store: Store, season: str, rounds: int = 0) -> pd.DataFrame:
-    """How badly each manager needed the slot they were filling.
 
-    Replayed in order, because need is a fact about the moment: a manager with
-    four NBA slots open and one round left is buying under a different
-    constraint from one with a single slot open in round one, and the same
-    price means different things in the two cases.
+def needs(store: Store, season: str) -> pd.DataFrame:
+    """How much of each roster was still empty at the moment of each buy.
 
-    ``pressure`` is open slots divided by rounds remaining -- how many of that
-    category they had to buy per round from here to keep up. Above one, the
-    board was going to run out before the slots did.
+    Replayed in order, because need is a fact about the moment: $200 with
+    fifty slots still open is a different act from $200 with five, whatever it
+    buys. ``open_before`` is that category's remaining seats and
+    ``roster_open`` the whole roster's.
+
+    Counts, and deliberately only counts. An earlier version divided by the
+    rounds remaining and called the result pressure, which was hindsight
+    wearing a constraint's clothes: nobody knew there would be exactly three
+    rounds, and slots were left open on purpose to be filled in the snake. A
+    buy made with a category empty was not forced, it was a manager choosing
+    when to spend, and this says how much he had left to buy rather than
+    whether he had a choice.
     """
     from whul.draft_bids import load
 
-    empty = pd.DataFrame({c: pd.Series(dtype="object") for c in PRESSURE_COLUMNS})
+    empty = pd.DataFrame({c: pd.Series(dtype="object") for c in NEEDS_COLUMNS})
     bids = load(store, season)
     if bids.empty:
         return empty
@@ -121,31 +129,30 @@ def pressure(store: Store, season: str, rounds: int = 0) -> pd.DataFrame:
     if won.empty:
         return empty
     won["round"] = pd.to_numeric(won["round"], errors="coerce").fillna(0).astype(int)
-    last = rounds or int(won["round"].max())
 
     caps = {(g.category, g.asset_type): g.cap for g in ALL_SLOTS}
     filled: dict[tuple[str, str, str], int] = {}
+    taken: dict[str, int] = {}
     rows = []
     for rnd in sorted(won["round"].unique()):
         for row in won[won["round"] == rnd].itertuples():
-            seat = (str(row.manager_id), str(row.category), str(row.asset_type))
+            manager = str(row.manager_id)
+            seat = (manager, str(row.category), str(row.asset_type))
             cap = caps.get((str(row.category), str(row.asset_type)), 0)
-            open_before = max(0, cap - filled.get(seat, 0))
-            left = max(1, last - int(rnd) + 1)
             rows.append({
                 "asset_id": str(row.asset_id),
                 "name_key": str(row.name_key),
                 "league": str(row.league),
                 "round": int(rnd),
-                "manager_id": str(row.manager_id),
+                "manager_id": manager,
                 "category": str(row.category),
                 "asset_type": str(row.asset_type),
-                "open_before": open_before,
-                "rounds_left": left,
-                "pressure": open_before / left,
+                "open_before": max(0, cap - filled.get(seat, 0)),
+                "roster_open": max(0, ROSTER_SLOTS - taken.get(manager, 0)),
             })
             filled[seat] = filled.get(seat, 0) + 1
-    return pd.DataFrame(rows, columns=list(PRESSURE_COLUMNS))
+            taken[manager] = taken.get(manager, 0) + 1
+    return pd.DataFrame(rows, columns=list(NEEDS_COLUMNS))
 
 
 def replacement(priced: pd.DataFrame) -> pd.Series:
@@ -230,14 +237,14 @@ def value(store: Store, season: str, priced: pd.DataFrame,
                    "contested", "premium"]],
             on="asset_id", how="left")
 
-    seats = pressure(store, season)
+    seats = needs(store, season)
     if not seats.empty:
         seats = seats[seats["asset_id"].astype(str) != ""]
         seats = seats.sort_values("round").drop_duplicates("asset_id", keep="last")
-        out = out.merge(seats[["asset_id", "open_before", "rounds_left", "pressure"]],
+        out = out.merge(seats[["asset_id", "open_before", "roster_open"]],
                         on="asset_id", how="left")
     for column in ("round", "field", "bidders", "demand", "contested", "premium",
-                   "open_before", "rounds_left", "pressure"):
+                   "open_before", "roster_open"):
         if column not in out.columns:
             out[column] = pd.NA
     return out
@@ -266,8 +273,12 @@ def by_round(priced: pd.DataFrame) -> pd.DataFrame:
         score=("score", "sum"),
     )
     out["per_hundred"] = out["score"] / out["spend"].where(out["spend"] > 0) * 100
-    if "pressure" in bought.columns:
-        out["pressure"] = bought.groupby("round")["pressure"].mean()
+    # What one asset cost in that round's money. The clearest single reading of
+    # a round's economy: the board thins, the rollover does not, and the last
+    # round pays most for least.
+    out["per_asset"] = out["spend"] / out["slots"].where(out["slots"] > 0)
+    if "roster_open" in bought.columns:
+        out["roster_open"] = bought.groupby("round")["roster_open"].mean()
     return out.reset_index()
 
 
@@ -286,7 +297,7 @@ def by_manager(priced: pd.DataFrame, managers) -> pd.DataFrame:
         spend = float(mine["cost"].sum())
         contested = pd.to_numeric(mine.get("contested"), errors="coerce").fillna(0)
         premium = pd.to_numeric(mine.get("premium"), errors="coerce").fillna(0)
-        press = pd.to_numeric(mine.get("pressure"), errors="coerce")
+        left = pd.to_numeric(mine.get("roster_open"), errors="coerce")
         rows.append({
             "manager": manager,
             "slots": int(len(mine)),
@@ -296,7 +307,10 @@ def by_manager(priced: pd.DataFrame, managers) -> pd.DataFrame:
             # this is what the winner's own number cost them, and with most
             # assets drawing a single bid it is most of the money.
             "premium": float(premium.sum()),
-            "pressure": float(press.mean()) if press.notna().any() else 0.0,
+            # How empty their roster was, averaged over their own buys. A
+            # manager who spent early bought everything else into a near-full
+            # roster; one who held back was still building at every price.
+            "roster_open": float(left.mean()) if left.notna().any() else 0.0,
             "over_free": float(pd.to_numeric(
                 mine.get("over_free"), errors="coerce").fillna(0).sum()),
         })
