@@ -245,10 +245,36 @@ def test_the_rounds_do_not_look_alike(tmp_path):
         bid("Brewers", "JM", 200, rnd=1, asset="a0"),
         bid("Dodgers", "JM", 20, rnd=2, asset="a1"),
     ])
-    out = draft.by_round(draft.value(store, SEASON, _slots([
-        ("MLB", 200, 10.0), ("MLB", 20, 10.0)])))
+    priced = _slots([("MLB", 200, 10.0), ("MLB", 20, 10.0)])
+    out = draft.by_round(draft.market(store, SEASON),
+                         draft.value(store, SEASON, priced))
     assert list(out["round"]) == [1, 2]
     assert list(out["spend"]) == [200, 20]
     assert [round(v, 1) for v in out["per_hundred"]] == [5.0, 50.0]
     # The clearest reading of a round's economy: what one asset cost in it.
     assert list(out["per_asset"]) == [200, 20]
+
+
+def test_a_round_is_charged_the_auctions_money_not_the_rosters(tmp_path):
+    """Harry Kane moved for $100 before the season opened and the roster
+    carries that, but round one only moved $40 on the night."""
+    store = _store(tmp_path, [bid("Kane", "SM", 40, rnd=1, asset="a0")])
+    priced = _slots([("Club Soccer Other", 100, 6.0)])
+    out = draft.by_round(draft.market(store, SEASON),
+                         draft.value(store, SEASON, priced))
+    assert list(out["spend"]) == [40]
+    # And the score still comes off the slot, because only a slot has one.
+    assert list(out["score"]) == [6.0]
+
+
+def test_a_released_asset_still_cost_its_round_the_money(tmp_path):
+    """Casper Ruud went for a dollar and was dropped. Nobody holds him, so he
+    scores for nobody -- but the dollar was spent."""
+    store = _store(tmp_path, [
+        bid("Brewers", "JM", 200, rnd=1, asset="a0"),
+        bid("Ruud", "SS", 1, rnd=1, asset=""),
+    ])
+    out = draft.by_round(draft.market(store, SEASON),
+                         draft.value(store, SEASON, _slots([("MLB", 200, 10.0)])))
+    assert list(out["slots"]) == [2] and list(out["spend"]) == [201]
+    assert list(out["score"]) == [10.0]

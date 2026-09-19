@@ -189,10 +189,9 @@ def test_a_losing_bid_is_never_matched_on_price(tmp_path):
 
 # --- where the two files disagree -------------------------------------------
 
-def test_a_traded_asset_is_reported_and_not_corrected(tmp_path):
-    """Harry Kane was won for $40 and traded for $100. The roster is what the
-    league plays by, so it wins; the difference is printed for someone who
-    knows which it was."""
+def test_a_transfer_at_a_new_price_is_still_a_transfer(tmp_path):
+    """Harry Kane was won for $40 and moved for $100. Somebody else holds him,
+    so something moved; the new figure is what it moved for."""
     store = _store(tmp_path, [
         ("player-kane", "Harry Kane", "Player", "Bundesliga",
          "Club Soccer Other", "SS", 100.0),
@@ -200,9 +199,9 @@ def test_a_traded_asset_is_reported_and_not_corrected(tmp_path):
     rows, report = draft_bids.plan(store, SEASON, {1: log(
         ("Harry Kane", "Bundesliga", "Player", "SM", 40, "Won"),
     )})
-    assert len(report.disagreements) == 1
-    assert "SS paid $100" in report.disagreements[0]
-    assert "SM won it for $40" in report.disagreements[0]
+    assert report.disagreements == []
+    assert len(report.moved) == 1
+    assert "for $40, held at $100" in report.moved[0]
     # And the bid is stored as the log wrote it: it is a record of the
     # auction, not of the roster.
     assert rows[0]["manager_id"] == "SM" and rows[0]["bid"] == 40
@@ -301,17 +300,19 @@ def test_an_asset_that_changed_hands_is_not_called_a_disagreement(tmp_path):
     assert "SM won it" in report.moved[0] and "TG holds it" in report.moved[0]
 
 
-def test_a_price_that_moved_is_still_a_disagreement(tmp_path):
-    """Harry Kane went for $40 and moved for $100. A new figure is a trade
-    struck at a new figure or an entry error, and only the league knows."""
+def test_a_price_nobody_bid_is_the_shape_worth_a_second_look(tmp_path):
+    """The one case nothing can explain: the manager who won it still holds
+    it, at a figure he did not bid. Nobody else was involved, so nothing can
+    have moved, which leaves an entry error."""
     store = _store(tmp_path, [
-        ("player-kane", "Harry Kane", "Player", "Bundesliga",
-         "Club Soccer Other", "SS", 100.0),
+        ("team-arsenal", "Arsenal", "Team", "Premier League",
+         "Club Soccer Top 3", "JM", 90.0),
     ])
     _, report = draft_bids.plan(store, SEASON, {1: log(
-        ("Harry Kane", "Bundesliga", "Player", "SM", 40, "Won"),
+        ("Arsenal", "Premier League", "Team", "JM", 40, "Won"),
     )})
     assert report.moved == [] and len(report.disagreements) == 1
+    assert "nobody else was involved" in report.disagreements[0]
 
 
 def test_a_released_asset_keeps_its_bid(tmp_path):

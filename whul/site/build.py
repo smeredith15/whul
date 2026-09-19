@@ -3660,7 +3660,7 @@ def _costs(store, season: str, bars, profiles: dict[str, dict],
     facts = draft.market(store, season)
     logged = not facts.empty
     bought = _market_table(draft.by_manager(valued, managers)) if logged else ""
-    rounds = _round_table(draft.by_round(valued)) if logged else ""
+    rounds = _round_table(draft.by_round(facts, valued)) if logged else ""
     scarcity = _scarcity_table(draft.categories(everything))
     body = "" if logged else (
         "<p class='sub'>No bid log has been imported for this season, so the "
@@ -3688,12 +3688,15 @@ def _costs(store, season: str, bars, profiles: dict[str, dict],
             "<h3 class='buys'>Round by round</h3>"
             "<p class='sub'>The rounds are not alike, and the third least "
             "of all: the board thinned, the rollover did not, and what was "
-            "left cost half as much again per asset as round one and three "
-            "times what round two did. That is where heavy spending shows up "
+            "left cost half as much again per asset as round one and nearly "
+            "twice what round two did. That is where heavy spending shows up "
             "-- a manager still holding money and slots when the cheap assets "
             "had gone. What a dollar bought changes with both the budget and "
             "the board, and one season cannot separate the two, so this says "
-            "what each round went on rather than converting between them.</p>"
+            "what each round went on rather than converting between them. "
+            "This is the auction's money, not the roster's: three assets "
+            "changed hands before the season opened and one was released, and "
+            "a round is charged what it actually cost at the time.</p>"
             + rounds
         )
     contested = _contested_table(facts, profiles)

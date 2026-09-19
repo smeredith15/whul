@@ -250,35 +250,52 @@ def value(store: Store, season: str, priced: pd.DataFrame,
     return out
 
 
-def by_round(priced: pd.DataFrame) -> pd.DataFrame:
+def by_round(market_frame: pd.DataFrame, priced: pd.DataFrame | None = None) -> pd.DataFrame:
     """What each round cost and what it bought.
 
     The round is in here twice over -- a round's budget and the board it was
     spent on -- and neither is separable from the other with one season's data.
     What can be said is what a round's dollars went on and what has come back,
     which is worth saying because the three rounds do not look alike.
+
+    Counted off the log rather than off the roster, which are not the same
+    money. Three assets changed hands before the season opened and one was
+    released, so the roster carries $100 for a Harry Kane the auction moved
+    for $40 and carries nothing at all for a player somebody won. A table
+    describing what each round cost has to spend the round's own money.
+
+    ``scored`` is the exception and has to come from the roster, because only
+    a slot has a score. An asset won in a round and no longer held scores
+    nothing here, which is right: it is not returning anything to anybody.
     """
-    if priced is None or priced.empty or "round" not in priced.columns:
+    if market_frame is None or market_frame.empty:
         return pd.DataFrame()
-    bought = priced[priced["round"].notna()].copy()
+    bought = market_frame[market_frame["winner"].astype(str) != ""].copy()
     if bought.empty:
         return pd.DataFrame()
     bought["round"] = bought["round"].astype(int)
     out = bought.groupby("round").agg(
-        slots=("cost", "size"),
-        spend=("cost", "sum"),
-        median=("cost", "median"),
+        slots=("paid", "size"),
+        spend=("paid", "sum"),
+        median=("paid", "median"),
         contested=("contested", "sum"),
         premium=("premium", "sum"),
-        score=("score", "sum"),
     )
-    out["per_hundred"] = out["score"] / out["spend"].where(out["spend"] > 0) * 100
     # What one asset cost in that round's money. The clearest single reading of
     # a round's economy: the board thins, the rollover does not, and the last
     # round pays most for least.
     out["per_asset"] = out["spend"] / out["slots"].where(out["slots"] > 0)
-    if "roster_open" in bought.columns:
-        out["roster_open"] = bought.groupby("round")["roster_open"].mean()
+
+    scored = pd.Series(0.0, index=out.index)
+    if priced is not None and not priced.empty and "round" in priced.columns:
+        held = priced[priced["round"].notna()].copy()
+        if not held.empty:
+            held["round"] = held["round"].astype(int)
+            scored = held.groupby("round")["score"].sum().reindex(out.index)
+            if "roster_open" in held.columns:
+                out["roster_open"] = held.groupby("round")["roster_open"].mean()
+    out["score"] = scored.fillna(0.0)
+    out["per_hundred"] = out["score"] / out["spend"].where(out["spend"] > 0) * 100
     return out.reset_index()
 
 

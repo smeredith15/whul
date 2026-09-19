@@ -88,13 +88,13 @@ class BidReport:
                 out.append(f"    ... and {len(self.unresolved) - SHOWN} more")
         if self.moved:
             out.append(f"  Changed hands ({len(self.moved)}) -- won by one "
-                       "manager and held by another at the same price, which "
-                       "is what a transfer looks like from here:")
+                       "manager and held by another. All of the 2026-27 ones "
+                       "settled before the season opened:")
             out += [f"    {line}" for line in self.moved]
         if self.disagreements:
-            out.append(f"  The roster and the log disagree on a price "
-                       f"({len(self.disagreements)}). The roster wins; nothing "
-                       "here was changed:")
+            out.append(f"  Held at a price nobody bid ({len(self.disagreements)})"
+                       " -- worth a look. The roster wins; nothing here was "
+                       "changed:")
             out += [f"    {line}" for line in self.disagreements]
         if self.unbid:
             out.append(f"  Held but never bid for ({len(self.unbid)}):")
@@ -351,11 +351,15 @@ def _check_against_roster(store: Store, season: str, rows: list[dict],
     """Say where the log and the roster tell different stories.
 
     Two different stories, and they are worth separating. An asset held by
-    someone other than the manager who won it, *at the price he won it for*,
-    has changed hands: the price travelled with the asset, which is what a
-    transfer does and what a mistyped initial does not. A price that differs
-    is a trade struck at a new figure -- Harry Kane went for $40 and moved for
-    $100 -- or an entry error, and only the league knows which.
+    someone other than the manager who won it has changed hands, whatever it
+    went for: Harry Kane was won for $40 and moved for $100, João Pedro moved
+    at the figure he was bid at, and both are transfers. All of them settled
+    before the season opened, so the roster's single dated occupancy is the
+    whole truth and there is nothing to backdate.
+
+    What is worth a second look is the other shape: the same manager holding
+    an asset at a price he did not bid. Nobody else was involved, so nothing
+    can have moved, which leaves an entry error.
 
     Said rather than fixed, either way. The roster is what the league plays
     by, so it wins, and the difference is printed for someone who knows.
@@ -376,15 +380,20 @@ def _check_against_roster(store: Store, season: str, rows: list[dict],
                 report.unbid.append(
                     f"{row.display_name} ({row.manager_id}, ${cost:,.0f})")
             continue
-        if abs(float(win["bid"]) - cost) >= 0.5:
-            report.disagreements.append(
-                f"{row.display_name}: the roster says {row.manager_id} paid "
-                f"${cost:,.0f}, the log says {win['manager_id']} won it for "
-                f"${win['bid']:,.0f} in round {win['round']}")
-        elif str(win["manager_id"]) != str(row.manager_id):
+        moved = str(win["manager_id"]) != str(row.manager_id)
+        repriced = abs(float(win["bid"]) - cost) >= 0.5
+        if moved:
+            at = (f" for ${win['bid']:,.0f}, held at ${cost:,.0f}" if repriced
+                  else f" at ${cost:,.0f}")
             report.moved.append(
-                f"{row.display_name} (${cost:,.0f}): {win['manager_id']} won "
-                f"it in round {win['round']}, {row.manager_id} holds it")
+                f"{row.display_name}: {win['manager_id']} won it in round "
+                f"{win['round']}{at}, {row.manager_id} holds it")
+        elif repriced:
+            report.disagreements.append(
+                f"{row.display_name}: {row.manager_id} holds it at "
+                f"${cost:,.0f} and won it for ${win['bid']:,.0f} in round "
+                f"{win['round']} -- nobody else was involved, so nothing can "
+                "have moved")
 
 
 def apply(store: Store, season: str, rows: list[dict]) -> int:
