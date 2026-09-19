@@ -13,7 +13,7 @@ Two manager counts exist and must not be conflated:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 #: The league's managers: id -> display name. The id is the initials and is
 #: what appears in URLs, filenames and badges, where a full name would not
@@ -110,6 +110,66 @@ SEASON = SeasonWindow(
     end=date(2027, 7, 13),  # MLB All-Star Game
     benchmark_cutoff=date(2026, 8, 20),
 )
+
+
+#: Where the season's quarters break, as (month, day).
+#:
+#: Fixed dates rather than an even split of the days. An even split puts a
+#: boundary wherever the arithmetic lands -- for 2026-27 that was 9 November,
+#: mid-NFL-playoff-race, and 30 January, four days before the Super Bowl --
+#: and a boundary that cuts a competition in half makes the quarter either
+#: side of it read as a different sport than it was. These sit on seams the
+#: calendar already has: mid-October is after the World Series and before the
+#: NBA and NHL open, mid-January is after the college football final and
+#: inside the NFL playoffs, mid-April is as the NBA and NHL regular seasons
+#: finish and the majors begin.
+#:
+#: A quarter is therefore not a quarter of a year. The first one is whatever
+#: is left between the league year opening and the first boundary, which in
+#: 2026-27 is eight weeks rather than thirteen. That is the honest shape: the
+#: draft happened in August and the season did not start over to suit it.
+QUARTER_STARTS: tuple[tuple[int, int], ...] = ((10, 15), (1, 15), (4, 15))
+
+
+@dataclass(frozen=True)
+class Quarter:
+    """One quarter of a league year. Both ends are inclusive."""
+
+    label: str
+    start: date
+    end: date
+
+    def holds(self, day: date) -> bool:
+        return self.start <= day <= self.end
+
+
+def quarters(window: SeasonWindow | None = None) -> tuple[Quarter, ...]:
+    """The four quarters of a league year, in order.
+
+    The boundaries are months and days, so each one belongs to the first year
+    in which it falls after the league year opened: for a year opening in
+    August, 15 October is that autumn and 15 January is the following winter.
+    """
+    window = window or SEASON
+    edges = []
+    for month, day in QUARTER_STARTS:
+        when = date(window.start.year, month, day)
+        if when <= window.start:
+            when = date(window.start.year + 1, month, day)
+        edges.append(when)
+    bounds = [window.start] + edges + [window.end + timedelta(days=1)]
+    return tuple(
+        Quarter(f"Q{i + 1}", bounds[i], bounds[i + 1] - timedelta(days=1))
+        for i in range(4)
+    )
+
+
+def quarter_of(day: date, window: SeasonWindow | None = None) -> Quarter | None:
+    """Which quarter a day falls in, or None outside the league year."""
+    for quarter in quarters(window):
+        if quarter.holds(day):
+            return quarter
+    return None
 
 
 #: When each league's results start counting, where that is not the league

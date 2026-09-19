@@ -3,7 +3,7 @@
 import json
 import re
 from html import escape
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -4603,3 +4603,81 @@ def test_a_rival_that_does_not_exist_is_not_a_bid_of_zero():
     assert "nobody" in site_build._rival(0)
     assert site_build._rival(None) == "—"
     assert site_build._rival(75) == "75"
+
+
+# --- the quarters, on the standings page ------------------------------------
+
+def _progression(rows):
+    """``(as_of, manager, total)`` as `pipeline.progression` returns it."""
+    return pd.DataFrame([
+        {"as_of": when, "manager_id": who, "total": total, "rank": 1}
+        for when, who, total in rows
+    ])
+
+
+def test_a_quarter_is_measured_from_where_it_opened(tmp_path):
+    """Rebased, not absolute. The season total says who is winning the league,
+    which the standings already say; a quarter asks who has gained since it
+    opened, and a line starting at last quarter's total buries that."""
+    from whul.config.league import quarters
+
+    q2 = quarters()[1]
+    before = q2.start - timedelta(days=1)
+    frame = _progression([
+        (before, "JM", 100.0), (before, "SS", 40.0),
+        (q2.start, "JM", 110.0), (q2.start, "SS", 70.0),
+        (q2.start + timedelta(days=1), "JM", 120.0),
+        (q2.start + timedelta(days=1), "SS", 130.0),
+    ])
+    days, runs = site_build._quarter_runs(frame, ["JM", "SS"], q2)
+
+    assert days == [q2.start, q2.start + timedelta(days=1)]
+    assert runs["JM"] == [10.0, 20.0]
+    assert runs["SS"] == [30.0, 90.0]
+    # And the quarter's leader is not the season's.
+    html = site_build._quarter_table(runs, ["JM", "SS"],
+                                     [("Jake", 1), ("Shelby", 2)], days)
+    assert html.index("Shelby") < html.index("Jake")
+
+
+def test_the_first_quarter_counts_from_zero(tmp_path):
+    """It opens with the league year, so there is no day before it to
+    subtract -- which is also what a manager had."""
+    from whul.config.league import quarters
+
+    q1 = quarters()[0]
+    frame = _progression([(q1.start, "JM", 0.0),
+                          (q1.start + timedelta(days=3), "JM", 55.0)])
+    _, runs = site_build._quarter_runs(frame, ["JM"], q1)
+    assert runs["JM"] == [0.0, 55.0]
+
+
+def test_a_quarter_nobody_has_played_yet_is_not_shown(tmp_path):
+    """Only the quarters that have started get a chip. A tab for next April is
+    an empty chart with a date on it."""
+    from whul.config.league import quarters
+
+    store = _priced_store(tmp_path, ("s1", "JM", "NFL", 10.0))
+    q1 = quarters()[0]
+    frame = _progression([(q1.start, "JM", 0.0), (q1.start + timedelta(days=3), "JM", 55.0)])
+    html = site_build._quarters_figure(
+        store, "2026-27", frame, ["JM"], [("Jake", 1)],
+        q1.start + timedelta(days=3))
+
+    assert html.count('data-filter="quarter"') == 1
+    assert 'data-value="Q1"' in html and 'data-value="Q2"' not in html
+    # Closed like the other asides, and the live quarter is the one open.
+    assert "<details" in html and " open" not in html.split(">")[0]
+
+
+def test_the_quarters_section_says_nothing_about_money(site):
+    """Nothing is being played for this season, so nothing on the standings
+    page may imply otherwise."""
+    out, _ = site
+    page = (out / "index.html").read_text()
+
+    assert 'id="quarters"' in page
+    start = page.index('id="quarters"')
+    section = page[start:page.index("</details>", start)]
+    for word in ("$", "payout", "prize", "buy-in", "pot", "%"):
+        assert word not in section, f"the quarters section mentions {word!r}"

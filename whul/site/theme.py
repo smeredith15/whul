@@ -367,6 +367,19 @@ table.h2hgrid button.cell:hover, table.h2hgrid button.cell:focus-visible {
 }
 .chip .swatch { margin-right: 5px; }
 
+/* A quarter's chart and its table, side by side on a wide screen and stacked
+   on a narrow one. The chart is given the room because a line needs width to
+   say anything; the table is four rows and reads fine in a column. */
+.twoup { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 20px; align-items: start; }
+.quarterchart { min-width: 0; overflow-x: auto; }
+.quartertable { min-width: 0; }
+table.quarters { font-variant-numeric: tabular-nums; width: 100%; }
+table.quarters .rank { color: var(--muted); width: 1.5em; }
+@media (max-width: 720px) {
+  .twoup { grid-template-columns: minmax(0, 1fr); }
+}
+
 h3.buys {
   margin: 18px 0 6px; font-size: 13px; font-weight: 600;
   letter-spacing: .02em; color: var(--text-secondary);
