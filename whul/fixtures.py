@@ -845,8 +845,12 @@ RESULT_KEYS = ("game_date", "match_uid")
 #: records nothing at all, and that is the safe direction on purpose: a
 #: missing meeting is a gap somebody notices, and an exhibition in the
 #: head-to-head record is a result that never happened.
+#: The 2026-27 opener is the league's own answer, and the schedule agrees
+#: with it: the eighteen days the feed was carrying on 19 September have
+#: exactly one dark night in them, Monday the 28th, and the games resume the
+#: Tuesday. Fifty-three exhibitions before it, and the season after.
 SEASON_OPENS: dict[tuple[str, str], date] = {
-    ("NHL", "2026-27"): date(2026, 10, 7),
+    ("NHL", "2026-27"): date(2026, 9, 29),
 }
 
 
