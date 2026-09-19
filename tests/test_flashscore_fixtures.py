@@ -786,6 +786,11 @@ def result(uid, home, away, when, code, here=None, there=None) -> str:
 
 PLAYED = date(2026, 9, 6)
 
+#: A night the NHL season is actually open on. The parse tests above can use
+#: any date, but anything that walks through `_remember_results` has to clear
+#: `SEASON_OPENS` or it is an exhibition as far as the ledger is concerned.
+IN_SEASON = date(2026, 10, 20)
+
 
 def test_a_finished_match_is_read_as_a_result():
     """The inverse of `iter_fixtures`, off the same payload: what it throws
@@ -842,7 +847,7 @@ def test_a_played_game_reaches_the_ledger_under_the_rosters_spelling(monkeypatch
     rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
              league="NHL")
     raw = payload(header("USA: NHL"),
-                  result("h5", "Edmonton", "Calgary Flames", PLAYED, "1", 3, 1))
+                  result("h5", "Edmonton", "Calgary Flames", IN_SEASON, "1", 3, 1))
     pull_soccer(store, monkeypatch, raw, ["NHL"])
 
     kept = feed_ledger.load(store, "nhl-games")
@@ -861,7 +866,7 @@ def test_a_game_between_two_clubs_nobody_holds_is_not_written_down(monkeypatch):
     rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
              league="NHL")
     raw = payload(header("USA: NHL"),
-                  result("h6", "Barys Astana", "Avangard Omsk", PLAYED, "1", 3, 1))
+                  result("h6", "Barys Astana", "Avangard Omsk", IN_SEASON, "1", 3, 1))
     pull_soccer(store, monkeypatch, raw, ["NHL"])
     assert feed_ledger.load(store, "nhl-games").empty
 
@@ -877,4 +882,82 @@ def test_a_league_with_a_game_source_of_its_own_does_not_get_a_second(monkeypatc
     raw = payload(header("ENGLAND: Premier League"),
                   result("a1", "Arsenal", "Chelsea", PLAYED, "1", 2, 0))
     pull_soccer(store, monkeypatch, raw, ["Premier League"])
+    assert feed_ledger.load(store, "nhl-games").empty
+
+
+# --- the preseason, which the feed does not mark ----------------------------
+
+def test_a_game_before_the_season_opened_is_not_a_result(monkeypatch):
+    """The whole reason `SEASON_OPENS` exists. Flashscore files an NHL
+    exhibition under "NHL", in the USA, with no round name -- identical in
+    every field to opening night -- so only the date can tell them apart, and
+    a preseason game in the head-to-head record is a result that never
+    happened."""
+    from whul.store import feed_ledger
+
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    raw = payload(header("USA: NHL"),
+                  result("h7", "Edmonton Oilers", "Calgary Flames",
+                         date(2026, 9, 20), "1", 3, 1))
+    pull_soccer(store, monkeypatch, raw, ["NHL"])
+    assert feed_ledger.load(store, "nhl-games").empty
+
+
+def test_a_game_on_opening_night_is(monkeypatch):
+    from whul.store import feed_ledger
+
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    opens = fixtures.SEASON_OPENS[("NHL", "2026-27")]
+    raw = payload(header("USA: NHL"),
+                  result("h8", "Edmonton Oilers", "Calgary Flames",
+                         opens, "1", 3, 1))
+    pull_soccer(store, monkeypatch, raw, ["NHL"])
+    assert len(feed_ledger.load(store, "nhl-games")) == 1
+
+
+def test_a_league_with_no_declared_opening_records_nothing(monkeypatch):
+    """The safe direction, on purpose. A missing meeting is a gap somebody
+    notices; an exhibition in the record is a result that never happened."""
+    from whul.store import feed_ledger
+
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    monkeypatch.setattr(fixtures, "SEASON_OPENS", {})
+    raw = payload(header("USA: NHL"),
+                  result("h9", "Edmonton Oilers", "Calgary Flames",
+                         date(2026, 12, 1), "1", 3, 1))
+    pull_soccer(store, monkeypatch, raw, ["NHL"])
+    assert feed_ledger.load(store, "nhl-games").empty
+
+
+def test_every_league_that_records_results_declares_when_they_start():
+    """Adding a league to `RESULTS_FOR` without saying when its season opens
+    is the mistake this catches. It would not fail -- it would record nothing,
+    quietly, which reads exactly like a league with no meetings in it."""
+    seasons = {season for _, season in fixtures.SEASON_OPENS}
+    for league in fixtures.RESULTS_FOR:
+        for season in seasons:
+            assert (league, season) in fixtures.SEASON_OPENS, (
+                f"{league} records results but has no {season} opening date")
+
+
+def test_last_years_opening_date_cannot_apply_to_this_year(monkeypatch):
+    """Keyed on the season as well as the league, so a date nobody updated is
+    a league with no results rather than a league whose preseason counts."""
+    from whul.store import feed_ledger
+
+    store = open_store(":memory:")
+    rostered(store, "team-oilers", "Team", "Edmonton Oilers", index=1,
+             league="NHL")
+    monkeypatch.setattr(fixtures, "SEASON_OPENS",
+                        {("NHL", "2025-26"): date(2025, 10, 7)})
+    raw = payload(header("USA: NHL"),
+                  result("h10", "Edmonton Oilers", "Calgary Flames",
+                         date(2026, 9, 20), "1", 3, 1))
+    pull_soccer(store, monkeypatch, raw, ["NHL"])
     assert feed_ledger.load(store, "nhl-games").empty

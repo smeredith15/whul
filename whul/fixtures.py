@@ -829,6 +829,26 @@ RESULTS_FOR: dict[str, str] = {"NHL": "nhl-games"}
 #: reused between seasons cannot fold two games onto one row.
 RESULT_KEYS = ("game_date", "match_uid")
 
+#: The first day a league's results count, by season. Nothing before it is
+#: written down.
+#:
+#: The fixture feed cannot tell a preseason game from a real one. It files
+#: both under "NHL", in the USA, with no round name and no other mark: on
+#: 19 September 2026 every one of the 93 NHL fixtures it was carrying was an
+#: exhibition, and each looked exactly like opening night. The scoring never
+#: had this problem -- it asks the NHL's own API for `gameTypeId=2` and the
+#: preseason is simply not in the answer -- but this reads a feed that has no
+#: such field, so the date is the only thing that can tell them apart.
+#:
+#: Keyed on the season as well as the league, so last year's date cannot
+#: quietly apply to this one. A league in `RESULTS_FOR` with no entry here
+#: records nothing at all, and that is the safe direction on purpose: a
+#: missing meeting is a gap somebody notices, and an exhibition in the
+#: head-to-head record is a result that never happened.
+SEASON_OPENS: dict[tuple[str, str], date] = {
+    ("NHL", "2026-27"): date(2026, 10, 7),
+}
+
 
 def _remember_results(store, season: str, played, wanted: dict,
                       verbose: bool = True) -> int:
@@ -857,8 +877,22 @@ def _remember_results(store, season: str, played, wanted: dict,
         mine = {k: v for k, v in wanted.items() if v[1] == league}
         if not mine:
             continue
+        opens = SEASON_OPENS.get((league, season))
+        if opens is None:
+            if verbose:
+                print(f"  {league}: no opening date declared for {season}, so "
+                      "no results recorded -- see fixtures.SEASON_OPENS",
+                      flush=True)
+            continue
+        first = opens.isoformat()
         keep = []
+        early = 0
         for row in played.itertuples():
+            # Before the season opened, so it was an exhibition. The feed says
+            # nothing to distinguish one, so the date has to.
+            if str(row.game_date) < first:
+                early += 1
+                continue
             country = str(getattr(row, "country", "") or "")
             named = [match_team(side, mine, country)
                      for side in (str(row.home_team), str(row.away_team))]
@@ -875,6 +909,9 @@ def _remember_results(store, season: str, played, wanted: dict,
                 "won": str(getattr(row, "won", "") or ""),
                 "competition": str(getattr(row, "competition", "") or ""),
             })
+        if early and verbose:
+            print(f"  {league}: {early} game(s) before {first} left out -- "
+                  "the season had not opened", flush=True)
         if keep:
             written += feed_ledger.record(
                 store, source, pd.DataFrame(keep), RESULT_KEYS)
