@@ -1371,7 +1371,15 @@ SOURCES: dict[str, Source] = _register(
            accumulates=("season", "week", "player_id"),
            note="nflverse release parquet; the only source reachable without a proxy"),
     Source("nfl-teams", "NFL", "Team", _nfl_teams, reliability="verified",
-           seasons_for=_feed_seasons("nfl", "NFL")),
+           seasons_for=_feed_seasons("nfl", "NFL"),
+           # One game. nflverse republishes the whole schedule file every
+           # week, the same way it does the player stats, so a week that is
+           # served and then is not is a file that failed to read rather than
+           # a week nobody played -- and the ledger is what keeps the games it
+           # forgot. It is also where the head-to-head table reads NFL from:
+           # the frame is one row per game with both clubs and both scores,
+           # and nothing was keeping it.
+           accumulates=GAME_KEYS),
     Source("mlb", "MLB", "Player", _mlb_players, live=_mlb_players_live,
            post_normalize=_mlb_two_way, cumulative=True,
            seasons_for=_league_year_seasons,

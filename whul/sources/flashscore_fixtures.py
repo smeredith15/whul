@@ -435,13 +435,19 @@ def probe_season(league: str) -> dict:
     return out
 
 
-def probe(sport: int = SPORT_SOCCER, days: range = range(0, 3)) -> dict:
+def probe(sport: int = SPORT_SOCCER, days: range = range(-3, 3)) -> dict:
     """What the feed actually returns, for correcting this from its output.
 
     Every guess in this module is reported separately, because they fail
     separately: the request, the record split, the status codes present, the
     name fields, and the competition headers. A parser that returns nothing
     could be any one of them, and the whole point of a probe is to say which.
+
+    The window reaches backwards as well as forwards. This reader keeps only
+    the upcoming records, so a probe of the next three days would report the
+    status codes of fixtures alone -- and the question most often asked of it
+    is whether the feed carries *finished* games, which it would then answer
+    no to whether or not that was true.
     """
     out: dict[str, object] = {"sport": sport, "days": str(days)}
     try:

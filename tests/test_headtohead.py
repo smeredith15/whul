@@ -227,3 +227,48 @@ def test_an_event_with_no_two_sides_is_not_read_at_all(tmp_path):
     ])
 
     assert headtohead.meetings(store, SEASON).empty
+
+
+def test_an_nfl_game_is_read_through_the_feeds_abbreviations(tmp_path):
+    """nflverse names its clubs "SEA" and "NE" and its date column `gameday`,
+    and the alias table already holds the abbreviations because the scorer
+    needed them. The ledger is new; everything it is read with is not."""
+    store = _store(tmp_path, [("t-sea", "Seattle Seahawks", "NFL", "JM"),
+                              ("t-ne", "New England Patriots", "NFL", "SS")], [
+        ("nfl-teams", {"season": 2026, "game_id": "2026_03_NE_SEA",
+                       "gameday": "2026-09-20", "home_team": "SEA",
+                       "away_team": "NE", "home_score": 24.0,
+                       "away_score": 20.0}),
+    ])
+    store.upsert("asset_aliases", [
+        {"source": "nfl-teams", "source_key": key, "asset_id": asset,
+         "match_kind": "name", "needs_review": 0, "created_at": "2026-08-21"}
+        for key, asset in (("SEA", "t-sea"), ("NE", "t-ne"))
+    ], keys=("source", "source_key"))
+    store.conn.commit()
+
+    out = headtohead.meetings(store, SEASON)
+
+    assert len(out) == 1
+    row = out.iloc[0]
+    assert (row["a_name"], row["b_name"]) == ("Seattle Seahawks",
+                                              "New England Patriots")
+    assert row["won"] == "a" and row["date"] == "2026-09-20"
+
+
+def test_a_feeds_own_name_does_not_leak_into_another_feed(tmp_path):
+    """nflverse files the Rams as "LA", which is a club in more than one
+    sport. An alias belongs to the feed that uses it."""
+    store = _store(tmp_path, [("t-rams", "Los Angeles Rams", "NFL", "JM"),
+                              ("t-sea", "Seattle Seahawks", "NFL", "SS")], [
+        ("epl", {"event_id": "77", "date": "2026-09-12", "team": "LA",
+                 "opponent": "Seattle Seahawks", "goals_for": 2.0,
+                 "goals_against": 1.0, "competition_key": "epl"}),
+    ])
+    store.upsert("asset_aliases", [{
+        "source": "nfl-teams", "source_key": "LA", "asset_id": "t-rams",
+        "match_kind": "name", "needs_review": 0, "created_at": "2026-08-21"}],
+        keys=("source", "source_key"))
+    store.conn.commit()
+
+    assert headtohead.meetings(store, SEASON).empty

@@ -1,0 +1,78 @@
+# Ask the Flashscore day feed what it is serving, per sport, and print it.
+#
+# `whul.cli probe <league>` covers the sources that score. This covers the one
+# that does not: the fixture feed, which is a different host, a different
+# payload and a different parser, and which nothing could run on demand. The
+# NHL is why it exists. Its own stats API reports season totals and carries no
+# schedule at all -- `probe nhl` says so plainly -- so the only place an NHL
+# game with an opponent in it could come from is this feed, which the nightly
+# already fetches for fixtures and reads only the unplayed half of.
+#
+# It reads and writes nothing. The database argument is a path the command
+# insists on and never opens: the probe answers from the feed, not the roster.
+#
+# Like the other probes, failing here means the feed moved rather than that the
+# standings are wrong, which is why it is its own workflow and not a step in
+# the nightly.
+
+name: Probe fixtures
+
+on:
+  workflow_dispatch:
+    inputs:
+      sport:
+        description: "Which sport's feed to ask about"
+        type: choice
+        default: hockey
+        options:
+          - hockey
+          - soccer
+          - basketball
+          - baseball
+          - tennis
+          - all
+      season:
+        description: "Season label, for the coverage lines"
+        default: "2026-27"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Probe
+        # pipefail because a pipeline exits with its last command's status and
+        # the default shell is `bash -e`: without it `tee` reports success
+        # however the command exited, and a dead feed would go green.
+        env:
+          SPORT: ${{ inputs.sport }}
+          SEASON: ${{ inputs.season }}
+        run: |
+          set -o pipefail
+          FLAGS=""
+          # "all" is the absence of the flag rather than a value it accepts.
+          if [ -n "$SPORT" ] && [ "$SPORT" != "all" ]; then
+            FLAGS="--sport $SPORT"
+          fi
+          mkdir -p data
+          echo "fixtures --probe $FLAGS --season $SEASON"
+          python -m whul.cli fixtures --probe $FLAGS \
+            --season "$SEASON" --db data/probe.sqlite3 | tee probe-fixtures.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-fixtures
+          path: probe-fixtures.txt
+          if-no-files-found: ignore
