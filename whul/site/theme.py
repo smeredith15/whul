@@ -347,7 +347,25 @@ table.h2h td:not(.beat) .who { opacity: .72; }
 table.h2h .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
 table.h2h .rowmeta { display: block; color: var(--muted); font-size: 11.5px; }
 table.h2h .h2hscore { font-variant-numeric: tabular-nums; white-space: nowrap; }
-table.h2hrecords [data-record] { font-weight: 600; }
+/* The pairings, as a grid. Read across a row: that manager's season against
+   each of the others, with the diagonal struck out because nobody plays
+   themselves. The cells are buttons and look like text until hovered --
+   twenty underlined numbers would be a page of links rather than a table. */
+table.h2hgrid { font-variant-numeric: tabular-nums; }
+table.h2hgrid th[scope="col"] { text-align: right; white-space: nowrap; }
+table.h2hgrid th[scope="row"] { text-align: left; font-weight: 600; white-space: nowrap; }
+table.h2hgrid td.self { color: var(--muted); }
+table.h2hgrid td.all, table.h2hgrid th.all {
+  font-weight: 600; border-left: 1px solid var(--grid);
+}
+table.h2hgrid button.cell {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit;
+  font-variant-numeric: tabular-nums; cursor: pointer; border-radius: 4px;
+}
+table.h2hgrid button.cell:hover, table.h2hgrid button.cell:focus-visible {
+  background: var(--grid); text-decoration: underline;
+}
+.chip .swatch { margin-right: 5px; }
 
 h3.buys {
   margin: 18px 0 6px; font-size: 13px; font-weight: 600;

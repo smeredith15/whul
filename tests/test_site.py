@@ -4463,6 +4463,53 @@ def test_a_meeting_puts_the_winner_on_the_left():
     assert 'data-one="LS"' in html and 'data-two="JM"' in html
 
 
+def test_the_records_are_a_grid_with_a_cell_each_way(tmp_path):
+    """Read across a row: that manager's record against each of the others.
+    Both orientations exist, because a grid that only filled its upper half
+    would make a reader work out which half they were in."""
+    html = site_build._h2h_grid(["TG", "LS", "SS", "JM", "SM"])
+
+    for one in ("TG", "LS", "SS", "JM", "SM"):
+        for two in ("TG", "LS", "SS", "JM", "SM"):
+            if one == two:
+                continue
+            assert f'data-cell="{one}|{two}"' in html, f"{one} v {two} missing"
+    # Nobody plays themselves, so the diagonal is struck out rather than zero.
+    assert html.count('class="num self"') == 5
+    # And a row ends with what that manager did against everybody.
+    assert html.count("data-all=") == 5
+
+
+def test_a_manager_chip_exists_for_each_of_them():
+    html = site_build._manager_chips(["TG", "LS"])
+    assert html.count('data-filter="h2hmanager"') == 2
+    assert 'data-value="TG"' in html and 'data-value="LS"' in html
+    # Nothing is pressed until somebody presses it.
+    assert 'aria-pressed="true"' not in html
+
+
+def test_the_meetings_table_carries_both_managers_for_the_filter():
+    """The manager filter reads these; the league filter reads `data-leagues`
+    on the same row, and the two narrow independently."""
+    import pandas as pd
+
+    found = pd.DataFrame([{
+        "date": "2026-09-10", "competition": "", "a_id": "a1",
+        "a_name": "Arsenal", "a_manager": "SM", "a_league": "Premier League",
+        "a_category": "Club Soccer Top 3", "b_id": "b1", "b_name": "Chelsea",
+        "b_manager": "TG", "b_league": "Premier League",
+        "b_category": "Club Soccer Top 3", "a_score": 2.0, "b_score": 1.0,
+        "won": "a", "detail": "",
+    }])
+    html = site_build._head_to_head_table(found, {}, ["SM", "TG"])
+
+    assert 'data-one="SM"' in html and 'data-two="TG"' in html
+    assert 'data-leagues="Club Soccer|Premier League"' in html
+    # One grid, one set of manager chips, one set of league chips.
+    assert html.count('id="h2hgrid"') == 1
+    assert html.count('data-filter="h2hmanager"') == 2
+
+
 def test_a_season_with_no_meetings_says_so(tmp_path):
     from whul.store import open_store
 

@@ -3883,32 +3883,85 @@ def _head_to_head_table(found, profiles: dict[str, dict],
         return (f'<div class="chips" role="group" '
                 f'aria-label="Filter by {name}">{buttons}</div>')
 
-    # The pairings, above the fixtures and recomputed as the chips are
-    # clicked: unfiltered it is the season, filtered to one league it says who
-    # wins that league's meetings, which is the question the chips exist for.
-    pairs = "".join(
-        f'<tr data-pair="{escape(one)}|{escape(two)}" hidden>'
-        f'<td><span class="who"><i class="swatch" style="background: '
-        f'var(--series-{theme.series_index(managers, one) + 1})"></i>'
-        f'{escape(manager_name(one))}</span></td>'
-        f'<td class="num" data-record>0-0</td>'
-        f'<td><span class="who"><i class="swatch" style="background: '
-        f'var(--series-{theme.series_index(managers, two) + 1})"></i>'
-        f'{escape(manager_name(two))}</span></td></tr>'
-        for index, one in enumerate(managers) for two in managers[index + 1:]
-    )
     return (
-        '<table class="costs h2hrecords" id="h2hrecords"><thead><tr>'
-        '<th>Manager</th><th class="num">Record</th><th>Manager</th>'
-        '</tr></thead>'
-        f'<tbody>{pairs}</tbody></table>'
-        f'{chips("h2hleague", leagues, groups - {""})}'
-        '<p class="sub filtercount" data-h2hcount>Showing every meeting.</p>'
+        _h2h_grid(managers)
+        + _manager_chips(managers)
+        + chips("h2hleague", leagues, groups - {""})
+        + '<p class="sub filtercount" data-h2hcount>Showing every meeting.</p>'
         '<table class="costs h2h" id="h2htable"><thead><tr>'
         '<th>Date</th><th>Won by</th><th class="num">Score</th><th>Lost by</th>'
         '<th>Competition</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table>'
     )
+
+
+def _swatch(managers: list[str], manager: str) -> str:
+    slot = theme.series_index(managers, str(manager)) + 1
+    return f'<i class="swatch" style="background: var(--series-{slot})"></i>'
+
+
+def _h2h_grid(managers: list[str]) -> str:
+    """Every pairing at once, read across the row.
+
+    A grid rather than a list of pairs because ten rows of "A 2-1 B" is a
+    lookup table and this is a standings: a row is one manager's season
+    against each of the others, and the shape of who beats whom is visible
+    without reading a word of it.
+
+    Filled by the script from whatever the league chips leave showing, so a
+    reader narrowing to the Premier League gets the Premier League's grid.
+    The cells are buttons: clicking one asks the table below for that pairing,
+    which is the question a cell makes you want to ask.
+    """
+    head = "".join(
+        f'<th class="num" scope="col">{_swatch(managers, who)}'
+        f'{escape(manager_name(who))}</th>' for who in managers
+    )
+    body = []
+    for one in managers:
+        cells = []
+        for two in managers:
+            if one == two:
+                cells.append('<td class="num self">—</td>')
+                continue
+            cells.append(
+                f'<td class="num"><button class="cell" type="button" '
+                f'data-cell="{escape(one)}|{escape(two)}" '
+                f'data-pair="{escape(one)},{escape(two)}" hidden>0-0</button>'
+                f'<span class="flat" data-empty>—</span></td>'
+            )
+        body.append(
+            f'<tr data-row="{escape(one)}">'
+            f'<th scope="row"><span class="who">{_swatch(managers, one)}'
+            f'{escape(manager_name(one))}</span></th>'
+            + "".join(cells)
+            + f'<td class="num all" data-all="{escape(one)}">—</td></tr>'
+        )
+    return (
+        '<table class="costs h2hgrid" id="h2hgrid"><thead><tr>'
+        '<th scope="col">Manager</th>' + head
+        + '<th class="num all" scope="col">All</th></tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table>'
+    )
+
+
+def _manager_chips(managers: list[str]) -> str:
+    """One chip a manager, and one to clear them.
+
+    Separate from the league chips because they narrow differently: pick one
+    manager and the table is every meeting they played, pick two and it is the
+    meetings between them. That is what a reader wants from a grid cell, and
+    it is why picking three is the meetings among those three rather than
+    nothing at all.
+    """
+    buttons = "".join(
+        f'<button class="chip" data-filter="h2hmanager" '
+        f'data-value="{escape(who)}" aria-pressed="false">'
+        f'{_swatch(managers, who)}{escape(manager_name(who))}</button>'
+        for who in managers
+    )
+    return ('<div class="chips" role="group" aria-label="Filter by manager">'
+            f'{buttons}</div>')
 
 
 def _h2h_line(row) -> str:
@@ -4862,8 +4915,12 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         "meeting pays nobody, and it could not fairly: a Premier League club "
         "faces a rostered opponent in about half its games and a Serie A club "
         "in a fifth, so points would reward the draft's league mix rather "
-        "than the manager. Filter by league or category; a tie between two "
-        "leagues answers to both, and the records above re-count as you go.",
+        "than the manager. Read the grid across a row: that manager's record "
+        "against each of the others. Below it, filter by manager -- one for "
+        "every meeting they played, two or more for the meetings between them "
+        "-- or by league, where a tie between two leagues answers to both. "
+        "The grid re-counts as the league chips are clicked, and a cell in it "
+        "asks the list for that pairing.",
         _head_to_head(store, season, profiles, managers),
         open_=False,
     )
