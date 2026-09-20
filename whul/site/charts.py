@@ -939,6 +939,39 @@ SCRIPT = """\
         });
       });
   }
+  // --- filtering the record book by manager -----------------------------
+  // Pick nobody and it is the league's book; pick one or more and it is
+  // theirs. The ranks renumber rather than keeping their league places: a
+  // reader who asked for one manager wants that manager's best first, not a
+  // column of 4, 9, 11.
+  var pickedRec = {};
+  function applyRecords() {
+    var any = false;
+    for (var k in pickedRec) if (pickedRec[k]) any = true;
+    document.querySelectorAll('table.records[data-records]').forEach(
+      function (table) {
+        var place = 0;
+        table.querySelectorAll('tbody tr').forEach(function (row) {
+          var ok = !any || pickedRec[row.dataset.manager];
+          row.hidden = !ok;
+          if (!ok) return;
+          place++;
+          var cell = row.querySelector('.rank');
+          if (cell) cell.textContent = place;
+        });
+      });
+  }
+  document.querySelectorAll('.chip[data-filter="recordman"]').forEach(
+    function (chip) {
+      chip.addEventListener('click', function () {
+        var value = chip.dataset.value;
+        pickedRec[value] = !pickedRec[value];
+        chip.setAttribute('aria-pressed', pickedRec[value] ? 'true' : 'false');
+        applyRecords();
+      });
+    });
+  applyRecords();
+
   // --- the quarter panels -----------------------------------------------
   // One at a time, and exactly one: these are not filters but pages of the
   // same thing, so pressing a chip moves to that quarter rather than adding

@@ -66,7 +66,7 @@ def _page(title: str, body: str, active: str, managers: list[str],
     """One page's HTML. Depth sets how far up the shared assets are."""
     up = "../" * depth
     nav = [("index.html", "Standings"), ("results.html", "Results"),
-           ("about.html", "Scoring")]
+           ("records.html", "Records"), ("about.html", "Scoring")]
     current = ' aria-current="page"'
     links = "".join(
         f'<a href="{up}{href}"{current if label == active else ""}>{label}</a>'
@@ -4467,6 +4467,8 @@ def build(
     for manager in managers:
         _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     simulated, deep_profiles)
+    _write_records(out, season, managers, slotted, latest, stamp, simulated,
+                   store)
     _write_about(out, managers, stamp, simulated, version,
                  _uncovered(store, season, version), store=store)
 
@@ -4474,7 +4476,7 @@ def build(
         "out": str(out),
         "season": season,
         "as_of": str(latest),
-        "pages": 2 + len(managers),
+        "pages": 3 + len(managers),
         "managers": len(managers),
         "days": int(progression["as_of"].nunique()),
         "simulated": simulated,
@@ -5432,6 +5434,135 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=(),
 """
     (out / "about.html").write_text(
         _page(f"{LEAGUE_ABBR} — Scoring", body, "Scoring", managers,
+              stamp=stamp, simulated=simulated)
+    )
+
+
+#: How many lines a record list shows before it stops. Long enough that a
+#: season's worth of quarters fits, short enough that nobody scrolls a
+#: leaderboard looking for themselves.
+MARKS_SHOWN = 12
+
+
+def _mark_rows(marks, managers: list[str], reverse: bool = False) -> str:
+    """One row a mark, ranked, with the unfinished ones marked as such."""
+    if not marks:
+        return ""
+    body = []
+    for place, mark in enumerate(marks[:MARKS_SHOWN], start=1):
+        slot = theme.series_index(managers, mark.manager) + 1
+        live = "" if mark.settled else '<span class="ago">in progress</span>'
+        marked = "" if mark.settled else ' class="unsettled"'
+        body.append(
+            f'<tr data-manager="{escape(mark.manager)}"{marked}>'
+            f'<td class="num rank">{place}</td>'
+            f'<td><span class="who"><i class="swatch" style="background: '
+            f'var(--series-{slot})"></i>'
+            f'{escape(manager_name(mark.manager))}</span></td>'
+            f'<td class="num">{mark.value:,.1f}</td>'
+            f'<td class="why">{escape(mark.label)} {live}</td>'
+            "</tr>"
+        )
+    return "".join(body)
+
+
+def _mark_table(marks, managers: list[str], kind: str) -> str:
+    rows = _mark_rows(marks, managers)
+    if not rows:
+        return "<p class='sub'>Nothing recorded yet.</p>"
+    return (
+        f'<table class="costs records" data-records="{escape(kind)}">'
+        '<thead><tr><th class="num"></th><th>Manager</th>'
+        '<th class="num">Score</th><th>When</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _career_table(frame, managers: list[str], columns: list[tuple[str, str]],
+                  played: str = "") -> str:
+    """A career counting table: one row a manager, one column a thing counted."""
+    if frame is None or frame.empty:
+        return "<p class='sub'>Nothing recorded yet.</p>"
+    head = "".join(f"<th class='num'>{escape(title)}</th>" for _, title in columns)
+    body = []
+    for row in frame.itertuples():
+        who = str(row.manager_id)
+        slot = theme.series_index(managers, who) + 1
+        cells = "".join(
+            f"<td class='num'>{int(getattr(row, key, 0))}</td>"
+            for key, _ in columns
+        )
+        body.append(
+            "<tr>"
+            f'<td><span class="who"><i class="swatch" style="background: '
+            f'var(--series-{slot})"></i>{escape(manager_name(who))}</span></td>'
+            f"{cells}</tr>"
+        )
+    note = f"<p class='sub'>{escape(played)}</p>" if played else ""
+    return (
+        "<table class='costs records'><thead><tr><th>Manager</th>"
+        f"{head}</tr></thead><tbody>{''.join(body)}</tbody></table>{note}"
+    )
+
+
+def _write_records(out, season: str, managers: list[str], slotted, latest,
+                   stamp, simulated, store) -> None:
+    """The record book, and what is still being played for.
+
+    A record is of a completed thing, so a season enters here when the league
+    year has closed and a quarter when its last day has passed. Everything
+    still running is shown beside it and marked, because a page that says only
+    "nothing has finished yet" is true and useless.
+    """
+    from whul import records
+
+    book = records.book(store, managers, latest)
+    chips = "".join(
+        f'<button class="chip" data-filter="recordman" '
+        f'data-value="{escape(m)}" aria-pressed="false">'
+        f'<i class="swatch" style="background: '
+        f'var(--series-{theme.series_index(managers, m) + 1})"></i>'
+        f'{escape(manager_name(m))}</button>'
+        for m in managers
+    )
+    opening = (
+        "<p class='sub'>Nothing has finished yet — no league year has closed "
+        "and no quarter has run its last day — so the book is empty and every "
+        "figure below is still being played for.</p>"
+        if book.empty else ""
+    )
+    played = book.quarter_wins.attrs.get("played", 0)
+    body = f"""
+{opening}
+<div class="card">
+  <h2>Career</h2>
+  <div class="twoup">
+    <div>{_career_table(book.titles, managers,
+                        [("titles", "Titles"), ("second", "2nd"),
+                         ("third", "3rd"), ("seasons", "Seasons")])}</div>
+    <div>{_career_table(book.quarter_wins, managers, [("won", "Quarters won")],
+                        played=f"{played} quarter(s) have finished.")}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Best season</h2>
+  <div class="chips" role="group" aria-label="Filter by manager">{chips}</div>
+  {_mark_table(book.seasons, managers, "season")}
+</div>
+
+<div class="card">
+  <h2>Best quarter</h2>
+  {_mark_table(book.best_quarters, managers, "best-quarter")}
+</div>
+
+<div class="card">
+  <h2>Worst quarter</h2>
+  {_mark_table(book.worst_quarters, managers, "worst-quarter")}
+</div>
+"""
+    (out / "records.html").write_text(
+        _page(f"{LEAGUE_ABBR} — Records", body, "Records", managers,
               stamp=stamp, simulated=simulated)
     )
 

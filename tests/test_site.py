@@ -182,7 +182,8 @@ def test_every_page_is_written(site):
     assert (out / "app.js").exists()
     for manager in simulate.MANAGERS:
         assert (out / "team" / f"{manager.lower()}.html").exists()
-    assert result["pages"] == 2 + len(simulate.MANAGERS)
+    assert (out / "records.html").exists()
+    assert result["pages"] == 3 + len(simulate.MANAGERS)
 
 
 def test_simulated_data_is_labelled_on_every_page(site):
@@ -4681,3 +4682,51 @@ def test_the_quarters_section_says_nothing_about_money(site):
     section = page[start:page.index("</details>", start)]
     for word in ("$", "payout", "prize", "buy-in", "pot", "%"):
         assert word not in section, f"the quarters section mentions {word!r}"
+
+
+# --- the records page -------------------------------------------------------
+
+def test_the_records_page_is_in_the_nav_and_built(site):
+    out, _ = site
+    assert (out / "records.html").exists()
+    for name in ("index.html", "results.html", "about.html", "records.html"):
+        assert 'href="records.html"' in (out / name).read_text()
+
+
+def test_a_finished_quarter_is_counted_and_a_running_one_is_not(site):
+    """The simulated season runs to 31 October, so Q1 has closed and Q2 has
+    not. One is in the book; the other is on the page, marked."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+
+    for heading in ("Career", "Best season", "Best quarter", "Worst quarter"):
+        assert f"<h2>{heading}</h2>" in page
+    assert "1 quarter(s) have finished" in page
+    # The season itself has not ended, so nobody has a title.
+    assert "in progress" in page
+    assert page.count('class="unsettled"') >= 5
+
+
+def test_a_book_with_nothing_finished_says_so(tmp_path_factory):
+    """One month in, before any quarter has closed: the page says the book is
+    empty rather than putting the live standings under "best ever"."""
+    from whul import simulate as sim
+
+    store = open_store(":memory:")
+    sim.generate(store, seed=2026, end=date(2026, 9, 20), verbose=False)
+    out = tmp_path_factory.mktemp("early")
+    build(store, sim.SIM_SEASON, out)
+    page = (out / "records.html").read_text()
+
+    assert "Nothing has finished yet" in page
+    assert "0 quarter(s) have finished" in page
+
+
+def test_every_record_row_names_its_manager_for_the_filter(site):
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-records="season"')
+    table = page[start:page.index("</table>", start)]
+
+    assert table.count("data-manager=") == 5
+    assert 'data-filter="recordman"' in page
