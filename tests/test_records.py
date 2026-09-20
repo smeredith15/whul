@@ -257,18 +257,19 @@ def test_a_bigger_overpay_on_a_negative_score_is_the_worse_pick(tmp_path):
     assert [m.name for m in book.worst_picks] == ["Broncos", "Rams"]
 
 
-def test_a_dollar_pick_cannot_be_the_worst_one(tmp_path):
-    """A dollar spent badly is not a story, and without a floor every dollar
-    snake pick that scored nothing ties at the bottom."""
+def test_the_dearest_scoreless_pick_is_the_worst_one(tmp_path):
+    """No price floor either way. Every scoreless pick ties at nought per
+    dollar, so price breaks the tie and a cheap dud sorts to the bottom of
+    the list on its own -- a floor was tried and was borrowed reasoning."""
     q1 = quarters()[0]
     store = _with_slots(tmp_path, [(SEASON.label, q1.end, "SM", 40.0)], [
         (SEASON.label, q1.end, "a1", "Dollar", "Player", "MLB", "SM", 0.0, 1.0),
         (SEASON.label, q1.end, "a2", "Expensive", "Team", "NFL", "SM", 0.0, 200.0),
+        (SEASON.label, q1.end, "a3", "Middling", "Team", "NFL", "SM", 0.0, 50.0),
     ])
     book = records.book(store, MANAGERS, q1.end, WINDOWS)
 
-    assert [m.name for m in book.worst_picks] == ["Expensive"]
-    assert all(m.cost >= records.WORST_PICK_FLOOR for m in book.worst_picks)
+    assert [m.name for m in book.worst_picks] == ["Expensive", "Middling", "Dollar"]
 
 
 def test_the_margin_belongs_to_the_season_and_names_the_winner(tmp_path):

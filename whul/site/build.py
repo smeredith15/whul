@@ -5443,6 +5443,13 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=(),
 #: leaderboard looking for themselves.
 MARKS_SHOWN = 12
 
+#: An asset list puts *every* asset in the page and lets the script show the
+#: first `MARKS_SHOWN` that survive the chips. Truncating server-side first
+#: would make "NFL players" mean "whichever NFL players happened to make the
+#: unfiltered top twelve", which for the worst list is none of them, and would
+#: hide a category whose best asset ranks below the cut entirely. It costs a
+#: third of a megabyte on a page already carrying the profile payload.
+
 
 def _mark_rows(marks, managers: list[str], reverse: bool = False) -> str:
     """One row a mark, ranked, with the unfinished ones marked as such."""
@@ -5507,16 +5514,17 @@ def _career_table(frame, managers: list[str], columns: list[tuple[str, str]],
 
 def _asset_rows(marks, managers: list[str], profiles: dict[str, dict],
                 per_dollar: bool = False) -> str:
-    """One row an asset, carrying its type so the chips can narrow it."""
+    """One row an asset, carrying what the chips narrow on."""
     body = []
-    for place, mark in enumerate(marks[:MARKS_SHOWN], start=1):
+    for place, mark in enumerate(marks, start=1):
         slot = theme.series_index(managers, mark.manager) + 1
         profile = profiles.get(mark.asset_id, {})
         name = str(profile.get("name") or mark.name)
         value = (f"{mark.per_dollar:,.2f}" if per_dollar else f"{mark.score:,.1f}")
         body.append(
             f'<tr data-manager="{escape(mark.manager)}" '
-            f'data-type="{escape(mark.asset_type)}">'
+            f'data-type="{escape(mark.asset_type)}" '
+            f'data-cat="{escape(mark.category)}">'
             f'<td class="num rank">{place}</td>'
             f'<td>{_asset_button(mark.asset_id, name, profile=profile)}</td>'
             f'<td class="owner">{escape(manager_name(mark.manager))}</td>'
@@ -5529,32 +5537,52 @@ def _asset_rows(marks, managers: list[str], profiles: dict[str, dict],
     return "".join(body)
 
 
+def _dim_chips(dim: str, values, label: str, default: str = "") -> str:
+    """One row of chips narrowing an asset list along one dimension.
+
+    ``dim`` names the row attribute the script reads, so a block can carry two
+    rows of chips that narrow independently without the script knowing what
+    either of them means.
+    """
+    buttons = "".join(
+        f'<button class="chip" data-dim="{escape(dim)}" '
+        f'data-value="{escape(value)}" '
+        f'aria-pressed="{"true" if value == default else "false"}">'
+        f"{escape(shown)}</button>"
+        for value, shown in values
+    )
+    return (f'<div class="chips" role="group" aria-label="Filter by {label}">'
+            f"{buttons}</div>")
+
+
 def _asset_block(marks, managers, profiles, kind: str, default: str = "",
                  per_dollar: bool = False) -> str:
-    """An asset list with its own type chips.
+    """An asset list with its own chips, by type and by category.
 
     Its own, and not one row of chips for the page, because the two lists want
     different defaults: the worst assets open on teams, since an injured
     player scores nothing through no fault of the manager who drafted him and
     would otherwise fill the list.
+
+    The two rows narrow independently and combine -- teams, and the NFL, is
+    the question somebody actually asks -- so the list shown is the assets
+    matching every dimension that has a chip pressed in it.
     """
     if not marks:
         return "<p class='sub'>Nothing recorded yet.</p>"
-    chips = "".join(
-        f'<button class="chip" data-filter="assettype" data-value="{escape(value)}"'
-        f' aria-pressed="{"true" if value == default else "false"}">{escape(label)}'
-        "</button>"
-        for value, label in (("Player", "Players"), ("Team", "Teams"))
-    )
+    categories = sorted({m.category for m in marks if m.category})
     extra = '<th class="num">Per $</th>' if per_dollar else ""
     return (
         f'<div class="assetblock" data-block="{escape(kind)}">'
-        f'<div class="chips" role="group" aria-label="Filter by type">{chips}</div>'
-        '<table class="costs records"><thead><tr><th class="num"></th>'
+        + _dim_chips("type", (("Player", "Players"), ("Team", "Teams")),
+                     "type", default)
+        + _dim_chips("cat", [(c, c) for c in categories], "category")
+        + '<table class="costs records"><thead><tr><th class="num"></th>'
         '<th>Asset</th><th>Manager</th><th>Category</th>'
         f'<th class="num">Cost</th><th class="num">Score</th>{extra}</tr></thead>'
         f'<tbody>{_asset_rows(marks, managers, profiles, per_dollar)}</tbody>'
-        "</table></div>"
+        "</table>"
+        "<p class='sub filtercount' data-assetcount hidden></p></div>"
     )
 
 
@@ -5699,8 +5727,6 @@ def _write_records(out, season: str, managers: list[str], slotted, latest,
 
 <div class="card">
   <h2>Worst pick</h2>
-  <p class="sub">Picks of ${records.WORST_PICK_FLOOR:,.0f} or more, worst
-    return first. A dollar spent badly is not a story.</p>
   {_asset_block(book.worst_picks, managers, profiles, "worst-picks",
                 per_dollar=True)}
 </div>

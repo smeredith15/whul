@@ -274,12 +274,6 @@ def book(store: Store, managers: list[str], as_of: date | str,
 
 # --- assets, picks, margins and days at the top -----------------------------
 
-#: What a pick has to have cost before it can be a *bad* one. Without a floor
-#: the list is every dollar snake pick that scored nothing, all tied at zero
-#: per dollar, and a dollar spent badly is not a story. The best-pick list has
-#: no floor on purpose: a dollar returning fourteen points is exactly the story.
-WORST_PICK_FLOOR = 25.0
-
 #: One row per slot per season, at that season's last recorded day.
 FINAL_SLOTS = (
     "SELECT ss.season, ss.as_of, ss.asset_id, ss.score, ss.counts, "
@@ -344,12 +338,16 @@ def _ranked_picks(marks: list[AssetMark], worst: bool) -> list[AssetMark]:
     above the Rams at $125 for −0.77, which is backwards. Clamped, the two tie
     at nothing per dollar and the tie-break is price, so the worst pick is the
     one that spent most to get nothing.
+
+    No price floor either way. One was tried and it was borrowed reasoning: a
+    dollar pick that returns nothing really is a worse buy than nothing, and
+    the tie-break already keeps it off the top of the list, since every
+    scoreless pick ties at nought per dollar and the dearest sorts first.
     """
     priced = [m for m in marks if m.cost > 0]
     if not worst:
         return sorted(priced, key=lambda m: -m.per_dollar)
-    real = [m for m in priced if m.cost >= WORST_PICK_FLOOR]
-    return sorted(real, key=lambda m: (max(m.score, 0.0) / m.cost, -m.cost))
+    return sorted(priced, key=lambda m: (max(m.score, 0.0) / m.cost, -m.cost))
 
 
 def _margins(seasons: pd.DataFrame, closed: list[str]) -> list[Mark]:

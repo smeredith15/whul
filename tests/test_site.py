@@ -4764,3 +4764,27 @@ def test_the_records_page_carries_the_rest_of_the_book(site):
                     "Worst asset", "Best pick", "Worst pick"):
         assert f"<h2>{heading}</h2>" in page
     assert "Days at #1" in page
+
+
+def test_an_asset_list_takes_both_type_and_category_chips(site):
+    """They narrow independently and combine -- "teams, and the NFL" is the
+    question somebody actually asks."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="best-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert block.count('data-dim="type"') == 2
+    assert block.count('data-dim="cat"') >= 3
+    assert 'data-cat="' in block
+
+
+def test_an_asset_list_ships_every_row_for_its_chips_to_narrow(site):
+    """Truncating server-side would make a category filter mean "whichever of
+    them made the unfiltered top twelve"."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="best-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert block.count("<tr ") > site_build.MARKS_SHOWN * 2

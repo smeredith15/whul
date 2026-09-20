@@ -976,32 +976,57 @@ SCRIPT = """\
   // Per block, not per page: the two lists want different defaults, and the
   // worst list opens on teams because an injured player scores nothing
   // through no fault of whoever drafted him.
+  var SHOWN = 12;
   document.querySelectorAll('.assetblock').forEach(function (block) {
+    // One bag of choices per dimension. A chip names the row attribute it
+    // narrows, so the script never needs to know what "type" or "cat" mean --
+    // and the dimensions combine, because "teams, and the NFL" is the
+    // question somebody actually asks.
     var picked = {};
-    block.querySelectorAll('.chip[data-filter="assettype"]').forEach(
-      function (chip) {
-        if (chip.getAttribute('aria-pressed') === 'true') {
-          picked[chip.dataset.value] = true;
-        }
-        chip.addEventListener('click', function () {
-          var value = chip.dataset.value;
-          picked[value] = !picked[value];
-          chip.setAttribute('aria-pressed', picked[value] ? 'true' : 'false');
-          apply();
-        });
+    block.querySelectorAll('.chip[data-dim]').forEach(function (chip) {
+      var dim = chip.dataset.dim;
+      var bag = picked[dim] || (picked[dim] = {});
+      if (chip.getAttribute('aria-pressed') === 'true') {
+        bag[chip.dataset.value] = true;
+      }
+      chip.addEventListener('click', function () {
+        var value = chip.dataset.value;
+        bag[value] = !bag[value];
+        chip.setAttribute('aria-pressed', bag[value] ? 'true' : 'false');
+        apply();
       });
+    });
     function apply() {
-      var any = false;
-      for (var k in picked) if (picked[k]) any = true;
-      var place = 0;
+      var live = [];
+      for (var dim in picked) {
+        for (var value in picked[dim]) {
+          if (picked[dim][value]) { live.push(dim); break; }
+        }
+      }
+      // The page carries a deep pool and the cap is applied here, after
+      // filtering: cutting the list to twelve first would make "NFL players"
+      // mean "whichever NFL players made the unfiltered top twelve".
+      var matched = 0;
       block.querySelectorAll('tbody tr').forEach(function (row) {
-        var ok = !any || picked[row.dataset.type];
-        row.hidden = !ok;
-        if (!ok) return;
-        place++;
+        var ok = live.every(function (dim) {
+          return picked[dim][row.dataset[dim]];
+        });
+        if (ok) matched++;
+        row.hidden = !ok || matched > SHOWN;
+        if (row.hidden) return;
         var cell = row.querySelector('.rank');
-        if (cell) cell.textContent = place;
+        if (cell) cell.textContent = matched;
       });
+      var count = block.querySelector('[data-assetcount]');
+      if (count) {
+        // Say something whenever the chips are doing anything, including when
+        // they have matched nothing -- a list that empties without a word
+        // reads as broken rather than as an honest answer.
+        count.hidden = !live.length && matched <= SHOWN;
+        count.textContent = matched
+          ? 'Showing ' + Math.min(matched, SHOWN) + ' of ' + matched + '.'
+          : 'Nothing in this list matches.';
+      }
     }
     apply();
   });
