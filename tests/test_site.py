@@ -4730,3 +4730,37 @@ def test_every_record_row_names_its_manager_for_the_filter(site):
 
     assert table.count("data-manager=") == 5
     assert 'data-filter="recordman"' in page
+
+
+def test_the_worst_asset_list_opens_on_teams(site):
+    """An injured player scores nothing through no fault of whoever drafted
+    him, and would otherwise fill the list."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="worst-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert 'data-value="Team" aria-pressed="true"' in block
+    assert 'data-value="Player" aria-pressed="false"' in block
+    # And the best list opens on everything.
+    other = page[page.index('data-block="best-assets"'):]
+    assert 'aria-pressed="true"' not in other[:other.index("<table")]
+
+
+def test_every_asset_row_carries_its_type_for_the_filter(site):
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="best-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert block.count("data-type=") >= 5
+    assert 'data-type="Team"' in page and 'data-type="Player"' in page
+
+
+def test_the_records_page_carries_the_rest_of_the_book(site):
+    out, _ = site
+    page = (out / "records.html").read_text()
+    for heading in ("Head to head", "Winning margin", "Best asset",
+                    "Worst asset", "Best pick", "Worst pick"):
+        assert f"<h2>{heading}</h2>" in page
+    assert "Days at #1" in page

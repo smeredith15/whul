@@ -972,6 +972,40 @@ SCRIPT = """\
     });
   applyRecords();
 
+  // --- narrowing an asset list to players or teams ----------------------
+  // Per block, not per page: the two lists want different defaults, and the
+  // worst list opens on teams because an injured player scores nothing
+  // through no fault of whoever drafted him.
+  document.querySelectorAll('.assetblock').forEach(function (block) {
+    var picked = {};
+    block.querySelectorAll('.chip[data-filter="assettype"]').forEach(
+      function (chip) {
+        if (chip.getAttribute('aria-pressed') === 'true') {
+          picked[chip.dataset.value] = true;
+        }
+        chip.addEventListener('click', function () {
+          var value = chip.dataset.value;
+          picked[value] = !picked[value];
+          chip.setAttribute('aria-pressed', picked[value] ? 'true' : 'false');
+          apply();
+        });
+      });
+    function apply() {
+      var any = false;
+      for (var k in picked) if (picked[k]) any = true;
+      var place = 0;
+      block.querySelectorAll('tbody tr').forEach(function (row) {
+        var ok = !any || picked[row.dataset.type];
+        row.hidden = !ok;
+        if (!ok) return;
+        place++;
+        var cell = row.querySelector('.rank');
+        if (cell) cell.textContent = place;
+      });
+    }
+    apply();
+  });
+
   // --- the quarter panels -----------------------------------------------
   // One at a time, and exactly one: these are not filters but pages of the
   // same thing, so pressing a chip moves to that quarter rather than adding

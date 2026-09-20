@@ -151,6 +151,13 @@ class Book:
     seasons: list[Mark] = field(default_factory=list)
     best_quarters: list[Mark] = field(default_factory=list)
     worst_quarters: list[Mark] = field(default_factory=list)
+    best_assets: list = field(default_factory=list)
+    worst_assets: list = field(default_factory=list)
+    best_picks: list = field(default_factory=list)
+    worst_picks: list = field(default_factory=list)
+    margins: list[Mark] = field(default_factory=list)
+    top_days: pd.DataFrame = field(default_factory=pd.DataFrame)
+    head_to_head: pd.DataFrame = field(default_factory=pd.DataFrame)
     #: True while nothing at all has finished, which is the state of a league
     #: one month into its first season and is worth saying outright.
     empty: bool = True
@@ -246,11 +253,178 @@ def book(store: Store, managers: list[str], as_of: date | str,
     # there are records to read.
     nothing = (not any(m.settled for m in season_marks)
                and not any(m.settled for m in marks))
+    slots = final_slots(store)
+    assets = _asset_marks(slots, closed)
     return Book(
         titles=_title_rows(seasons, closed, managers),
         quarter_wins=_quarter_win_rows(quarterly, managers),
         seasons=season_marks,
         best_quarters=sorted(marks, key=lambda m: -m.value),
         worst_quarters=sorted(marks, key=lambda m: m.value),
+        best_assets=sorted(assets, key=lambda m: -m.score),
+        worst_assets=sorted(assets, key=lambda m: m.score),
+        best_picks=_ranked_picks(assets, worst=False),
+        worst_picks=_ranked_picks(assets, worst=True),
+        margins=sorted(_margins(seasons, closed), key=lambda m: -m.value),
+        top_days=days_at_top(store, managers),
+        head_to_head=career_head_to_head(store, managers),
         empty=nothing,
     )
+
+
+# --- assets, picks, margins and days at the top -----------------------------
+
+#: What a pick has to have cost before it can be a *bad* one. Without a floor
+#: the list is every dollar snake pick that scored nothing, all tied at zero
+#: per dollar, and a dollar spent badly is not a story. The best-pick list has
+#: no floor on purpose: a dollar returning fourteen points is exactly the story.
+WORST_PICK_FLOOR = 25.0
+
+#: One row per slot per season, at that season's last recorded day.
+FINAL_SLOTS = (
+    "SELECT ss.season, ss.as_of, ss.asset_id, ss.score, ss.counts, "
+    "       r.manager_id, r.category, a.display_name, a.asset_type, o.cost "
+    "FROM slot_scores ss "
+    "JOIN (SELECT season, MAX(as_of) AS d FROM slot_scores GROUP BY season) last "
+    "  ON last.season = ss.season AND last.d = ss.as_of "
+    "JOIN roster_slots r ON r.slot_id = ss.slot_id "
+    "JOIN slot_occupancy o ON o.slot_id = ss.slot_id AND o.end_date IS NULL "
+    "JOIN assets a ON a.asset_id = ss.asset_id"
+)
+
+
+def final_slots(store: Store) -> pd.DataFrame:
+    """Every rostered slot with the score it finished the season on."""
+    out = store.query(FINAL_SLOTS)
+    if out.empty:
+        return out
+    out["score"] = pd.to_numeric(out["score"], errors="coerce").fillna(0.0)
+    out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0.0)
+    return out
+
+
+@dataclass(frozen=True)
+class AssetMark:
+    """One asset's season: what it scored, what it cost, who held it."""
+
+    manager: str
+    asset_id: str
+    name: str
+    asset_type: str
+    category: str
+    score: float
+    cost: float
+    season: str
+    settled: bool = True
+
+    @property
+    def per_dollar(self) -> float:
+        return self.score / self.cost if self.cost > 0 else 0.0
+
+
+def _asset_marks(slots: pd.DataFrame, closed: list[str]) -> list[AssetMark]:
+    if slots.empty:
+        return []
+    return [
+        AssetMark(manager=str(r.manager_id), asset_id=str(r.asset_id),
+                  name=str(r.display_name), asset_type=str(r.asset_type),
+                  category=str(r.category), score=float(r.score),
+                  cost=float(r.cost), season=str(r.season),
+                  settled=str(r.season) in closed)
+        for r in slots.itertuples()
+    ]
+
+
+def _ranked_picks(marks: list[AssetMark], worst: bool) -> list[AssetMark]:
+    """Value for money, ranked.
+
+    Best is points per dollar outright. Worst clamps a negative score to zero
+    before dividing, because dividing a negative by a larger price makes the
+    bigger overpay look *better* -- the Broncos at $141 for −0.80 would rank
+    above the Rams at $125 for −0.77, which is backwards. Clamped, the two tie
+    at nothing per dollar and the tie-break is price, so the worst pick is the
+    one that spent most to get nothing.
+    """
+    priced = [m for m in marks if m.cost > 0]
+    if not worst:
+        return sorted(priced, key=lambda m: -m.per_dollar)
+    real = [m for m in priced if m.cost >= WORST_PICK_FLOOR]
+    return sorted(real, key=lambda m: (max(m.score, 0.0) / m.cost, -m.cost))
+
+
+def _margins(seasons: pd.DataFrame, closed: list[str]) -> list[Mark]:
+    """How far the winner of each season finished ahead of second.
+
+    One row a season rather than a row a manager: the margin belongs to the
+    season, and the name on it is whoever won.
+    """
+    if seasons.empty:
+        return []
+    out = []
+    for label, group in seasons.groupby("season"):
+        order = group.sort_values("total", ascending=False)
+        if len(order) < 2:
+            continue
+        first, second = order.iloc[0], order.iloc[1]
+        out.append(Mark(
+            manager=str(first["manager_id"]),
+            value=float(first["total"]) - float(second["total"]),
+            season=str(label), label=str(label),
+            settled=str(label) in closed,
+            detail=f"over {second['manager_id']}",
+        ))
+    return out
+
+
+def days_at_top(store: Store, managers: list[str]) -> pd.DataFrame:
+    """How many recorded days each manager has spent leading.
+
+    Every day counts, including days inside a season still being played. A
+    title is awarded when a season ends and a day at the top is a thing that
+    happened on the day, so unlike the rest of this module there is nothing
+    here to wait for.
+    """
+    rows = store.query(
+        "SELECT manager_id, COUNT(*) AS days FROM standings_snapshots "
+        "WHERE rank = 1 GROUP BY manager_id"
+    )
+    counts = ({str(r.manager_id): int(r.days) for r in rows.itertuples()}
+              if not rows.empty else {})
+    total = store.scalar(
+        "SELECT COUNT(DISTINCT season || as_of) FROM standings_snapshots") or 0
+    out = pd.DataFrame([{"manager_id": m, "days": counts.get(m, 0)}
+                        for m in managers])
+    out.attrs["days"] = int(total)
+    return out.sort_values("days", ascending=False)
+
+
+def career_head_to_head(store: Store, managers: list[str]) -> pd.DataFrame:
+    """Every meeting in every season, as one record a pair.
+
+    The same reader the standings page uses, run over each season and added
+    up. A pair that has never met is absent rather than nil-nil.
+    """
+    from whul import headtohead
+
+    seasons = store.query("SELECT DISTINCT season FROM roster_slots ORDER BY season")
+    tally: dict[tuple[str, str], list[int]] = {}
+    for season in (seasons["season"] if not seasons.empty else []):
+        found = headtohead.meetings(store, str(season))
+        if found.empty:
+            continue
+        for row in found.itertuples():
+            one, two = str(row.a_manager), str(row.b_manager)
+            key = (one, two) if one < two else (two, one)
+            slot = tally.setdefault(key, [0, 0, 0])
+            if str(row.won) == "draw":
+                slot[2] += 1
+            else:
+                winner = one if str(row.won) == "a" else two
+                slot[0 if winner == key[0] else 1] += 1
+    rows = []
+    for (one, two), (first, second, drawn) in tally.items():
+        rows.append({"one": one, "two": two, "one_won": first,
+                     "two_won": second, "drawn": drawn,
+                     "played": first + second + drawn})
+    return pd.DataFrame(rows, columns=["one", "two", "one_won", "two_won",
+                                       "drawn", "played"])
