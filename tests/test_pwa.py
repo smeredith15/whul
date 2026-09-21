@@ -2,11 +2,13 @@
 
 A manifest, a service worker and a set of icons -- enough that a manager can
 put the league on a home screen and stop keeping a tab open for it. Nothing
-here is a native app: it is the same static files with three more of them.
+here is a native app: it is the same static files with a few more of them.
 """
 
 import json
 import struct
+
+import pytest
 
 from whul.site import icons, pwa
 
@@ -108,24 +110,46 @@ def test_the_status_bar_matches_the_page_under_it():
 
 # --- the icon ---------------------------------------------------------------
 
+def _dimensions(blob: bytes) -> tuple[int, int]:
+    """The width and height an IHDR claims. A phone reads the file, not the
+    filename, so this is the size that counts."""
+    assert blob[:8] == b"\x89PNG\r\n\x1a\n"
+    return struct.unpack(">II", blob[16:24])
+
+
 def test_the_icon_is_a_png_of_the_size_it_says():
-    """Written by hand: iOS will not take an SVG for a home-screen icon and
-    this project has no image library."""
+    """iOS will not take an SVG for a home-screen icon, and a 512 file that is
+    really 180 pixels is one a launcher shows blurred."""
     for size in icons.SIZES:
-        blob = icons.mark(size)
-        assert blob[:8] == b"\x89PNG\r\n\x1a\n"
-        width, height = struct.unpack(">II", blob[16:24])
-        assert (width, height) == (size, size)
+        assert _dimensions(icons.mark(size)) == (size, size)
 
 
-def test_the_icon_is_drawn_in_the_managers_own_colours():
-    """Five bars in the series palette rather than a logo nobody chose."""
-    size = 192
-    blob = icons.mark(size)
-    assert len(blob) > 100
-    # The ground is the site's dark page colour, so the corners are it.
-    assert icons._rgb(icons.GROUND) == (13, 13, 13)
-    assert len(icons.BARS) == len(icons.HEIGHTS) == 5
+def test_every_icon_is_a_file_rather_than_something_the_build_draws():
+    """The crest is a drawing. This project has no image library and wants none
+    for four files, so they are cut once and versioned with the repo -- and a
+    missing one has to say so rather than leaving the site an icon short."""
+    for name, blob in icons.files().items():
+        assert (icons.SOURCE_DIR / name).exists(), f"{name} is not in the repo"
+        assert len(blob) > 1000
+
+    with pytest.raises(FileNotFoundError):
+        icons.mark(97)
+
+
+def test_the_croppable_icon_keeps_the_crest_inside_the_safe_zone():
+    """A maskable icon is cropped to whatever shape the launcher likes and only
+    the middle 80% is promised. The crest's outer ring runs to 91% of the
+    square, so the full-bleed cut would have it shaved open -- the maskable one
+    is a separate file with the plate shrunk into the safe zone."""
+    assert icons.MASKABLE not in {f"icon-{size}.png" for size in icons.SIZES}
+    assert _dimensions(icons.files()[icons.MASKABLE]) == (512, 512)
+
+    listed = json.loads(pwa.manifest())["icons"]
+    croppable = [icon for icon in listed if icon.get("purpose") == "maskable"]
+    assert [icon["src"] for icon in croppable] == [icons.MASKABLE]
+    # And the full-bleed one is never offered for cropping.
+    assert all(icon.get("purpose") != "maskable"
+               for icon in listed if icon["src"] == "icon-512.png")
 
 
 def test_every_size_the_manifest_names_is_actually_written():

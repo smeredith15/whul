@@ -4458,7 +4458,7 @@ def build(
 
     (out / "style.css").write_text(theme.STYLESHEET)
     (out / "app.js").write_text(charts.SCRIPT)
-    # The three files that make the site installable. Written every build so
+    # The files that make the site installable. Written every build so
     # the worker's cache name carries the stamp this site was published with.
     (out / "manifest.webmanifest").write_text(pwa.manifest())
     (out / "sw.js").write_text(pwa.service_worker(stamp))

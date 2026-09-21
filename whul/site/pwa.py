@@ -1,10 +1,10 @@
 """What turns the site into something with its own home-screen icon.
 
-A manifest, a service worker and a set of icons. Between them they mean a
+A manifest, a service worker and the crest. Between them they mean a
 manager can install the league from their phone's browser and open it from the
 home screen without a tab -- which is the whole of what was asked for. There is
 no app store in this, no wrapper, no build step and no developer account: a
-progressive web app is the same static files with three more of them.
+progressive web app is the same static files with a few more of them.
 
 The service worker is the part worth being careful about. This site's only
 claim is that it is current, so a cache that served yesterday's standings
@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 
 from whul.config.league import LEAGUE_ABBR, LEAGUE_NAME
+from whul.site import icons
 
 #: The colour a phone paints its own furniture with -- the status bar behind a
 #: standalone window. One per scheme, matching the page underneath it.
@@ -48,9 +49,10 @@ def manifest() -> str:
         "icons": [
             {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
             {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},
-            # Cropped to whatever shape the launcher likes. The icon is drawn
-            # with a wide margin so a circular crop takes only the ground.
-            {"src": "icon-512.png", "sizes": "512x512", "type": "image/png",
+            # Cropped to whatever shape the launcher likes, so it is a cut of
+            # its own with the plate inside the safe zone rather than the
+            # full-bleed one with its outer ring in the part that gets shaved.
+            {"src": icons.MASKABLE, "sizes": "512x512", "type": "image/png",
              "purpose": "maskable"},
         ],
     }, indent=2)
