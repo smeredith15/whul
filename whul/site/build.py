@@ -66,7 +66,7 @@ def _page(title: str, body: str, active: str, managers: list[str],
     """One page's HTML. Depth sets how far up the shared assets are."""
     up = "../" * depth
     nav = [("index.html", "Standings"), ("results.html", "Results"),
-           ("about.html", "Scoring")]
+           ("records.html", "Records"), ("about.html", "Scoring")]
     current = ' aria-current="page"'
     links = "".join(
         f'<a href="{up}{href}"{current if label == active else ""}>{label}</a>'
@@ -4467,6 +4467,8 @@ def build(
     for manager in managers:
         _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     simulated, deep_profiles)
+    _write_records(out, season, managers, slotted, latest, stamp, simulated,
+                   store, profiles)
     _write_about(out, managers, stamp, simulated, version,
                  _uncovered(store, season, version), store=store)
 
@@ -4474,7 +4476,7 @@ def build(
         "out": str(out),
         "season": season,
         "as_of": str(latest),
-        "pages": 2 + len(managers),
+        "pages": 3 + len(managers),
         "managers": len(managers),
         "days": int(progression["as_of"].nunique()),
         "simulated": simulated,
@@ -5432,6 +5434,307 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=(),
 """
     (out / "about.html").write_text(
         _page(f"{LEAGUE_ABBR} — Scoring", body, "Scoring", managers,
+              stamp=stamp, simulated=simulated)
+    )
+
+
+#: How many lines a record list shows before it stops. Long enough that a
+#: season's worth of quarters fits, short enough that nobody scrolls a
+#: leaderboard looking for themselves.
+MARKS_SHOWN = 12
+
+#: An asset list puts *every* asset in the page and lets the script show the
+#: first `MARKS_SHOWN` that survive the chips. Truncating server-side first
+#: would make "NFL players" mean "whichever NFL players happened to make the
+#: unfiltered top twelve", which for the worst list is none of them, and would
+#: hide a category whose best asset ranks below the cut entirely. It costs a
+#: third of a megabyte on a page already carrying the profile payload.
+
+
+def _mark_rows(marks, managers: list[str], reverse: bool = False) -> str:
+    """One row a mark, ranked, with the unfinished ones marked as such."""
+    if not marks:
+        return ""
+    body = []
+    for place, mark in enumerate(marks[:MARKS_SHOWN], start=1):
+        slot = theme.series_index(managers, mark.manager) + 1
+        live = "" if mark.settled else '<span class="ago">in progress</span>'
+        marked = "" if mark.settled else ' class="unsettled"'
+        body.append(
+            f'<tr data-manager="{escape(mark.manager)}"{marked}>'
+            f'<td class="num rank">{place}</td>'
+            f'<td><span class="who"><i class="swatch" style="background: '
+            f'var(--series-{slot})"></i>'
+            f'{escape(manager_name(mark.manager))}</span></td>'
+            f'<td class="num">{mark.value:,.1f}</td>'
+            f'<td class="why">{escape(mark.label)} {live}</td>'
+            "</tr>"
+        )
+    return "".join(body)
+
+
+def _mark_table(marks, managers: list[str], kind: str) -> str:
+    rows = _mark_rows(marks, managers)
+    if not rows:
+        return "<p class='sub'>Nothing recorded yet.</p>"
+    return (
+        f'<table class="costs records" data-records="{escape(kind)}">'
+        '<thead><tr><th class="num"></th><th>Manager</th>'
+        '<th class="num">Score</th><th>When</th></tr></thead>'
+        f"<tbody>{rows}</tbody></table>"
+    )
+
+
+def _career_table(frame, managers: list[str], columns: list[tuple[str, str]],
+                  played: str = "") -> str:
+    """A career counting table: one row a manager, one column a thing counted."""
+    if frame is None or frame.empty:
+        return "<p class='sub'>Nothing recorded yet.</p>"
+    head = "".join(f"<th class='num'>{escape(title)}</th>" for _, title in columns)
+    body = []
+    for row in frame.itertuples():
+        who = str(row.manager_id)
+        slot = theme.series_index(managers, who) + 1
+        cells = "".join(
+            f"<td class='num'>{int(getattr(row, key, 0))}</td>"
+            for key, _ in columns
+        )
+        body.append(
+            "<tr>"
+            f'<td><span class="who"><i class="swatch" style="background: '
+            f'var(--series-{slot})"></i>{escape(manager_name(who))}</span></td>'
+            f"{cells}</tr>"
+        )
+    note = f"<p class='sub'>{escape(played)}</p>" if played else ""
+    return (
+        "<table class='costs records'><thead><tr><th>Manager</th>"
+        f"{head}</tr></thead><tbody>{''.join(body)}</tbody></table>{note}"
+    )
+
+
+def _asset_rows(marks, managers: list[str], profiles: dict[str, dict],
+                per_dollar: bool = False) -> str:
+    """One row an asset, carrying what the chips narrow on."""
+    body = []
+    for place, mark in enumerate(marks, start=1):
+        slot = theme.series_index(managers, mark.manager) + 1
+        profile = profiles.get(mark.asset_id, {})
+        name = str(profile.get("name") or mark.name)
+        value = (f"{mark.per_dollar:,.2f}" if per_dollar else f"{mark.score:,.1f}")
+        body.append(
+            f'<tr data-manager="{escape(mark.manager)}" '
+            f'data-type="{escape(mark.asset_type)}" '
+            f'data-cat="{escape(mark.category)}">'
+            f'<td class="num rank">{place}</td>'
+            f'<td>{_asset_button(mark.asset_id, name, profile=profile)}</td>'
+            f'<td class="owner">{escape(manager_name(mark.manager))}</td>'
+            f'<td class="why">{escape(mark.category)}</td>'
+            f'<td class="num">{mark.cost:,.0f}</td>'
+            f'<td class="num">{mark.score:,.1f}</td>'
+            + (f'<td class="num">{value}</td>' if per_dollar else "")
+            + "</tr>"
+        )
+    return "".join(body)
+
+
+def _dim_chips(dim: str, values, label: str, default: str = "") -> str:
+    """One row of chips narrowing an asset list along one dimension.
+
+    ``dim`` names the row attribute the script reads, so a block can carry two
+    rows of chips that narrow independently without the script knowing what
+    either of them means.
+    """
+    buttons = "".join(
+        f'<button class="chip" data-dim="{escape(dim)}" '
+        f'data-value="{escape(value)}" '
+        f'aria-pressed="{"true" if value == default else "false"}">'
+        f"{escape(shown)}</button>"
+        for value, shown in values
+    )
+    return (f'<div class="chips" role="group" aria-label="Filter by {label}">'
+            f"{buttons}</div>")
+
+
+def _asset_block(marks, managers, profiles, kind: str, default: str = "",
+                 per_dollar: bool = False) -> str:
+    """An asset list with its own chips, by type and by category.
+
+    Its own, and not one row of chips for the page, because the two lists want
+    different defaults: the worst assets open on teams, since an injured
+    player scores nothing through no fault of the manager who drafted him and
+    would otherwise fill the list.
+
+    The two rows narrow independently and combine -- teams, and the NFL, is
+    the question somebody actually asks -- so the list shown is the assets
+    matching every dimension that has a chip pressed in it.
+    """
+    if not marks:
+        return "<p class='sub'>Nothing recorded yet.</p>"
+    categories = sorted({m.category for m in marks if m.category})
+    extra = '<th class="num">Per $</th>' if per_dollar else ""
+    return (
+        f'<div class="assetblock" data-block="{escape(kind)}">'
+        + _dim_chips("type", (("Player", "Players"), ("Team", "Teams")),
+                     "type", default)
+        + _dim_chips("cat", [(c, c) for c in categories], "category")
+        + '<table class="costs records"><thead><tr><th class="num"></th>'
+        '<th>Asset</th><th>Manager</th><th>Category</th>'
+        f'<th class="num">Cost</th><th class="num">Score</th>{extra}</tr></thead>'
+        f'<tbody>{_asset_rows(marks, managers, profiles, per_dollar)}</tbody>'
+        "</table>"
+        "<p class='sub filtercount' data-assetcount hidden></p></div>"
+    )
+
+
+def _career_grid(frame, managers: list[str]) -> str:
+    """Career head-to-head, read across a row, filled here rather than by the
+    script: nothing on this page filters it, so there is nothing to recompute."""
+    if frame is None or frame.empty:
+        return "<p class='sub'>No two managers have met yet.</p>"
+    tally = {}
+    for row in frame.itertuples():
+        tally[(str(row.one), str(row.two))] = (int(row.one_won), int(row.two_won),
+                                               int(row.drawn))
+    head = "".join(
+        f'<th class="num" scope="col">{_swatch(managers, who)}'
+        f"{escape(manager_name(who))}</th>" for who in managers
+    )
+    body = []
+    for one in managers:
+        cells, won, lost, drew = [], 0, 0, 0
+        for two in managers:
+            if one == two:
+                cells.append('<td class="num self">—</td>')
+                continue
+            got = tally.get((one, two))
+            flip = False
+            if got is None:
+                got, flip = tally.get((two, one)), True
+            if got is None:
+                cells.append('<td class="num"><span class="flat">—</span></td>')
+                continue
+            first, second, drawn = (got[1], got[0], got[2]) if flip else got
+            won, lost, drew = won + first, lost + second, drew + drawn
+            text = (f"{first}-{second}-{drawn}" if drawn else f"{first}-{second}")
+            cells.append(f'<td class="num">{text}</td>')
+        overall = f"{won}-{lost}-{drew}" if drew else f"{won}-{lost}"
+        body.append(
+            f'<tr><th scope="row"><span class="who">{_swatch(managers, one)}'
+            f'{escape(manager_name(one))}</span></th>{"".join(cells)}'
+            f'<td class="num all">{overall}</td></tr>'
+        )
+    return (
+        '<table class="costs h2hgrid"><thead><tr><th scope="col">Manager</th>'
+        f'{head}<th class="num all" scope="col">All</th></tr></thead>'
+        f'<tbody>{"".join(body)}</tbody></table>'
+    )
+
+
+def _write_records(out, season: str, managers: list[str], slotted, latest,
+                   stamp, simulated, store, profiles=None) -> None:
+    """The record book, and what is still being played for.
+
+    A record is of a completed thing, so a season enters here when the league
+    year has closed and a quarter when its last day has passed. Everything
+    still running is shown beside it and marked, because a page that says only
+    "nothing has finished yet" is true and useless.
+    """
+    from whul import records
+
+    book = records.book(store, managers, latest)
+    chips = "".join(
+        f'<button class="chip" data-filter="recordman" '
+        f'data-value="{escape(m)}" aria-pressed="false">'
+        f'<i class="swatch" style="background: '
+        f'var(--series-{theme.series_index(managers, m) + 1})"></i>'
+        f'{escape(manager_name(m))}</button>'
+        for m in managers
+    )
+    opening = (
+        "<p class='sub'>Nothing has finished yet — no league year has closed "
+        "and no quarter has run its last day — so the book is empty and every "
+        "figure below is still being played for.</p>"
+        if book.empty else ""
+    )
+    played = book.quarter_wins.attrs.get("played", 0)
+    profiles = profiles or {}
+    # Titles and days at the top are both career counts, so they share a
+    # table -- but they are not the same kind of fact and the note says which:
+    # a title waits for a season to end, a day at the top happened on the day.
+    career = book.titles.merge(book.top_days, on="manager_id", how="left")
+    career["days"] = career["days"].fillna(0)
+    days_seen = book.top_days.attrs.get("days", 0)
+    body = f"""
+{opening}
+<div class="card">
+  <h2>Career</h2>
+  <div class="twoup">
+    <div>{_career_table(career, managers,
+                        [("titles", "Titles"), ("second", "2nd"),
+                         ("third", "3rd"), ("seasons", "Seasons"),
+                         ("days", "Days at #1")],
+                        played=f"{days_seen} day(s) recorded. A title waits "
+                               "for a season to end; a day at the top does not.")}</div>
+    <div>{_career_table(book.quarter_wins, managers, [("won", "Quarters won")],
+                        played=f"{played} quarter(s) have finished.")}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Head to head</h2>
+  {_career_grid(book.head_to_head, managers)}
+</div>
+
+<div class="card">
+  <h2>Best season</h2>
+  <div class="chips" role="group" aria-label="Filter by manager">{chips}</div>
+  {_mark_table(book.seasons, managers, "season")}
+</div>
+
+<div class="card">
+  <h2>Best quarter</h2>
+  {_mark_table(book.best_quarters, managers, "best-quarter")}
+</div>
+
+<div class="card">
+  <h2>Worst quarter</h2>
+  {_mark_table(book.worst_quarters, managers, "worst-quarter")}
+</div>
+
+<div class="card">
+  <h2>Winning margin</h2>
+  {_mark_table(book.margins, managers, "margin")}
+</div>
+
+<div class="card">
+  <h2>Best asset</h2>
+  {_asset_block(book.best_assets, managers, profiles, "best-assets")}
+</div>
+
+<div class="card">
+  <h2>Worst asset</h2>
+  <p class="sub">Opens on teams: an injured player scores nothing through no
+    fault of whoever drafted him, and would otherwise fill the list.</p>
+  {_asset_block(book.worst_assets, managers, profiles, "worst-assets",
+                default="Team")}
+</div>
+
+<div class="card">
+  <h2>Best pick</h2>
+  {_asset_block(book.best_picks, managers, profiles, "best-picks",
+                per_dollar=True)}
+</div>
+
+<div class="card">
+  <h2>Worst pick</h2>
+  {_asset_block(book.worst_picks, managers, profiles, "worst-picks",
+                per_dollar=True)}
+</div>
+
+{_profile_payload(profiles)}
+"""
+    (out / "records.html").write_text(
+        _page(f"{LEAGUE_ABBR} — Records", body, "Records", managers,
               stamp=stamp, simulated=simulated)
     )
 

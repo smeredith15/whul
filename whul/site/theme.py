@@ -376,6 +376,13 @@ table.h2hgrid button.cell:hover, table.h2hgrid button.cell:focus-visible {
 .quartertable { min-width: 0; }
 table.quarters { font-variant-numeric: tabular-nums; width: 100%; }
 table.quarters .rank { color: var(--muted); width: 1.5em; }
+
+/* The record book. A mark still being played for is set back rather than
+   hidden: it belongs on the page, and it is not a record yet. */
+table.records { font-variant-numeric: tabular-nums; width: 100%; }
+table.records .rank { color: var(--muted); width: 1.5em; }
+table.records tr.unsettled td { color: var(--text-secondary); }
+table.records tr.unsettled .ago { margin-left: 6px; }
 @media (max-width: 720px) {
   .twoup { grid-template-columns: minmax(0, 1fr); }
 }

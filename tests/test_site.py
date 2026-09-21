@@ -182,7 +182,8 @@ def test_every_page_is_written(site):
     assert (out / "app.js").exists()
     for manager in simulate.MANAGERS:
         assert (out / "team" / f"{manager.lower()}.html").exists()
-    assert result["pages"] == 2 + len(simulate.MANAGERS)
+    assert (out / "records.html").exists()
+    assert result["pages"] == 3 + len(simulate.MANAGERS)
 
 
 def test_simulated_data_is_labelled_on_every_page(site):
@@ -4681,3 +4682,109 @@ def test_the_quarters_section_says_nothing_about_money(site):
     section = page[start:page.index("</details>", start)]
     for word in ("$", "payout", "prize", "buy-in", "pot", "%"):
         assert word not in section, f"the quarters section mentions {word!r}"
+
+
+# --- the records page -------------------------------------------------------
+
+def test_the_records_page_is_in_the_nav_and_built(site):
+    out, _ = site
+    assert (out / "records.html").exists()
+    for name in ("index.html", "results.html", "about.html", "records.html"):
+        assert 'href="records.html"' in (out / name).read_text()
+
+
+def test_a_finished_quarter_is_counted_and_a_running_one_is_not(site):
+    """The simulated season runs to 31 October, so Q1 has closed and Q2 has
+    not. One is in the book; the other is on the page, marked."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+
+    for heading in ("Career", "Best season", "Best quarter", "Worst quarter"):
+        assert f"<h2>{heading}</h2>" in page
+    assert "1 quarter(s) have finished" in page
+    # The season itself has not ended, so nobody has a title.
+    assert "in progress" in page
+    assert page.count('class="unsettled"') >= 5
+
+
+def test_a_book_with_nothing_finished_says_so(tmp_path_factory):
+    """One month in, before any quarter has closed: the page says the book is
+    empty rather than putting the live standings under "best ever"."""
+    from whul import simulate as sim
+
+    store = open_store(":memory:")
+    sim.generate(store, seed=2026, end=date(2026, 9, 20), verbose=False)
+    out = tmp_path_factory.mktemp("early")
+    build(store, sim.SIM_SEASON, out)
+    page = (out / "records.html").read_text()
+
+    assert "Nothing has finished yet" in page
+    assert "0 quarter(s) have finished" in page
+
+
+def test_every_record_row_names_its_manager_for_the_filter(site):
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-records="season"')
+    table = page[start:page.index("</table>", start)]
+
+    assert table.count("data-manager=") == 5
+    assert 'data-filter="recordman"' in page
+
+
+def test_the_worst_asset_list_opens_on_teams(site):
+    """An injured player scores nothing through no fault of whoever drafted
+    him, and would otherwise fill the list."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="worst-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert 'data-value="Team" aria-pressed="true"' in block
+    assert 'data-value="Player" aria-pressed="false"' in block
+    # And the best list opens on everything.
+    other = page[page.index('data-block="best-assets"'):]
+    assert 'aria-pressed="true"' not in other[:other.index("<table")]
+
+
+def test_every_asset_row_carries_its_type_for_the_filter(site):
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="best-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert block.count("data-type=") >= 5
+    assert 'data-type="Team"' in page and 'data-type="Player"' in page
+
+
+def test_the_records_page_carries_the_rest_of_the_book(site):
+    out, _ = site
+    page = (out / "records.html").read_text()
+    for heading in ("Head to head", "Winning margin", "Best asset",
+                    "Worst asset", "Best pick", "Worst pick"):
+        assert f"<h2>{heading}</h2>" in page
+    assert "Days at #1" in page
+
+
+def test_an_asset_list_takes_both_type_and_category_chips(site):
+    """They narrow independently and combine -- "teams, and the NFL" is the
+    question somebody actually asks."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="best-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert block.count('data-dim="type"') == 2
+    assert block.count('data-dim="cat"') >= 3
+    assert 'data-cat="' in block
+
+
+def test_an_asset_list_ships_every_row_for_its_chips_to_narrow(site):
+    """Truncating server-side would make a category filter mean "whichever of
+    them made the unfiltered top twelve"."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    start = page.index('data-block="best-assets"')
+    block = page[start:page.index("</table>", start)]
+
+    assert block.count("<tr ") > site_build.MARKS_SHOWN * 2

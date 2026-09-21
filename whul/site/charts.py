@@ -939,6 +939,98 @@ SCRIPT = """\
         });
       });
   }
+  // --- filtering the record book by manager -----------------------------
+  // Pick nobody and it is the league's book; pick one or more and it is
+  // theirs. The ranks renumber rather than keeping their league places: a
+  // reader who asked for one manager wants that manager's best first, not a
+  // column of 4, 9, 11.
+  var pickedRec = {};
+  function applyRecords() {
+    var any = false;
+    for (var k in pickedRec) if (pickedRec[k]) any = true;
+    document.querySelectorAll('table.records[data-records]').forEach(
+      function (table) {
+        var place = 0;
+        table.querySelectorAll('tbody tr').forEach(function (row) {
+          var ok = !any || pickedRec[row.dataset.manager];
+          row.hidden = !ok;
+          if (!ok) return;
+          place++;
+          var cell = row.querySelector('.rank');
+          if (cell) cell.textContent = place;
+        });
+      });
+  }
+  document.querySelectorAll('.chip[data-filter="recordman"]').forEach(
+    function (chip) {
+      chip.addEventListener('click', function () {
+        var value = chip.dataset.value;
+        pickedRec[value] = !pickedRec[value];
+        chip.setAttribute('aria-pressed', pickedRec[value] ? 'true' : 'false');
+        applyRecords();
+      });
+    });
+  applyRecords();
+
+  // --- narrowing an asset list to players or teams ----------------------
+  // Per block, not per page: the two lists want different defaults, and the
+  // worst list opens on teams because an injured player scores nothing
+  // through no fault of whoever drafted him.
+  var SHOWN = 12;
+  document.querySelectorAll('.assetblock').forEach(function (block) {
+    // One bag of choices per dimension. A chip names the row attribute it
+    // narrows, so the script never needs to know what "type" or "cat" mean --
+    // and the dimensions combine, because "teams, and the NFL" is the
+    // question somebody actually asks.
+    var picked = {};
+    block.querySelectorAll('.chip[data-dim]').forEach(function (chip) {
+      var dim = chip.dataset.dim;
+      var bag = picked[dim] || (picked[dim] = {});
+      if (chip.getAttribute('aria-pressed') === 'true') {
+        bag[chip.dataset.value] = true;
+      }
+      chip.addEventListener('click', function () {
+        var value = chip.dataset.value;
+        bag[value] = !bag[value];
+        chip.setAttribute('aria-pressed', bag[value] ? 'true' : 'false');
+        apply();
+      });
+    });
+    function apply() {
+      var live = [];
+      for (var dim in picked) {
+        for (var value in picked[dim]) {
+          if (picked[dim][value]) { live.push(dim); break; }
+        }
+      }
+      // The page carries a deep pool and the cap is applied here, after
+      // filtering: cutting the list to twelve first would make "NFL players"
+      // mean "whichever NFL players made the unfiltered top twelve".
+      var matched = 0;
+      block.querySelectorAll('tbody tr').forEach(function (row) {
+        var ok = live.every(function (dim) {
+          return picked[dim][row.dataset[dim]];
+        });
+        if (ok) matched++;
+        row.hidden = !ok || matched > SHOWN;
+        if (row.hidden) return;
+        var cell = row.querySelector('.rank');
+        if (cell) cell.textContent = matched;
+      });
+      var count = block.querySelector('[data-assetcount]');
+      if (count) {
+        // Say something whenever the chips are doing anything, including when
+        // they have matched nothing -- a list that empties without a word
+        // reads as broken rather than as an honest answer.
+        count.hidden = !live.length && matched <= SHOWN;
+        count.textContent = matched
+          ? 'Showing ' + Math.min(matched, SHOWN) + ' of ' + matched + '.'
+          : 'Nothing in this list matches.';
+      }
+    }
+    apply();
+  });
+
   // --- the quarter panels -----------------------------------------------
   // One at a time, and exactly one: these are not filters but pages of the
   // same thing, so pressing a chip moves to that quarter rather than adding
