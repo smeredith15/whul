@@ -2160,4 +2160,23 @@ SCRIPT = """\
 
   show();
 })();
+
+// --- installing the league ------------------------------------------------
+// Registered from the page's own root prefix, because a team page lives one
+// directory down and a worker registered from there would claim that
+// directory rather than the site.
+(function () {
+  if (!('serviceWorker' in navigator)) return;
+  // './' and not '', because an empty scope resolves against the page rather
+  // than its directory -- a worker registered from index.html would claim
+  // /index.html alone and control nothing else on the site.
+  var base = window.WHUL_BASE || './';
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register(base + 'sw.js', { scope: base })
+      .catch(function () {
+        // An install that fails is a site that still works, so there is
+        // nothing to tell the reader and nothing to retry.
+      });
+  });
+})();
 """
