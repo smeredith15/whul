@@ -33,7 +33,7 @@ from whul.config.league import (
     manager_name, umbrella_for,
 )
 from whul import fixtures, pipeline
-from whul.site import charts, images, rulebook, theme
+from whul.site import charts, icons, images, pwa, rulebook, theme
 from whul.store import benchmarks as bm
 from whul.store.db import Store
 
@@ -86,6 +86,7 @@ def _page(title: str, body: str, active: str, managers: list[str],
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{escape(title)}</title>
 <link rel="stylesheet" href="{up}style.css">
+{pwa.head(up)}
 </head>
 <body>
 <div class="wrap">
@@ -101,6 +102,7 @@ def _page(title: str, body: str, active: str, managers: list[str],
   on a scale where 100 is an elite season for that sport and position.
 </footer>
 </div>
+<script>window.WHUL_BASE = "{up}";</script>
 <script src="{up}app.js"></script>
 </body>
 </html>
@@ -4456,6 +4458,12 @@ def build(
 
     (out / "style.css").write_text(theme.STYLESHEET)
     (out / "app.js").write_text(charts.SCRIPT)
+    # The three files that make the site installable. Written every build so
+    # the worker's cache name carries the stamp this site was published with.
+    (out / "manifest.webmanifest").write_text(pwa.manifest())
+    (out / "sw.js").write_text(pwa.service_worker(stamp))
+    for name, blob in icons.files().items():
+        (out / name).write_bytes(blob)
     photos = images.copy_all(out)
 
     rostered = set(bars["asset_id"].dropna()) if not bars.empty else set()

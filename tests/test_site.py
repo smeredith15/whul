@@ -4788,3 +4788,35 @@ def test_an_asset_list_ships_every_row_for_its_chips_to_narrow(site):
     block = page[start:page.index("</table>", start)]
 
     assert block.count("<tr ") > site_build.MARKS_SHOWN * 2
+
+
+# --- installable ------------------------------------------------------------
+
+def test_the_built_site_can_be_installed(site):
+    """A manifest, a worker and the icons, beside the pages."""
+    out, _ = site
+    for name in ("manifest.webmanifest", "sw.js",
+                 "icon-180.png", "icon-192.png", "icon-512.png"):
+        assert (out / name).exists(), name
+    assert (out / "icon-512.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_every_page_links_the_manifest_from_its_own_depth(site):
+    """A team page is one directory down, so the climb has to be right or the
+    manifest is a 404 and nothing installs."""
+    out, _ = site
+
+    assert 'href="manifest.webmanifest"' in (out / "index.html").read_text()
+    deep = next((out / "team").glob("*.html")).read_text()
+    assert 'href="../manifest.webmanifest"' in deep
+    assert 'window.WHUL_BASE = "../"' in deep
+
+
+def test_the_worker_is_registered_for_the_whole_site_not_one_page(site):
+    """An empty scope resolves against the page rather than its directory, so
+    a worker registered from index.html would control /index.html alone."""
+    out, _ = site
+    script = (out / "app.js").read_text()
+
+    assert "window.WHUL_BASE || './'" in script
+    assert "scope: base" in script
