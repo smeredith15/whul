@@ -375,25 +375,56 @@ def _margins(seasons: pd.DataFrame, closed: list[str]) -> list[Mark]:
 
 
 def days_at_top(store: Store, managers: list[str]) -> pd.DataFrame:
-    """How many recorded days each manager has spent leading.
+    """How many recorded days each manager has spent leading, and the longest
+    run of them.
 
     Every day counts, including days inside a season still being played. A
     title is awarded when a season ends and a day at the top is a thing that
     happened on the day, so unlike the rest of this module there is nothing
     here to wait for.
+
+    **A run is counted in recorded days, not calendar days.** The site has not
+    published every day of its life and never will -- a failed build, a season
+    that had not started -- and a day nobody recorded is a day with no evidence
+    the lead changed hands, so it must not break a run that the evidence says
+    held. Counting recorded days also keeps the two columns in the same unit:
+    the run is a stretch of the days the total is made of.
+
+    A season boundary does break one. Being top in May and top again in
+    September is two runs, and calling it one would be a claim about a summer
+    in which the league was not being played.
     """
     rows = store.query(
-        "SELECT manager_id, COUNT(*) AS days FROM standings_snapshots "
-        "WHERE rank = 1 GROUP BY manager_id"
+        "SELECT season, as_of, manager_id FROM standings_snapshots "
+        "WHERE rank = 1 ORDER BY season, as_of"
     )
-    counts = ({str(r.manager_id): int(r.days) for r in rows.itertuples()}
-              if not rows.empty else {})
-    total = store.scalar(
-        "SELECT COUNT(DISTINCT season || as_of) FROM standings_snapshots") or 0
-    out = pd.DataFrame([{"manager_id": m, "days": counts.get(m, 0)}
-                        for m in managers])
-    out.attrs["days"] = int(total)
-    return out.sort_values("days", ascending=False)
+    tops: dict[str, set[tuple[str, str]]] = {}
+    for r in rows.itertuples():
+        tops.setdefault(str(r.manager_id), set()).add((str(r.season), str(r.as_of)))
+
+    every = store.query(
+        "SELECT DISTINCT season, as_of FROM standings_snapshots "
+        "ORDER BY season, as_of"
+    )
+    days: list[tuple[str, str]] = [
+        (str(r.season), str(r.as_of)) for r in every.itertuples()
+    ]
+
+    out = []
+    for manager in managers:
+        held = tops.get(manager, set())
+        run = best = 0
+        current = None
+        for season, when in days:
+            if season != current:
+                run = 0
+                current = season
+            run = run + 1 if (season, when) in held else 0
+            best = max(best, run)
+        out.append({"manager_id": manager, "days": len(held), "streak": best})
+    frame = pd.DataFrame(out, columns=["manager_id", "days", "streak"])
+    frame.attrs["days"] = len(days)
+    return frame.sort_values(["days", "streak"], ascending=False)
 
 
 def career_head_to_head(store: Store, managers: list[str]) -> pd.DataFrame:

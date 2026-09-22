@@ -4766,6 +4766,29 @@ def test_the_records_page_carries_the_rest_of_the_book(site):
     assert "Days at #1" in page
 
 
+def test_the_run_at_the_top_is_shown_beside_the_days_that_make_it(site):
+    """A total of 14 days and a longest run of 14 are different claims, and the
+    page has to carry both or the reader cannot tell one from the other."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    career = page[page.index("<h2>Career</h2>"):page.index("<h2>Head to head</h2>")]
+
+    assert career.index("Days at #1") < career.index("In a row")
+    assert "longest run" in career, "the page has to say which run it means"
+
+
+def test_the_career_tables_fit_a_phone(site):
+    """The card scrolls sideways on a narrow screen with nothing to say it
+    does, so a column past the edge is a column nobody finds. Neither table
+    goes past four counted columns."""
+    out, _ = site
+    page = (out / "records.html").read_text()
+    career = page[page.index("<h2>Career</h2>"):page.index("<h2>Head to head</h2>")]
+
+    for table in career.split("<thead>")[1:]:
+        assert table[:table.index("</thead>")].count("<th") <= 5
+
+
 def test_an_asset_list_takes_both_type_and_category_chips(site):
     """They narrow independently and combine -- "teams, and the NFL" is the
     question somebody actually asks."""
