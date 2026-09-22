@@ -310,6 +310,81 @@ def test_days_at_the_top_count_days_that_have_happened(tmp_path):
     assert out.attrs["days"] == 3
 
 
+def _snapshot(store, season, day, leader, others=()):
+    """One recorded day, with `leader` on top."""
+    rows = [{"season": season, "as_of": day, "manager_id": leader,
+             "total": 100.0, "rank": 1}]
+    rows += [{"season": season, "as_of": day, "manager_id": m,
+              "total": 50.0, "rank": 2} for m in others]
+    store.upsert("standings_snapshots", rows,
+                 keys=("season", "as_of", "manager_id"))
+    store.conn.commit()
+
+
+def test_the_longest_run_is_counted_in_days_the_site_actually_recorded(tmp_path):
+    """A day nobody recorded is a day with no evidence the lead changed hands,
+    so it must not break a run the evidence says held. The site has not
+    published every day of its life -- a failed build, a season that had not
+    started -- and a run that reset on each of those would understate every
+    leader who held the top through one."""
+    store = open_store(str(tmp_path / "run.sqlite3"))
+    for m in ("SM", "LS"):
+        rosters.add_manager(store, m)
+    # Four recorded days with a fortnight missing in the middle of them.
+    for day in ("2026-09-01", "2026-09-02", "2026-09-16", "2026-09-17"):
+        _snapshot(store, SEASON.label, day, "SM", others=["LS"])
+
+    out = records.days_at_top(store, MANAGERS).set_index("manager_id")
+    assert out.loc["SM", "days"] == 4
+    assert out.loc["SM", "streak"] == 4, "a gap in recording is not a gap at the top"
+
+
+def test_a_run_ends_where_somebody_else_takes_the_top(tmp_path):
+    store = open_store(str(tmp_path / "lost.sqlite3"))
+    for m in ("SM", "LS"):
+        rosters.add_manager(store, m)
+    #        SM  SM  LS  SM  SM  SM
+    for day, leader in zip(
+        ("2026-09-01", "2026-09-02", "2026-09-03",
+         "2026-09-04", "2026-09-05", "2026-09-06"),
+        ("SM", "SM", "LS", "SM", "SM", "SM"),
+    ):
+        _snapshot(store, SEASON.label, day, leader,
+                  others=[m for m in ("SM", "LS") if m != leader])
+
+    out = records.days_at_top(store, MANAGERS).set_index("manager_id")
+    assert out.loc["SM", "days"] == 5
+    assert out.loc["SM", "streak"] == 3, "the longest run, not the total"
+    assert out.loc["LS", "streak"] == 1
+
+
+def test_a_new_season_starts_the_run_over(tmp_path):
+    """Top in May and top again in September is two runs. Calling it one would
+    be a claim about a summer in which the league was not being played."""
+    store = open_store(str(tmp_path / "seasons.sqlite3"))
+    for m in ("SM", "LS"):
+        rosters.add_manager(store, m)
+    for day in ("2027-05-14", "2027-05-15"):
+        _snapshot(store, "2026-27", day, "SM", others=["LS"])
+    for day in ("2027-09-01", "2027-09-02", "2027-09-03"):
+        _snapshot(store, "2027-28", day, "SM", others=["LS"])
+
+    out = records.days_at_top(store, MANAGERS).set_index("manager_id")
+    assert out.loc["SM", "days"] == 5
+    assert out.loc["SM", "streak"] == 3
+
+
+def test_a_manager_who_has_never_led_has_no_run(tmp_path):
+    store = open_store(str(tmp_path / "never.sqlite3"))
+    for m in ("SM", "LS"):
+        rosters.add_manager(store, m)
+    _snapshot(store, SEASON.label, "2026-09-01", "SM", others=["LS"])
+
+    out = records.days_at_top(store, MANAGERS).set_index("manager_id")
+    assert out.loc["LS", "days"] == 0
+    assert out.loc["LS", "streak"] == 0
+
+
 def test_a_pair_that_never_met_is_absent_from_the_career_grid(tmp_path):
     store = _store(tmp_path, [(SEASON.label, date(2026, 9, 18), "SM", 40.0)])
     frame = records.career_head_to_head(store, MANAGERS)

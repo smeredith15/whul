@@ -5666,25 +5666,30 @@ def _write_records(out, season: str, managers: list[str], slotted, latest,
     )
     played = book.quarter_wins.attrs.get("played", 0)
     profiles = profiles or {}
-    # Titles and days at the top are both career counts, so they share a
-    # table -- but they are not the same kind of fact and the note says which:
-    # a title waits for a season to end, a day at the top happened on the day.
-    career = book.titles.merge(book.top_days, on="manager_id", how="left")
-    career["days"] = career["days"].fillna(0)
+    # Split by what kind of fact each one is rather than by what is countable.
+    # The left table is what a finished season hands out and the right is what
+    # happened while it was being played -- and a phone, which stacks the two
+    # and scrolls anything wider than it, fits neither at seven columns.
+    during = book.quarter_wins.merge(book.top_days, on="manager_id", how="left")
+    during["days"] = during["days"].fillna(0)
+    during["streak"] = during["streak"].fillna(0)
     days_seen = book.top_days.attrs.get("days", 0)
     body = f"""
 {opening}
 <div class="card">
   <h2>Career</h2>
   <div class="twoup">
-    <div>{_career_table(career, managers,
+    <div>{_career_table(book.titles, managers,
                         [("titles", "Titles"), ("second", "2nd"),
-                         ("third", "3rd"), ("seasons", "Seasons"),
-                         ("days", "Days at #1")],
-                        played=f"{days_seen} day(s) recorded. A title waits "
-                               "for a season to end; a day at the top does not.")}</div>
-    <div>{_career_table(book.quarter_wins, managers, [("won", "Quarters won")],
-                        played=f"{played} quarter(s) have finished.")}</div>
+                         ("third", "3rd"), ("seasons", "Seasons")],
+                        played="A title waits for a season to end.")}</div>
+    <div>{_career_table(during, managers,
+                        [("won", "Quarters"), ("days", "Days at #1"),
+                         ("streak", "In a row")],
+                        played=f"{played} quarter(s) have finished, "
+                               f"{days_seen} day(s) recorded. In a row is the "
+                               "longest run of those days, which a new season "
+                               "starts over.")}</div>
   </div>
 </div>
 
