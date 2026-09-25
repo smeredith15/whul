@@ -371,3 +371,61 @@ def test_the_best_competition_is_the_one_shown_first():
     assert best["counted"] == pytest.approx(best["points"] * mine["lift"], abs=0.2)
     assert rest["counted"] == pytest.approx(
         rest["points"] * 0.5 * mine["lift"], abs=0.2)
+
+
+# --- the history is evidence, not output ------------------------------------
+
+def _two_seasons(wanted):
+    """One league year asked for, one carried only so a shape can be read."""
+    rows = []
+    for season, day in ((2025, "2025-06-1"), (2026, "2026-06-1")):
+        for i in range(4):
+            rows.append(match("Champ", f"Foe{i}", 2, 0, competition="CONCACAF Gold Cup",
+                              rung="federation", day=f"{day}{i}", season=season))
+        for i in range(3):
+            rows.append(match("Early", f"Foe{i}", 0, 1, competition="CONCACAF Gold Cup",
+                              rung="federation", day=f"{day}{i}", season=season))
+    frame = pd.DataFrame(rows)
+    frame["wanted"] = frame["season"] == wanted
+    return frame
+
+
+def test_sections_are_built_only_for_the_seasons_that_survive(monkeypatch):
+    """The ledger runs to 1872 and the score is narrowed to one league year,
+    so sections for every other year are computed, never read, and thrown
+    away. It was four minutes of a six-minute pull -- 27,424 calls into
+    `_counted` to answer about a few dozen team-seasons."""
+    seen = {}
+    real = scorer.season_sections
+
+    def watched(rows, shares):
+        seen["seasons"] = set(rows["season"])
+        return real(rows, shares)
+
+    monkeypatch.setattr(scorer, "season_sections", watched)
+    scorer.score_teams(_two_seasons(wanted=2026))
+
+    assert seen["seasons"] == {2026}, (
+        f"sections were built for {sorted(seen['seasons'])}, and only 2026 is "
+        f"ever read back"
+    )
+
+
+def test_narrowing_the_sections_does_not_change_them():
+    """The saving is only worth having if the answer is the same one. A
+    section is read by the season it belongs to and nothing in building one
+    consults another year -- the shape inference that does has already run by
+    this point."""
+    games = _two_seasons(wanted=2026)
+
+    narrowed = scorer.score_teams(games)
+
+    # The same pull with nothing held back: every season wanted, then cut down
+    # to 2026 afterwards. If the narrowing were unsound these would differ.
+    whole = games.assign(wanted=True)
+    full = scorer.score_teams(whole)
+    full = full[full["season"] == 2026].reset_index(drop=True)
+
+    assert list(narrowed["team"]) == list(full["team"])
+    for one, two in zip(narrowed["sections"], full["sections"]):
+        assert one == two
