@@ -424,6 +424,11 @@ CREATE TABLE IF NOT EXISTS ingest_timings (
     -- to nothing has stopped fetching and started replaying.
     requests INTEGER NOT NULL DEFAULT 0,
     waiting  REAL NOT NULL DEFAULT 0.0,
+    -- Seconds slept on purpose: the politeness pause a source serves itself
+    -- after each request. Kept apart from `waiting` because it is time the
+    -- pull chose to spend rather than the host being slow, and apart from
+    -- what is left because that is the only column that means work.
+    pausing  REAL NOT NULL DEFAULT 0.0,
     PRIMARY KEY (season, as_of, source)
 );
 
