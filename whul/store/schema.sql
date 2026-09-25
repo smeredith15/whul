@@ -401,3 +401,30 @@ CREATE TABLE IF NOT EXISTS draft_bids (
 
 CREATE INDEX IF NOT EXISTS draft_bids_asset_idx ON draft_bids (season, asset_id);
 CREATE INDEX IF NOT EXISTS draft_bids_round_idx ON draft_bids (season, round);
+
+-- --------------------------------------------------------------------------
+-- What the pull cost
+-- --------------------------------------------------------------------------
+
+-- One row per source per day: how long it took and how much of that was spent
+-- waiting on a feed. Stored rather than left in the run's log, because the
+-- question worth asking is not what a pull cost last night but whether it is
+-- costing more than it did in November -- and a log that ages out cannot
+-- answer that. The day key matches every other table: a second run on the
+-- same day revises it, so the figure is the last pull of that day, which is
+-- also the run that produced the day's standings.
+CREATE TABLE IF NOT EXISTS ingest_timings (
+    season   TEXT NOT NULL,
+    as_of    TEXT NOT NULL,
+    source   TEXT NOT NULL,
+    -- Wall clock for the whole source.
+    seconds  REAL NOT NULL,
+    -- Requests that went out, and the seconds inside them. A cache hit is not
+    -- a request, so a source whose seconds stay flat while its requests fall
+    -- to nothing has stopped fetching and started replaying.
+    requests INTEGER NOT NULL DEFAULT 0,
+    waiting  REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (season, as_of, source)
+);
+
+CREATE INDEX IF NOT EXISTS ingest_timings_day_idx ON ingest_timings (season, as_of);

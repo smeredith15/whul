@@ -77,22 +77,48 @@ _connect = socket.socket.connect
 _connect_ex = socket.socket.connect_ex
 
 
+#: Addresses that cannot be a feed. A test that serves itself two files over
+#: a socket on the loopback is using the socket as a fixture -- it is the only
+#: honest way to prove something about real HTTP, and marking it ``network``
+#: would be a lie that fails wherever the marked tests are the ones skipped
+#: for want of egress.
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
+
+
 @pytest.fixture(autouse=True)
 def no_network(request):
-    """A socket is an error unless the test is marked ``network``."""
+    """A socket is an error unless the test is marked ``network``.
+
+    Loopback is exempt. The guard exists because a feed that quietly answers
+    makes a test pass without making its point, and nothing on this machine's
+    own loopback is a feed.
+    """
     if request.node.get_closest_marker("network"):
         yield
         return
 
-    def refuse(self, address, *args, **kwargs):
-        raise AssertionError(
-            f"this test opened a network connection to {address}. Feeds are "
-            f"stubbed in tests -- mark it @pytest.mark.network if the request "
-            f"is the point of it."
-        )
+    def guard(real):
+        """``real``, but only for an address that cannot be a feed.
 
-    socket.socket.connect = refuse
-    socket.socket.connect_ex = refuse
+        One per call it replaces: ``connect_ex`` reports a failure in its
+        return value where ``connect`` raises, and letting the loopback case
+        fall through to the wrong one would change what a caller sees.
+        """
+
+        def refuse(self, address, *args, **kwargs):
+            host = address[0] if isinstance(address, tuple) else address
+            if host in LOOPBACK:
+                return real(self, address, *args, **kwargs)
+            raise AssertionError(
+                f"this test opened a network connection to {address}. Feeds "
+                f"are stubbed in tests -- mark it @pytest.mark.network if the "
+                f"request is the point of it."
+            )
+
+        return refuse
+
+    socket.socket.connect = guard(_connect)
+    socket.socket.connect_ex = guard(_connect_ex)
     try:
         yield
     finally:

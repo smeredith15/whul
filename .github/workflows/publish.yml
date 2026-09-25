@@ -206,6 +206,15 @@ jobs:
         continue-on-error: true
         run: python -m whul.cli fixtures --season "$SEASON" --fetch
 
+      - name: Say what the pull cost, and which way it is heading
+        # Never fatal, and never acted on here: this is a reading, not a gate.
+        # The per-source timings are written to the database by the ingest
+        # above, so they survive the log -- and the question worth asking is
+        # not what last night cost but whether a feed that took forty seconds
+        # in September takes four minutes in March.
+        continue-on-error: true
+        run: python -m whul.cli pull-costs --season "$SEASON"
+
       - name: Put the stored MLB days on the contract-year weights
         if: ${{ inputs.reweight_mlb }}
         # No feed is touched, and none could be: the MLB player feed reports a

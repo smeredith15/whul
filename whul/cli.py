@@ -2781,24 +2781,54 @@ def _ingest_one_day(ingest_module, store, sources, season, as_of,
                     spent: dict | None = None, hold: bool = True,
                     today=None) -> list:
     """One day's pull across every source asked for."""
-    import time
+    from whul import meter
 
     print(f"\nIngesting {season} as of {as_of}.\n")
     reports = []
     for source in sources:
-        began = time.monotonic()
-        report = ingest_module.ingest(store, source, season, as_of, hold=hold,
-                                      today=today)
-        took = time.monotonic() - began
+        with meter.measure() as spend:
+            report = ingest_module.ingest(store, source, season, as_of,
+                                          hold=hold, today=today)
         if spent is not None:
-            spent[source.key] = spent.get(source.key, 0.0) + took
+            spent[source.key] = spent.get(source.key, meter.Spend()) + spend
+        _record_cost(store, season, as_of, source.key, spend)
         reports.append(report)
         # A skipped league is noise when every league is being tried; a league
         # that actually did something, or failed at something, is not.
         if report.pulled or report.problems != [
                 "nothing rostered in this league; skipped"]:
-            print(f"{report}  [{took:,.1f}s]\n")
+            print(f"{report}  [{_cost(spend)}]\n")
     return reports
+
+
+def _cost(spend) -> str:
+    """One source's spend, short enough to sit at the end of its line."""
+    if not spend.requests:
+        return f"{spend.seconds:,.1f}s, no request seen"
+    return (f"{spend.seconds:,.1f}s: {spend.waiting:,.1f}s waiting on "
+            f"{spend.requests} request(s), {spend.other:,.1f}s other")
+
+
+def _record_cost(store, season: str, as_of, key: str, spend) -> None:
+    """Keep the reading, so the question can be about the trend.
+
+    Never fatal. A pull that worked and could not write down what it cost is a
+    pull that worked, and taking the run down over an instrument would be the
+    instrument costing more than it measures.
+    """
+    try:
+        store.upsert("ingest_timings", [{
+            "season": season,
+            "as_of": as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of),
+            "source": key,
+            "seconds": round(spend.seconds, 3),
+            "requests": spend.requests,
+            "waiting": round(spend.waiting, 3),
+        }], keys=("season", "as_of", "source"))
+        store.conn.commit()
+    except Exception as exc:  # noqa: BLE001 -- an instrument must not stop a run
+        print(f"  (could not record what {key} cost: "
+              f"{type(exc).__name__}: {exc})", flush=True)
 
 
 #: How many sources to name in the timing line. Enough to see the shape and
@@ -2806,27 +2836,114 @@ def _ingest_one_day(ingest_module, store, sources, season, as_of,
 SLOWEST_SHOWN = 8
 
 
-def _say_where_the_time_went(spent: dict[str, float]) -> None:
-    """Which sources the pull spent itself on.
+def cmd_pull_costs(args: argparse.Namespace) -> int:
+    """What the pull has cost per source, and which way it is heading.
+
+    One night's timings name the expensive feeds. Two months of them answer
+    the question actually worth asking, which is whether a feed that costs
+    forty seconds in September costs four minutes in March -- and whether it
+    got there by waiting longer or by working harder, because those have
+    different fixes.
+    """
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    rows = store.query(
+        "SELECT as_of, source, seconds, requests, waiting FROM ingest_timings "
+        "WHERE season = ? ORDER BY as_of, source", (args.season,)
+    )
+    if rows.empty:
+        print(f"\nNothing recorded for {args.season}. The timings are written "
+              f"by `ingest`,\nso the first reading arrives with the next pull.\n")
+        return 0
+
+    days = sorted(rows["as_of"].unique())
+    if args.source:
+        one = rows[rows["source"] == args.source]
+        if one.empty:
+            known = ", ".join(sorted(rows["source"].unique()))
+            print(f"\nNo readings for {args.source!r}. Recorded: {known}\n",
+                  file=sys.stderr)
+            return 2
+        print(f"\n{args.source} in {args.season}, day by day:\n")
+        print(f"  {'day':12s} {'total':>8s} {'waiting':>9s} {'other':>8s} {'reqs':>5s}")
+        for row in one.itertuples():
+            other = max(0.0, float(row.seconds) - float(row.waiting))
+            print(f"  {row.as_of:12s} {row.seconds:7,.1f}s {row.waiting:8,.1f}s "
+                  f"{other:7,.1f}s {int(row.requests):5d}")
+        print()
+        return 0
+
+    # The newest day against one far enough back to show a trend rather than
+    # a Tuesday. Fewer days recorded than asked for is not a problem: the
+    # earliest there is is the earliest there is, and the header says which.
+    latest = days[-1]
+    earliest = days[max(0, len(days) - args.days)]
+    now = rows[rows["as_of"] == latest].set_index("source")
+    then = rows[rows["as_of"] == earliest].set_index("source")
+
+    print(f"\n  {args.season}: {latest}, against {earliest} "
+          f"({len(days)} day(s) recorded).\n")
+    print(f"  {'source':16s} {'total':>8s} {'waiting':>9s} {'other':>8s} "
+          f"{'reqs':>5s}   {'since ' + earliest[5:]:>10s}")
+    order = now["seconds"].sort_values(ascending=False)
+    for source in order.index:
+        row = now.loc[source]
+        other = max(0.0, float(row["seconds"]) - float(row["waiting"]))
+        if source in then.index:
+            was = float(then.loc[source, "seconds"])
+            moved = f"{float(row['seconds']) - was:+,.1f}s" if was else "new"
+        else:
+            moved = "new"
+        print(f"  {source:16s} {float(row['seconds']):7,.1f}s "
+              f"{float(row['waiting']):8,.1f}s {other:7,.1f}s "
+              f"{int(row['requests']):5d}   {moved:>10s}")
+    total = float(now["seconds"].sum())
+    before = float(then["seconds"].sum())
+    print(f"\n  {total:,.0f}s in total, against {before:,.0f}s on {earliest} "
+          f"({total - before:+,.0f}s).\n")
+    return 0
+
+
+def _say_where_the_time_went(spent: dict) -> None:
+    """Which sources the pull spent itself on, and on what.
 
     The nightly job takes ten minutes and a backfill takes forty, and until
     this nothing said which of the twenty-four feeds that was. A run that
     cannot say where its time goes cannot be made faster except by guessing,
     and the guesses have been wrong before -- the fixture pull looks expensive
     and is forty seconds of the eighteen minutes.
+
+    The split matters as much as the total. Waiting is fixed by asking for
+    less or by asking alongside something else; the rest is fixed by not
+    doing the work twice. A column that says which one a source is made of is
+    the difference between a plan and a guess.
     """
     if not spent:
         return
-    whole = sum(spent.values())
-    ranked = sorted(spent.items(), key=lambda kv: kv[1], reverse=True)
+    whole = sum(s.seconds for s in spent.values())
+    ranked = sorted(spent.items(), key=lambda kv: kv[1].seconds, reverse=True)
     print(f"\n  {whole:,.0f}s in the feeds. Slowest:")
-    for key, took in ranked[:SLOWEST_SHOWN]:
-        share = 100.0 * took / whole if whole else 0.0
-        print(f"    {key:16s} {took:7,.1f}s  {share:4.1f}%")
-    rest = sum(took for _, took in ranked[SLOWEST_SHOWN:])
+    print(f"    {'source':16s} {'total':>8s} {'waiting':>9s} {'other':>8s} "
+          f"{'reqs':>5s}   share")
+    for key, spend in ranked[:SLOWEST_SHOWN]:
+        share = 100.0 * spend.seconds / whole if whole else 0.0
+        flag = "  (no request seen)" if spend.blind else ""
+        print(f"    {key:16s} {spend.seconds:7,.1f}s {spend.waiting:8,.1f}s "
+              f"{spend.other:7,.1f}s {spend.requests:5d}  {share:4.1f}%{flag}")
+    rest = [spend for _, spend in ranked[SLOWEST_SHOWN:]]
     if rest:
-        print(f"    {'the rest':16s} {rest:7,.1f}s  "
-              f"{100.0 * rest / whole if whole else 0:4.1f}%")
+        total = sum(s.seconds for s in rest)
+        print(f"    {'the rest':16s} {total:7,.1f}s "
+              f"{sum(s.waiting for s in rest):8,.1f}s "
+              f"{sum(s.other for s in rest):7,.1f}s "
+              f"{sum(s.requests for s in rest):5d}  "
+              f"{100.0 * total / whole if whole else 0:4.1f}%")
+    if any(spend.blind for spend in spent.values()):
+        print("    A source with no request seen either replayed a cache or "
+              "reached the\n    network by a route the meter does not wrap. "
+              "Its cost is in `other`\n    either way, where it reads as "
+              "parsing and may not be.")
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -2872,7 +2989,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
               "held: the days before this range are the ones being corrected.")
 
     reports = []
-    spent: dict[str, float] = {}
+    spent: dict = {}   # source key -> meter.Spend
     for day in days:
         if len(days) > 1:
             print(f"\n--- {day} ---", flush=True)
@@ -4069,6 +4186,19 @@ def main(argv: list[str] | None = None) -> int:
         help="rebuild every day from the season start, after a formula change",
     )
     rollup.set_defaults(func=cmd_rollup)
+
+    costs = sub.add_parser(
+        "pull-costs",
+        help="what each feed has cost per day, and whether it is growing",
+    )
+    costs.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    costs.add_argument("--season", default="2026-27", help="season to report on")
+    costs.add_argument(
+        "--source", help="one source key, day by day, instead of the summary")
+    costs.add_argument(
+        "--days", type=int, default=14,
+        help="how many recorded days to compare the earliest against")
+    costs.set_defaults(func=cmd_pull_costs)
 
     falls = sub.add_parser(
         "check-falls",
