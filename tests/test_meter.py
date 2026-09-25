@@ -26,6 +26,42 @@ def test_a_request_is_counted_and_timed():
     assert spend.seconds >= 0.0
 
 
+def test_a_politeness_pause_is_not_work():
+    """ESPN gets four tenths of a second after every request and FBref three
+    and a half. That sleep sits beside the request rather than inside it, and
+    counting it as work -- which the first cut of this module did -- made
+    every source that pays it look like it was parsing."""
+    with meter.measure() as spend:
+        meter.record(0.2)
+        time.sleep(0.05)
+    spend.seconds = 1.0
+
+    assert spend.waiting == pytest.approx(0.2)
+    assert spend.pausing == pytest.approx(0.05, abs=0.03)
+    assert spend.other == pytest.approx(0.75, abs=0.03)
+
+
+def test_sleep_is_put_back_when_the_block_ends():
+    """It replaces a standard callable for the length of a pull. Leaving it
+    wrapped would have every later sleep in the process reporting into a tally
+    nobody reads."""
+    before = time.sleep
+    with meter.measure():
+        assert time.sleep is not before
+    assert time.sleep is before
+
+
+def test_the_three_buckets_account_for_the_whole_pull():
+    """Total is what a person sees. If the columns beside it do not add back
+    up to it, the table is telling three separate stories."""
+    with meter.measure() as spend:
+        meter.record(1.0)
+        time.sleep(0.02)
+    spend.seconds = 4.0
+
+    assert (spend.waiting + spend.pausing + spend.other) == pytest.approx(4.0)
+
+
 def test_what_was_not_waiting_is_everything_else():
     with meter.measure() as spend:
         meter.record(0.1)
@@ -189,6 +225,7 @@ def test_a_pull_writes_down_what_it_cost(tmp_path):
             time.sleep(0.01)
             meter.record(0.5)
             meter.record(0.25)
+            time.sleep(0.02)
             from whul.ingest import IngestReport
             return IngestReport(league=source.league, asset_type="Team", pulled=3)
 
@@ -202,7 +239,8 @@ def test_a_pull_writes_down_what_it_cost(tmp_path):
     assert row["as_of"] == "2026-11-03"
     assert row["requests"] == 2
     assert row["waiting"] == pytest.approx(0.75, abs=0.01)
-    assert row["seconds"] >= 0.01, "the wall clock was not written down"
+    assert row["pausing"] >= 0.02, "the pause was not written down"
+    assert row["seconds"] >= 0.03, "the wall clock was not written down"
     assert spent["epl"].requests == 2
 
 
@@ -264,3 +302,24 @@ def test_a_run_survives_a_reading_it_cannot_store(tmp_path):
     reports = _ingest_one_day(FakeIngest, store, [FakeSource()], "2026-27",
                               date(2026, 11, 3), {})
     assert reports[0].pulled == 1, "the pull was lost to a bookkeeping failure"
+
+
+def test_a_day_recorded_before_pauses_were_measured_is_called_out():
+    """The pausing column arrived after the first readings did, and those days
+    put their pauses in `work`. Read straight, the first comparison across the
+    changeover shows work collapsing and pausing appearing, having done
+    neither."""
+    import pandas as pd
+
+    from whul.cli import _unmeasured_pauses
+
+    old = pd.DataFrame([{"requests": 48, "pausing": 0.0}])
+    assert _unmeasured_pauses(old)
+
+    measured = pd.DataFrame([{"requests": 48, "pausing": 19.2}])
+    assert not _unmeasured_pauses(measured)
+
+    # A day where nothing was in season paused for nothing and is not a gap in
+    # the instrument, so it must not carry the warning.
+    quiet = pd.DataFrame([{"requests": 0, "pausing": 0.0}])
+    assert not _unmeasured_pauses(quiet)

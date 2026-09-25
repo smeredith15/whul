@@ -8,11 +8,19 @@ by running it alongside something else. A source that spends four minutes
 parsing a season it already had on disk is fixed by not re-deriving it. The
 remedies have nothing in common, and a wall clock cannot tell them apart.
 
-So this counts the requests and times them. What it measures is *waiting*: the
-seconds between asking for a URL and having the answer, including any
-politeness pause a source serves inside its own fetch. What is left over --
+So this counts the requests and times them, in three buckets. *Waiting* is
+the seconds between asking for a URL and having the answer. *Pausing* is the
+politeness a source serves itself -- ESPN gets four tenths of a second after
+every request, FBref three and a half -- which sits beside the request rather
+than inside it and would otherwise be counted as work. What is left over --
 the report calls it ``other`` -- is parsing, disk, and anything that went out
 over a transport this module cannot see.
+
+The three want different things. Waiting falls when a slow host is asked
+alongside a different one; pausing falls when there are fewer requests to pay
+for, or when two hosts pay in parallel; ``other`` falls only when the work
+stops being done twice. Lumping the first two together, as the first cut of
+this module did, made every ESPN-shaped source look like it was parsing.
 
 **It does not see everything, and says so rather than reporting a zero.** Two
 transports are counted: ``requests`` (which covers ``requests.get``, since that
@@ -48,9 +56,12 @@ class Spend:
     seconds: float = 0.0
     #: Requests that actually went out. A cache hit is not one.
     requests: int = 0
-    #: Seconds inside those requests, politeness pauses included where a
-    #: source serves them within its own fetch.
+    #: Seconds inside those requests: the host's own latency.
     waiting: float = 0.0
+    #: Seconds slept on purpose. A politeness pause is time the pull chose to
+    #: spend and can choose to spend differently; it is not the feed being
+    #: slow and it is certainly not parsing.
+    pausing: float = 0.0
 
     def __add__(self, other: "Spend") -> "Spend":
         """Two readings of the same source, from two days of one run.
@@ -62,12 +73,14 @@ class Spend:
             seconds=self.seconds + other.seconds,
             requests=self.requests + other.requests,
             waiting=self.waiting + other.waiting,
+            pausing=self.pausing + other.pausing,
         )
 
     @property
     def other(self) -> float:
-        """Everything that was not waiting: parsing, disk, unseen transports."""
-        return max(0.0, self.seconds - self.waiting)
+        """Everything that was neither waited for nor slept through: parsing,
+        disk, and any transport this module does not see."""
+        return max(0.0, self.seconds - self.waiting - self.pausing)
 
     @property
     def blind(self) -> bool:
@@ -94,15 +107,22 @@ def record(seconds: float) -> None:
         _active.waiting += seconds
 
 
-def _timed(call):
+def slept(seconds: float) -> None:
+    """Add a deliberate pause to whatever is being measured."""
+    if _active is not None:
+        _active.pausing += seconds
+
+
+def _timed(call, into=None):
     """``call``, wrapped so its wall time lands in the tally."""
+    into = into or record
 
     def wrapped(*args, **kwargs):
         began = time.monotonic()
         try:
             return call(*args, **kwargs)
         finally:
-            record(time.monotonic() - began)
+            into(time.monotonic() - began)
 
     wrapped.__whul_meter__ = True  # type: ignore[attr-defined]
     return wrapped
@@ -127,13 +147,21 @@ def measure():
     _active = spend
     session_request = _requests.sessions.Session.request
     urlopen = urllib.request.urlopen
+    sleep = time.sleep
     began = time.monotonic()
     try:
         _requests.sessions.Session.request = _timed(session_request)
         urllib.request.urlopen = _timed(urlopen)
+        # Every sleep inside a pull is a politeness pause or a retry backoff,
+        # and both are time chosen rather than time worked. Wrapped for the
+        # same reason as the other two: there is one of these in every source
+        # and an instrument that has to be threaded through each would read
+        # low for whichever was written last.
+        time.sleep = _timed(sleep, into=slept)
         yield spend
     finally:
         _requests.sessions.Session.request = session_request
         urllib.request.urlopen = urlopen
+        time.sleep = sleep
         spend.seconds = time.monotonic() - began
         _active = None

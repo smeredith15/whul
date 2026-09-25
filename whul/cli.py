@@ -2806,7 +2806,8 @@ def _cost(spend) -> str:
     if not spend.requests:
         return f"{spend.seconds:,.1f}s, no request seen"
     return (f"{spend.seconds:,.1f}s: {spend.waiting:,.1f}s waiting on "
-            f"{spend.requests} request(s), {spend.other:,.1f}s other")
+            f"{spend.requests} request(s), {spend.pausing:,.1f}s pausing, "
+            f"{spend.other:,.1f}s other")
 
 
 def _record_cost(store, season: str, as_of, key: str, spend) -> None:
@@ -2824,6 +2825,7 @@ def _record_cost(store, season: str, as_of, key: str, spend) -> None:
             "seconds": round(spend.seconds, 3),
             "requests": spend.requests,
             "waiting": round(spend.waiting, 3),
+            "pausing": round(spend.pausing, 3),
         }], keys=("season", "as_of", "source"))
         store.conn.commit()
     except Exception as exc:  # noqa: BLE001 -- an instrument must not stop a run
@@ -2849,8 +2851,9 @@ def cmd_pull_costs(args: argparse.Namespace) -> int:
 
     store = open_store(args.db)
     rows = store.query(
-        "SELECT as_of, source, seconds, requests, waiting FROM ingest_timings "
-        "WHERE season = ? ORDER BY as_of, source", (args.season,)
+        "SELECT as_of, source, seconds, requests, waiting, pausing "
+        "FROM ingest_timings WHERE season = ? ORDER BY as_of, source",
+        (args.season,)
     )
     if rows.empty:
         print(f"\nNothing recorded for {args.season}. The timings are written "
@@ -2866,11 +2869,14 @@ def cmd_pull_costs(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         print(f"\n{args.source} in {args.season}, day by day:\n")
-        print(f"  {'day':12s} {'total':>8s} {'waiting':>9s} {'other':>8s} {'reqs':>5s}")
+        print(f"  {'day':12s} {'total':>8s} {'waiting':>9s} {'pausing':>9s} "
+              f"{'work':>8s} {'reqs':>5s}")
         for row in one.itertuples():
-            other = max(0.0, float(row.seconds) - float(row.waiting))
+            other = max(0.0, float(row.seconds) - float(row.waiting)
+                        - float(row.pausing))
             print(f"  {row.as_of:12s} {row.seconds:7,.1f}s {row.waiting:8,.1f}s "
-                  f"{other:7,.1f}s {int(row.requests):5d}")
+                  f"{float(row.pausing):8,.1f}s {other:7,.1f}s "
+                  f"{int(row.requests):5d}")
         print()
         return 0
 
@@ -2884,25 +2890,47 @@ def cmd_pull_costs(args: argparse.Namespace) -> int:
 
     print(f"\n  {args.season}: {latest}, against {earliest} "
           f"({len(days)} day(s) recorded).\n")
-    print(f"  {'source':16s} {'total':>8s} {'waiting':>9s} {'other':>8s} "
-          f"{'reqs':>5s}   {'since ' + earliest[5:]:>10s}")
+    print(f"  {'source':16s} {'total':>8s} {'waiting':>9s} {'pausing':>9s} "
+          f"{'work':>8s} {'reqs':>5s}   {'since ' + earliest[5:]:>10s}")
     order = now["seconds"].sort_values(ascending=False)
     for source in order.index:
         row = now.loc[source]
-        other = max(0.0, float(row["seconds"]) - float(row["waiting"]))
+        other = max(0.0, float(row["seconds"]) - float(row["waiting"])
+                    - float(row["pausing"]))
         if source in then.index:
             was = float(then.loc[source, "seconds"])
             moved = f"{float(row['seconds']) - was:+,.1f}s" if was else "new"
         else:
             moved = "new"
         print(f"  {source:16s} {float(row['seconds']):7,.1f}s "
-              f"{float(row['waiting']):8,.1f}s {other:7,.1f}s "
-              f"{int(row['requests']):5d}   {moved:>10s}")
+              f"{float(row['waiting']):8,.1f}s {float(row['pausing']):8,.1f}s "
+              f"{other:7,.1f}s {int(row['requests']):5d}   {moved:>10s}")
     total = float(now["seconds"].sum())
     before = float(then["seconds"].sum())
     print(f"\n  {total:,.0f}s in total, against {before:,.0f}s on {earliest} "
-          f"({total - before:+,.0f}s).\n")
+          f"({total - before:+,.0f}s).")
+    if _unmeasured_pauses(then):
+        # The pausing column arrived after the first readings did. Those days
+        # put their politeness pauses in `work`, so the first comparison
+        # across the changeover shows work collapsing and pausing appearing,
+        # having done neither. Only the total is comparable there.
+        print(f"  {earliest} was recorded before pausing was measured, so its "
+              f"pauses are\n  inside its `work`. Compare the totals across "
+              f"that day, not the columns.")
+    print()
     return 0
+
+
+def _unmeasured_pauses(day) -> bool:
+    """Whether a day's readings predate the pausing column.
+
+    A source that made no request genuinely paused for nothing, so the tell is
+    a day that fetched and still reports no pause anywhere -- which no real
+    pull does, every feed here serving itself one.
+    """
+    if day.empty:
+        return False
+    return bool(day["requests"].sum() > 0 and float(day["pausing"].sum()) == 0.0)
 
 
 def _say_where_the_time_went(spent: dict) -> None:
@@ -2914,28 +2942,33 @@ def _say_where_the_time_went(spent: dict) -> None:
     and the guesses have been wrong before -- the fixture pull looks expensive
     and is forty seconds of the eighteen minutes.
 
-    The split matters as much as the total. Waiting is fixed by asking for
-    less or by asking alongside something else; the rest is fixed by not
-    doing the work twice. A column that says which one a source is made of is
-    the difference between a plan and a guess.
+    The split matters as much as the total, because the three columns want
+    different things. Waiting on a slow host falls when it is asked alongside
+    a different one. Pausing -- the politeness a source serves itself between
+    requests -- falls when there are fewer requests to pay for, or when two
+    hosts pay at once. What is left is work, and work falls only when it
+    stops being done twice. A total says which source to look at; the split
+    says what to do when you get there.
     """
     if not spent:
         return
     whole = sum(s.seconds for s in spent.values())
     ranked = sorted(spent.items(), key=lambda kv: kv[1].seconds, reverse=True)
     print(f"\n  {whole:,.0f}s in the feeds. Slowest:")
-    print(f"    {'source':16s} {'total':>8s} {'waiting':>9s} {'other':>8s} "
-          f"{'reqs':>5s}   share")
+    print(f"    {'source':16s} {'total':>8s} {'waiting':>9s} {'pausing':>9s} "
+          f"{'work':>8s} {'reqs':>5s}   share")
     for key, spend in ranked[:SLOWEST_SHOWN]:
         share = 100.0 * spend.seconds / whole if whole else 0.0
         flag = "  (no request seen)" if spend.blind else ""
         print(f"    {key:16s} {spend.seconds:7,.1f}s {spend.waiting:8,.1f}s "
-              f"{spend.other:7,.1f}s {spend.requests:5d}  {share:4.1f}%{flag}")
+              f"{spend.pausing:8,.1f}s {spend.other:7,.1f}s "
+              f"{spend.requests:5d}  {share:4.1f}%{flag}")
     rest = [spend for _, spend in ranked[SLOWEST_SHOWN:]]
     if rest:
         total = sum(s.seconds for s in rest)
         print(f"    {'the rest':16s} {total:7,.1f}s "
               f"{sum(s.waiting for s in rest):8,.1f}s "
+              f"{sum(s.pausing for s in rest):8,.1f}s "
               f"{sum(s.other for s in rest):7,.1f}s "
               f"{sum(s.requests for s in rest):5d}  "
               f"{100.0 * total / whole if whole else 0:4.1f}%")

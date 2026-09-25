@@ -92,6 +92,7 @@ ADDED_COLUMNS = (
     ("assets", "affiliation", "TEXT NOT NULL DEFAULT ''"),
     ("fixtures", "round_name", "TEXT NOT NULL DEFAULT ''"),
     ("daily_scores", "held_score", "REAL NOT NULL DEFAULT 0"),
+    ("ingest_timings", "pausing", "REAL NOT NULL DEFAULT 0.0"),
 )
 
 
