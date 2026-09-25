@@ -85,7 +85,19 @@ def score_teams(matches: pd.DataFrame) -> pd.DataFrame:
     if "wanted" in matches.columns:
         keep = set(matches.loc[matches["wanted"].astype(bool), "season"])
         scored = scored[scored["season"].isin(keep)].reset_index(drop=True)
-    sections = season_sections(rows, shares)
+    # Only for the seasons that survived. The line above narrows the score to
+    # the league years asked for, and a section is read back by the season it
+    # belongs to -- so building them for the whole ledger is answering about
+    # 1872 to put a number on this year. It was most of the pull: 27,424 calls
+    # into `_counted`, four minutes of them, for a frame that kept a few dozen
+    # team-seasons and threw the rest away unread.
+    #
+    # Narrowed here rather than above because the shape of a tournament is
+    # read off whichever edition was played, and `_editions`, `_shape`,
+    # `_price` and `_fold` all need the history to do it. This is the first
+    # point at which the rest has stopped being evidence.
+    sections = season_sections(rows[rows["season"].isin(set(scored["season"]))],
+                               shares)
     scored["sections"] = [
         sections.get((str(l), str(t), int(y)), [])
         for l, t, y in zip(scored["league"], scored["team"], scored["season"])
