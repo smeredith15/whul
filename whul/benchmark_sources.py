@@ -534,12 +534,19 @@ def _intl_seasons(as_of: date) -> list[int]:
 
 
 @lru_cache(maxsize=None)
-def _players_in(competition: str, seasons: tuple[int, ...]):
+def _players_in(competition: str, seasons: tuple[int, ...],
+                clubs: frozenset | None = None):
     """One competition's players, pulled at most once a run.
 
     The Champions League is played by clubs from four of the six leagues here,
     so computing those leagues separately would ask for it four times. Cached
-    on the competition and the seasons, which is what the request depends on.
+    on the competition, the seasons and the clubs asked for, which between
+    them are everything the requests depend on.
+
+    ``clubs`` is the ESPN ids whose rosters are wanted; ``None`` is all of
+    them. A league's own pull passes nothing, since every club in a league is
+    by definition one of its clubs. A cup or a European competition passes
+    the clubs our leagues are made of, and the rest are never fetched.
 
     Never raises and never returns None: a competition that cannot be read is
     one competition missing, said out loud, and the rest of the run continues.
@@ -552,7 +559,7 @@ def _players_in(competition: str, seasons: tuple[int, ...]):
     from whul.sources import espn_soccer
 
     try:
-        frame = espn_soccer.load_players(competition, list(seasons))
+        frame = espn_soccer.load_players(competition, list(seasons), clubs=clubs)
     except Exception as exc:  # noqa: BLE001 -- one request, not all
         print(f"  {competition}: could not pull "
               f"({type(exc).__name__}: {exc}); the rest continue", flush=True)
@@ -596,8 +603,8 @@ def _soccer_players(only: tuple[str, ...] = ()):
             DOMESTIC_CUPS, LEAGUE_PATHS, continental_for,
         )
 
-        def pull(competition):
-            return _players_in(competition, tuple(seasons))
+        def pull(competition, clubs=None):
+            return _players_in(competition, tuple(seasons), clubs)
 
         def club_key(frame):
             """What identifies a club across two competitions' requests.
@@ -648,11 +655,17 @@ def _soccer_players(only: tuple[str, ...] = ()):
         others: list[str] = []
         for key in wanted_leagues.values():
             others += list(DOMESTIC_CUPS.get(key, ())) + list(continental_for(key))
-        # Each competition once, however many leagues send clubs to it.
+        # Each competition once, however many leagues send clubs to it --
+        # and only our clubs' rosters in it. The attribution below keeps a row
+        # only if its club is in `club_league`, by the same global id, so a
+        # roster for any other club was always fetched to be thrown away.
+        # Passing the ids down means it is never fetched: 213 rosters and
+        # ~300 more that 404, a night, on 2026-09-26.
+        ours = frozenset(club_league)
         for competition in dict.fromkeys(others):
             if competition not in LEAGUE_PATHS:
                 continue
-            frame = pull(competition)
+            frame = pull(competition, ours)
             if frame.empty:
                 continue
             belongs = club_key(frame).map(club_league)

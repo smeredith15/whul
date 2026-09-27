@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       league:
-        description: "Source key, e.g. nhl, nba, mlb, ncaaf, tennis2026"
+        description: "Source key, e.g. nhl, nba, mlb, mlb-gamelog, ncaaf, tennis2026"
         default: "nhl"
       season:
         description: "Season to ask for. Leave empty for the source's default."

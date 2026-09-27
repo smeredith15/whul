@@ -2838,6 +2838,34 @@ def _record_cost(store, season: str, as_of, key: str, spend) -> None:
 SLOWEST_SHOWN = 8
 
 
+def cmd_best_games(args: argparse.Namespace) -> int:
+    """Calibrate a best-game slot: MLB's three roles against the NFL.
+
+    A proposal's evidence, not a scoring step: it reads the frozen divisors
+    and nothing else stored, and writes nothing but its own report. See
+    ``whul.best_game_calibration`` for the method and ``whul.scoring.best_game``
+    for the rules it measures.
+    """
+    from whul import best_game_calibration as calibration
+    from whul.store import open_store
+
+    text = str(args.seasons).strip()
+    if "-" in text:
+        first, last = (int(x) for x in text.split("-", 1))
+        seasons = tuple(range(first, last + 1))
+    else:
+        seasons = tuple(int(x) for x in text.split(","))
+
+    report = calibration.calibrate(open_store(args.db), seasons)
+    print(calibration.render(report))
+    if args.out:
+        report.mlb.to_csv(f"{args.out}-mlb.csv", index=False)
+        report.nfl.to_csv(f"{args.out}-nfl.csv", index=False)
+    # Nothing measured is a failure, not an empty table: it means the season
+    # lines or every game log went unread, and a green run would hide that.
+    return 0 if len(report.mlb) and len(report.nfl) else 1
+
+
 def cmd_pull_costs(args: argparse.Namespace) -> int:
     """What the pull has cost per source, and which way it is heading.
 
@@ -3779,6 +3807,16 @@ def cmd_probe(args: argparse.Namespace) -> int:
             ) or status
         return status
 
+    if args.league == "mlb-gamelog":
+        # Whether a best-game slot could be scored for MLB at all: per-game
+        # lines, whether they add up to the season, and whether a pitcher's
+        # game says if he started it. Reads nothing stored, writes nothing.
+        from whul.sources import mlb
+
+        report = mlb.probe_game_logs(int(args.season) if args.season else 2025)
+        return _print_stages(
+            f"MLB game-log probe -- season {report['season']}", report)
+
     if args.league == "f1":
         from whul.sources import jolpica
 
@@ -4220,6 +4258,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     rollup.set_defaults(func=cmd_rollup)
 
+    games = sub.add_parser(
+        "best-games",
+        help="calibrate a best-game slot: MLB batters, starts and relief against the NFL",
+    )
+    games.add_argument("--db", default="data/whul.sqlite3",
+                       help="database holding the frozen benchmark")
+    games.add_argument("--seasons", default="2021-2025",
+                       help="a range like 2021-2025, or a comma list")
+    games.add_argument("--out", default="",
+                       help="also write the per-player rows as <out>-mlb.csv and <out>-nfl.csv")
+    games.set_defaults(func=cmd_best_games)
+
     costs = sub.add_parser(
         "pull-costs",
         help="what each feed has cost per day, and whether it is growing",
@@ -4578,7 +4628,7 @@ def main(argv: list[str] | None = None) -> int:
         "league",
         choices=sorted(
             set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)
-            | {"tennis2026", "fbref"}
+            | {"tennis2026", "fbref", "mlb-gamelog"}
         ),
         metavar="league",
     )

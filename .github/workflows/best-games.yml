@@ -1,0 +1,65 @@
+# Calibrate the proposed best-game slot for MLB, against the NFL.
+#
+# The slot counts a player's k best games at face value, with k set per sport
+# -- and per role in MLB -- so it is worth the same on average everywhere. The
+# NFL, NBA, NHL and club soccer were measured from archives reachable anywhere;
+# MLB needs the Stats API's game logs, which answer from GitHub Actions and not
+# from the sandbox this project is developed in. `probe mlb-gamelog` showed they
+# are complete. This is the run that uses them.
+#
+# It reads the frozen divisors from the database and writes nothing back. It is
+# a proposal's evidence, not a scoring step: nothing in the standings changes.
+# About a thousand game-log requests at the Stats API's pause -- ten minutes or
+# so.
+
+name: Best-game calibration
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Seasons to measure, as a range or a comma list"
+        default: "2021-2025"
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      - name: Restore the database
+        # For the frozen divisors: a game is scored at face value against the
+        # same scale a season is, and that scale lives here.
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+
+      - name: Calibrate
+        # pipefail, or `tee` reports success however the command exited.
+        env:
+          SEASONS: ${{ inputs.seasons }}
+        run: |
+          set -o pipefail
+          python -m whul.cli best-games --seasons "$SEASONS" --out best-games \
+            | tee best-games.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: best-games
+          path: |
+            best-games.txt
+            best-games-mlb.csv
+            best-games-nfl.csv
+          if-no-files-found: ignore
