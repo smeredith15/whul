@@ -93,6 +93,10 @@ ADDED_COLUMNS = (
     ("fixtures", "round_name", "TEXT NOT NULL DEFAULT ''"),
     ("daily_scores", "held_score", "REAL NOT NULL DEFAULT 0"),
     ("ingest_timings", "pausing", "REAL NOT NULL DEFAULT 0.0"),
+    # The best-performances slot: its k best games, and which way the slot is
+    # scored today -- 'season', 'best', or '' for the bench.
+    ("slot_scores", "best_score", "REAL NOT NULL DEFAULT 0"),
+    ("slot_scores", "scored_as", "TEXT NOT NULL DEFAULT ''"),
 )
 
 

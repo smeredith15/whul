@@ -110,7 +110,10 @@ Set `WHUL_TENNIS2026` if it is not a sibling of this repository.
 | `whul/benchmark_sources.py` | Which loader and scorer each league's history comes from |
 | `whul/resolve.py` | Matching a feed's name to the asset a manager drafted |
 | `whul/ingest.py` | Pull a live league, match it to the roster, record it |
-| `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, standings |
+| `whul/bestball.py` | Slot occupancy, trade accrual, top-K rollup, best-performances slots, standings |
+| `whul/games.py` | Every rostered team-sport player's games, dated and scored one by one |
+| `whul/scoring/best_game.py` | The best-performances rules: k best games, MLB roles traded, highest-scoring lineup |
+| `whul/backdate.py` | Rebuilds the days before a player's first stored score from their games |
 | `whul/scoring/` | Per-league scoring formulas, ported from `r-scripts/` |
 | `whul/sources/` | Data adapters (free sources only) |
 | `whul/cli.py` | Per-league terminal harness |

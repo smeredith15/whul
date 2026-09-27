@@ -1,10 +1,11 @@
-"""The rules for a best-game slot, on record before anything scores by them.
+"""The rules for the best-performances slot.
 
-A proposal, not a rule of the league: nothing in the standings reads this
-module. It exists so that the rules agreed for the slot are written down in the
-one form that cannot drift from what gets measured -- the calibration in
-``whul.best_game_calibration`` scores games through these functions, so the k it
-recommends is the k for exactly these rules and not for a paraphrase of them.
+Adopted for 2026-27 after the season opened: each team sport's player category
+holds one slot that counts a player's k best games rather than his season. The
+rollup (``whul.bestball``) scores the slot through these functions, and so does
+the calibration in ``whul.best_game_calibration`` -- so the k it recommends is
+the k for exactly these rules and not for a paraphrase of them. The k's
+themselves are ``whul.config.league.BEST_K``.
 
 What was settled, and where each rule lives:
 
@@ -103,23 +104,45 @@ def exchange(games: Mapping[str, Sequence[float]], k: Mapping[str, int]) -> floa
     3.25 relief appearances at k=13, and a float that came to 3.2499999 would
     quietly take two.
     """
+    return exchange_pick(games, k)[0]
+
+
+def exchange_pick(games: Mapping[str, Sequence[float]],
+                  k: Mapping[str, int]) -> tuple[float, dict[str, int]]:
+    """``exchange``, and how many of each role's best games it took.
+
+    The counts are what a page needs to list the games that count: within a
+    role the best games are always the ones taken, so a count names them.
+    Ties between combinations go to the first found, which takes fewer games
+    of the earlier roles.
+    """
     roles = [r for r in k if k[r] > 0]
     if not roles:
-        return 0.0
+        return 0.0, {}
     ranked = {r: sorted(games.get(r, ()), reverse=True) for r in roles}
 
-    def search(i: int, room: Fraction) -> float:
+    def search(i: int, room: Fraction) -> tuple[float, tuple[int, ...]]:
         role = roles[i]
         cap = math.floor(room * k[role])
         if i == len(roles) - 1:
-            return best_k(ranked[role], cap)
-        best = -math.inf
-        for count in range(0, cap + 1):
+            take = min(cap, len(ranked[role]))
+            # A game below zero is never forced in: the slot may stay short.
+            while take and ranked[role][take - 1] < 0:
+                take -= 1
+            return best_k(ranked[role], take), (take,)
+        best, pick = -math.inf, ()
+        for count in range(0, min(cap, len(ranked[role])) + 1):
+            if count and ranked[role][count - 1] < 0:
+                break
             rest = room - Fraction(count, k[role])
-            best = max(best, best_k(ranked[role], count) + search(i + 1, rest))
-        return best
+            value, tail = search(i + 1, rest)
+            value += best_k(ranked[role], count)
+            if value > best + 1e-12:
+                best, pick = value, (count, *tail)
+        return best, pick
 
-    return float(search(0, Fraction(1)))
+    value, counts = search(0, Fraction(1))
+    return float(value), dict(zip(roles, counts))
 
 
 def pitcher_best(starts: Sequence[float], reliefs: Sequence[float],
@@ -217,6 +240,11 @@ class Configuration:
     total: float
 
 
+#: How close two lineups' totals must be to count as the same. Scores are
+#: shown to one decimal and stored to four.
+TIE = 0.01
+
+
 def best_configuration(players: Sequence[Candidate],
                        season_slots: int) -> Configuration:
     """The assignment of players to slots that scores most.
@@ -233,7 +261,11 @@ def best_configuration(players: Sequence[Candidate],
     score below zero is never forced into the total.
 
     Ties go to the configuration with more in its season slots, which is the
-    one plain best-ball would have chosen; then to roster order.
+    one plain best-ball would have chosen; then to roster order. A tie is
+    anything within ``TIE`` of the best total: a player whose every game
+    counts has a best-k equal to his season, and the two are computed by
+    different routes that can differ in the fourth decimal -- which is not a
+    reason to move him.
     """
     roster = list(players)
 
@@ -250,5 +282,7 @@ def best_configuration(players: Sequence[Candidate],
         value = seasons + player.best
         options.append((value, seasons, Configuration(
             tuple(p.name for p in seated), player.name, value)))
+    top = max(o[0] for o in options)
+    close = [o for o in options if o[0] >= top - TIE]
     # max() keeps the first of equal keys, and the options are in roster order.
-    return max(options, key=lambda o: (round(o[0], 9), round(o[1], 9)))[2]
+    return max(close, key=lambda o: round(o[1], 9))[2]

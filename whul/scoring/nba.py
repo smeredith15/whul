@@ -80,13 +80,12 @@ def _plus_minus(df: pd.DataFrame) -> pd.Series:
     return pd.to_numeric(raw.str.replace("+", "", regex=False), errors="coerce").fillna(0.0)
 
 
-def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
-    """Season totals per player from per-game box scores.
+def per_game(box: pd.DataFrame) -> pd.DataFrame:
+    """One row per player per game, with that game's points.
 
-    Playoff rows (``season_type`` 3) are credited as a bonus rather than as raw
-    counting stats. Play-In games (5) are dropped entirely -- they are neither
-    regular season nor playoffs. Pass ``postseason=False`` for benchmark
-    computation.
+    The one place a game is scored. A season is the sum of these, and a
+    best-performances slot is the best k of them, so the two cannot disagree
+    about what a game was worth.
     """
     work = pd.DataFrame(
         {
@@ -127,6 +126,29 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     # Net plus-minus is folded in per game so it rides along with the phase split.
     work["game_points"] = work["game_points"] + work["plus_minus"] * PLUS_MINUS_WEIGHT
     work["game_count"] = 1
+    return work
+
+
+def game_points(box: pd.DataFrame) -> pd.DataFrame:
+    """Regular-season games only, each with its id, date and points."""
+    work = per_game(box)
+    season_type = resolve_num(box, ["season_type"], default=SEASON_TYPE_REGULAR
+                              ).reindex(work.index)
+    work["game_id"] = resolve_str(box, ["game_id"]).reindex(work.index)
+    work["game_date"] = resolve_str(box, ["game_date", "date"]).reindex(work.index)
+    work["team"] = resolve_str(box, ["team", "team_abbreviation"]).reindex(work.index)
+    return work[season_type == SEASON_TYPE_REGULAR].reset_index(drop=True)
+
+
+def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
+    """Season totals per player from per-game box scores.
+
+    Playoff rows (``season_type`` 3) are credited as a bonus rather than as raw
+    counting stats. Play-In games (5) are dropped entirely -- they are neither
+    regular season nor playoffs. Pass ``postseason=False`` for benchmark
+    computation.
+    """
+    work = per_game(box)
     season_type = resolve_num(box, ["season_type"], default=SEASON_TYPE_REGULAR).reindex(
         work.index
     )

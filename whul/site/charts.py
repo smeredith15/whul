@@ -212,6 +212,9 @@ SLOT_LABEL_WIDTH = 250
 #: both reads as two kinds of thing rather than one run of bars. Alpha alone is
 #: a weak signal, which is why the label carries the word as well.
 PLAYER_ALPHA = 0.68
+#: A value that is not the one counting: benched, or counting the other way.
+#: Faint enough to read as not in the total, solid enough to still compare.
+UNCOUNTED_ALPHA = 0.22
 
 
 def _fit(text: str, limit: int) -> str:
@@ -327,6 +330,9 @@ def contribution_chart(
                 held = values.get((manager, key), (0.0, "", "", ""))
                 score, asset_id, asset_name = held[0], held[1], held[2]
                 kind = held[3] if len(held) > 3 else ""
+                # A fifth entry says whether this value is the one counting.
+                # Older callers pass four and every bar counts, as it did.
+                counted = held[4] if len(held) > 4 else True
                 bar_y = base_y + index * (SLOT_BAR_THICKNESS + BAR_GAP) + 2
                 index += 1
                 # What the bar is of, not merely which slot it fills. Colour
@@ -341,10 +347,15 @@ def contribution_chart(
                     label = shown
                 suffix = (f'<tspan fill="var(--muted)" font-size="9"> '
                           f'{escape(kind)}</tspan>') if kind else ""
+                # A value that is not counting keeps its bar, faded, and its
+                # name struck through: what a manager is carrying is worth
+                # seeing, and so is that it is not in the total.
+                struck = (' text-decoration="line-through" opacity="0.7"'
+                          if asset_id and not counted else "")
                 parts.append(
                     f'<text x="{pad_left - 10}" '
                     f'y="{bar_y + SLOT_BAR_THICKNESS - 1:.1f}" text-anchor="end" '
-                    f'font-size="10.5" fill="var(--text-secondary)">'
+                    f'font-size="10.5" fill="var(--text-secondary)"{struck}>'
                     f'{escape(label)}{suffix}</text>'
                 )
                 bar_w = max(plot_w * score / top, 0.0)
@@ -352,6 +363,8 @@ def contribution_chart(
                 # Players a little softer than teams, so a mixed category reads
                 # as two kinds of holding.
                 alpha = f' fill-opacity="{PLAYER_ALPHA}"' if kind == "Player" else ""
+                if not counted:
+                    alpha = f' fill-opacity="{UNCOUNTED_ALPHA}"'
                 parts.append(
                     f'<rect class="bar" x="{pad_left}" y="{bar_y:.1f}" '
                     f'width="{bar_w:.1f}" height="{SLOT_BAR_THICKNESS}" '
@@ -366,7 +379,8 @@ def contribution_chart(
                     f'{escape(asset_name or "(empty)")}'
                     f'{" — " + escape(kind) if kind else ""} · '
                     f'{escape(category)} #{rank} · {escape(manager)} · '
-                    f'{_fmt(score)}</title></rect>'
+                    f'{_fmt(score)}{"" if counted else " (not counting)"}'
+                    f'</title></rect>'
                 )
         offset += heights[category]
     parts.append("</svg>")
@@ -803,9 +817,16 @@ SCRIPT = """\
       if (row.hidden) return;
       var cell = row.querySelector('[data-score]');
       if (!cell) return;
-      var value = Number(cell.dataset.score) || 0;
+      // What the row adds: its season, or its best performances where that
+      // is the slot it fills. The bench column takes the larger of the two.
+      var counts = row.dataset.counts === '1';
+      var value = counts
+        ? Number(row.dataset.added !== undefined ? row.dataset.added
+                                                 : cell.dataset.score) || 0
+        : Number(row.dataset.benchvalue !== undefined ? row.dataset.benchvalue
+                                                      : cell.dataset.score) || 0;
       var who = row.dataset.manager;
-      var into = row.dataset.counts === '1' ? counting : bench;
+      var into = counts ? counting : bench;
       into[who] = (into[who] || 0) + value;
     });
     // Rounded to two places and then to one, which is what the standings do
@@ -1558,6 +1579,43 @@ SCRIPT = """\
            '</div>' + post;
   }
 
+  // The games a best-performances slot counts for him, best first: when, who
+  // against, what he did, and what it was worth. The same strip closes the
+  // pane as closes the season, over his best games instead of his season.
+  function renderBest(best) {
+    var rows = (best.games || []).map(function (g) {
+      var figs = (g.role ? '<span class="fig role">' + g.role + '</span>' : '') +
+        (g.figs || []).map(function (f) {
+          return '<span class="fig">' + (f[0] ? '<b>' + f[0] + '</b>' : '') +
+                 '<i>' + f[1] + '</i></span>';
+        }).join('');
+      return '<div class="perf"><div class="when">' + g.date +
+             (g.vs ? '<span class="vs">' + g.vs + '</span>' : '') + '</div>' +
+             '<div class="figs">' + figs + '</div>' +
+             '<div class="pts">' + g.score +
+             (g.points ? '<small>' + g.points + ' raw</small>' : '') +
+             '</div></div>';
+    }).join('');
+    var head = 'The ' + best.rule + ' count' +
+      (best.played ? ', from ' + best.played + ' played' : '') + '.' +
+      (best.counts ? ' This is the slot this player fills today.'
+       : best.season_counts ? ' This player counts for the full season today; ' +
+                              'these are what the best-performances slot would count.'
+       : ' This player is on the bench today; these are what the ' +
+         'best-performances slot would count.');
+    return '<div class="perfpane" data-pane="best"' +
+           (best.counts ? '' : ' hidden') + '>' +
+           '<div class="body"><p class="perfhead">' + head + '</p>' +
+           (rows ? '<div class="perflist">' + rows + '</div>'
+                 : '<p class="sub">No games recorded yet.</p>') + '</div>' +
+           '<div class="scoreline">' +
+             '<div><div class="label">Raw score</div>' +
+               '<div class="value">' + best.raw + '</div></div>' +
+             '<div><div class="label">Normalized</div>' +
+               '<div class="value">' + best.score + '</div></div>' +
+           '</div></div>';
+  }
+
   function open(id) {
     var a = profiles[id];
     if (!a) return;
@@ -1588,13 +1646,28 @@ SCRIPT = """\
     // tables show a position and a club; this is where the rest of it is, which
     // is what a click on a name is for.
     var who = [a.position, a.team, a.meta].filter(Boolean).join(' \u00b7 ');
+    // A team-sport player scores one of two ways, so his window has a tab for
+    // each: the season, which is everything below as it always was, and his
+    // best performances. The tab that is counting today opens first.
+    var best = a.best;
+    var tabs = best
+      ? '<div class="perftabs" role="tablist">' +
+          '<button class="pt' + (best.counts ? '' : ' on') + '" data-pane="season">' +
+            'Full season' + (best.season_counts ? '<span class="counts">counts</span>' : '') +
+          '</button>' +
+          '<button class="pt' + (best.counts ? ' on' : '') + '" data-pane="best">' +
+            'Best performances' + (best.counts ? '<span class="counts">counts</span>' : '') +
+          '</button></div>'
+      : '';
     dialog.innerHTML =
       '<button class="close" aria-label="Close">&times;</button>' +
       '<div class="head">' + a.avatar +
         '<div><div class="nm">' + a.name + (a.badge || '') + '</div>' +
         '<div class="meta">' + who + '</div>' +
         (a.group ? '<div class="grp">' + a.group + '</div>' : '') +
-        '</div></div>' +
+        '</div></div>' + tabs +
+      (best ? '<div class="perfpane" data-pane="season"' +
+              (best.counts ? ' hidden' : '') + '>' : '') +
       // The summary first, then what it is a summary of. A driver's season
       // opened on twenty-eight race results and the three numbers that sum
       // them up were below the fold; every other slot leads with its boxes.
@@ -1614,7 +1687,18 @@ SCRIPT = """\
           '<div class="value rawvalue">' + a.raw + '</div></div>' +
         '<div><div class="label">Normalized</div>' +
           '<div class="value scaledvalue">' + a.scaled + '</div></div>' +
-      '</div>';
+      '</div>' +
+      (best ? '</div>' + renderBest(best) : '');
+    dialog.querySelectorAll('button.pt').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        dialog.querySelectorAll('button.pt').forEach(function (other) {
+          other.classList.toggle('on', other === tab);
+        });
+        dialog.querySelectorAll('.perfpane').forEach(function (pane) {
+          pane.hidden = pane.dataset.pane !== tab.dataset.pane;
+        });
+      });
+    });
     dialog.querySelectorAll('button.yr').forEach(function (tab) {
       tab.addEventListener('click', function () {
         dialog.querySelectorAll('button.yr').forEach(function (other) {

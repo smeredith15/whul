@@ -2307,6 +2307,39 @@ def _rostered_player_figures(store, season: str, rostered) -> dict:
     return out
 
 
+def cmd_games(args: argparse.Namespace) -> int:
+    """Record every rostered team-sport player's games, for the
+    best-performances slot. See ``whul.games``."""
+    from datetime import date as _date
+
+    from whul import games
+    from whul.store import open_store
+
+    store = open_store(args.db)
+    day = args.date or _date.today().isoformat()
+    sports = tuple(args.sports) if args.sports else games.SPORTS
+    print()
+    report = games.record(store, args.season, day, sports=sports)
+    print()
+    # Printed whole above. A problem is a game record that does not add up,
+    # which the run should say out loud rather than pass quietly.
+    return 1 if report.problems else 0
+
+
+def cmd_backdate(args: argparse.Namespace) -> int:
+    """Rebuild the days before each player's first stored score from his
+    dated games. See ``whul.backdate``. A dry run unless ``--write``."""
+    from whul import backdate
+    from whul.store import open_store
+
+    report = backdate.rebuild(open_store(args.db), args.season, write=args.write)
+    print(f"\n{report}\n")
+    if not args.write:
+        print("  Dry run: nothing written. Pass --write, then roll up with "
+              "--backfill.\n")
+    return 0
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     """Score every slot and write the standings snapshot -- the nightly job."""
     from datetime import date as _date
@@ -2864,27 +2897,6 @@ def cmd_best_games(args: argparse.Namespace) -> int:
     # Nothing measured is a failure, not an empty table: it means the season
     # lines or every game log went unread, and a green run would hide that.
     return 0 if len(report.mlb) and len(report.nfl) else 1
-
-
-def cmd_proposal_scores(args: argparse.Namespace) -> int:
-    """The standings under each best-game proposal, on the latest day.
-
-    A proposal's evidence, not a scoring step: it reads the database and the
-    game records and writes nothing but its own report. See
-    ``whul.proposal_scores``.
-    """
-    from pathlib import Path
-
-    from whul import proposal_scores
-    from whul.store import open_store
-
-    report = proposal_scores.compute(open_store(args.db), as_of=args.as_of or None)
-    print(proposal_scores.render(report))
-    if args.out:
-        Path(f"{args.out}.json").write_text(proposal_scores.to_json(report))
-    # A best-k that could not be read is scored as zero, which understates that
-    # manager's proposals -- a run that says so is not a clean run.
-    return 1 if report.problems else 0
 
 
 def cmd_pull_costs(args: argparse.Namespace) -> int:
@@ -4279,6 +4291,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     rollup.set_defaults(func=cmd_rollup)
 
+    back = sub.add_parser(
+        "backdate",
+        help="rebuild the days before each player's first stored score from his games",
+    )
+    back.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    back.add_argument("--season", default="2026-27", help="season")
+    back.add_argument("--write", action="store_true", help="write the rebuilt days")
+    back.set_defaults(func=cmd_backdate)
+
+    record = sub.add_parser(
+        "games",
+        help="record every rostered team-sport player's games, for best performances",
+    )
+    record.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    record.add_argument("--season", default="2026-27", help="season")
+    record.add_argument("--date", help="YYYY-MM-DD, the last day to record (default: today)")
+    record.add_argument("--sports", nargs="*",
+                        help="NFL, NBA, MLB, NHL or 'Club Soccer' (default: all)")
+    record.set_defaults(func=cmd_games)
+
     games = sub.add_parser(
         "best-games",
         help="calibrate a best-game slot: MLB batters, starts and relief against the NFL",
@@ -4290,16 +4322,6 @@ def main(argv: list[str] | None = None) -> int:
     games.add_argument("--out", default="",
                        help="also write the per-player rows as <out>-mlb.csv and <out>-nfl.csv")
     games.set_defaults(func=cmd_best_games)
-
-    proposals = sub.add_parser(
-        "proposal-scores",
-        help="the standings under each best-game proposal, on the latest day",
-    )
-    proposals.add_argument("--db", default="data/whul.sqlite3")
-    proposals.add_argument("--as-of", default="", help="a day other than the latest")
-    proposals.add_argument("--out", default="",
-                           help="also write the report as <out>.json")
-    proposals.set_defaults(func=cmd_proposal_scores)
 
     costs = sub.add_parser(
         "pull-costs",

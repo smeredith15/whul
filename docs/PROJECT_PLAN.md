@@ -29,35 +29,39 @@ is in §8.
 ### 1.3 Roster template
 
 65 slots at full strength: **29 team slots** (no bench, all count) + **36 player slots**
-(22 starters + 14 bench).
+(20 full-season starters + 6 best-performances slots + 10 bench).
 
-| Category | Team slots | Player slots | Player starters | Player bench |
-|---|---:|---:|---:|---:|
-| Club Soccer Top 3 (EPL / La Liga / Serie A) | 4 | 5 | 4 | 1 |
-| Club Soccer Other (Bundesliga / Ligue 1 / MLS / NWSL) | 4 | 5 | 4 | 1 |
-| NFL | 2 | 4 | 2 | 2 |
-| NBA | 2 | 4 | 2 | 2 |
-| MLB | 2 | 4 | 2 | 2 |
-| NHL | 2 | 4 | 2 | 2 |
-| WNBA | 1 | 2 | 1 | 1 |
-| PGA | — | 3 | 2 | 1 |
-| Tennis (ATP + WTA) | — | 3 | 2 | 1 |
-| Motorsports (F1 + NASCAR) | — | 2 | 1 | 1 |
-| NCAAF | 2 | — | — | — |
-| NCAAM | 2 | — | — | — |
-| NCAAW | 2 | — | — | — |
-| NCAA Baseball | 1 | — | — | — |
-| NCAA Softball | 1 | — | — | — |
-| Intl Soccer | 2 | — | — | — |
-| Olympics | 2 | — | — | — |
-| **Total** | **29** | **36** | **22** | **14** |
+| Category | Team slots | Player slots | Full season | Best perf. | Player bench |
+|---|---:|---:|---:|---:|---:|
+| Club Soccer Top 3 (EPL / La Liga / Serie A) | 4 | 5 | 3 | 1 | 1 |
+| Club Soccer Other (Bundesliga / Ligue 1 / MLS / NWSL) | 4 | 5 | 3 | 1 | 1 |
+| NFL | 2 | 4 | 2 | 1 | 1 |
+| NBA | 2 | 4 | 2 | 1 | 1 |
+| MLB | 2 | 4 | 2 | 1 | 1 |
+| NHL | 2 | 4 | 2 | 1 | 1 |
+| WNBA | 1 | 2 | 1 | — | 1 |
+| PGA | — | 3 | 2 | — | 1 |
+| Tennis (ATP + WTA) | — | 3 | 2 | — | 1 |
+| Motorsports (F1 + NASCAR) | — | 2 | 1 | — | 1 |
+| NCAAF | 2 | — | — | — | — |
+| NCAAM | 2 | — | — | — | — |
+| NCAAW | 2 | — | — | — | — |
+| NCAA Baseball | 1 | — | — | — | — |
+| NCAA Softball | 1 | — | — | — | — |
+| Intl Soccer | 2 | — | — | — | — |
+| Olympics | 2 | — | — | — | — |
+| **Total** | **29** | **36** | **20** | **6** | **10** |
+
+The best-performances slots were adopted for 2026-27 after the season opened
+(the league's "Proposal 2"): in the NFL, NBA, MLB and NHL one bench slot became
+one, and in each club-soccer category one of the four full-season slots did.
 
 **2026–27 deactivations** (placeholders retained in the schema, flagged inactive for the season):
 
 - **Olympics** — 2 team slots. No Games before the next draft.
 - **WNBA** — 1 team + 2 player slots. Season nearly over at the 8/21 start.
 
-→ **60 active slots, 47 of which count. Maximum theoretical team score = 4,700.**
+→ **60 active slots, 51 of which count: 45 for a full season (26 team, 19 player) and 6 for best performances. Maximum theoretical team score = 5,100.**
 
 ### 1.4 Scoring: season-long best ball
 
@@ -65,6 +69,15 @@ A team's total is the **sum** of, for each category, the **top-K scores** where 
 starter count. Nothing is set weekly; the best performers are selected continuously.
 
 > NFL example: four rostered players scoring 100, 98, 97, 80 → only 100 + 98 count (K=2).
+
+The team sports' player categories add one **best-performances** slot, which counts a player's k best
+games at face value rather than a season: NFL 3 weeks, NBA 14 games, NHL 7, club soccer 6 domestic
+matches, MLB 10 games at the plate, 4 starts or 13 relief outings (traded at those rates). Each k is
+where a draft-caliber player's best games match an NFL player's best three weeks, 2021-25. Counting
+stats only. The category is filled whichever way scores most, so a player whose best games are worth
+more than the gap to the next player's season moves into it. Games come from `game_scores`, one dated
+row per game (`whul.games`); the rules are `whul.scoring.best_game`; the selection is
+`whul.bestball.score_slots`.
 
 Every team slot counts (K = cap). Which slots are "counting" changes over time as scores move — the
 UI must reflect the live selection (see §4.2).

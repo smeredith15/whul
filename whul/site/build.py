@@ -3042,6 +3042,42 @@ def _asset_button(asset_id: str, name: str, counts: bool = True, depth: int = 0,
     )
 
 
+def _best_categories() -> set[str]:
+    """The player categories that hold a best-performances slot."""
+    return {g.category for g in ALL_SLOTS if g.asset_type == "Player" and g.best}
+
+
+def _scored_as(row) -> str:
+    """Which of a slot's two values counts: 'season', 'best', or '' (bench).
+
+    A row written before the best-performances slot existed carries a blank
+    whether or not it counted, so a blank reads ``counts``.
+    """
+    kind = str(getattr(row, "scored_as", "") or "")
+    if kind:
+        return kind
+    return "season" if bool(getattr(row, "counts", False)) else ""
+
+
+def _with_added(frame: pd.DataFrame) -> pd.DataFrame:
+    """The frame with ``added`` -- what each slot puts in its manager's
+    total -- present however it was assembled."""
+    if frame is None or frame.empty or "added" in frame.columns:
+        return frame
+    out = frame.copy()
+    index = out.index
+    counts = (out["counts"].astype(bool) if "counts" in out.columns
+              else pd.Series(True, index=index))
+    kind = (out["scored_as"].fillna("").astype(str) if "scored_as" in out.columns
+            else pd.Series("", index=index))
+    kind = kind.where(kind != "", counts.map({True: "season", False: ""}))
+    best = (out["best_score"] if "best_score" in out.columns
+            else pd.Series(0.0, index=index))
+    out["added"] = (out["score"].where(kind == "season", 0.0)
+                    + best.where(kind == "best", 0.0))
+    return out
+
+
 def _counting_mix(
     mine: pd.DataFrame, profiles: dict[str, dict]
 ) -> list[tuple[str, list[tuple[str, float, str]]]]:
@@ -3054,17 +3090,20 @@ def _counting_mix(
     """
     if mine.empty:
         return []
-    counting = mine[mine["counts"].astype(bool) & (mine["score"] > 0)]
+    mine = _with_added(mine)
+    counting = mine[mine["counts"].astype(bool) & (mine["added"] > 0)]
     if counting.empty:
         return []
 
     by_category: dict[str, list[tuple[str, float, str]]] = {}
-    for row in counting.sort_values("score", ascending=False).itertuples():
+    for row in counting.sort_values("added", ascending=False).itertuples():
         asset = str(row.asset_id or "")
         profile = profiles.get(asset)
         name = profile["name"] if profile else asset
+        if _scored_as(row) == "best":
+            name = f"{name} (best performances)"
         by_category.setdefault(str(row.category), []).append(
-            (name, float(row.score), asset)
+            (name, float(row.added), asset)
         )
 
     ranked = sorted(
@@ -3128,7 +3167,8 @@ def _in_season(
     for row in filled.itertuples():
         profile = profiles.get(str(row.asset_id)) or {}
         started = league_in_season(str(profile.get("league") or ""), day)
-        live += bool(float(row.score) > 0) if started is None else bool(started)
+        worth = float(getattr(row, "added", row.score))
+        live += bool(worth > 0) if started is None else bool(started)
     return live, len(filled)
 
 
@@ -3158,6 +3198,8 @@ def _results_table(
     # `contributions` always carries it; a frame assembled by hand may not, and
     # a missing column should leave every row counting rather than none.
     has_counts = "counts" in bars.columns
+    bars = _with_added(bars)
+    with_best = _best_categories()
     for row in bars.sort_values("score", ascending=False).itertuples():
         profile = profiles.get(row.asset_id)
         if not profile:
@@ -3169,11 +3211,29 @@ def _results_table(
         slot = theme.series_index(managers, row.manager_id) + 1
         group = umbrella_for(league)
         groups.add(group)
+        counting = not has_counts or bool(row.counts)
+        how = _scored_as(row) if has_counts else "season"
+        best = float(getattr(row, "best_score", 0.0) or 0.0)
+        has_best = (kind == "Player"
+                    and str(getattr(row, "category", "")) in with_best)
+        # What the row puts in the total, and what it would if it were
+        # counting: the larger of its two values, the way the bench column in
+        # the standings is summed.
+        bench_value = max(float(row.score), best) if has_best else float(row.score)
+        # Whichever value is not the one counting is struck through -- both of
+        # them, on the bench.
+        season_cell = (f'{row.score:,.1f}' if how == "season"
+                       else f'<span class="struck">{row.score:,.1f}</span>')
+        best_cell = ("" if not has_best
+                     else f'{best:,.1f}' if how == "best"
+                     else f'<span class="struck">{best:,.1f}</span>')
         rows.append(
             f'<tr data-league="{escape(league)}" data-kind="{escape(kind)}" '
             f'data-group="{escape(group)}" '
             f'data-manager="{escape(str(row.manager_id))}" '
-            f'data-counts="{1 if (not has_counts or row.counts) else 0}">'
+            f'data-counts="{1 if counting else 0}" '
+            f'data-added="{float(row.added):.4f}" '
+            f'data-benchvalue="{bench_value:.4f}">'
             f'<td><button class="assetlink" data-asset="{escape(row.asset_id)}">'
             f'{escape(profile["name"])}</button>'
             f'<span class="rowmeta">{_identity_lines(profile, league, kind)}</span>'
@@ -3181,7 +3241,8 @@ def _results_table(
             f'<td><span class="who"><i class="swatch" '
             f'style="background: var(--series-{slot})"></i>'
             f'{escape(manager_name(row.manager_id))}</span></td>'
-            f'<td class="num" data-score="{row.score:.4f}">{row.score:,.1f}</td></tr>'
+            f'<td class="num" data-score="{row.score:.4f}">{season_cell}</td>'
+            f'<td class="num">{best_cell}</td></tr>'
         )
     if not rows:
         return '<p class="sub">Nothing scored yet.</p>'
@@ -3239,7 +3300,8 @@ def _results_table(
         '<p class="sub filtercount" data-count>Showing every scored asset.</p>'
         '<table class="results" id="resultstable">'
         '<thead><tr><th>Asset</th><th>Owner</th>'
-        '<th class="num">Normalized</th></tr></thead>'
+        '<th class="num">Full season</th>'
+        '<th class="num">Best perf.</th></tr></thead>'
         f'<tbody>{"".join(rows)}</tbody></table>'
     )
 
@@ -3424,12 +3486,12 @@ def _cost_rows(priced, managers) -> list[dict]:
         if mine.empty:
             continue
         spend = float(mine["cost"].sum())
-        counting = mine[mine["counts"] == 1]
+        counting = _with_added(mine[mine["counts"] == 1])
         rows.append({
             "manager": manager,
             "spend": spend,
             "score": float(mine["score"].sum()),
-            "counting": float(counting["score"].sum()),
+            "counting": float(counting["added"].sum()) if not counting.empty else 0.0,
             "bench_spend": spend - float(counting["cost"].sum()),
             # Per hundred rather than per dollar: the prices are two and three
             # figures and a column of 0.14s is a column nobody reads.
@@ -4051,9 +4113,26 @@ def _day_payload(breakdown: dict) -> str:
     )
 
 
+def _split_by_manager(bars: pd.DataFrame) -> dict[str, tuple[float, float]]:
+    """Each manager's total as (full seasons, best performances)."""
+    if bars is None or bars.empty:
+        return {}
+    frame = _with_added(bars)
+    kinds = [_scored_as(row) for row in frame.itertuples()]
+    frame = frame.assign(_kind=kinds)
+    out = {}
+    for manager, mine in frame.groupby("manager_id"):
+        out[str(manager)] = (
+            round(float(mine.loc[mine["_kind"] == "season", "added"].sum()), 2),
+            round(float(mine.loc[mine["_kind"] == "best", "added"].sum()), 2),
+        )
+    return out
+
+
 def _standings_table(table: pd.DataFrame, mvps: dict[str, str],
                      managers: list[str], bench: dict[str, float] | None = None,
-                     held: dict[str, float] | None = None) -> str:
+                     held: dict[str, float] | None = None,
+                     split: dict[str, tuple[float, float]] | None = None) -> str:
     """The standings, with the two figures that are not in the total.
 
     Held points ride on the total as a superscript rather than as a column of
@@ -4064,8 +4143,11 @@ def _standings_table(table: pd.DataFrame, mvps: dict[str, str],
     The bench is a column, greyed and italic, because it is a different thing
     entirely: points a manager holds that best ball is not counting and will
     not count. It is there to say how deep a squad is, not to be added up.
+
+    The total is split into the two ways a slot scores -- full seasons and best
+    performances -- in a column each, which add up to it.
     """
-    bench, held = bench or {}, held or {}
+    bench, held, split = bench or {}, held or {}, split or {}
     rows = []
     for row in table.itertuples():
         slot = theme.series_index(managers, row.manager_id) + 1
@@ -4081,18 +4163,22 @@ def _standings_table(table: pd.DataFrame, mvps: dict[str, str],
             f'on the next one and can fall.">+{waiting:,.1f}</sup>'
         ) if waiting >= 0.05 else ""
         sat = float(bench.get(row.manager_id, 0.0))
+        season_part, best_part = split.get(row.manager_id, (float(row.total), 0.0))
         rows.append(
             f"<tr><td class='num'>{row.rank}</td>"
             f"<td><span class='who'>{badge}"
             f"<a href='team/{_slug(row.manager_id)}.html'>"
             f"{escape(manager_name(row.manager_id))}</a></span></td>"
             f"<td class='num'>{row.total:,.1f}{mark}</td>"
+            f"<td class='num part'>{season_part:,.1f}</td>"
+            f"<td class='num part'>{best_part:,.1f}</td>"
             f"<td class='num benched'>{sat:,.1f}</td>"
             f"<td>{mvps.get(row.manager_id, '—')}</td></tr>"
         )
     return (
         "<table><thead><tr><th class='num'>#</th><th>Manager</th>"
-        "<th class='num'>Total</th><th class='num'>Bench</th>"
+        "<th class='num'>Total</th><th class='num part'>Full season</th>"
+        "<th class='num part'>Best perf.</th><th class='num'>Bench</th>"
         "<th>Best performer</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
@@ -4277,10 +4363,12 @@ def _day_breakdown(
     # 10th at 17.04, he had no row the day before to difference against, so his
     # entire score read as the day's gain.
     scores: dict[str, dict[str, tuple[bool, float, str]]] = {}
+    added: dict[str, dict[str, float]] = {}
     stats: dict[str, dict[str, dict]] = {}
     for day in listed:
         rows = store.query(
-            "SELECT s.asset_id, s.score, s.counts, r.manager_id FROM slot_scores s "
+            "SELECT s.asset_id, s.score, s.counts, s.best_score, s.scored_as, "
+            "       r.manager_id FROM slot_scores s "
             "JOIN roster_slots r ON r.slot_id = s.slot_id "
             "WHERE s.season = ? AND s.as_of = ?",
             (season, day),
@@ -4288,6 +4376,15 @@ def _day_breakdown(
         scores[day] = {
             f"{row.manager_id}|{row.asset_id}": (
                 bool(row.counts), float(row.score), str(row.manager_id),
+            )
+            for row in rows.itertuples()
+        }
+        # What each slot put in the total that day, which for the one in a
+        # best-performances slot is its best games rather than its season.
+        added[day] = {
+            f"{row.manager_id}|{row.asset_id}": (
+                float(row.best_score) if _scored_as(row) == "best"
+                else float(row.score) if _scored_as(row) == "season" else 0.0
             )
             for row in rows.itertuples()
         }
@@ -4300,10 +4397,10 @@ def _day_breakdown(
         before = scores.get(listed[index - 1], {}) if index else {}
         totals: dict[str, float] = {}
         was: dict[str, float] = {}
+        added_before = added.get(listed[index - 1], {}) if index else {}
         for key, (counts, score, manager) in scores[day].items():
-            totals[manager] = totals.get(manager, 0.0) + (score if counts else 0.0)
-            was_counts, was_score, _ = before.get(key, (False, 0.0, ""))
-            was[manager] = was.get(manager, 0.0) + (was_score if was_counts else 0.0)
+            totals[manager] = totals.get(manager, 0.0) + added[day].get(key, 0.0)
+            was[manager] = was.get(manager, 0.0) + added_before.get(key, 0.0)
         before_scale = scales.get(listed[index - 1]) if index else None
         rescaled = bool(
             index and before_scale and scales.get(day)
@@ -4469,6 +4566,11 @@ def build(
     rostered = set(bars["asset_id"].dropna()) if not bars.empty else set()
     profiles = asset_profiles(store, season, latest, rostered)
     deep_profiles = asset_profiles(store, season, latest, rostered, depth=1)
+    best = best_payloads(store, season, latest, bars)
+    for held in (profiles, deep_profiles):
+        for asset_id, payload in best.items():
+            if asset_id in held:
+                held[asset_id]["best"] = payload
 
     _write_index(out, season, today, progression, bars, managers, slotted,
                  latest, stamp, simulated, profiles, store)
@@ -4491,6 +4593,145 @@ def build(
         "photos": photos,
         "profiles": len(profiles),
     }
+
+
+#: A game's figures as the profile lists them, per sport, in reading order.
+#: Short labels: a game row carries half a dozen of them side by side.
+GAME_FIGURES = {
+    "NFL": (("passing_yards", "pass yds"), ("passing_tds", "pass TD"),
+            ("interceptions", "INT"), ("rushing_yards", "rush yds"),
+            ("rushing_tds", "rush TD"), ("receptions", "rec"),
+            ("receiving_yards", "rec yds"), ("receiving_tds", "rec TD"),
+            ("fumbles_lost", "fum lost")),
+    "NBA": (("points", "pts"), ("rebounds", "reb"), ("assists", "ast"),
+            ("steals", "stl"), ("blocks", "blk"), ("turnovers", "TO"),
+            ("three_pt_made", "3PM"), ("plus_minus", "+/-"),
+            ("double_doubles", "dbl-dbl"), ("triple_doubles", "trpl-dbl")),
+    "NHL": (("goals", "G"), ("assists", "A"), ("shots", "SOG"),
+            ("plus_minus", "+/-")),
+    "Club Soccer": (("goals", "goals"), ("assists", "ast"), ("yellow", "yellow"),
+                    ("red", "red")),
+    "batting": (("homeRuns", "HR"), ("doubles", "2B"), ("triples", "3B"),
+                ("baseOnBalls", "BB"), ("hitByPitch", "HBP"),
+                ("stolenBases", "SB"), ("caughtStealing", "CS")),
+    "pitching": (("strikeOuts", "K"), ("hits", "H"), ("baseOnBalls", "BB"),
+                 ("hitByPitch", "HBP"), ("homeRuns", "HR"), ("saves", "SV"),
+                 ("holds", "HLD")),
+}
+
+#: What a best-performances slot counts, per sport, in words.
+BEST_WORDS = {
+    "NFL": "best 3 weeks",
+    "NBA": "best 14 games",
+    "NHL": "best 7 games",
+    "Club Soccer": "best 6 domestic matches",
+    "MLB": "best 10 games at the plate, 4 starts or 13 relief outings, "
+           "traded at those rates",
+}
+
+
+def _figure_text(value: float) -> str:
+    return f"{int(value)}" if float(value).is_integer() else f"{value:g}"
+
+
+def _game_figures(sport: str, detail: dict) -> list[list[str]]:
+    """A game's counting stats as ``[value, label]`` pairs, as a row shows them."""
+    out: list[list[str]] = []
+    if sport == "MLB":
+        batting = detail.get("batting") or {}
+        pitching = detail.get("pitching") or {}
+        if pitching:
+            out.append([str(pitching.get("inningsPitched") or "0.0"), "IP"])
+            out += [[_figure_text(float(pitching[c])), label]
+                    for c, label in GAME_FIGURES["pitching"] if pitching.get(c)]
+        if batting:
+            hits, at_bats = batting.get("hits", 0), batting.get("atBats", 0)
+            out.append([f"{int(hits)}-{int(at_bats)}", "H-AB"])
+            out += [[_figure_text(float(batting[c])), label]
+                    for c, label in GAME_FIGURES["batting"] if batting.get(c)]
+        return out
+    if sport == "Club Soccer":
+        out.append(["", "started" if detail.get("started") else "off the bench"])
+    for column, label in GAME_FIGURES.get(sport, ()):
+        value = detail.get(column)
+        if value:
+            text = _figure_text(float(value))
+            if column == "plus_minus" and float(value) > 0:
+                text = f"+{text}"
+            out.append([text, label])
+    return out
+
+
+def best_payloads(store, season: str, latest, bars: pd.DataFrame) -> dict[str, dict]:
+    """Each team-sport player's best performances, for the profile.
+
+    The games are the player's own, while holding today's slot -- the games
+    that slot would count. ``counts`` says whether best performances is how
+    the player scores today; ``season_counts`` whether the full season is.
+    """
+    from whul.bestball import GameIndex, best_performances, slot_games
+    from whul.games import sport_of
+    from whul.store import rosters
+
+    if bars is None or bars.empty:
+        return {}
+    wanted = _best_categories()
+    players = bars[(bars["asset_type"] == "Player") & bars["category"].isin(wanted)]
+    players = players[players["asset_id"].notna() & (players["asset_id"] != "")]
+    if players.empty:
+        return {}
+    day = latest if isinstance(latest, date) else date.fromisoformat(str(latest))
+    index = GameIndex(pipeline.game_records(store, season, day))
+    records = store.query(
+        "SELECT asset_id, game_key, date, role, points, score, opponent, detail "
+        "FROM game_scores WHERE season = ?", (season,))
+    by_key = {(r.asset_id, r.game_key): r for r in records.itertuples()}
+    slots = {s.slot_id: s for s in rosters.load_slots(store, season)}
+
+    out: dict[str, dict] = {}
+    for row in players.itertuples():
+        slot = slots.get(row.slot_id)
+        if slot is None:
+            continue
+        asset = str(row.asset_id)
+        his = type(slot)(slot.slot_id, slot.manager, slot.category, slot.asset_type,
+                         [o for o in slot.occupancies if o.asset_id == asset])
+        played = slot_games(his, index, day)
+        value, chosen = best_performances(slot.category, played)
+        sport = sport_of(slot.category)
+        games = []
+        raw = 0.0
+        for game in chosen:
+            record = by_key.get((asset, game.game_key))
+            detail = {}
+            if record is not None:
+                try:
+                    detail = json.loads(record.detail or "{}")
+                except (TypeError, ValueError):
+                    detail = {}
+                raw += float(record.points)
+            opponent = str(record.opponent) if record is not None else ""
+            role = {"start": "Start", "relief": "Relief", "bat": "At the plate"}.get(
+                game.role, "") if sport == "MLB" else ""
+            games.append({
+                "date": f"{game.date:%b} {game.date.day}",
+                "vs": f"v {opponent}" if opponent else "",
+                "role": role,
+                "figs": _game_figures(sport, detail),
+                "score": f"{game.score:,.1f}",
+                "points": f"{float(record.points):,.1f}" if record is not None else "",
+            })
+        how = _scored_as(row)
+        out[asset] = {
+            "counts": how == "best",
+            "season_counts": how == "season",
+            "rule": BEST_WORDS.get(sport, ""),
+            "played": len(played),
+            "score": f"{value:,.1f}",
+            "raw": f"{raw:,.1f}",
+            "games": games,
+        }
+    return out
 
 
 def _why_no_standings(store, season: str) -> str:
@@ -4551,29 +4792,50 @@ def _why_no_standings(store, season: str) -> str:
     return "\n".join(lines)
 
 
-def _slot_rows(bars: pd.DataFrame, managers: list[str]) -> tuple[list, dict, dict]:
+def _slot_rows(bars: pd.DataFrame, managers: list[str],
+               mode: str = "season") -> tuple[list, dict, dict]:
     """Rank each manager's slots within a category, so a row compares like with like.
 
     Row "NFL 1" is every manager's best NFL slot, "NFL 2" their second, and so
     on. Ranking rather than using the stored slot index matters because a slot
     index is arbitrary -- best ball reorders them constantly -- so comparing
     slot 1 to slot 1 would compare nothing in particular.
+
+    ``mode`` is which of a slot's two values the chart is of. ``season`` is
+    every asset's full-season score; ``best`` is every team-sport player's best
+    performances. Every slot is listed either way, and each value carries
+    whether it is the one counting, so the chart can show the rest struck
+    through rather than leave out what a manager is carrying.
     """
+    best_mode = mode == "best"
+    wanted = _best_categories() if best_mode else None
     order = []
     seen: set[str] = set()
     for group in active_slots(ALL_SLOTS):
+        if wanted is not None and (group.category not in wanted
+                                   or group.asset_type != "Player"):
+            continue
         if group.category not in seen:
             seen.add(group.category)
             order.append(group.category)
 
     depth = {}
     for group in active_slots(ALL_SLOTS):
-        depth[group.category] = depth.get(group.category, 0) + group.starters
+        if group.category not in seen:
+            continue
+        if best_mode and group.asset_type != "Player":
+            continue
+        depth[group.category] = depth.get(group.category, 0) + group.cap
 
-    values: dict[tuple[str, str], tuple[float, str, str]] = {}
-    counting = bars[bars["counts"] == 1] if not bars.empty else bars
+    values: dict[tuple[str, str], tuple] = {}
+    field = "best_score" if best_mode else "score"
+    frame = bars
+    if best_mode and not frame.empty:
+        frame = frame[frame["asset_type"] == "Player"]
+    if not frame.empty and field not in frame.columns:
+        frame = frame.assign(**{field: 0.0})
     for manager in managers:
-        mine = counting[counting["manager_id"] == manager] if not counting.empty else counting
+        mine = frame[frame["manager_id"] == manager] if not frame.empty else frame
         for category in order:
             block = mine[mine["category"] == category] if not mine.empty else mine
             # An undrafted slot has no score to rank and no bar to draw, so
@@ -4581,10 +4843,12 @@ def _slot_rows(bars: pd.DataFrame, managers: list[str]) -> tuple[list, dict, dic
             # has nothing in it for this manager.
             if not block.empty:
                 block = block[block["asset_id"].notna() & (block["asset_id"] != "")]
-            ranked = block.sort_values("score", ascending=False) if not block.empty else block
+            ranked = block.sort_values(field, ascending=False) if not block.empty else block
             for rank, row in enumerate(ranked.itertuples(), start=1):
+                counted = _scored_as(row) == ("best" if best_mode else "season")
                 values[(manager_name(manager), f"{category} {rank}")] = (
-                    float(row.score), str(row.asset_id or ""), ""
+                    float(getattr(row, field)), str(row.asset_id or ""), "", "",
+                    counted,
                 )
 
     # The key stays fully qualified so two categories cannot collide, but the
@@ -4892,7 +5156,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
             gains[manager] = float(run.loc[latest, "total"] - run.loc[earlier, "total"])
     riser, gain = max(gains.items(), key=lambda kv: kv[1]) if gains else ("—", 0.0)
 
-    counting = bars[bars["counts"] == 1] if not bars.empty else bars
+    counting = _with_added(bars[bars["counts"] == 1]) if not bars.empty else bars
     mvps = {}
     for manager in managers:
         mine = counting[counting["manager_id"] == manager] if not counting.empty else counting
@@ -4900,7 +5164,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
             mine = mine[mine["asset_id"].notna() & (mine["asset_id"] != "")]
         if mine.empty:
             continue
-        best = mine.sort_values("score", ascending=False).iloc[0]
+        best = mine.sort_values("added", ascending=False).iloc[0]
         asset_id = str(best["asset_id"] or "")
         profile = profiles.get(asset_id)
         name = profile["name"] if profile else asset_id or "—"
@@ -4913,7 +5177,9 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
             f"{images.avatar('asset', asset_id, name, size=26, badge=corner, logo=is_logo)}"
             f'<span><span class="nm">{escape(name)}</span> '
             f'<span style="color:var(--muted)">{escape(str(best["category"]))} · '
-            f'{float(best["score"]):,.1f}</span></span></span></button>'
+            f'{float(best["added"]):,.1f}'
+            f'{" best performances" if _scored_as(best) == "best" else ""}'
+            f'</span></span></span></button>'
         )
 
     tiles = f"""
@@ -4957,34 +5223,49 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         for d in listed
     ]
 
-    slot_rows, values, slot_depth = _slot_rows(bars, managers)
-    # Name each bar's asset, so the tooltip and the table both read as people.
-    # The kind rides along, which is what lets a bar say "Arsenal Team" rather
-    # than "Club Soccer Top 3 1".
-    for key, (score, asset_id, _) in list(values.items()):
-        profile = profiles.get(asset_id)
-        values[key] = (
-            score, asset_id,
-            profile["name"] if profile else "",
-            profile.get("kind", "") if profile else "",
-        )
-    bar_rows = [
-        [key] + [
-            (f"{values[(m, key)][0]:,.1f}" if (m, key) in values else "—")
-            for m, _ in slotted
+    def charted(mode: str):
+        slot_rows, values, slot_depth = _slot_rows(bars, managers, mode)
+        # Name each bar's asset, so the tooltip and the table both read as
+        # people. The kind rides along, which is what lets a bar say "Arsenal
+        # Team" rather than "Club Soccer Top 3 1".
+        for key, (score, asset_id, _, _, counted) in list(values.items()):
+            profile = profiles.get(asset_id)
+            values[key] = (
+                score, asset_id,
+                profile["name"] if profile else "",
+                profile.get("kind", "") if profile else "",
+                counted,
+            )
+
+        def cell(entry) -> str:
+            text = f"{entry[0]:,.1f}"
+            return text if entry[4] else f'<span class="struck">{text}</span>'
+
+        table = [
+            [key] + [
+                (cell(values[(m, key)]) if (m, key) in values else "—")
+                for m, _ in slotted
+            ]
+            for _, key, _ in slot_rows
         ]
-        for _, key, _ in slot_rows
-    ]
+        return slot_rows, values, slot_depth, table
+
+    slot_rows, values, slot_depth, bar_rows = charted("season")
+    best_rows, best_values, best_depth, best_table = charted("best")
 
     body = f"""
 {tiles}
 <div class="card">
   <h2>Standings</h2>
-  <p class="sub">Season-long best ball. A superscript is what a playoff or
-    European run has earned, held until that competition finishes.</p>
+  <p class="sub">Season-long best ball: every category's top full-season
+    scores count, and each team sport's players add one best-performances
+    slot — a player's best few games. The two columns after the total are
+    those two parts of it. A superscript is what a playoff or European run has
+    earned, held until that competition finishes.</p>
   {_standings_table(today, mvps, managers,
                     pipeline.bench_by_manager(store, season, latest),
-                    pipeline.held_by_manager(store, season, latest))}
+                    pipeline.held_by_manager(store, season, latest),
+                    _split_by_manager(bars))}
 </div>
 
 <div class="card">
@@ -5025,16 +5306,32 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
                       breakdown=progression_keys),
     )
     slots_figure = _figure(
-        "slots", "Every counting slot",
-        "One section per league, each collapsible. A manager's slots sit "
-        "together in their own colour, ranked best first, so a category reads "
-        "as a block. Every bar is a single normalized score, so any two are "
-        "directly comparable. Click a manager in the key to hide them; click a "
-        "bar for the asset behind it.",
+        "slots", "Full season scores",
+        "Every rostered asset's score for its season so far. One section per "
+        "league, each collapsible. A manager's slots sit together in their own "
+        "colour, ranked best first, so a category reads as a block. Faded bars "
+        "with their names struck through are not counting for their season: "
+        "they are on the bench, or they are counting for their best "
+        "performances instead. Every bar is a single normalized score, so any "
+        "two are directly comparable. Click a manager in the key to hide them; "
+        "click a bar for the asset behind it.",
         f"{charts.legend(slotted, filterable=True)}"
         f"{charts.slot_sections(slot_rows, slotted, values, depth=slot_depth)}"
         + _table_view("Show as a table", ["Slot"] + [m for m, _ in slotted],
                       bar_rows, columns=[m for m, _ in slotted]),
+    )
+    best_figure = _figure(
+        "best", "Best performances",
+        "Every team-sport player's best games at face value, on the same scale "
+        "as a season: the best 3 NFL weeks, 14 NBA games, 7 NHL games, 6 club "
+        "soccer matches, and in MLB the best 10 games at the plate, 4 starts or "
+        "13 relief outings. Each category counts one player this way, "
+        "whichever arrangement scores most; the rest are faded and struck "
+        "through. Click a bar for the games behind it.",
+        f"{charts.legend(slotted, filterable=True)}"
+        f"{charts.slot_sections(best_rows, slotted, best_values, depth=best_depth)}"
+        + _table_view("Show as a table", ["Slot"] + [m for m, _ in slotted],
+                      best_table, columns=[m for m, _ in slotted]),
     )
     table_figure = _figure(
         "everyone", "Every scored asset",
@@ -5072,12 +5369,14 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
     costs_figure = _costs(store, season, bars, profiles, managers)
     results_body = (
         _figure_index([("progression", "Progression"),
-                       ("slots", "Every counting slot"),
+                       ("slots", "Full season scores"),
+                       ("best", "Best performances"),
                        ("everyone", "Every scored asset"),
                        ("feeds", "Where the numbers came from"),
                        ("head-to-head", "Where two rosters met"),
                        ("costs", "What it cost")])
-        + progression_figure + slots_figure + table_figure + feeds_figure
+        + progression_figure + slots_figure + best_figure + table_figure
+        + feeds_figure
         + meetings_figure + costs_figure
         + _profile_payload(profiles) + _day_payload(breakdown)
     )
@@ -5152,16 +5451,24 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
     sections = []
     total = 0.0
     empty_slots = 0
+    mine = _with_added(mine)
+    with_best = _best_categories()
     for asset_type in ("Player", "Team"):
         rows = []
         block = mine[mine["asset_type"] == asset_type] if not mine.empty else mine
         if block.empty:
             continue
+        # Players in a team sport have two values and a column each; everyone
+        # else has a season and nothing else.
+        two = asset_type == "Player" and bool(set(block["category"]) & with_best)
         for category in sorted(block["category"].unique()):
-            for row in block[block["category"] == category].sort_values(
-                "score", ascending=False
-            ).itertuples():
+            here = block[block["category"] == category]
+            here = here.assign(_order=[
+                {"season": 0, "best": 1}.get(_scored_as(r), 2) for r in here.itertuples()])
+            for row in here.sort_values(["_order", "score"],
+                                        ascending=[True, False]).itertuples():
                 asset = str(row.asset_id or "")
+                has_best = two and category in with_best
                 # An undrafted slot is shown, not skipped. It is a slot the
                 # manager still has to fill, and hiding it would make a roster
                 # with a hole look complete.
@@ -5172,36 +5479,53 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                         f"<td class='slotname'>{escape(category)}</td>"
                         f"<td class='undrafted'>Undrafted</td>"
                         f"<td class='fixture'></td>"
-                        f"<td class='num'>—</td></tr>"
+                        f"<td class='num'>—</td>"
+                        + ("<td class='num'></td>" if two else "") + "</tr>"
                     )
                     continue
                 profile = profiles.get(asset)
                 name = profile["name"] if profile else asset
                 scaled = float(raw.loc[asset, "scaled_score"]) if asset in raw.index else 0.0
-                counts = bool(row.counts)
-                total += float(row.score) if counts else 0.0
-                # A benched slot's score is struck through rather than hidden:
-                # it is what the slot would be worth, and seeing it is how a
-                # manager knows how close the bench is to the cut.
-                value = (
-                    f"{scaled:,.1f}" if counts
-                    else f'<span class="struck">{scaled:,.1f}</span>'
-                )
+                how = _scored_as(row)
+                counts = bool(how)
+                total += float(row.added)
+                best = float(getattr(row, "best_score", 0.0) or 0.0)
+                # Whichever value is not counting is struck through rather than
+                # hidden: it is what the slot would be worth, and seeing it is
+                # how a manager knows how close the bench is to the cut.
+                season_cell = (f"{scaled:,.1f}" if how == "season"
+                               else f'<span class="struck">{scaled:,.1f}</span>')
+                best_cell = ("" if not has_best
+                             else f"{best:,.1f}" if how == "best"
+                             else f'<span class="struck">{best:,.1f}</span>')
+                tag = ("<span class='slottag best' title=\"This slot counts the "
+                       "player's best games rather than his season\">"
+                       "Best performances</span>") if how == "best" else ""
                 rows.append(
                     f"<tr class='{'' if counts else 'bench'}'>"
-                    f"<td class='slotname'>{escape(category)}</td>"
+                    f"<td class='slotname'>{escape(category)}{tag}</td>"
                     f"<td>{_asset_button(asset, name, counts, depth=1, profile=profile)}</td>"
                     f"{_fixture_cell(upcoming.get(asset))}"
-                    f"<td class='num'>{value}</td></tr>"
+                    f"<td class='num'>{season_cell}</td>"
+                    + (f"<td class='num'>{best_cell}</td>" if two else "") + "</tr>"
                 )
+        sub = ("Normalized score, where 100 is the 99th percentile of a "
+               "draftable pool. Click a name for the raw stats behind the score.")
+        if two:
+            sub += (" Each team sport counts its best full seasons and one "
+                    "player's best performances — that player's best few games, on the "
+                    "same scale. Whichever figure is not counting is struck "
+                    "through, and so is everything on the bench.")
+        else:
+            sub += " Benched slots are struck through."
         sections.append(
             f"<div class='card'><h2>{asset_type}s</h2>"
-            f"<p class='sub'>Normalized score, where 100 is the 99th percentile of a "
-            f"draftable pool. Benched slots are struck through. Click a name for the "
-            f"raw stats behind the score.</p>"
+            f"<p class='sub'>{sub}</p>"
             "<table><thead><tr><th>Category</th><th>Asset</th>"
             "<th class='fixture'>Next</th>"
-            "<th class='num'>Normalized</th></tr></thead>"
+            "<th class='num'>Full season</th>"
+            + ("<th class='num'>Best perf.</th>" if two else "") +
+            "</tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></div>"
         )
 
@@ -5345,6 +5669,11 @@ STEPS = (
      "Each category counts only its best few slots, and the selection moves on "
      "its own as scores move. There is no lineup to submit and no way to leave "
      "points on your bench."),
+    ("5. One best-performances slot per team sport",
+     "The NFL, NBA, MLB, NHL and club-soccer player categories each count one "
+     "player's best few games instead of a season — the best 3 NFL weeks, for "
+     "instance, on the same 0-100 scale. Which player fills it is decided the "
+     "same way as everything else: whichever arrangement scores most."),
 )
 
 
@@ -5377,7 +5706,8 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=(),
                  store=None) -> None:
     groups = "".join(
         f"<tr><td>{escape(g.asset_type)}</td><td>{escape(g.category)}</td>"
-        f"<td class='num'>{g.cap}</td><td class='num'>{g.starters}</td></tr>"
+        f"<td class='num'>{g.cap}</td><td class='num'>{g.starters}</td>"
+        f"<td class='num'>{g.best or '—'}</td></tr>"
         for g in active_slots(ALL_SLOTS)
     )
     steps = "".join(
@@ -5423,9 +5753,12 @@ def _write_about(out, managers, stamp, simulated, version, uncovered=(),
 <div class="card">
   <h2>The roster</h2>
   <p class="sub">{sum(g.cap for g in active_slots(ALL_SLOTS))} slots,
-    {sum(g.starters for g in active_slots(ALL_SLOTS))} of them counting.</p>
+    {sum(g.counting for g in active_slots(ALL_SLOTS))} of them counting:
+    {sum(g.starters for g in active_slots(ALL_SLOTS))} for a full season and
+    {sum(g.best for g in active_slots(ALL_SLOTS))} for best performances.</p>
   <table><thead><tr><th>Type</th><th>Category</th>
-    <th class='num'>Slots</th><th class='num'>Counting</th></tr></thead>
+    <th class='num'>Slots</th><th class='num'>Full season</th>
+    <th class='num'>Best perf.</th></tr></thead>
     <tbody>{groups}</tbody></table>
 </div>
 

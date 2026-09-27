@@ -229,11 +229,12 @@ def test_the_standings_table_is_the_default_view(site):
 
 def test_every_chart_ships_a_table_view(site):
     """The relief the light-mode contrast warning requires, and what makes a
-    value readable without a hover. The two charts now sit on two pages -- the
-    line on the standings, both on the results -- so the count is per page."""
+    value readable without a hover. The charts sit on two pages -- the line on
+    the standings; the line, full seasons and best performances on the
+    results -- so the count is per page."""
     out, _ = site
     assert (out / "index.html").read_text().count("Show as a table") == 1
-    assert (out / "results.html").read_text().count("Show as a table") == 2
+    assert (out / "results.html").read_text().count("Show as a table") == 3
 
 
 def test_the_results_page_carries_both_charts_and_the_table(site):
@@ -242,7 +243,9 @@ def test_the_results_page_carries_both_charts_and_the_table(site):
     out, _ = site
     html = (out / "results.html").read_text()
     assert 'id="progression"' in html
-    assert 'id="slots"' in html
+    assert 'id="slots"' in html and "Full season scores" in html
+    assert 'id="best"' in html and "Best performances" in html
+    assert "Every counting slot" not in html
     assert 'id="everyone"' in html
     assert "linechart" in html and "barchart" in html
 

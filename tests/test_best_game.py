@@ -1,7 +1,7 @@
-"""The best-game slot's rules, as agreed, pinned before anything scores by them.
+"""The best-performances slot's rules, as agreed.
 
-A proposal rather than a rule of the league: nothing in the standings reads
-these. They are here so what was agreed is what the calibration measures.
+The rollup and the calibration both score through these, so what was agreed is
+what the standings count and what the calibration measured.
 """
 
 import pytest
