@@ -370,7 +370,9 @@ def _mlb_rows(p, logs, divisor, start, end, rules, mlb) -> list[dict]:
         b, a = bat.get(pk), arm.get(pk)
         record = (a or b)[0]
         day = str(record.get("date") or "")[:10]
-        if not (start <= day <= end):
+        # Up to the day before, as the season line is: last night's games are
+        # over and today's may not be.
+        if not (start <= day < end):
             continue
         bat_score = 100 * b[1] / divisor["MLB_Batter"] if b else None
         arm_score = 100 * a[1] / divisor["MLB_Pitcher"] if a else None

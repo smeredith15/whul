@@ -80,8 +80,9 @@ on:
           stored score from his dated games, then rebuild the standings. A
           one-off: those players reached the database on 4 and 5 September
           with a season to date, and every day before stored nothing, so each
-          manager's line leapt on the 5th. A day already stored is never
-          rewritten, so ticking it again does nothing. Implies backfill.
+          manager's line leapt on the 5th. Every stored MLB day is restated
+          from today's game-log line too, since those were built from totals
+          that ran days behind. Implies backfill.
         type: boolean
         default: false
       rescore:
@@ -239,8 +240,11 @@ jobs:
         run: python -m whul.cli games --season "$SEASON"
 
       - name: Rebuild the days before MLB and soccer arrived
+        # And every stored MLB day, from today's line: those were built from
+        # date-range totals that ran days behind the games, and today's is
+        # summed from the game logs.
         if: ${{ inputs.backdate }}
-        run: python -m whul.cli backdate --season "$SEASON" --write
+        run: python -m whul.cli backdate --season "$SEASON" --write --restate MLB
 
       - name: Put the stored MLB days on the contract-year weights
         if: ${{ inputs.reweight_mlb }}

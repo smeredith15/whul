@@ -49,6 +49,7 @@ class Report:
     players: int = 0
     checked: int = 0
     agreed: int = 0
+    restated: int = 0
     disagreeing: dict[str, int] = field(default_factory=dict)
     per_player: list[str] = field(default_factory=list)
 
@@ -83,8 +84,17 @@ def _fraction(games: pd.DataFrame, day: date, first: date,
 
 
 def rebuild(store: Store, season: str, write: bool = False,
-            check_days: int = 14) -> Report:
+            check_days: int = 14, restate: tuple[str, ...] = ()) -> Report:
+    """Fill the days before each player's first stored score from his games.
+
+    ``restate`` names leagues whose stored days are rebuilt too, from the
+    latest one, rather than only the days before the first. MLB is the case:
+    its stored days came from date-range totals that ran days behind the games,
+    and its latest day is summed from the game logs themselves. Only the score
+    and the points are rewritten on a stored day; a held bonus stays as it was.
+    """
     report = Report()
+    restating: list[tuple] = []
     games = store.query(
         "SELECT asset_id, date, points FROM game_scores WHERE season = ?", (season,))
     if games.empty:
@@ -125,6 +135,40 @@ def rebuild(store: Store, season: str, write: bool = False,
             else:
                 report.disagreeing[asset_id] = report.disagreeing.get(asset_id, 0) + 1
 
+        if league in restate and len(series) > 1:
+            # Every day before the latest, from the latest: stored days are
+            # rewritten in place, and the days before the first are filled.
+            anchor = last
+            advanced = _advanced_share(store, asset_id, anchor["as_of"])
+            stored_days = set(series["as_of"])
+            day = opened
+            count = 0
+            while day < anchor["as_of"]:
+                share = _fraction(mine, day, anchor["as_of"], advanced)
+                if share is not None:
+                    score = round(float(anchor["scaled_score"]) * share, 6)
+                    points = round(float(anchor["league_points"]) * share, 6)
+                    if day in stored_days:
+                        restating.append((score, points, asset_id, season, day.isoformat()))
+                    else:
+                        rows.append({
+                            "asset_id": asset_id, "season": season,
+                            "as_of": day.isoformat(), "league_points": points,
+                            "postseason_bonus": 0.0, "held_score": 0.0,
+                            "scaled_score": score,
+                            "benchmark_version": anchor["benchmark_version"],
+                            "computed_at": _now(),
+                        })
+                    count += 1
+                day += timedelta(days=1)
+            if count:
+                report.players += 1
+                report.restated += 1
+                report.per_player.append(
+                    f"{asset_id}: {count} day(s) restated from {anchor['as_of']}'s "
+                    f"{float(anchor['scaled_score']):.2f}")
+            continue
+
         days = []
         day = opened
         while day < first_day:
@@ -151,7 +195,12 @@ def rebuild(store: Store, season: str, write: bool = False,
 
     if write and rows:
         store.upsert("daily_scores", rows, keys=("asset_id", "season", "as_of"))
-    report.written = len(rows)
+    if write and restating:
+        with store.transaction() as conn:
+            conn.executemany(
+                "UPDATE daily_scores SET scaled_score = ?, league_points = ? "
+                "WHERE asset_id = ? AND season = ? AND as_of = ?", restating)
+    report.written = len(rows) + len(restating)
     return report
 
 

@@ -355,13 +355,18 @@ def _fangraphs(season: int, stats: str, qual: int) -> pd.DataFrame:
 
 
 def _merge_counting_and_advanced(
-    season: int, group: str, since: date | None = None
+    season: int, group: str, since: date | None = None,
+    names: list[str] | tuple[str, ...] = (), log_loader=None,
 ) -> pd.DataFrame:
     """Counting stats joined to the fWAR components, from one host.
 
     Both come from the MLB Stats API, which removes the FanGraphs dependency
     entirely: FanGraphs blocks datacenter IPs, so it was never going to serve a
     production scraper.
+
+    ``names`` are the rostered players, whose counting lines are rebuilt from
+    their game logs -- see ``from_game_logs``. Everyone else keeps the
+    date-range totals, which is all a player nobody holds needs.
     """
     whole = None
     if since:
@@ -370,6 +375,9 @@ def _merge_counting_and_advanced(
         _check_range_applied(counting, whole, group, since)
     else:
         counting = load_stats_api_players(season, group)
+    if names and not counting.empty:
+        counting, whole = from_game_logs(
+            counting, whole, season, group, names, since, log_loader=log_loader)
 
     # The advanced figures have to cover the same span as the counting ones. WAR
     # and the run-value components accumulate with playing time, so a season of
@@ -417,7 +425,7 @@ PITCHER_COLUMNS = {
 
 def load_batters(
     seasons: list[int], use_fangraphs: bool = False, since: date | None = None,
-    postseason: bool = False,
+    postseason: bool = False, names: list[str] | tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """Batting lines with Offense and Defense attached.
 
@@ -432,7 +440,7 @@ def load_batters(
 
     frames = ([load_postseason_players(y, "hitting") for y in seasons]
               if postseason
-              else [_merge_counting_and_advanced(y, "hitting", since)
+              else [_merge_counting_and_advanced(y, "hitting", since, names)
                     for y in seasons])
     frames = [f for f in frames if not f.empty]
     if not frames:
@@ -444,7 +452,7 @@ def load_batters(
 
 def load_pitchers(
     seasons: list[int], use_fangraphs: bool = False, since: date | None = None,
-    postseason: bool = False,
+    postseason: bool = False, names: list[str] | tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """Pitching lines with WAR attached, and innings converted from outs notation."""
     if use_fangraphs:
@@ -452,7 +460,7 @@ def load_pitchers(
 
     frames = ([load_postseason_players(y, "pitching") for y in seasons]
               if postseason
-              else [_merge_counting_and_advanced(y, "pitching", since)
+              else [_merge_counting_and_advanced(y, "pitching", since, names)
                     for y in seasons])
     frames = [f for f in frames if not f.empty]
     if not frames:
@@ -1035,6 +1043,119 @@ def load_game_log(player_id, season: int, group: str = "hitting",
                 **(split.get("stat") or {}),
             })
     return pd.DataFrame(rows)
+
+
+def plain_name(name) -> str:
+    """A name reduced to its letters, for matching a roster's spelling to the
+    feed's: "Jose Ramirez" and "José Ramírez" are one player."""
+    import re
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z]", "", text.lower())
+
+
+def innings_notation(innings: float) -> str:
+    """Innings back into baseball's notation: 6 and two thirds is "6.2"."""
+    outs = round(float(innings) * 3)
+    return f"{outs // 3}.{outs % 3}"
+
+
+#: What a game log adds up to a season line from. Every numeric field of a
+#: game is summed except these, which are not counts.
+NOT_SUMMED = {"game_pk", "game_number", "season", "player_id", "is_home",
+              "inningsPitched", "era", "whip", "avg", "obp", "slg", "ops",
+              "babip", "strikePercentage", "winPercentage", "stolenBasePercentage",
+              "groundOutsToAirouts", "strikeoutWalkRatio", "strikeoutsPer9Inn",
+              "walksPer9Inn", "hitsPer9Inn", "runsScoredPer9", "homeRunsPer9",
+              "pitchesPerInning", "atBatsPerHomeRun"}
+
+
+def season_from_log(log: pd.DataFrame, group: str) -> dict:
+    """One player's season line, as the sum of the games in his log.
+
+    Every count is summed; innings go through thirds, because "6.2" and "5.1"
+    are twelve innings, not 11.3.
+    """
+    line: dict = {}
+    if log is None or log.empty:
+        return line
+    for column in log.columns:
+        if column in NOT_SUMMED:
+            continue
+        values = pd.to_numeric(log[column], errors="coerce")
+        if values.notna().any():
+            line[column] = float(values.fillna(0).sum())
+    line["gamesPlayed"] = float(len(log))
+    if group == "pitching":
+        line["inningsPitched"] = innings_notation(
+            sum(innings_to_float(v) for v in log.get("inningsPitched", [])))
+    return line
+
+
+def from_game_logs(counting: pd.DataFrame, whole: pd.DataFrame | None,
+                   season: int, group: str, names, since: date | None,
+                   until: date | None = None, log_loader=None,
+                   ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+    """The rostered players' lines, rebuilt from the games they played.
+
+    The date-range totals were found days behind -- Schwarber held at 33 games
+    for four days and then jumped to 36 -- and a feed that lags scores a player
+    for games he played last week on the day it catches up, and puts a
+    doubleheader into whichever day the pull happened to run. The game log
+    names every game and the day it was played, so the line is the sum of the
+    games from the league's start to the day before the run: the previous
+    night's games are over, and today's may not be.
+
+    The whole season comes from the same log, for the share of the run values
+    that belongs to the window (``_share_of_season``). A player the date-range
+    pull does not list has played nothing in the window and is left out.
+    """
+    log_loader = log_loader or load_game_log
+    until = until or date.today()
+    wanted = {plain_name(n) for n in names}
+    rows = counting.copy()
+    # Sums are floats; a column of ints would refuse them one row at a time.
+    for column in rows.columns:
+        if column not in ("player_id", "season") and pd.api.types.is_integer_dtype(rows[column]):
+            rows[column] = rows[column].astype(float)
+    full = whole.copy() if whole is not None else None
+    rebuilt = lagging = 0
+    for index, row in rows.iterrows():
+        if plain_name(row.get("player", "")) not in wanted:
+            continue
+        pid = row.get("player_id")
+        try:
+            log = log_loader(pid, season, group)
+        except Exception as exc:  # noqa: BLE001 -- keep the date-range line
+            print(f"  MLB {season} {group}: {row.get('player')}'s game log could "
+                  f"not be read ({type(exc).__name__}); keeping the date-range "
+                  f"line", flush=True)
+            continue
+        if log is None or log.empty:
+            continue
+        days = log["date"].astype(str).str[:10]
+        played = log[days < until.isoformat()]
+        window = played[played["date"].astype(str).str[:10] >= since.isoformat()] \
+            if since else played
+        line = season_from_log(window, group)
+        before = float(pd.to_numeric(row.get("gamesPlayed"), errors="coerce") or 0)
+        if int(line.get("gamesPlayed", 0)) != int(before):
+            lagging += 1
+        for column, value in line.items():
+            if column in rows.columns and not pd.api.types.is_numeric_dtype(rows[column]) \
+                    and column != "inningsPitched":
+                continue
+            rows.at[index, column] = value
+        if full is not None and "gamesPlayed" in full.columns:
+            mine = full["player_id"].astype(str) == str(pid)
+            full.loc[mine, "gamesPlayed"] = float(len(played))
+        rebuilt += 1
+    if rebuilt:
+        print(f"  MLB {season} {group}: {rebuilt} rostered line(s) rebuilt from "
+              f"game logs through {until}, {lagging} of them different from the "
+              f"date-range totals", flush=True)
+    return rows, full
 
 
 def game_points(log: pd.DataFrame, group: str) -> pd.DataFrame:
