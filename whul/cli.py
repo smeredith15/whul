@@ -3779,6 +3779,16 @@ def cmd_probe(args: argparse.Namespace) -> int:
             ) or status
         return status
 
+    if args.league == "mlb-gamelog":
+        # Whether a best-game slot could be scored for MLB at all: per-game
+        # lines, whether they add up to the season, and whether a pitcher's
+        # game says if he started it. Reads nothing stored, writes nothing.
+        from whul.sources import mlb
+
+        report = mlb.probe_game_logs(int(args.season) if args.season else 2025)
+        return _print_stages(
+            f"MLB game-log probe -- season {report['season']}", report)
+
     if args.league == "f1":
         from whul.sources import jolpica
 
@@ -4578,7 +4588,7 @@ def main(argv: list[str] | None = None) -> int:
         "league",
         choices=sorted(
             set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)
-            | {"tennis2026", "fbref"}
+            | {"tennis2026", "fbref", "mlb-gamelog"}
         ),
         metavar="league",
     )

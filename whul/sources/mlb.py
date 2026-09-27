@@ -397,6 +397,24 @@ def _merge_counting_and_advanced(
     return counting
 
 
+#: The Stats API's names for what the scorer reads, and the names it reads them
+#: by. One mapping, because the season lines and the game log are the same
+#: fields at two grains, and a per-game point that was renamed differently from
+#: the season it adds up to would disagree with it in exactly the way nobody
+#: would think to check.
+BATTER_COLUMNS = {
+    "atBats": "AB", "hits": "H", "doubles": "2B", "triples": "3B",
+    "homeRuns": "HR", "baseOnBalls": "BB", "hitByPitch": "HBP",
+    "stolenBases": "SB", "caughtStealing": "CS", "gamesPlayed": "G",
+    "player": "PlayerName",
+}
+PITCHER_COLUMNS = {
+    "strikeOuts": "SO", "hits": "H", "baseOnBalls": "BB", "hitByPitch": "HBP",
+    "homeRuns": "HR", "saves": "SV", "holds": "HLD", "war": "WAR",
+    "gamesPlayed": "G", "player": "PlayerName",
+}
+
+
 def load_batters(
     seasons: list[int], use_fangraphs: bool = False, since: date | None = None,
     postseason: bool = False,
@@ -421,12 +439,7 @@ def load_batters(
         return pd.DataFrame()
 
     out = pd.concat(frames, ignore_index=True)
-    return out.rename(columns={
-        "atBats": "AB", "hits": "H", "doubles": "2B", "triples": "3B",
-        "homeRuns": "HR", "baseOnBalls": "BB", "hitByPitch": "HBP",
-        "stolenBases": "SB", "caughtStealing": "CS", "gamesPlayed": "G",
-        "player": "PlayerName",
-    })
+    return out.rename(columns=BATTER_COLUMNS)
 
 
 def load_pitchers(
@@ -450,11 +463,7 @@ def load_pitchers(
     # would read the fractional innings back as outs -- see `_sum_the_rounds`.
     if "inningsPitched" in out.columns and "IP" not in out.columns:
         out["IP"] = out["inningsPitched"].map(innings_to_float)
-    return out.rename(columns={
-        "strikeOuts": "SO", "hits": "H", "baseOnBalls": "BB", "hitByPitch": "HBP",
-        "homeRuns": "HR", "saves": "SV", "holds": "HLD", "war": "WAR",
-        "gamesPlayed": "G", "player": "PlayerName",
-    })
+    return out.rename(columns=PITCHER_COLUMNS)
 
 
 #: Fields the scoring needs from an advanced-metrics feed, and the FanGraphs
@@ -969,3 +978,215 @@ def probe(season: int = 2025) -> dict:
         result["scoring"] = f"FAILED: {type(exc).__name__}: {exc}"
 
     return result
+
+
+# --- game logs ----------------------------------------------------------------
+#
+# Everything above reads a season to date, which is what the scoring wants and
+# is also why it cannot say what happened in any one game: a daily snapshot
+# differences into days, not games, a doubleheader is two games in one day, and
+# a snapshot the run did not take is a day that cannot be recovered afterwards.
+# A game log is keyed by the game and answers for every one of them whenever it
+# is asked.
+#
+# UNVERIFIED -- the host answers from GitHub Actions and not from the sandbox
+# this was written in, so the shape below is what the endpoint is documented to
+# return rather than what it has been seen to. `probe_game_logs` is the check.
+
+#: What the scorer needs from one game, in the Stats API's own names. The
+#: season-level terms -- Offense, Defense and WAR -- are not here and cannot
+#: be: they are run values for a whole season with no share in any one game.
+GAME_LOG_FIELDS = {
+    "hitting": ("atBats", "hits", "doubles", "triples", "homeRuns",
+                "baseOnBalls", "hitByPitch", "stolenBases", "caughtStealing"),
+    "pitching": ("inningsPitched", "strikeOuts", "hits", "baseOnBalls",
+                 "hitByPitch", "homeRuns", "saves", "holds"),
+}
+
+
+def load_game_log(player_id, season: int, group: str = "hitting",
+                  game_type: str = "R") -> pd.DataFrame:
+    """One player's season, one row per game.
+
+    Not cached. A finished season's log never changes, but a season in
+    progress does after every game, and a cache keyed on the season would
+    freeze it at the first pull -- the fault that caching this project's other
+    per-season feeds has had to be careful of.
+    """
+    payload = _get(
+        f"{STATS_API}/people/{player_id}/stats",
+        {"stats": "gameLog", "group": group, "season": season,
+         "gameType": game_type},
+    )
+    rows: list[dict] = []
+    for block in payload.get("stats", []):
+        for split in block.get("splits", []):
+            game = split.get("game") or {}
+            rows.append({
+                "date": split.get("date", ""),
+                "game_pk": game.get("gamePk"),
+                "game_number": game.get("gameNumber"),
+                "is_home": split.get("isHome"),
+                "team": (split.get("team") or {}).get("name", ""),
+                "opponent": (split.get("opponent") or {}).get("name", ""),
+                "player": (split.get("player") or {}).get("fullName", ""),
+                "player_id": (split.get("player") or {}).get("id", player_id),
+                "season": season,
+                **(split.get("stat") or {}),
+            })
+    return pd.DataFrame(rows)
+
+
+def game_points(log: pd.DataFrame, group: str) -> pd.DataFrame:
+    """Each game's counting-stat points, from the league's own scorer.
+
+    ``score_batters`` and ``score_pitchers`` compute a row at a time, so a game
+    handed to them is scored exactly as a season is -- with the advanced terms
+    switched off, which is the rule a best-game slot would use. Each row is
+    labelled with its game so the score comes back attached to it.
+    """
+    from whul.scoring import mlb as scoring
+
+    if log.empty:
+        return pd.DataFrame(columns=["game_pk", "date", "points"])
+    frame = log.copy()
+    if group == "pitching":
+        frame["IP"] = frame["inningsPitched"].map(innings_to_float)
+        frame = frame.rename(columns=PITCHER_COLUMNS)
+        score = scoring.score_pitchers
+    else:
+        frame = frame.rename(columns=BATTER_COLUMNS)
+        score = scoring.score_batters
+    frame["PlayerName"] = frame["game_pk"].astype(str)
+    scored = score(frame, include_advanced=False)
+    points = dict(zip(scored["player"], scored["role_points"]))
+    return pd.DataFrame({
+        "game_pk": log["game_pk"], "date": log["date"],
+        "points": [points.get(str(pk), 0.0) for pk in log["game_pk"]],
+    })
+
+
+def _reconcile(log: pd.DataFrame, line: pd.Series, group: str) -> list[str]:
+    """Each scoring field summed over the games, against the season line.
+
+    The whole case for a game log rests on this: if the games do not add up to
+    the season, a best game is being read out of an incomplete record.
+    """
+    out = []
+    for field in GAME_LOG_FIELDS[group]:
+        if field not in log.columns:
+            out.append(f"{field}: not in the game log")
+            continue
+        convert = innings_to_float if field == "inningsPitched" else float
+        games = sum(convert(v) for v in log[field].fillna(0))
+        season = convert(line.get(field, 0) or 0)
+        if abs(games - season) > 1e-6:
+            out.append(f"{field}: games {games:g} vs season {season:g}")
+    return out
+
+
+def _subject(season_line: pd.Series, group: str, season: int, why: str) -> dict:
+    """Fetch one player's log and say what it looks like."""
+    player_id = season_line["player_id"]
+    detail: dict = {"who": f"{season_line['player']} ({player_id}) -- {why}"}
+    try:
+        log = load_game_log(player_id, season, group)
+    except Exception as exc:  # noqa: BLE001 -- one subject, not the probe
+        status = getattr(getattr(exc, "response", None), "status_code", "?")
+        return {**detail, "ok": False, "error": f"({status}) {type(exc).__name__}: {exc}"}
+    if log.empty:
+        return {**detail, "ok": False, "error": "the endpoint answered with no games"}
+
+    played = season_line.get("gamesPlayed") or season_line.get("gamesPitched")
+    detail["games"] = f"{len(log)} in the log, {played} on the season line"
+    missing = [f for f in GAME_LOG_FIELDS[group] if f not in log.columns]
+    detail["scoring fields"] = (f"all {len(GAME_LOG_FIELDS[group])} present"
+                                if not missing else f"MISSING {missing}")
+    mismatches = _reconcile(log, season_line, group)
+    detail["sums to season"] = "yes, every field" if not mismatches else "NO"
+    if mismatches:
+        detail["mismatches"] = mismatches
+
+    by_date = log.groupby("date").size()
+    doubled = by_date[by_date > 1]
+    detail["doubleheaders"] = (
+        f"{len(doubled)} date(s) with two games, gameNumber values "
+        f"{sorted(set(log['game_number'].dropna()))}" if len(doubled)
+        else "none this season")
+
+    if group == "pitching":
+        if "gamesStarted" in log.columns:
+            flags = pd.to_numeric(log["gamesStarted"], errors="coerce")
+            detail["start flag"] = (
+                f"yes -- values {sorted(set(flags.dropna().astype(int)))}, "
+                f"{int(flags.sum())} starts in the log, "
+                f"{season_line.get('gamesStarted')} on the season line")
+        else:
+            detail["start flag"] = "NO gamesStarted on a game row"
+        detail["relief fields on a game row"] = [
+            f for f in ("gamesFinished", "saves", "holds", "saveOpportunities",
+                        "blownSaves", "inningsPitched") if f in log.columns]
+
+    points = game_points(log, group).sort_values("points", ascending=False)
+    top = points.head(3)
+    detail["best games (counting stats)"] = [
+        f"{r.date}  {r.points:6.1f}  game {r.game_pk}" for r in top.itertuples()]
+    detail["keys on a game row"] = sorted(c for c in log.columns
+                                          if c not in GAME_LOG_FIELDS[group])[:40]
+    detail["ok"] = not missing and not mismatches
+    return detail
+
+
+def probe_game_logs(season: int = 2025) -> dict:
+    """Can a best-game slot be scored for MLB at all?
+
+    Four players are chosen from the season lines -- which this host is already
+    known to serve -- rather than named here, so the probe cannot be defeated by
+    an id typed wrong: the busiest batter, the pitcher with the most starts,
+    the one with the most saves, and a two-way player if the season had one.
+    Each one's game log is then asked three questions: is every scoring field
+    there, do the games add up to the season line, and does a pitcher's game
+    say whether he started it.
+    """
+    report: dict = {"season": season, "stages": {}}
+    stages = report["stages"]
+    try:
+        hitting = load_stats_api_players(season, "hitting")
+        pitching = load_stats_api_players(season, "pitching")
+    except Exception as exc:  # noqa: BLE001
+        stages["season lines"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return report
+    stages["season lines"] = {"ok": not hitting.empty and not pitching.empty,
+                              "batters": len(hitting), "pitchers": len(pitching)}
+    if hitting.empty or pitching.empty:
+        return report
+
+    def num(frame, column):
+        return pd.to_numeric(frame.get(column, 0), errors="coerce").fillna(0)
+
+    batter = hitting.loc[num(hitting, "plateAppearances").idxmax()]
+    starter = pitching.loc[num(pitching, "gamesStarted").idxmax()]
+    relievers = pitching[num(pitching, "gamesStarted") == 0]
+    closer = relievers.loc[num(relievers, "saves").idxmax()] if len(relievers) else None
+
+    stages["batter"] = _subject(batter, "hitting", season, "most plate appearances")
+    stages["starter"] = _subject(starter, "pitching", season, "most starts")
+    if closer is not None:
+        stages["reliever"] = _subject(closer, "pitching", season,
+                                      "most saves, no starts")
+
+    innings = pitching.get("inningsPitched", pd.Series(0, index=pitching.index))
+    batted = set(hitting.loc[num(hitting, "plateAppearances") >= 100, "player_id"])
+    pitched = set(pitching.loc[innings.map(innings_to_float) >= 20, "player_id"])
+    both = sorted(batted & pitched)
+    if both:
+        who = both[0]
+        stages["two-way (hitting)"] = _subject(
+            hitting.loc[hitting["player_id"] == who].iloc[0],
+            "hitting", season, "bats and pitches")
+        stages["two-way (pitching)"] = _subject(
+            pitching.loc[pitching["player_id"] == who].iloc[0],
+            "pitching", season, "bats and pitches")
+    else:
+        report["two-way"] = "nobody batted 100 times and pitched 20 innings"
+    return report
