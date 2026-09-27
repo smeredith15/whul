@@ -98,14 +98,16 @@ def equalising_k(means: dict[int, float], target: float) -> float:
 
 # --- the anchor ---------------------------------------------------------------
 
-def nfl_rows(scale: Scale, seasons=SEASONS, loader=None) -> pd.DataFrame:
-    """Draft-caliber NFL player-seasons, with best-k on the league scale."""
-    if loader is None:
-        from whul.sources.nflverse import load_player_stats as loader
-    raw = loader(list(seasons))
+def nfl_game_points(raw: pd.DataFrame) -> pd.DataFrame:
+    """nflverse's weekly lines, one row a regular-season game, with its points.
+
+    Scored with the league's own weights. ``key`` is the benchmark group the
+    frozen divisor is looked up by.
+    """
     raw = raw[resolve_str(raw, ["season_type"], default="REG") == "REG"]
     work = pd.DataFrame({
         "season": resolve_num(raw, ["season"]).astype(int),
+        "week": resolve_num(raw, ["week"]).astype(int),
         "player": resolve_str(raw, ["player_id", "gsis_id"]),
         "name": resolve_str(raw, ["player_display_name", "player_name"]),
         "position": resolve_str(raw, ["position", "position_group"]),
@@ -121,9 +123,17 @@ def nfl_rows(scale: Scale, seasons=SEASONS, loader=None) -> pd.DataFrame:
                          + resolve_num(raw, ["rushing_fumbles_lost"])
                          + resolve_num(raw, ["receiving_fumbles_lost"])),
     })
-    work = work[work["position"].isin(nfl_scoring.SCORING_POSITIONS)]
+    work = work[work["position"].isin(nfl_scoring.SCORING_POSITIONS)].copy()
     work["points"] = sum(work[c] * w for c, w in nfl_scoring.PLAYER_WEIGHTS.items())
     work["key"] = "NFL_" + work["position"]
+    return work
+
+
+def nfl_rows(scale: Scale, seasons=SEASONS, loader=None) -> pd.DataFrame:
+    """Draft-caliber NFL player-seasons, with best-k on the league scale."""
+    if loader is None:
+        from whul.sources.nflverse import load_player_stats as loader
+    work = nfl_game_points(loader(list(seasons)))
 
     rows = []
     for (season, key), block in work.groupby(["season", "key"]):

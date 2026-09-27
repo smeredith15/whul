@@ -2866,6 +2866,27 @@ def cmd_best_games(args: argparse.Namespace) -> int:
     return 0 if len(report.mlb) and len(report.nfl) else 1
 
 
+def cmd_proposal_scores(args: argparse.Namespace) -> int:
+    """The standings under each best-game proposal, on the latest day.
+
+    A proposal's evidence, not a scoring step: it reads the database and the
+    game records and writes nothing but its own report. See
+    ``whul.proposal_scores``.
+    """
+    from pathlib import Path
+
+    from whul import proposal_scores
+    from whul.store import open_store
+
+    report = proposal_scores.compute(open_store(args.db), as_of=args.as_of or None)
+    print(proposal_scores.render(report))
+    if args.out:
+        Path(f"{args.out}.json").write_text(proposal_scores.to_json(report))
+    # A best-k that could not be read is scored as zero, which understates that
+    # manager's proposals -- a run that says so is not a clean run.
+    return 1 if report.problems else 0
+
+
 def cmd_pull_costs(args: argparse.Namespace) -> int:
     """What the pull has cost per source, and which way it is heading.
 
@@ -4269,6 +4290,16 @@ def main(argv: list[str] | None = None) -> int:
     games.add_argument("--out", default="",
                        help="also write the per-player rows as <out>-mlb.csv and <out>-nfl.csv")
     games.set_defaults(func=cmd_best_games)
+
+    proposals = sub.add_parser(
+        "proposal-scores",
+        help="the standings under each best-game proposal, on the latest day",
+    )
+    proposals.add_argument("--db", default="data/whul.sqlite3")
+    proposals.add_argument("--as-of", default="", help="a day other than the latest")
+    proposals.add_argument("--out", default="",
+                           help="also write the report as <out>.json")
+    proposals.set_defaults(func=cmd_proposal_scores)
 
     costs = sub.add_parser(
         "pull-costs",
