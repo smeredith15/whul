@@ -2332,7 +2332,8 @@ def cmd_backdate(args: argparse.Namespace) -> int:
     from whul import backdate
     from whul.store import open_store
 
-    report = backdate.rebuild(open_store(args.db), args.season, write=args.write)
+    report = backdate.rebuild(open_store(args.db), args.season, write=args.write,
+                              restate=tuple(args.restate or ()))
     print(f"\n{report}\n")
     if not args.write:
         print("  Dry run: nothing written. Pass --write, then roll up with "
@@ -4298,6 +4299,9 @@ def main(argv: list[str] | None = None) -> int:
     back.add_argument("--db", default="data/whul.sqlite3", help="database path")
     back.add_argument("--season", default="2026-27", help="season")
     back.add_argument("--write", action="store_true", help="write the rebuilt days")
+    back.add_argument("--restate", nargs="*", default=[],
+                      help="leagues whose stored days are rebuilt from the latest "
+                           "one too, e.g. MLB")
     back.set_defaults(func=cmd_backdate)
 
     record = sub.add_parser(

@@ -97,3 +97,29 @@ def test_stored_days_are_checked_against_the_games(store):
     report = backdate.rebuild(store, SEASON)
     # The 6th, rebuilt from the 8th: one of two games behind it, half of 10.
     assert report.checked == 1 and report.agreed == 1
+
+
+def test_a_restated_league_has_its_stored_days_rebuilt_from_the_latest(store):
+    """The stored MLB days came from totals that ran days behind: the 6th says
+    5 when one of the two games was already played and the latest day says 40."""
+    games(store, [("2026-09-05", 10), ("2026-09-07", 10)])
+    stored(store, "2026-09-06", 5.0)
+    stored(store, "2026-09-10", 40.0)
+    store.conn.execute("UPDATE daily_scores SET held_score = 3.0 WHERE as_of = '2026-09-06'")
+    store.conn.commit()
+
+    backdate.rebuild(store, SEASON, write=True, restate=("MLB",))
+    scores = day_scores(store)
+    assert scores["2026-09-06"] == pytest.approx(20.0)
+    assert scores["2026-09-08"] == pytest.approx(40.0)
+    assert scores["2026-09-10"] == 40.0, "the anchor itself was rewritten"
+    held = store.scalar("SELECT held_score FROM daily_scores WHERE as_of = '2026-09-06'")
+    assert held == 3.0, "a held bonus on a stored day was wiped"
+
+
+def test_an_unrestated_league_keeps_its_stored_days(store):
+    games(store, [("2026-09-05", 10), ("2026-09-07", 10)])
+    stored(store, "2026-09-06", 5.0)
+    stored(store, "2026-09-10", 40.0)
+    backdate.rebuild(store, SEASON, write=True)
+    assert day_scores(store)["2026-09-06"] == 5.0

@@ -470,3 +470,15 @@ CREATE TABLE IF NOT EXISTS game_scores (
 );
 
 CREATE INDEX IF NOT EXISTS game_scores_asset_idx ON game_scores (season, asset_id, date);
+
+-- Who played in a club-soccer match and what each did, read once from the
+-- match's own summary after full time. Kept so a match is asked about once
+-- however many rostered players were in it and however many runs follow.
+-- Its own table rather than a row in `feed_rows`: every reader of that table
+-- takes a row to be one fixture.
+CREATE TABLE IF NOT EXISTS match_lineups (
+    event_id    TEXT PRIMARY KEY,
+    competition TEXT NOT NULL DEFAULT '',
+    payload     TEXT NOT NULL,
+    fetched_at  TEXT NOT NULL
+);

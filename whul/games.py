@@ -69,8 +69,6 @@ SOCCER_STATS = {
     "red": ("redCards",),
 }
 
-#: Where a match's parsed lineup is kept, so each match is asked about once.
-LINEUP_SOURCE = "soccer-lineups"
 
 
 @dataclass
@@ -372,7 +370,9 @@ def _mlb_rows(p, logs, divisor, start, end, rules, mlb) -> list[dict]:
         b, a = bat.get(pk), arm.get(pk)
         record = (a or b)[0]
         day = str(record.get("date") or "")[:10]
-        if not (start <= day <= end):
+        # Up to the day before, as the season line is: last night's games are
+        # over and today's may not be.
+        if not (start <= day < end):
             continue
         bat_score = 100 * b[1] / divisor["MLB_Batter"] if b else None
         arm_score = 100 * a[1] / divisor["MLB_Pitcher"] if a else None
@@ -451,9 +451,10 @@ def _finished(payload: dict) -> bool:
 
 def _lineup(store: Store, competition: str, event_id: str, loader) -> list[dict] | None:
     """A match's lineup, from the store if it has been asked before."""
-    key = f"{event_id}"
-    text = store.scalar("SELECT payload FROM feed_rows WHERE source = ? AND row_key = ?",
-                        (LINEUP_SOURCE, key))
+    key = str(event_id)
+    # Its own table, not the fixture ledger: every reader of `feed_rows` takes
+    # a row to be one fixture, and a lineup is not one.
+    text = store.scalar("SELECT payload FROM match_lineups WHERE event_id = ?", (key,))
     if text:
         return json.loads(text)
     try:
@@ -467,11 +468,10 @@ def _lineup(store: Store, competition: str, event_id: str, loader) -> list[dict]
     lineup = soccer_lineup(payload or {})
     if not lineup:
         return None
-    now = _now()
-    store.upsert("feed_rows", [{
-        "source": LINEUP_SOURCE, "row_key": key, "season": "",
-        "payload": json.dumps(lineup), "first_seen": now, "last_seen": now,
-    }], keys=("source", "row_key"))
+    store.upsert("match_lineups", [{
+        "event_id": key, "competition": str(competition),
+        "payload": json.dumps(lineup), "fetched_at": _now(),
+    }], keys=("event_id",))
     return lineup
 
 

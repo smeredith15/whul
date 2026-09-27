@@ -192,6 +192,10 @@ def meetings(store: Store, season: str) -> pd.DataFrame:
             row = json.loads(payload)
         except (TypeError, ValueError):
             continue
+        # One fixture a row is the ledger's contract; anything else kept there
+        # is not a meeting and must not stop the page being built.
+        if not isinstance(row, dict):
+            continue
         read = _sides(row)
         if read is None:
             continue

@@ -185,16 +185,22 @@ def _mlb_players_live():
     from whul.scoring.postseason import RULES, apply_bonus
     from whul.sources import mlb as source
 
-    def load(seasons):
+    def load(seasons, names=()):
         # The window only applies to the season the league year opened inside.
         # A season that begins *within* the league year is wholly inside it, so
         # asking for it from 15 August would cut off its April.
+        #
+        # ``names`` are the rostered players. Their counting lines are rebuilt
+        # from their game logs, which name every game and the day it was
+        # played; the date-range totals were found running days behind.
         opened = SEASON.start.year
         frames = []
         for year in seasons:
             since = season_start("MLB") if year == opened else None
-            frames.append(source.load_batters([year], since=since).assign(_phase="bat"))
-            frames.append(source.load_pitchers([year], since=since).assign(_phase="pit"))
+            frames.append(source.load_batters([year], since=since, names=names)
+                          .assign(_phase="bat"))
+            frames.append(source.load_pitchers([year], since=since, names=names)
+                          .assign(_phase="pit"))
             if not _october_is_possible(year):
                 continue
             # October, asked for separately because the endpoint answers for
@@ -1395,9 +1401,12 @@ SOURCES: dict[str, Source] = _register(
            accumulates=GAME_KEYS),
     Source("mlb", "MLB", "Player", _mlb_players, live=_mlb_players_live,
            post_normalize=_mlb_two_way, cumulative=True,
+           # For the rostered names: their lines come from their game logs.
+           roster_scoped=True,
            seasons_for=_league_year_seasons,
-           note="FanGraphs leaderboards; one row per player-role, folded after "
-                "normalization by the two-way rule"),
+           note="Stats API; rostered players' lines summed from their game "
+                "logs, one row per player-role, folded after normalization by "
+                "the two-way rule"),
     Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
            seasons_for=_league_year_seasons, accumulates=GAME_KEYS,
            note="a live contract year is scored on the half already played"),
