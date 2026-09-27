@@ -231,6 +231,11 @@ CREATE TABLE IF NOT EXISTS slot_scores (
     asset_id  TEXT,
     score     REAL NOT NULL,
     counts    INTEGER NOT NULL DEFAULT 0,
+    -- A player slot's k best games at face value, and which of its two values
+    -- the day's lineup counts: 'season' (score), 'best' (best_score), or ''
+    -- for the bench. `counts` is true for either.
+    best_score REAL NOT NULL DEFAULT 0,
+    scored_as  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (slot_id, as_of)
 );
 
@@ -433,3 +438,35 @@ CREATE TABLE IF NOT EXISTS ingest_timings (
 );
 
 CREATE INDEX IF NOT EXISTS ingest_timings_day_idx ON ingest_timings (season, as_of);
+
+-- One game a rostered player played, at face value, dated.
+--
+-- The record the best-performances slot is scored from. A season-to-date feed
+-- says what a player has done; it cannot say which of it was one night, and a
+-- best-performances slot counts a player's k best nights. So each game is
+-- written down with the day it was played -- not the day it was scraped, which
+-- is what lets a trade split a slot's games the way it splits a season, and a
+-- doubleheader stay two games rather than one lumped day.
+--
+-- `points` is the game's counting-stat points by the league's own weights and
+-- `score` is those points on the 0-100 scale, against the same frozen divisor
+-- a season is measured by. `role` separates MLB's batting games, starts and
+-- relief outings, which are counted at different rates; it is blank elsewhere.
+-- `detail` is the counting stats themselves, for the profile's list of the
+-- games that count.
+CREATE TABLE IF NOT EXISTS game_scores (
+    season      TEXT NOT NULL,
+    asset_id    TEXT NOT NULL REFERENCES assets (asset_id),
+    game_key    TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT '',
+    points      REAL NOT NULL,
+    score       REAL NOT NULL,
+    opponent    TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '{}',
+    source      TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (season, asset_id, game_key)
+);
+
+CREATE INDEX IF NOT EXISTS game_scores_asset_idx ON game_scores (season, asset_id, date);

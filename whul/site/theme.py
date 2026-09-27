@@ -915,6 +915,72 @@ dialog.profile .scoreline .value {
   font-size: 20px; font-weight: 650; letter-spacing: -0.01em;
 }
 
+/* Full season or best performances: the two ways a team-sport player can
+   score, one tab each, in the same pill as the calendar-year tabs so the
+   window keeps one vocabulary. The tab that counts today says so. */
+dialog.profile .perftabs { display: flex; gap: 4px; padding: 2px 18px 10px; }
+dialog.profile .perftabs button.pt {
+  font: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 4px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--grid); background: var(--page);
+  color: var(--text-secondary);
+}
+dialog.profile .perftabs button.pt.on {
+  background: var(--text-primary); border-color: var(--text-primary);
+  color: var(--surface-1);
+}
+dialog.profile .perftabs button.pt .counts {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; margin-left: 6px; color: var(--series-4);
+}
+/* One game a row. The boxes above are one per statistic, and a season of
+   games in boxes that size is a wall; so a game is a row in the same frame --
+   the stat box's border, radius and small-caps labels -- with its figures as
+   chips and its score at the right, where a box's strip would be. */
+dialog.profile .perflist { display: flex; flex-direction: column; gap: 6px; }
+dialog.profile .perf {
+  display: grid; grid-template-columns: 74px 1fr auto; gap: 10px;
+  align-items: center; background: var(--surface-1);
+  border: 1px solid var(--grid); border-radius: 8px; padding: 7px 10px;
+}
+dialog.profile .perf.out { opacity: 0.55; }
+dialog.profile .perf .when { font-size: 12px; color: var(--text-secondary);
+  line-height: 1.25; font-variant-numeric: tabular-nums; }
+dialog.profile .perf .when .vs { display: block; font-size: 11px;
+  color: var(--muted); }
+dialog.profile .perf .figs { display: flex; flex-wrap: wrap; gap: 4px; }
+dialog.profile .perf .fig {
+  font-size: 11px; border: 1px solid var(--grid); border-radius: 6px;
+  padding: 1px 6px; background: var(--page); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+dialog.profile .perf .fig b { font-weight: 650; margin-right: 3px; }
+dialog.profile .perf .fig i { font-style: normal; text-transform: uppercase;
+  font-size: 9.5px; letter-spacing: 0.05em; color: var(--text-secondary); }
+dialog.profile .perf .fig.role { border-color: transparent; background: none;
+  color: var(--muted); }
+dialog.profile .perf .pts { text-align: right; font-weight: 650;
+  font-variant-numeric: tabular-nums; font-size: 14px; min-width: 44px; }
+dialog.profile .perf .pts small { display: block; font-weight: 500;
+  font-size: 10.5px; color: var(--muted); }
+dialog.profile .perfhead { font-size: 12.5px; color: var(--text-secondary);
+  margin: 0 0 8px; }
+@media (max-width: 480px) {
+  dialog.profile .perf { grid-template-columns: 60px 1fr auto; gap: 8px; }
+}
+
+/* The one slot a category scores on its best games, marked where it sits. */
+.slottag {
+  display: inline-block; margin-left: 8px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 7px;
+  border-radius: 999px; vertical-align: 1px;
+}
+.slottag.best { background: color-mix(in srgb, var(--series-4) 22%, transparent);
+  color: var(--text-primary); border: 1px solid var(--series-4); }
+/* The two parts of a total, quieter than the total they add up to. */
+td.part, th.part { color: var(--text-secondary); }
+@media (max-width: 620px) { td.part, th.part { display: none; } }
+
 .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
 .tile { background: var(--surface-1); border: 1px solid var(--grid);
         border-radius: 8px; padding: 14px 16px; }

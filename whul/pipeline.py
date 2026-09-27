@@ -25,7 +25,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from whul.bestball import ScoreIndex, score_slots, standings
+from whul.bestball import GameIndex, ScoreIndex, score_slots, standings
 from whul.config.league import SEASON
 from whul.scoring.base import resolve_num
 from whul.store import benchmarks as bm
@@ -134,6 +134,27 @@ def cumulative_scores(store: Store, season: str, through: date | str) -> pd.Data
     return _from_league_start(frame)
 
 
+def game_records(store: Store, season: str, through: date | str | None = None
+                 ) -> pd.DataFrame:
+    """Every recorded game for the season, shaped for ``GameIndex``.
+
+    Games dated before their league's start are dropped for the same reason
+    season scores are -- see ``_from_league_start``.
+    """
+    sql = ("SELECT g.asset_id, g.game_key, g.date, g.role, g.score, a.league "
+           "FROM game_scores g LEFT JOIN assets a ON a.asset_id = g.asset_id "
+           "WHERE g.season = ?")
+    params: tuple = (season,)
+    if through is not None:
+        sql += " AND g.date <= ?"
+        params += (_as_text(through),)
+    frame = store.query(sql, params)
+    if frame.empty:
+        return frame
+    frame["date"] = pd.to_datetime(frame["date"]).dt.date
+    return _from_league_start(frame)
+
+
 def _from_league_start(frame: pd.DataFrame) -> pd.DataFrame:
     """Drop scores dated before their league's results start counting.
 
@@ -173,6 +194,7 @@ def roll_up(
     slots: list | None = None,
     scores: ScoreIndex | None = None,
     asset_count: int | None = None,
+    games: GameIndex | None = None,
 ) -> RunReport:
     """Score every slot for one day and write the standings snapshot.
 
@@ -225,7 +247,10 @@ def roll_up(
     report.scored_assets = asset_count or 0
     cumulative = scores
 
-    scored = score_slots(slots, cumulative, as_of)
+    if games is None:
+        games = GameIndex(game_records(store, season, as_of))
+
+    scored = score_slots(slots, cumulative, as_of, games)
     if not scored.empty:
         store.insert_frame(
             "slot_scores",
@@ -236,12 +261,14 @@ def roll_up(
                 "asset_id": scored["asset_id"],
                 "score": scored["score"].round(4),
                 "counts": scored["counts"].astype(int),
+                "best_score": scored["best_score"].round(4),
+                "scored_as": scored["scored_as"],
             }),
             keys=("slot_id", "as_of"),
         )
         report.slots = len(scored)
 
-    table = standings(slots, cumulative, as_of)
+    table = standings(slots, cumulative, as_of, scored=scored)
     if not table.empty:
         store.insert_frame(
             "standings_snapshots",
@@ -314,12 +341,15 @@ def backfill(
     scores = ScoreIndex(frame)
     assets = int(frame["asset_id"].nunique()) if not frame.empty else 0
     slots = rosters.load_slots(store, season)
+    # Every game once, too. A day's best performances are the games dated on
+    # or before it, which the index answers without being rebuilt.
+    games = GameIndex(game_records(store, season, days[-1]))
 
     reports = []
     for day in days:
         report = roll_up(
             store, season, day, check_overlaps=False,
-            slots=slots, scores=scores, asset_count=assets,
+            slots=slots, scores=scores, asset_count=assets, games=games,
         )
         if day == days[0]:
             if not clashes.empty:
@@ -389,8 +419,9 @@ def held_by_manager(store: Store, season: str,
         score=scores["score"] + held.where(scores["date"] == stamp, 0.0)
     )
 
-    now = standings(slots, scores, stamp).set_index("manager")["total"]
-    after = standings(slots, settled, stamp).set_index("manager")["total"]
+    games = GameIndex(game_records(store, season, stamp))
+    now = standings(slots, scores, stamp, games).set_index("manager")["total"]
+    after = standings(slots, settled, stamp, games).set_index("manager")["total"]
     return {
         str(manager): round(float(after.get(manager, 0.0) - value), 1)
         for manager, value in now.items()
@@ -411,19 +442,29 @@ def bench_by_manager(store: Store, season: str,
     bench = frame[frame["counts"] == 0]
     if bench.empty:
         return {}
+    # A benched player's larger value: his season, or his best games where the
+    # category has a slot for them.
+    carried = bench["score"].where(bench["score"] >= bench["best_score"],
+                                   bench["best_score"])
     return {str(k): round(float(v), 1)
-            for k, v in bench.groupby("manager_id")["score"].sum().items()}
+            for k, v in carried.groupby(bench["manager_id"]).sum().items()}
 
 
 def contributions(store: Store, season: str, as_of: date | str) -> pd.DataFrame:
     """Each manager's counting slots on one day -- the bar chart's data.
 
     Bench slots are included with ``counts = 0``, so the chart can show what a
-    manager is carrying as well as what is scoring.
+    manager is carrying as well as what is scoring. ``scored_as`` says which of
+    ``score`` and ``best_score`` a counting slot adds, and ``added`` is that
+    figure.
     """
     frame = store.query(
         "SELECT s.manager_id, s.category, s.asset_type, ss.slot_id, ss.asset_id, "
-        "       ss.score, ss.counts "
+        "       ss.score, ss.counts, ss.best_score, ss.scored_as, "
+        # A row written before the best slot existed has scored_as blank
+        # whether or not it counted, so the blank case reads `counts`.
+        "       CASE ss.scored_as WHEN 'best' THEN ss.best_score "
+        "            ELSE ss.score * ss.counts END AS added "
         "FROM slot_scores ss JOIN roster_slots s ON s.slot_id = ss.slot_id "
         "WHERE ss.season = ? AND ss.as_of = ? "
         "ORDER BY s.manager_id, s.asset_type, s.category, ss.score DESC",

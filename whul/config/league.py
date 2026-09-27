@@ -287,9 +287,14 @@ def in_season(league: str, day: date) -> bool | None:
 class SlotGroup:
     """One roster category for one asset type.
 
-    ``cap`` is how many may be drafted; ``starters`` is how many count under
-    best-ball scoring. ``bench`` is the remainder and never scores directly -- it
-    only supplies replacements when a starter stops accruing.
+    ``cap`` is how many may be drafted; ``starters`` is how many count for
+    their full season under best-ball scoring, and ``best`` how many count for
+    their best performances instead -- a player's k best games, k set per sport
+    (``BEST_K``). ``bench`` is the remainder and never scores directly -- it
+    only supplies replacements when somebody who counts stops accruing.
+
+    Which players fill which slots is not a manager's choice: the lineup that
+    scores most is the one used, every day. See ``whul.bestball``.
     """
 
     category: str
@@ -299,10 +304,16 @@ class SlotGroup:
     benchmark_rate: int  # Target_N per benchmark manager
     active: bool = True
     inactive_reason: str = ""
+    best: int = 0
+
+    @property
+    def counting(self) -> int:
+        """Every slot that scores: full seasons and best performances."""
+        return self.starters + self.best
 
     @property
     def bench(self) -> int:
-        return self.cap - self.starters
+        return self.cap - self.starters - self.best
 
 
 # --- Team slots: no bench, every slot counts -------------------------------
@@ -329,14 +340,19 @@ TEAM_SLOTS: tuple[SlotGroup, ...] = (
     ),
 )
 
-# --- Player slots: NFL/NBA/MLB/NHL carry 2 bench, everything else 1 --------
+# --- Player slots ------------------------------------------------------------
+# The team sports each carry one best-performances slot, adopted for 2026-27
+# after the season opened. In the NFL, NBA, MLB and NHL it took one of the two
+# bench places; in club soccer it took one of the four full-season places.
+# Everything else is as drafted: NFL/NBA/MLB/NHL one bench, soccer one bench,
+# the individual sports one.
 PLAYER_SLOTS: tuple[SlotGroup, ...] = (
-    SlotGroup("Club Soccer Top 3", "Player", 5, 4, 6),
-    SlotGroup("Club Soccer Other", "Player", 5, 4, 6),
-    SlotGroup("NFL", "Player", 4, 2, 3),
-    SlotGroup("NBA", "Player", 4, 2, 3),
-    SlotGroup("MLB", "Player", 4, 2, 3),
-    SlotGroup("NHL", "Player", 4, 2, 3),
+    SlotGroup("Club Soccer Top 3", "Player", 5, 3, 6, best=1),
+    SlotGroup("Club Soccer Other", "Player", 5, 3, 6, best=1),
+    SlotGroup("NFL", "Player", 4, 2, 3, best=1),
+    SlotGroup("NBA", "Player", 4, 2, 3, best=1),
+    SlotGroup("MLB", "Player", 4, 2, 3, best=1),
+    SlotGroup("NHL", "Player", 4, 2, 3, best=1),
     SlotGroup("PGA", "Player", 3, 2, 3),
     SlotGroup("Tennis", "Player", 3, 2, 3),
     SlotGroup("Motorsports", "Player", 2, 1, 2),
@@ -347,6 +363,32 @@ PLAYER_SLOTS: tuple[SlotGroup, ...] = (
 )
 
 ALL_SLOTS: tuple[SlotGroup, ...] = TEAM_SLOTS + PLAYER_SLOTS
+
+
+#: How many games a best-performances slot counts, per sport -- and per role
+#: in MLB, where a start is worth more than a relief outing and both differ
+#: from a day at the plate. Set so that on average the slot is worth the same
+#: in every sport: each k is where a draft-caliber player's k best games match
+#: an NFL player's best three weeks, 2021-25 (``whul.best_game_calibration``).
+#: A player whose games span MLB roles trades them at the ratio of their k's.
+BEST_K: dict[str, int] = {
+    "NFL": 3,
+    "NBA": 14,
+    "NHL": 7,
+    "Club Soccer": 6,
+    "MLB bat": 10,
+    "MLB start": 4,
+    "MLB relief": 13,
+}
+
+
+def best_k(category: str, role: str = "") -> int:
+    """k for a roster category, and for an MLB role."""
+    if category in CROSS_POOL_SOCCER or category == "Club Soccer":
+        return BEST_K["Club Soccer"]
+    if category == "MLB":
+        return BEST_K[f"MLB {role or 'bat'}"]
+    return BEST_K.get(category, 0)
 
 
 def active_slots(slots: tuple[SlotGroup, ...] = ALL_SLOTS) -> tuple[SlotGroup, ...]:

@@ -19,21 +19,32 @@ def test_full_roster_is_65_slots():
     assert sum(s.cap for s in PLAYER_SLOTS) == 36
 
 
-def test_starter_bench_split_matches_auction_resolution_comment():
-    """Auction Resolution.R describes 'starters + 14 strict bench spots'."""
-    assert sum(s.bench for s in PLAYER_SLOTS) == 14
-    assert sum(s.starters for s in PLAYER_SLOTS) == 22
-    assert all(s.bench == 0 for s in TEAM_SLOTS), "team slots carry no bench"
+def test_starter_bench_split():
+    """Auction Resolution.R described 'starters + 14 strict bench spots'. The
+    best-performances slots took four of those bench spots (NFL, NBA, MLB,
+    NHL) and one full-season spot in each club-soccer category."""
+    assert sum(s.bench for s in PLAYER_SLOTS) == 10
+    assert sum(s.starters for s in PLAYER_SLOTS) == 20
+    assert sum(s.best for s in PLAYER_SLOTS) == 6
+    assert all(s.cap == s.starters + s.best + s.bench for s in ALL_SLOTS)
+    assert all(s.bench == 0 and s.best == 0 for s in TEAM_SLOTS), \
+        "team slots carry no bench and no best-performances slot"
 
 
 def test_counting_slots():
-    assert sum(s.starters for s in ALL_SLOTS) == 51
+    assert sum(s.counting for s in ALL_SLOTS) == 55
 
 
 def test_bench_depth_by_category():
     bench = {s.category: s.bench for s in PLAYER_SLOTS}
-    assert all(bench[c] == 2 for c in ("NFL", "NBA", "MLB", "NHL"))
-    assert all(v == 1 for k, v in bench.items() if k not in ("NFL", "NBA", "MLB", "NHL"))
+    assert all(v == 1 for v in bench.values())
+
+
+def test_every_team_sport_has_one_best_performances_slot():
+    best = {s.category: s.best for s in PLAYER_SLOTS}
+    team_sports = ("NFL", "NBA", "MLB", "NHL", "Club Soccer Top 3", "Club Soccer Other")
+    assert all(best[c] == 1 for c in team_sports)
+    assert all(v == 0 for k, v in best.items() if k not in team_sports)
 
 
 def test_2026_27_deactivations():
@@ -42,11 +53,13 @@ def test_2026_27_deactivations():
     assert inactive == {("Team", "Olympics"), ("Team", "WNBA"), ("Player", "WNBA")}
     live = active_slots()
     assert sum(s.cap for s in live) == 60
-    assert sum(s.starters for s in live) == 47
+    assert sum(s.counting for s in live) == 51
 
 
 def test_max_theoretical_score():
-    assert sum(s.starters for s in active_slots()) * 100 == 4700
+    """100 a counting slot. A best-performances slot can in principle reach
+    it too -- a player whose k best games were an elite season's worth."""
+    assert sum(s.counting for s in active_slots()) * 100 == 5100
 
 
 def test_target_n_reproduces_all_analysis_values_at_15_managers():

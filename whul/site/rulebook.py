@@ -695,6 +695,69 @@ def _postseason() -> Rules:
     )
 
 
+def _best_performances() -> Rules:
+    """The best-performances slot: which games, how many, and how it fills.
+
+    Every figure is read from the config and the scorers, like the rest of
+    this page.
+    """
+    from whul.config.league import ALL_SLOTS, BEST_K
+    from whul.scoring.best_game import TIE
+    from whul.scoring.mlb import SECONDARY_ROLE_WEIGHT
+
+    held = [g for g in ALL_SLOTS if g.asset_type == "Player" and g.best and g.active]
+    where = ", ".join(f"{g.category} ({g.starters} full seasons + {g.best})"
+                      for g in held)
+    return Rules(
+        "best-performances", "Best performances (team-sport players)",
+        "Each team sport's player category has one slot that counts a "
+        "player's best games instead of a whole season. A player hurt in week "
+        "three still adds the weeks they played; a player with a few huge games "
+        "and a quiet season still adds those games. It is worth a fraction of a "
+        "season — about 16 points on average by the end of a year, against "
+        "100 for an elite season — and not nothing.",
+        [
+            Heading("How many games count"),
+            item("NFL — best weeks", BEST_K["NFL"]),
+            item("NBA — best games", BEST_K["NBA"]),
+            item("NHL — best games", BEST_K["NHL"]),
+            item("Club soccer — best domestic matches", BEST_K["Club Soccer"]),
+            item("MLB — best games at the plate", BEST_K["MLB bat"]),
+            item("MLB — or best starts", BEST_K["MLB start"]),
+            item("MLB — or best relief outings", BEST_K["MLB relief"]),
+            Heading("How a game is scored"),
+            "Counting stats only, by the same weights as a season, and on the "
+            "same 0–100 scale — a game's points divided by the same benchmark "
+            "the season is.",
+        ],
+        [
+            "MLB's Offense, Defense and WAR are for a whole season and have no "
+            "share in one game, so they are left out; no contract-year "
+            "multiplier applies either.",
+            "European ties and playoff games are not in it: they are the "
+            "postseason bonus below, as they are for the season.",
+            f"Where the slot is: {where}.",
+            "The numbers of games are set so the slot is worth the same in "
+            "every sport: each is where a draft-caliber player's best games "
+            "match an NFL player's best three weeks, measured over 2021–25.",
+            "A pitcher's starts and relief outings share the slot at those "
+            f"rates — one start is a {BEST_K['MLB start']}th of it and one "
+            f"relief outing a {BEST_K['MLB relief']}th — and whichever "
+            "combination scores most is used. A two-way player's game counts "
+            "as whichever role scored more in that game, with the other at "
+            f"{num(SECONDARY_ROLE_WEIGHT * 100)}%.",
+            "Nobody chooses who fills it. Every day, each category is filled "
+            "whichever way scores most: a player whose best games are worth "
+            "more than the gap between their season and the next player's moves "
+            "to the best-performances slot, and the next player takes the "
+            f"season slot. Lineups within {num(TIE)} of each other count as "
+            "tied, and a tie keeps the plain best-ball lineup.",
+            "A traded player's games stay with the slot that held the player "
+            "when they were played, the same way a season's points do.",
+        ],
+    )
+
+
 # --- shapes for a bigger league -------------------------------------------
 #
 # None of this is in force. It is written down because it was worked out
@@ -832,5 +895,6 @@ def sections() -> list[Rules]:
         _pga_players(),
         _tennis_players(),
         _motorsports_players(),
+        _best_performances(),
         _postseason(),
     ]

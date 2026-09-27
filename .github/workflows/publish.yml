@@ -74,6 +74,16 @@ on:
           ticking it again does nothing. Implies backfill.
         type: boolean
         default: false
+      backdate:
+        description: >-
+          Rebuild the days before each MLB and club-soccer player's first
+          stored score from his dated games, then rebuild the standings. A
+          one-off: those players reached the database on 4 and 5 September
+          with a season to date, and every day before stored nothing, so each
+          manager's line leapt on the 5th. A day already stored is never
+          rewritten, so ticking it again does nothing. Implies backfill.
+        type: boolean
+        default: false
       rescore:
         description: >-
           Restate every stored day against the frozen benchmark, before the
@@ -215,6 +225,23 @@ jobs:
         continue-on-error: true
         run: python -m whul.cli pull-costs --season "$SEASON"
 
+      - name: Record every rostered player's games
+        # For the best-performances slot: each NFL, NBA, MLB, NHL and
+        # club-soccer player's games, dated and scored one by one. NFL and NBA
+        # come from what the pull above keeps and cost nothing; MLB and NHL
+        # are a game log a player, and a soccer match is asked about once,
+        # after full time, and kept.
+        #
+        # Never fatal: a game record that cannot be read leaves that player's
+        # best performances as they were, and a problem is named in the log.
+        # It exits non-zero on one so the step shows amber rather than hiding.
+        continue-on-error: true
+        run: python -m whul.cli games --season "$SEASON"
+
+      - name: Rebuild the days before MLB and soccer arrived
+        if: ${{ inputs.backdate }}
+        run: python -m whul.cli backdate --season "$SEASON" --write
+
       - name: Put the stored MLB days on the contract-year weights
         if: ${{ inputs.reweight_mlb }}
         # No feed is touched, and none could be: the MLB player feed reports a
@@ -242,6 +269,7 @@ jobs:
           if [ "${{ inputs.backfill }}" = "true" ] \
              || [ "${{ inputs.rescore }}" = "true" ] \
              || [ "${{ inputs.reweight_mlb }}" = "true" ] \
+             || [ "${{ inputs.backdate }}" = "true" ] \
              || [ -n "${{ inputs.since }}" ]; then
             python -m whul.cli rollup --season "$SEASON" --backfill
           else

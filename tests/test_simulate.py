@@ -74,11 +74,13 @@ def test_the_roster_matches_the_league_template(simulated):
 
 
 def test_the_counting_slots_are_the_starter_counts(simulated):
-    """47 per manager, which is what caps the season at 4,700."""
+    """45 full seasons per manager. A simulated season records no games, so
+    its six best-performances slots stay empty rather than counting."""
     store, _ = simulated
     bars = pipeline.contributions(store, simulate.SIM_SEASON, END)
     counting = sum(g.starters for g in active_slots(ALL_SLOTS)) * len(simulate.MANAGERS)
-    assert int(bars["counts"].sum()) == counting == 235
+    assert int(bars["counts"].sum()) == counting == 225
+    assert set(bars.loc[bars["counts"] == 1, "scored_as"]) == {"season"}
 
 
 def test_no_asset_is_drafted_twice(simulated):
