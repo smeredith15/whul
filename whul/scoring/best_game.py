@@ -19,15 +19,20 @@ discount what was knowable at the draft, and a four-homer game was not.
 average everywhere.** Batters, starts and relief appearances are calibrated
 separately. See ``best_k``.
 
-**A two-way player's game is split within the game.** Whichever role scored
-more *in that game* counts in full and the other at half -- the season rule's
-1x / 0.5x, decided game by game rather than by the season's role. A game in
-which he played one role is that role alone. See ``two_way_game``.
+**Games of different roles trade at the ratio of their k's.** k is set so each
+role's slot is worth the same on average, so a game of a role with k games is
+1/k of the slot, and a player who played more than one role takes whichever
+whole combination scores most. See ``exchange``.
 
-**Starts and relief appearances are never mixed** by default: a pitcher's slot
-is his best n starts or his best m relief appearances, whichever is more. The
-exchange-rate reconciliation is here too, switched off, for the league to
-decide on. See ``pitcher_best``.
+**A pitcher's starts and relief appearances trade.** At the calibrated four
+starts and thirteen appearances, one start is worth about three appearances.
+See ``pitcher_best``.
+
+**A two-way player's appearance is decided within the game.** Whichever role
+scored more *in that game* counts in full and the other at half -- the season
+rule's 1x / 0.5x, decided game by game -- and the leading role is also what the
+appearance counts as against the slot. A game in which he played one role is
+that role alone. See ``two_way_game``, ``primary_role`` and ``two_way_best``.
 
 **The slots are filled in whichever way scores most.** A player with a strong
 season and a stronger handful of games may be worth more in the best-game slot,
@@ -40,7 +45,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from fractions import Fraction
+from typing import Iterable, Mapping, Sequence
 
 #: The season rule's weight on a two-way player's secondary role, reused so the
 #: game rule and the season rule cannot disagree about what "half" is.
@@ -81,30 +87,116 @@ def two_way_game(batting: float | None = None,
     return float(high + SECONDARY_ROLE_WEIGHT * low)
 
 
+def exchange(games: Mapping[str, Sequence[float]], k: Mapping[str, int]) -> float:
+    """The best whole combination of games from roles sharing one slot.
+
+    A game of role r is worth 1/k[r] of the slot, each k being the one
+    calibrated to make that role's slot worth the same on average -- so games
+    of different roles trade at the ratio of their k's. Every whole combination
+    that fits is tried: some number of games from each role but the last, from
+    none up to all the slot has room for, and the last role filling what is
+    left. Within a role the best games are always the ones taken. Any one role
+    alone is among the combinations, so this never scores below the best of
+    them taken separately.
+
+    Worked in exact fractions: a slot that is 3/4 spent has room for exactly
+    3.25 relief appearances at k=13, and a float that came to 3.2499999 would
+    quietly take two.
+    """
+    roles = [r for r in k if k[r] > 0]
+    if not roles:
+        return 0.0
+    ranked = {r: sorted(games.get(r, ()), reverse=True) for r in roles}
+
+    def search(i: int, room: Fraction) -> float:
+        role = roles[i]
+        cap = math.floor(room * k[role])
+        if i == len(roles) - 1:
+            return best_k(ranked[role], cap)
+        best = -math.inf
+        for count in range(0, cap + 1):
+            rest = room - Fraction(count, k[role])
+            best = max(best, best_k(ranked[role], count) + search(i + 1, rest))
+        return best
+
+    return float(search(0, Fraction(1)))
+
+
 def pitcher_best(starts: Sequence[float], reliefs: Sequence[float],
-                 n: int, m: int, mix: bool = False) -> float:
-    """A pitcher's slot: his best n starts or his best m relief appearances.
+                 n: int, m: int, mix: bool = True) -> float:
+    """A pitcher's slot: his starts and relief appearances, traded.
 
-    ``mix=False`` is the agreed rule. The two are never combined, so a pitcher
-    who did both takes whichever of the two is larger.
+    The agreed rule. n and m are calibrated so a pitcher's best n starts and a
+    reliever's best m appearances are worth the same on average, so a start is
+    1/n of the slot and an appearance 1/m, and a swingman takes whichever whole
+    combination of the two scores most. At n=4 and m=13 that is one start for
+    about three appearances.
 
-    ``mix=True`` is the proposed reconciliation, on record for the league to
-    decide. n and m are calibrated to be worth the same on average, so a start
-    is worth 1/n of the slot and a relief appearance 1/m -- an exchange rate of
-    m/n appearances per start. A pitcher may use any whole combination that
-    fits: s starts and the floor of (1 - s/n) * m appearances, for whichever s
-    scores most. Using all starts or all appearances is one of the choices, so
-    the mix can never score below the agreed rule; it only credits a swingman
-    whose best outings are split across both.
+    ``mix=False`` is the rule first agreed -- the better of the two taken apart
+    -- kept so the calibration can say what trading them changed.
     """
     if not mix:
         return max(best_k(starts, n), best_k(reliefs, m))
-    best = -math.inf
-    for s in range(0, n + 1):
-        # The small epsilon keeps 2.9999999 from flooring to 2.
-        r = math.floor((1 - s / n) * m + 1e-9) if n else m
-        best = max(best, best_k(starts, s) + best_k(reliefs, r))
-    return float(best)
+    return exchange({"start": starts, "relief": reliefs}, {"start": n, "relief": m})
+
+
+#: The roles an MLB appearance can count as.
+BAT, START, RELIEF = "bat", "start", "relief"
+
+
+def primary_role(batting: float | None, pitching: float | None,
+                 pitched: str = START, k: Mapping[str, int] | None = None) -> str:
+    """The role an appearance counts as: whichever scored more in it.
+
+    The agreed rule for a two-way player. Both figures are on the league scale,
+    each against its own divisor, which is what makes them comparable at all.
+    The leading role is the 1x of ``two_way_game`` and the role the appearance
+    uses its slot budget as; the other is the 0.5x. So the night he threw six
+    innings and homered twice may count as a batting game, if the homers were
+    worth more.
+
+    ``pitched`` is the kind of pitching appearance it was, start or relief.
+    A tie scores the same whichever role it is called, so it is called the one
+    that costs less of the slot -- the one with the larger k -- which can never
+    score less.
+    """
+    if pitching is None:
+        return BAT
+    if batting is None:
+        return pitched
+    if batting > pitching:
+        return BAT
+    if pitching > batting:
+        return pitched
+    if k and k.get(pitched, 0) > k.get(BAT, 0):
+        return pitched
+    return BAT
+
+
+@dataclass(frozen=True)
+class Appearance:
+    """One game of a player who may have batted, pitched, or both."""
+
+    batting: float | None = None
+    pitching: float | None = None
+    started: bool = False
+
+
+def two_way_best(appearances: Sequence[Appearance], k: Mapping[str, int]) -> float:
+    """A two-way player's slot, across every role he played.
+
+    Each appearance is scored whole by ``two_way_game`` -- the leading role in
+    full, the other at half -- and counts as its leading role by
+    ``primary_role``. The slot then takes the best whole combination across
+    batting games, starts and relief appearances at their calibrated rates.
+    ``k`` needs all three.
+    """
+    by_role: dict[str, list[float]] = {}
+    for game in appearances:
+        pitched = START if game.started else RELIEF
+        role = primary_role(game.batting, game.pitching, pitched, k)
+        by_role.setdefault(role, []).append(two_way_game(game.batting, game.pitching))
+    return exchange(by_role, k)
 
 
 @dataclass(frozen=True)

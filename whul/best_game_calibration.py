@@ -13,9 +13,10 @@ divisors. Games are scored through ``whul.scoring.best_game``, so what is
 calibrated is exactly the rule as agreed:
 
 * counting stats only, at face value, no year multiplier;
-* a two-way player's game split 1x / 0.5x by which role led that game;
-* starts and relief appearances segregated, a pitcher's slot being whichever
-  of his best n starts or best m appearances is larger.
+* a two-way player's game split 1x / 0.5x by which role led that game, and
+  counted as that role;
+* games of different roles traded at the ratio of their k's -- which is why
+  each role's k is measured on its own, from pitchers who were that role.
 
 Population: per season and group, the draft-caliber players -- the top N by
 points per game among those past a minimum, N being the frozen benchmark
@@ -97,14 +98,16 @@ def equalising_k(means: dict[int, float], target: float) -> float:
 
 # --- the anchor ---------------------------------------------------------------
 
-def nfl_rows(scale: Scale, seasons=SEASONS, loader=None) -> pd.DataFrame:
-    """Draft-caliber NFL player-seasons, with best-k on the league scale."""
-    if loader is None:
-        from whul.sources.nflverse import load_player_stats as loader
-    raw = loader(list(seasons))
+def nfl_game_points(raw: pd.DataFrame) -> pd.DataFrame:
+    """nflverse's weekly lines, one row a regular-season game, with its points.
+
+    Scored with the league's own weights. ``key`` is the benchmark group the
+    frozen divisor is looked up by.
+    """
     raw = raw[resolve_str(raw, ["season_type"], default="REG") == "REG"]
     work = pd.DataFrame({
         "season": resolve_num(raw, ["season"]).astype(int),
+        "week": resolve_num(raw, ["week"]).astype(int),
         "player": resolve_str(raw, ["player_id", "gsis_id"]),
         "name": resolve_str(raw, ["player_display_name", "player_name"]),
         "position": resolve_str(raw, ["position", "position_group"]),
@@ -120,9 +123,17 @@ def nfl_rows(scale: Scale, seasons=SEASONS, loader=None) -> pd.DataFrame:
                          + resolve_num(raw, ["rushing_fumbles_lost"])
                          + resolve_num(raw, ["receiving_fumbles_lost"])),
     })
-    work = work[work["position"].isin(nfl_scoring.SCORING_POSITIONS)]
+    work = work[work["position"].isin(nfl_scoring.SCORING_POSITIONS)].copy()
     work["points"] = sum(work[c] * w for c, w in nfl_scoring.PLAYER_WEIGHTS.items())
     work["key"] = "NFL_" + work["position"]
+    return work
+
+
+def nfl_rows(scale: Scale, seasons=SEASONS, loader=None) -> pd.DataFrame:
+    """Draft-caliber NFL player-seasons, with best-k on the league scale."""
+    if loader is None:
+        from whul.sources.nflverse import load_player_stats as loader
+    work = nfl_game_points(loader(list(seasons)))
 
     rows = []
     for (season, key), block in work.groupby(["season", "key"]):
@@ -272,7 +283,11 @@ def mlb_games(subject: Subject, scale: Scale, log_loader=None) -> pd.DataFrame:
         rows.append({
             "game_pk": pk,
             "date": (arm or bat)[0],
-            "role": arm[1] if arm else "bat",
+            # The role that led the game is the one it counts as -- the rule
+            # for a two-way player, and trivially true for anyone else.
+            "role": rules.primary_role(
+                bat[1] if bat else None, arm[2] if arm else None,
+                arm[1] if arm else rules.START),
             "score": rules.two_way_game(
                 batting=bat[1] if bat else None,
                 pitching=arm[2] if arm else None),
@@ -387,13 +402,17 @@ def render(report: Report) -> str:
             if math.isnan(n) or math.isnan(m):
                 continue
             n, m = max(1, round(n)), max(1, round(m))
-            seg = [rules.pitcher_best(r.starts, r.reliefs, n, m) for r in swing.itertuples()]
+            # Both named: the rule's default is the trade, and a comparison
+            # that took the default twice would report that trading changed
+            # nothing.
+            seg = [rules.pitcher_best(r.starts, r.reliefs, n, m, mix=False)
+                   for r in swing.itertuples()]
             mix = [rules.pitcher_best(r.starts, r.reliefs, n, m, mix=True)
                    for r in swing.itertuples()]
             gains = [b - a for a, b in zip(seg, mix)]
             helped = sum(g > 1e-9 for g in gains)
             say(f"    at the {name} anchor (n={n} starts, m={m} appearances): "
-                f"agreed rule {sum(seg) / len(seg):.1f} on average, mixed "
+                f"kept apart {sum(seg) / len(seg):.1f} on average, traded "
                 f"{sum(mix) / len(mix):.1f}; {helped} of {len(swing)} gain, "
                 f"by up to {max(gains):.1f}")
 
