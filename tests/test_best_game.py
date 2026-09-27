@@ -7,7 +7,8 @@ these. They are here so what was agreed is what the calibration measures.
 import pytest
 
 from whul.scoring.best_game import (
-    Candidate, best_configuration, best_k, pitcher_best, two_way_game,
+    Appearance, Candidate, best_configuration, best_k, exchange, pitcher_best,
+    primary_role, two_way_best, two_way_game,
 )
 
 
@@ -44,35 +45,52 @@ def test_a_role_he_did_not_play_is_absent_not_zero():
     assert two_way_game(batting=-0.3, pitching=0.0) == pytest.approx(0.0 - 0.15)
 
 
-# --- starts and relief appearances --------------------------------------------
+# --- starts and relief appearances: traded ----------------------------------
 
 STARTS = [5.0, 4.0, 1.0]
 RELIEFS = [2.0, 1.9, 1.8, 1.7, 0.5]
 
 
-def test_starts_and_relief_are_never_mixed_under_the_agreed_rule():
-    # best 2 starts = 9.0; best 4 reliefs = 7.4; the larger, not a blend.
+def test_starts_and_appearances_trade_at_the_ratio_of_their_ks():
+    """n=2 and m=4, so one start is two appearances. The choices are both
+    starts (9.0), one start and two appearances (5.0 + 2.0 + 1.9 = 8.9), or
+    four appearances (7.4)."""
     assert pitcher_best(STARTS, RELIEFS, n=2, m=4) == pytest.approx(9.0)
-    assert pitcher_best([2.0], RELIEFS, n=2, m=4) == pytest.approx(7.4)
 
 
-def test_the_mix_is_an_exchange_rate_and_never_scores_below_the_rule():
-    """n and m are calibrated to be worth the same, so one start is m/n relief
-    appearances. With n=2 and m=4 the choices are both starts (9.0), one start
-    and two appearances (5.0 + 2.0 + 1.9 = 8.9), or four appearances (7.4).
-    The agreed rule's answer is one of them, so the mix is never lower."""
-    mixed = pitcher_best(STARTS, RELIEFS, n=2, m=4, mix=True)
-    assert mixed >= pitcher_best(STARTS, RELIEFS, n=2, m=4)
-    assert mixed == pytest.approx(9.0)
-
-
-def test_the_mix_credits_a_swingman_whose_best_outings_are_split():
+def test_a_swingman_whose_best_outings_are_split_is_credited_for_both():
     """One big start and a run of strong relief: neither half alone shows it."""
     starts, reliefs = [6.0], [2.5, 2.4, 2.3, 0.1]
-    segregated = pitcher_best(starts, reliefs, n=2, m=4)       # max(6.0, 7.3)
-    mixed = pitcher_best(starts, reliefs, n=2, m=4, mix=True)  # 6.0 + 2.5 + 2.4
-    assert segregated == pytest.approx(7.3)
-    assert mixed == pytest.approx(10.9)
+    assert pitcher_best(starts, reliefs, n=2, m=4) == pytest.approx(6.0 + 2.5 + 2.4)
+
+
+def test_trading_never_scores_below_the_rule_first_agreed():
+    """Kept apart, a pitcher takes the better of the two alone. That is one of
+    the combinations the trade considers, so it can only add."""
+    for starts, reliefs in ((STARTS, RELIEFS), ([6.0], [2.5, 2.4, 2.3, 0.1]),
+                            ([], RELIEFS), (STARTS, [])):
+        apart = pitcher_best(starts, reliefs, n=2, m=4, mix=False)
+        assert pitcher_best(starts, reliefs, n=2, m=4) >= apart - 1e-12
+
+
+def test_the_room_left_is_counted_exactly():
+    """Three starts of four spend 3/4 of the slot, which at m=13 leaves room
+    for exactly 3.25 appearances -- three, not two because a float came to
+    3.2499999."""
+    starts = [10.0, 10.0, 10.0, -5.0]
+    reliefs = [1.0] * 13
+    # 3 starts + 3 appearances = 33.0, the best there is here.
+    assert pitcher_best(starts, reliefs, n=4, m=13) == pytest.approx(33.0)
+
+
+def test_three_roles_share_one_slot():
+    """A two-way player can have batting games, starts and relief outings in
+    one season, each role with its own k."""
+    games = {"bat": [3.0, 2.0, 1.0, 1.0], "start": [6.0, 1.0], "relief": [2.0, 2.0]}
+    k = {"bat": 4, "start": 2, "relief": 4}
+    # One start (1/2) + two batting games (1/2): 6.0 + 3.0 + 2.0 = 11.0 beats
+    # any one role alone (7.0, 7.0, 4.0) and the other mixes.
+    assert exchange(games, k) == pytest.approx(11.0)
 
 
 # --- the highest-scoring configuration ----------------------------------------
@@ -129,28 +147,48 @@ def test_a_tie_goes_to_what_plain_best_ball_would_have_chosen():
     assert set(found.season) == {"A", "B"} and found.best == "C"
 
 
-# --- a two-way player's slot --------------------------------------------------
+# --- a two-way player's slot -------------------------------------------------
 
-from whul.scoring.best_game import two_way_best  # noqa: E402
-
-
-def test_a_two_way_slot_trades_pitching_games_for_batting_games():
-    """n=2 pitching games or m=6 batting games fill the slot, so one pitching
-    game trades for three batting games. One gem and his three best nights at
-    the plate beat both two pitching games and six batting games."""
-    pitching = [9.0, 2.0]                  # whole games, both lines counted
-    batting = [3.0, 2.9, 2.8, 0.4, 0.3, 0.2]
-    assert two_way_best(pitching, batting, n=2, m=6) == pytest.approx(9.0 + 8.7)
-    assert best_k(pitching, 2) == pytest.approx(11.0)
-    assert best_k(batting, 6) == pytest.approx(9.6)
+K = {"bat": 10, "start": 4, "relief": 13}
 
 
-def test_a_two_way_slot_is_never_below_either_role_alone():
-    pitching, batting = [9.0, 8.5], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-    got = two_way_best(pitching, batting, n=2, m=6)
-    assert got >= max(best_k(pitching, 2), best_k(batting, 6))
-    assert got == pytest.approx(17.5)
+def test_an_appearance_counts_as_the_role_that_led_it():
+    """The night he threw six innings and homered twice counts as a batting
+    game if the homers were worth more -- that role in full, the pitching at
+    half, and the batting game's share of the slot."""
+    assert primary_role(batting=6.0, pitching=4.0, pitched="start") == "bat"
+    assert primary_role(batting=1.0, pitching=4.0, pitched="start") == "start"
+    assert primary_role(batting=None, pitching=4.0, pitched="relief") == "relief"
+    assert primary_role(batting=1.0, pitching=None) == "bat"
+
+
+def test_a_tie_counts_as_the_role_that_costs_less_of_the_slot():
+    """Either way it scores the same, so it is called the role with the larger
+    k, which can never score less."""
+    assert primary_role(2.0, 2.0, "start", K) == "bat"      # 10 > 4
+    assert primary_role(2.0, 2.0, "relief", K) == "relief"  # 13 > 10
+
+
+def test_a_two_way_slot_trades_across_every_role_he_played():
+    """Two gems that led their games, and ten batting nights. One pitching
+    game is 2.5 batting games at these k's."""
+    games = ([Appearance(batting=0.5, pitching=9.0, started=True)] * 2
+             + [Appearance(batting=2.0)] * 10)
+    pitching_game = two_way_game(batting=0.5, pitching=9.0)   # 9.25
+    # Both starts (1/2) and five batting games (1/2): 18.5 + 10.0 = 28.5.
+    assert two_way_best(games, K) == pytest.approx(2 * pitching_game + 5 * 2.0)
+
+
+def test_a_pitching_night_his_bat_won_is_a_batting_game():
+    """Three homers and a rough start: the batting led, so the whole game --
+    batting in full, the start at half -- is spent as a batting game, and the
+    four starts' worth of room stays free for real starts."""
+    games = [Appearance(batting=5.0, pitching=1.0, started=True)]
+    assert two_way_best(games, K) == pytest.approx(5.0 + 0.5 * 1.0)
+    role = primary_role(5.0, 1.0, "start", K)
+    assert role == "bat"
 
 
 def test_a_season_he_never_pitched_is_a_batters_slot():
-    assert two_way_best([], [3.0, 2.0, 1.0], n=2, m=2) == pytest.approx(5.0)
+    games = [Appearance(batting=b) for b in (3.0, 2.0, 1.0)]
+    assert two_way_best(games, {"bat": 2, "start": 4, "relief": 13}) == pytest.approx(5.0)

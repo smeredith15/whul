@@ -181,3 +181,27 @@ def test_a_player_whose_log_cannot_be_read_is_reported_not_fatal(monkeypatch):
     report = _run(monkeypatch, flaky)
     assert any("Closer" in line and "404" in line for line in report.failures)
     assert "Setup" in set(report.mlb["name"])
+
+
+def test_a_pitching_night_his_bat_won_is_labelled_a_batting_game():
+    """Three homers and a short start: the batting led, so the appearance
+    counts as a batting game, with the pitching at half."""
+    subject = calibration.Subject("9", "Two-Way", 2025, "Batter", two_way=True)
+    bat = {"atBats": 4, "hits": 3, "doubles": 0, "triples": 0, "homeRuns": 3,
+           "baseOnBalls": 0, "hitByPitch": 0, "stolenBases": 0, "caughtStealing": 0}
+    pitch = {"inningsPitched": "1.0", "strikeOuts": 0, "hits": 3,
+             "baseOnBalls": 2, "hitByPitch": 0, "homeRuns": 1, "saves": 0,
+             "holds": 0, "gamesStarted": 1}
+
+    def logs(pid, season, group):
+        stat = bat if group == "hitting" else pitch
+        return pd.DataFrame([log_row(1, "2025-06-01", **stat)])
+
+    game = calibration.mlb_games(subject, SCALE, log_loader=logs).iloc[0]
+    batting = (4 * scoring.BATTER_WEIGHTS["ab"] + 3 * scoring.BATTER_WEIGHTS["h"]
+               + 3 * scoring.BATTER_WEIGHTS["hr"])
+    w = scoring.PITCHER_WEIGHTS
+    pitching = w["ip"] + 3 * w["h"] + 2 * w["bb"] + w["hr"]
+    assert batting > pitching
+    assert game["role"] == "bat"
+    assert game["score"] == pytest.approx(batting + 0.5 * pitching)
