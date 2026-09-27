@@ -127,3 +127,30 @@ def test_a_tie_goes_to_what_plain_best_ball_would_have_chosen():
     found = best_configuration(roster, season_slots=2)
     assert found.total == 170
     assert set(found.season) == {"A", "B"} and found.best == "C"
+
+
+# --- a two-way player's slot --------------------------------------------------
+
+from whul.scoring.best_game import two_way_best  # noqa: E402
+
+
+def test_a_two_way_slot_trades_pitching_games_for_batting_games():
+    """n=2 pitching games or m=6 batting games fill the slot, so one pitching
+    game trades for three batting games. One gem and his three best nights at
+    the plate beat both two pitching games and six batting games."""
+    pitching = [9.0, 2.0]                  # whole games, both lines counted
+    batting = [3.0, 2.9, 2.8, 0.4, 0.3, 0.2]
+    assert two_way_best(pitching, batting, n=2, m=6) == pytest.approx(9.0 + 8.7)
+    assert best_k(pitching, 2) == pytest.approx(11.0)
+    assert best_k(batting, 6) == pytest.approx(9.6)
+
+
+def test_a_two_way_slot_is_never_below_either_role_alone():
+    pitching, batting = [9.0, 8.5], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    got = two_way_best(pitching, batting, n=2, m=6)
+    assert got >= max(best_k(pitching, 2), best_k(batting, 6))
+    assert got == pytest.approx(17.5)
+
+
+def test_a_season_he_never_pitched_is_a_batters_slot():
+    assert two_way_best([], [3.0, 2.0, 1.0], n=2, m=2) == pytest.approx(5.0)

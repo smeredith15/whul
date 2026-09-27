@@ -24,6 +24,11 @@ more *in that game* counts in full and the other at half -- the season rule's
 1x / 0.5x, decided game by game rather than by the season's role. A game in
 which he played one role is that role alone. See ``two_way_game``.
 
+**A two-way player's slot trades pitching games for batting games.** A game he
+pitched in is a pitching game, worth 1/n of the slot; one he only batted in is
+a batting game, worth 1/m; the slot takes the best whole combination. See
+``two_way_best``.
+
 **Starts and relief appearances are never mixed** by default: a pitcher's slot
 is his best n starts or his best m relief appearances, whichever is more. The
 exchange-rate reconciliation is here too, switched off, for the league to
@@ -99,12 +104,43 @@ def pitcher_best(starts: Sequence[float], reliefs: Sequence[float],
     """
     if not mix:
         return max(best_k(starts, n), best_k(reliefs, m))
+    return exchange_best(starts, reliefs, n, m)
+
+
+def exchange_best(first: Sequence[float], second: Sequence[float],
+                  n: int, m: int) -> float:
+    """The best whole combination of games from two roles sharing one slot.
+
+    A game of the first role is worth 1/n of the slot and a game of the second
+    1/m, n and m being the k's calibrated to make each role's slot worth the
+    same on average -- so m/n games of the second trade for one of the first.
+    Every whole combination that fits is tried: s games of the first and the
+    floor of (1 - s/n) * m of the second, for each s from none to n. All of
+    one role is among them, so this never scores below the better of the two
+    taken alone.
+    """
     best = -math.inf
     for s in range(0, n + 1):
         # The small epsilon keeps 2.9999999 from flooring to 2.
         r = math.floor((1 - s / n) * m + 1e-9) if n else m
-        best = max(best, best_k(starts, s) + best_k(reliefs, r))
+        best = max(best, best_k(first, s) + best_k(second, r))
     return float(best)
+
+
+def two_way_best(pitching_games: Sequence[float], batting_games: Sequence[float],
+                 n: int, m: int) -> float:
+    """A two-way player's slot: his pitching games and batting games, traded.
+
+    The agreed rule. A game in which he pitched is a pitching game, worth 1/n
+    of the slot, where n is the pitching role's k; its score is still the whole
+    game's, both lines split 1x / 0.5x by ``two_way_game``, because the batting
+    points count whether or not they led. A game in which he only batted is a
+    batting game, worth 1/m, m being the batter's k. The slot takes whichever
+    whole combination of the two scores most -- the exchange rate the swingman
+    proposal uses, and here the rule rather than an option, since nobody would
+    call a two-way player's season one role or the other.
+    """
+    return exchange_best(pitching_games, batting_games, n, m)
 
 
 @dataclass(frozen=True)
