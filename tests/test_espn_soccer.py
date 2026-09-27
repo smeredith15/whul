@@ -255,7 +255,7 @@ def test_a_league_that_returns_nothing_costs_that_league_only(monkeypatch, capsy
 
     silent = {"epl", "facup", "efl_cup", "ucl", "uel", "uecl"}
 
-    def some(league, seasons, verbose=True, session=None):
+    def some(league, seasons, verbose=True, session=None, clubs=None):
         return pd.DataFrame() if league in silent else squad_row(league, seasons)
 
     monkeypatch.setattr(source, "load_players", some)
@@ -275,7 +275,7 @@ def test_a_cup_that_returns_nothing_does_not_cost_the_league(monkeypatch, capsys
     from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
-    def some(league, seasons, verbose=True, session=None):
+    def some(league, seasons, verbose=True, session=None, clubs=None):
         return pd.DataFrame() if league != "epl" else squad_row(league, seasons)
 
     monkeypatch.setattr(source, "load_players", some)
@@ -296,7 +296,7 @@ def test_every_competition_a_clubs_players_appear_in_is_asked_for(monkeypatch):
 
     asked = []
 
-    def note(league, seasons, verbose=True, session=None):
+    def note(league, seasons, verbose=True, session=None, clubs=None):
         asked.append(league)
         return pd.DataFrame()
 
@@ -315,8 +315,8 @@ def test_each_row_says_which_competition_it_came_from(monkeypatch):
     from whul.sources import espn_soccer as source
 
     monkeypatch.setattr(source, "load_players",
-                        lambda league, seasons, verbose=True, session=None:
-                        squad_row(league, seasons))
+                        lambda league, seasons, verbose=True, session=None,
+                        clubs=None: squad_row(league, seasons))
     load, _ = SOURCES["soccer-players"].build()
     out = load([2025])
 
@@ -421,8 +421,13 @@ def test_a_player_yet_to_play_scores_nothing(monkeypatch):
 
 
 def test_a_whole_league_failing_is_reported_as_one_fact(monkeypatch, capsys):
-    """MLS 2027 has not been played, so ESPN lists its clubs and 404s every
-    roster in it. Thirty lines of HTTPError read like a broken adapter."""
+    """ESPN can list a season's clubs and 404 every roster in it. Thirty lines
+    of HTTPError read like a broken adapter.
+
+    The live case used to be MLS 2027 before February, which is now not asked
+    about at all -- see the test below. This keeps the one-fact report honest
+    for a season the calendar says has begun and the feed has nothing for,
+    which is the case a wrong season window or a lagging feed would produce."""
     from whul.sources import espn_soccer as source
 
     monkeypatch.setattr(source, "team_ids",
@@ -433,7 +438,7 @@ def test_a_whole_league_failing_is_reported_as_one_fact(monkeypatch, capsys):
         raise RuntimeError("404")
 
     monkeypatch.setattr(source, "load_squad", gone)
-    assert source.load_players("mls", [2027]).empty
+    assert source.load_players("epl", [2025]).empty
     out = capsys.readouterr().out
     assert "every club failed" in out
     assert "season nobody has played" in out
@@ -538,7 +543,7 @@ def attribution_fixture(monkeypatch, squads):
     from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
-    def some(league, seasons, verbose=True, session=None):
+    def some(league, seasons, verbose=True, session=None, clubs=None):
         rows = [squad_row(league, seasons, club=club).assign(player=player)
                 for player, club in squads.get(league, ())]
         return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
@@ -609,7 +614,7 @@ def test_a_shared_competition_is_pulled_once_however_many_leagues_play_it(
 
     asked = []
 
-    def note(league, seasons, verbose=True, session=None):
+    def note(league, seasons, verbose=True, session=None, clubs=None):
         asked.append(league)
         return pd.DataFrame()
 
@@ -755,7 +760,7 @@ def test_a_competition_that_returns_squads_without_statistics_says_so(
     from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
-    def some(league, seasons, verbose=True, session=None):
+    def some(league, seasons, verbose=True, session=None, clubs=None):
         if league == "epl":
             return squad_row(league, seasons)
         if league == "facup":
@@ -790,7 +795,7 @@ def test_the_champions_cup_is_not_pulled_and_the_reason_is_kept(monkeypatch):
 
     asked = []
 
-    def note(league, seasons, verbose=True, session=None):
+    def note(league, seasons, verbose=True, session=None, clubs=None):
         asked.append(league)
         return pd.DataFrame()
 
@@ -1297,3 +1302,158 @@ def test_a_team_with_no_squad_reports_rather_than_raising(monkeypatch):
     out = espn_soccer.compare_roster_and_overview("epl", "374519", 2027)
 
     assert "no squad for team 4771" in out["roster_error"]
+
+
+# --- asking only for what will be kept -------------------------------------
+#
+# A cup lists every club in it, and most of them play below the leagues anybody
+# here drafts from. On 2026-09-26 the EFL Cup listed 92 clubs, 72 outside our
+# six; the Europa Conference League 36, 31 outside. Every one of those rosters
+# was fetched, paid its politeness pause, and was then discarded by the
+# attribution below -- 213 of them in one night, and ~300 more that 404ed.
+
+
+def _listed(monkeypatch, clubs):
+    """Stub the club list, and record which rosters are then asked for."""
+    from whul.sources import espn_soccer as source
+
+    asked = []
+    monkeypatch.setattr(source, "team_ids",
+                        lambda league, season, session=None, note=None: dict(clubs))
+
+    def squad(league, team_id, season, session=None):
+        asked.append(team_id)
+        return squad_row(league, [season], club=team_id)
+
+    monkeypatch.setattr(source, "load_squad", squad)
+    return asked
+
+
+def test_a_cup_asks_only_for_our_clubs_rosters(monkeypatch, capsys):
+    from whul.sources import espn_soccer as source
+
+    asked = _listed(monkeypatch, {"Arsenal": "Arsenal", "Wrexham": "Wrexham",
+                                  "Chelsea": "Chelsea"})
+    out = source.load_players("efl_cup", [2025], clubs={"Arsenal", "Chelsea"})
+
+    assert sorted(asked) == ["Arsenal", "Chelsea"], "Wrexham's roster was fetched"
+    assert set(out["team"]) == {"Arsenal", "Chelsea"}
+
+
+def test_the_clubs_not_asked_for_are_named(monkeypatch, capsys):
+    """"Correctly not asked for" and "silently missing" read the same as a
+    count. A name you recognise in the list is how the two are told apart."""
+    from whul.sources import espn_soccer as source
+
+    _listed(monkeypatch, {"Arsenal": "Arsenal", "Wrexham": "Wrexham"})
+    source.load_players("efl_cup", [2025], clubs={"Arsenal"})
+
+    printed = capsys.readouterr().out
+    assert "Wrexham" in printed and "not asked for" in printed
+
+
+def test_a_league_pull_still_asks_for_every_club(monkeypatch):
+    """A league's own clubs are by definition ours, so it is never narrowed --
+    and it is the pull the list of ours is built from."""
+    from whul.sources import espn_soccer as source
+
+    asked = _listed(monkeypatch, {"Arsenal": "Arsenal", "Chelsea": "Chelsea"})
+    source.load_players("epl", [2025])
+    assert sorted(asked) == ["Arsenal", "Chelsea"]
+
+
+def test_the_cups_are_given_our_clubs_and_the_leagues_are_given_none(monkeypatch):
+    from whul.benchmark_sources import SOURCES
+    from whul.sources import espn_soccer as source
+
+    given = {}
+
+    def note(league, seasons, verbose=True, session=None, clubs=None):
+        given[league] = clubs
+        return squad_row(league, seasons)
+
+    monkeypatch.setattr(source, "load_players", note)
+    load, _ = SOURCES["soccer-players"].build()
+    load([2025])
+
+    for league in ("epl", "laliga", "seriea", "bundesliga", "ligue1", "mls"):
+        assert given[league] is None, f"{league} was narrowed"
+    ours = given["ucl"]
+    assert ours, "the Champions League was asked for everybody's rosters"
+    # Every club a league pull returned, and nothing else.
+    assert set(ours) == {squad_row(k, [2025])["team_id"].iloc[0]
+                         for k in ("epl", "laliga", "seriea", "bundesliga",
+                                   "ligue1", "mls")}
+    for cup in ("facup", "efl_cup", "dfbpokal", "coppaitalia", "uel", "uecl"):
+        assert given[cup] == ours
+
+
+def test_asking_only_for_our_clubs_changes_nothing_that_is_kept(monkeypatch):
+    """The whole saving rests on this. A cup row is kept only if its club is
+    one of ours, by the same id the narrowing uses -- so a roster for anyone
+    else was always fetched to be thrown away, and not fetching it must leave
+    every kept row exactly where it was."""
+    from whul.benchmark_sources import SOURCES, _players_in
+    from whul.sources import espn_soccer as source
+
+    squads = {
+        "epl": [("Saka", "Arsenal"), ("Palmer", "Chelsea")],
+        "laliga": [("Bellingham", "Real Madrid")],
+        "facup": [("Saka", "Arsenal"), ("Someone", "Wrexham"),
+                  ("Another", "Barnet")],
+        "efl_cup": [("Palmer", "Chelsea"), ("Else", "Accrington Stanley")],
+        "ucl": [("Saka", "Arsenal"), ("Bellingham", "Real Madrid"),
+                ("Stranger", "Club Brugge")],
+    }
+
+    def rows(league, seasons, clubs):
+        found = [squad_row(league, seasons, club=club).assign(player=player)
+                 for player, club in squads.get(league, ())
+                 if clubs is None or club in clubs]
+        return pd.concat(found, ignore_index=True) if found else pd.DataFrame()
+
+    def run(honour):
+        _players_in.cache_clear()
+        monkeypatch.setattr(
+            source, "load_players",
+            lambda league, seasons, verbose=True, session=None, clubs=None:
+            rows(league, seasons, clubs if honour else None))
+        load, _ = SOURCES["soccer-players"].build()
+        out = load([2025])
+        return out.sort_values(["competition_key", "player"]).reset_index(drop=True)
+
+    everything_then_discarded = run(honour=False)
+    only_ours = run(honour=True)
+
+    pd.testing.assert_frame_equal(only_ours, everything_then_discarded)
+    assert "Wrexham" not in set(only_ours["team"])
+
+
+def test_a_season_that_has_not_begun_is_not_asked_about(monkeypatch, capsys):
+    """MLS runs inside a calendar year, so our 2026-27 asks ESPN for 2027, which
+    opens in February. Until then every roster 404s: thirty requests a night to
+    learn that nobody has played. Far enough ahead that the test cannot age
+    into a season that has."""
+    from whul.sources import espn_soccer as source
+
+    def refuse(*a, **k):
+        raise AssertionError("asked about a season that has not begun")
+
+    monkeypatch.setattr(source, "team_ids", refuse)
+    monkeypatch.setattr(source, "load_squad", refuse)
+
+    assert source.load_players("mls", [2099]).empty
+    printed = capsys.readouterr().out
+    # Said out loud, with the date, so a wrong season window shows up in every
+    # nightly log instead of quietly scoring a league at zero.
+    assert "has not begun" in printed and "02-20" in printed
+
+
+def test_a_season_that_has_begun_is_still_asked_about(monkeypatch):
+    """The skip is only as good as the season window. A past season is always
+    begun, and must still be read."""
+    from whul.sources import espn_soccer as source
+
+    asked = _listed(monkeypatch, {"LAFC": "LAFC"})
+    assert not source.load_players("mls", [2024]).empty
+    assert asked == ["LAFC"]

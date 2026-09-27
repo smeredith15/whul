@@ -327,7 +327,8 @@ def team_ids(
 
 
 def load_players(
-    league: str, seasons: list[int], verbose: bool = True, session=None
+    league: str, seasons: list[int], verbose: bool = True, session=None,
+    clubs=None,
 ) -> pd.DataFrame:
     """Every player in a league, for each season given.
 
@@ -337,24 +338,64 @@ def load_players(
     A club that fails is reported and skipped rather than taking the league
     down with it: nineteen clubs' players are worth more than none, and the
     league that lost one says so.
+
+    ``clubs`` narrows the rosters fetched to those ESPN club ids. A cup lists
+    every club in it, and nearly all of them play below the leagues anybody
+    here drafts from: the EFL Cup listed 92 and 72 of them were outside our
+    six, and the loader used to fetch every one of those rosters and then
+    throw it away. The id is ESPN's own and global -- it is what the loader
+    already attributes a cup row by, after the fetch -- so asking only for
+    the ones that would have been kept returns the same rows without paying
+    for the others. The club list itself is still fetched, and the clubs left
+    out of it are named, because "correctly not asked for" and "silently
+    missing" otherwise look identical.
+
+    A season that has not begun is not asked about at all. MLS is the case:
+    our 2026-27 asks ESPN for 2027, which opens in February, and until then
+    every roster in it answers 404 -- thirty requests a night to confirm that
+    nobody has played yet. The opening date comes from ``SEASON_WINDOWS``,
+    and the skip is said out loud with it, so a window set wrong would be
+    visible in every run's log rather than quietly scoring a league at zero.
     """
     session = session or requests.Session()
+    wanted_ids = None if clubs is None else {str(c) for c in clubs}
     frames = []
     for season in seasons:
+        if not season_has_begun(league, season):
+            if verbose:
+                opens = SEASON_WINDOWS.get(league, ((0, 0),))[0]
+                print(f"  {league} {season}: ESPN's {roster_season(league, season)} "
+                      f"season opens {opens[0]:02d}-{opens[1]:02d} and has not "
+                      f"begun, so it is not asked about", flush=True)
+            continue
         why: list[str] = []
-        clubs = team_ids(league, season, session, note=why)
+        listed = team_ids(league, season, session, note=why)
         if verbose:
             for line in why:
                 print(f"    {league} {season}: {line}", flush=True)
-        if not clubs:
+        if not listed:
             if verbose:
                 print(f"  {league} {season}: no clubs listed, so no players",
                       flush=True)
             continue
+        if wanted_ids is None:
+            chosen = listed
+        else:
+            chosen = {club: tid for club, tid in listed.items()
+                      if str(tid) in wanted_ids}
         if verbose:
-            print(f"  {league} {season}: {len(clubs)} club(s) ...", flush=True)
+            if wanted_ids is None:
+                print(f"  {league} {season}: {len(listed)} club(s) ...", flush=True)
+            else:
+                left = sorted(set(listed) - set(chosen))
+                shown = ", ".join(left[:6])
+                more = f", and {len(left) - 6} more" if len(left) > 6 else ""
+                print(f"  {league} {season}: {len(listed)} club(s) listed, "
+                      f"{len(chosen)} from our leagues fetched"
+                      + (f"; {len(left)} outside them not asked for "
+                         f"({shown}{more})" if left else ""), flush=True)
         failed = []
-        for club, team_id in clubs.items():
+        for club, team_id in chosen.items():
             try:
                 frames.append(load_squad(league, team_id, season, session))
             except Exception as exc:  # noqa: BLE001 -- one club, not the league
@@ -365,7 +406,7 @@ def load_players(
         # read like a broken adapter; what they actually mean is that a season
         # has not been played, and the endpoint says so by 404ing every roster
         # in it while still listing the clubs.
-        if len(failed) == len(clubs):
+        if len(failed) == len(chosen):
             print(f"    every club failed ({failed[0][1]}). ESPN lists the clubs "
                   f"for {roster_season(league, season)} but has no roster in it, "
                   f"which is what a season nobody has played looks like.",
