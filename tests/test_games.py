@@ -329,5 +329,17 @@ def test_a_match_still_being_played_is_not_kept(store):
                           loaders={"soccer": lambda c, e: live})
     assert recorded(store, "st").empty
     assert any("could not read match e1" in p for p in report.problems)
-    assert store.scalar("SELECT COUNT(*) FROM feed_rows WHERE source = ?",
-                        (games.LINEUP_SOURCE,)) == 0
+    assert store.scalar("SELECT COUNT(*) FROM match_lineups") == 0
+
+
+def test_a_stored_lineup_is_not_read_as_a_fixture(store):
+    """The head-to-head table reads every ledger row as one fixture; a lineup
+    kept among them took the site down."""
+    from whul import headtohead
+
+    soccer_player(store, matches=1)
+    ledger(store, "epl", [match("e1", "2026-09-13")], key=lambda r: r["event_id"])
+    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                 loaders={"soccer": lambda c, e: summary()})
+    assert store.scalar("SELECT COUNT(*) FROM match_lineups") == 1
+    headtohead.meetings(store, SEASON)
