@@ -124,9 +124,14 @@ def _board(slug: str, start: date, end: date) -> dict:
     if (slug, span) in _BOARDS:
         return _BOARDS[(slug, span)]
     last: Exception | None = None
+    # A finished date is kept on disk: the date-at-a-time walk is three weeks
+    # of requests per slug, and only the last day or two can still change.
+    cache = (f"intl/{slug}/{start.isoformat()}"
+             if start == end and espn._has_settled(start) else None)
     for params in ({"dates": span, "limit": 900}, {"dates": span}):
         try:
-            payload = espn._get(f"{espn.BASE}/soccer/{slug}/scoreboard", params)
+            payload = espn._get(f"{espn.BASE}/soccer/{slug}/scoreboard", params,
+                                cache_key=cache)
         except Exception as exc:  # noqa: BLE001 -- the next shape may answer
             if _status(exc) not in (400, 404):
                 raise

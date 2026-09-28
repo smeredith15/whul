@@ -171,9 +171,11 @@ def _past_the_ledger(games: pd.DataFrame, verbose: bool = True,
         if verbose:
             for line in flash.lines():
                 print(line, flush=True)
-    recent = one_per_match([f for f in found if f is not None and not f.empty])
+    known = set(games["home_team"]) | set(games["away_team"])
+    recent = one_per_match([in_ledger_spelling(f, known) for f in found
+                            if f is not None and not f.empty])
     if store is not None:
-        recent = _kept(store, recent, verbose)
+        recent = _kept(store, recent, verbose, known)
     if recent.empty:
         return games
     recent = recent[[since.get(g) is not None and d.date() > since[g]
@@ -206,7 +208,8 @@ def one_per_match(frames: list[pd.DataFrame]) -> pd.DataFrame:
     return rows[keep].reset_index(drop=True)
 
 
-def _kept(store, recent: pd.DataFrame, verbose: bool) -> pd.DataFrame:
+def _kept(store, recent: pd.DataFrame, verbose: bool,
+          known: set[str] = frozenset()) -> pd.DataFrame:
     """Tonight's top-up written down, and everything the top-ups have found."""
     from whul.store import feed_ledger
 
@@ -225,7 +228,61 @@ def _kept(store, recent: pd.DataFrame, verbose: bool) -> pd.DataFrame:
     if verbose:
         print(f"  intl soccer: {len(window)} top-up match(es) tonight, "
               f"{len(held)} kept in all", flush=True)
-    return one_per_match([held])
+    return one_per_match([in_ledger_spelling(held, known)])
+
+
+#: Names no amount of normalizing turns into the ledger's.
+SPELLINGS = {
+    "central africa": "Central African Republic",
+    "china pr": "China",
+    "chinese taipei": "Taiwan",
+    "korea dpr": "North Korea",
+    "korea republic": "South Korea",
+    "kyrgyz republic": "Kyrgyzstan",
+    "east timor": "Timor-Leste",
+    "turkiye": "Turkey",
+    "czechia": "Czech Republic",
+}
+
+
+def _spelling_key(name) -> str:
+    """A name with the differences between feeds taken out of it.
+
+    Accents, "&" for "and", "St." for "Saint", "US" for "United States",
+    dots and hyphens. ESPN writes St. Lucia and Curaçao, Flashscore Saint Lucia
+    and Curacao, and the first night the top-ups ran, nine CONCACAF Nations
+    League matches were counted once under each spelling.
+    """
+    import unicodedata
+
+    text = unicodedata.normalize("NFKD", str(name or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch)).casefold()
+    text = text.replace("&", " and ").replace(".", "").replace("-", " ")
+    text = " ".join(text.split())
+    for short, long in (("st ", "saint "), ("us ", "united states ")):
+        if text.startswith(short):
+            text = long + text[len(short):]
+    return text
+
+
+def in_ledger_spelling(frame: pd.DataFrame, known) -> pd.DataFrame:
+    """The top-up's side names as the martj42 ledger spells them, where it can tell.
+
+    A side the ledger has never named keeps the feed's spelling.
+    """
+    if frame is None or frame.empty:
+        return frame
+    index = {_spelling_key(n): n for n in known if isinstance(n, str)}
+
+    def spell(name):
+        key = _spelling_key(name)
+        return index.get(key) or SPELLINGS.get(key) or name
+
+    out = frame.copy()
+    for column in ("home_team", "away_team", "shootout_winner"):
+        if column in out.columns:
+            out[column] = out[column].map(lambda v: spell(v) if isinstance(v, str) else v)
+    return out
 
 
 def _supplement(games: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
