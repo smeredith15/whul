@@ -227,9 +227,18 @@ def _shape(rows: pd.DataFrame) -> pd.DataFrame:
 
     every = rows[["gender", "competition", "edition"]].drop_duplicates()
     shape = every.merge(shape, on=["gender", "competition", "edition"], how="left")
+    # Stated shapes first, so an edition with none of its own inherits the
+    # stated one. Carried forward before, a CONCACAF Nations League edition in
+    # progress took 2024-25's shape as read off the ledger -- the reading the
+    # stated file exists to replace -- and two League C wins led the year.
+    shape = _stated(shape)
     shape = shape.sort_values(["gender", "competition", "edition"])
+    by = shape.groupby(["gender", "competition"])
     for column in ("G", "K"):
-        shape[column] = shape.groupby(["gender", "competition"])[column].ffill().bfill()
+        # Both directions within the competition. An ungrouped backward fill
+        # reached across into the next competition's shape.
+        shape[column] = by[column].ffill()
+        shape[column] = shape.groupby(["gender", "competition"])[column].bfill()
     # A competition with no completed edition at all has nothing to stand in,
     # and reading its own matches is better than scoring them at nothing.
     if not partial.empty:
@@ -238,7 +247,7 @@ def _shape(rows: pd.DataFrame) -> pd.DataFrame:
         for column in ("G", "K"):
             shape[column] = shape[column].fillna(pd.Series(fill[column].values,
                                                            index=shape.index))
-    return _stated(shape.dropna(subset=["G", "K"]))
+    return shape.dropna(subset=["G", "K"])
 
 
 def _stated(shape: pd.DataFrame) -> pd.DataFrame:
