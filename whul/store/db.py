@@ -97,6 +97,7 @@ ADDED_COLUMNS = (
     # scored today -- 'season', 'best', or '' for the bench.
     ("slot_scores", "best_score", "REAL NOT NULL DEFAULT 0"),
     ("slot_scores", "scored_as", "TEXT NOT NULL DEFAULT ''"),
+    ("game_scores", "phase", "TEXT NOT NULL DEFAULT 'regular'"),
 )
 
 

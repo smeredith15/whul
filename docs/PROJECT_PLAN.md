@@ -71,10 +71,12 @@ starter count. Nothing is set weekly; the best performers are selected continuou
 > NFL example: four rostered players scoring 100, 98, 97, 80 → only 100 + 98 count (K=2).
 
 The team sports' player categories add one **best-performances** slot, which counts a player's k best
-games at face value rather than a season: NFL 3 weeks, NBA 14 games, NHL 7, club soccer 6 domestic
+games at face value rather than a season: NFL 3 weeks, NBA 14 games, NHL 7, club soccer 6
 matches, MLB 10 games at the plate, 4 starts or 13 relief outings (traded at those rates). Each k is
-where a draft-caliber player's best games match an NFL player's best three weeks, 2021-25. Counting
-stats only. The category is filled whichever way scores most, so a player whose best games are worth
+where a draft-caliber player's best games match an NFL player's best three weeks, 2021-25, playoff
+games included. Counting stats only. Every game counts -- playoffs, the NBA Play-In, domestic cups
+and every European tie including qualifiers -- at face value with no multiplier; a player fills one
+slot at a time, so nothing is counted twice. The category is filled whichever way scores most, so a player whose best games are worth
 more than the gap to the next player's season moves into it. Games come from `game_scores`, one dated
 row per game (`whul.games`); the rules are `whul.scoring.best_game`; the selection is
 `whul.bestball.score_slots`.

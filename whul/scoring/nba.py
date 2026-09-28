@@ -129,15 +129,18 @@ def per_game(box: pd.DataFrame) -> pd.DataFrame:
     return work
 
 
-def game_points(box: pd.DataFrame) -> pd.DataFrame:
-    """Regular-season games only, each with its id, date and points."""
+def game_points(box: pd.DataFrame,
+                include: tuple[int, ...] = (SEASON_TYPE_REGULAR,)) -> pd.DataFrame:
+    """Each game of the kinds asked for -- the regular season unless told
+    otherwise -- with its id, date, ``season_type`` and points."""
     work = per_game(box)
     season_type = resolve_num(box, ["season_type"], default=SEASON_TYPE_REGULAR
                               ).reindex(work.index)
+    work["season_type"] = season_type
     work["game_id"] = resolve_str(box, ["game_id"]).reindex(work.index)
     work["game_date"] = resolve_str(box, ["game_date", "date"]).reindex(work.index)
     work["team"] = resolve_str(box, ["team", "team_abbreviation"]).reindex(work.index)
-    return work[season_type == SEASON_TYPE_REGULAR].reset_index(drop=True)
+    return work[season_type.isin(include)].reset_index(drop=True)
 
 
 def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:

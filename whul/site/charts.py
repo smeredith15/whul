@@ -1584,7 +1584,8 @@ SCRIPT = """\
   // pane as closes the season, over his best games instead of his season.
   function renderBest(best) {
     var rows = (best.games || []).map(function (g) {
-      var figs = (g.role ? '<span class="fig role">' + g.role + '</span>' : '') +
+      var figs = (g.phase ? '<span class="fig phase">' + g.phase + '</span>' : '') +
+        (g.role ? '<span class="fig role">' + g.role + '</span>' : '') +
         (g.figs || []).map(function (f) {
           return '<span class="fig">' + (f[0] ? '<b>' + f[0] + '</b>' : '') +
                  '<i>' + f[1] + '</i></span>';

@@ -460,6 +460,10 @@ CREATE TABLE IF NOT EXISTS game_scores (
     game_key    TEXT NOT NULL,
     date        TEXT NOT NULL,
     role        TEXT NOT NULL DEFAULT '',
+    -- 'regular' for what the season line is made of, 'playoffs', 'play-in',
+    -- or 'europe' for a club's European ties. Every phase counts toward best
+    -- performances; only 'regular' is checked against the season line.
+    phase       TEXT NOT NULL DEFAULT 'regular',
     points      REAL NOT NULL,
     score       REAL NOT NULL,
     opponent    TEXT NOT NULL DEFAULT '',

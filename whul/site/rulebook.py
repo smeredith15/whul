@@ -721,7 +721,7 @@ def _best_performances() -> Rules:
             item("NFL — best weeks", BEST_K["NFL"]),
             item("NBA — best games", BEST_K["NBA"]),
             item("NHL — best games", BEST_K["NHL"]),
-            item("Club soccer — best domestic matches", BEST_K["Club Soccer"]),
+            item("Club soccer — best matches", BEST_K["Club Soccer"]),
             item("MLB — best games at the plate", BEST_K["MLB bat"]),
             item("MLB — or best starts", BEST_K["MLB start"]),
             item("MLB — or best relief outings", BEST_K["MLB relief"]),
@@ -734,12 +734,19 @@ def _best_performances() -> Rules:
             "MLB's Offense, Defense and WAR are for a whole season and have no "
             "share in one game, so they are left out; no contract-year "
             "multiplier applies either.",
-            "European ties and playoff games are not in it: they are the "
-            "postseason bonus below, as they are for the season.",
+            "Every game counts, not only the regular season's: playoff "
+            "games, the NBA Play-In, and in club soccer the domestic cups and "
+            "every European tie, qualifying rounds included -- each scored "
+            "exactly like a regular-season game, with no multiplier. A player "
+            "fills one slot at a time, so a playoff game is never counted "
+            "twice: in the best-performances slot it counts as one of that "
+            "player's games, and in a season slot the postseason bonus below counts "
+            "instead.",
             f"Where the slot is: {where}.",
             "The numbers of games are set so the slot is worth the same in "
             "every sport: each is where a draft-caliber player's best games "
-            "match an NFL player's best three weeks, measured over 2021–25.",
+            "match an NFL player's best three weeks, measured over 2021–25 "
+            "with playoff games included.",
             "A pitcher's starts and relief outings share the slot at those "
             f"rates — one start is a {BEST_K['MLB start']}th of it and one "
             f"relief outing a {BEST_K['MLB relief']}th — and whichever "

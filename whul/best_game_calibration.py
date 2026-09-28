@@ -98,13 +98,16 @@ def equalising_k(means: dict[int, float], target: float) -> float:
 
 # --- the anchor ---------------------------------------------------------------
 
-def nfl_game_points(raw: pd.DataFrame) -> pd.DataFrame:
-    """nflverse's weekly lines, one row a regular-season game, with its points.
+def nfl_game_points(raw: pd.DataFrame, postseason: bool = False) -> pd.DataFrame:
+    """nflverse's weekly lines, one row a game, with its points.
 
-    Scored with the league's own weights. ``key`` is the benchmark group the
-    frozen divisor is looked up by.
+    Regular season only unless ``postseason``, in which case playoff weeks come
+    too, marked ``post``. Scored with the league's own weights. ``key`` is the
+    benchmark group the frozen divisor is looked up by.
     """
-    raw = raw[resolve_str(raw, ["season_type"], default="REG") == "REG"]
+    kind = resolve_str(raw, ["season_type"], default="REG")
+    raw = raw[kind.isin(["REG", "POST"] if postseason else ["REG"])]
+    post = (resolve_str(raw, ["season_type"], default="REG") == "POST").to_numpy()
     work = pd.DataFrame({
         "season": resolve_num(raw, ["season"]).astype(int),
         "week": resolve_num(raw, ["week"]).astype(int),
@@ -123,22 +126,28 @@ def nfl_game_points(raw: pd.DataFrame) -> pd.DataFrame:
                          + resolve_num(raw, ["rushing_fumbles_lost"])
                          + resolve_num(raw, ["receiving_fumbles_lost"])),
     })
+    work["post"] = post
     work = work[work["position"].isin(nfl_scoring.SCORING_POSITIONS)].copy()
     work["points"] = sum(work[c] * w for c, w in nfl_scoring.PLAYER_WEIGHTS.items())
     work["key"] = "NFL_" + work["position"]
     return work
 
 
-def nfl_rows(scale: Scale, seasons=SEASONS, loader=None) -> pd.DataFrame:
-    """Draft-caliber NFL player-seasons, with best-k on the league scale."""
+def nfl_rows(scale: Scale, seasons=SEASONS, loader=None,
+             postseason: bool = False) -> pd.DataFrame:
+    """Draft-caliber NFL player-seasons, with best-k on the league scale.
+
+    Chosen on regular-season form either way; ``postseason`` puts playoff
+    weeks among the games the best k are taken from.
+    """
     if loader is None:
         from whul.sources.nflverse import load_player_stats as loader
-    work = nfl_game_points(loader(list(seasons)))
+    work = nfl_game_points(loader(list(seasons)), postseason=postseason)
 
     rows = []
     for (season, key), block in work.groupby(["season", "key"]):
         divisor = scale.divisor[key]
-        games = block.groupby("player")["points"].agg(["size", "mean"])
+        games = block[~block["post"]].groupby("player")["points"].agg(["size", "mean"])
         games = games[games["size"] >= MIN_GAMES["NFL"]]
         chosen = games.sort_values("mean", ascending=False).head(scale.per_season[key])
         for player in chosen.index:
@@ -249,11 +258,13 @@ def mlb_population(season: int, scale: Scale, loader=None) -> list[Subject]:
     return subjects
 
 
-def mlb_games(subject: Subject, scale: Scale, log_loader=None) -> pd.DataFrame:
+def mlb_games(subject: Subject, scale: Scale, log_loader=None,
+              postseason: tuple[str, ...] = ()) -> pd.DataFrame:
     """One row per game: its role -- bat, start or relief -- and its score.
 
     A two-way player's game has both lines, split 1x / 0.5x by which led that
-    game. Anyone else is read for the role he was chosen in.
+    game. Anyone else is read for the role he was chosen in. ``postseason``
+    names the October rounds to read as well, one log a round.
     """
     from whul.sources import mlb
 
@@ -261,15 +272,22 @@ def mlb_games(subject: Subject, scale: Scale, log_loader=None) -> pd.DataFrame:
     wants_bat = subject.group == "Batter" or subject.two_way
     wants_arm = subject.group != "Batter" or subject.two_way
 
+    def read(group):
+        logs = [log_loader(subject.player_id, subject.season, group)]
+        logs += [log_loader(subject.player_id, subject.season, group, game_type=t)
+                 for t in postseason]
+        logs = [g for g in logs if g is not None and len(g)]
+        return pd.concat(logs, ignore_index=True) if logs else pd.DataFrame()
+
     batting: dict = {}
     if wants_bat:
-        log = log_loader(subject.player_id, subject.season, "hitting")
+        log = read("hitting")
         for row in mlb.game_points(log, "hitting").itertuples():
             batting[row.game_pk] = (row.date, 100 * row.points / scale.divisor["MLB_Batter"])
 
     pitching: dict = {}
     if wants_arm:
-        log = log_loader(subject.player_id, subject.season, "pitching")
+        log = read("pitching")
         started = dict(zip(log["game_pk"], _num(log, "gamesStarted"))) if len(log) else {}
         for row in mlb.game_points(log, "pitching").itertuples():
             role = "start" if started.get(row.game_pk, 0) >= 1 else "relief"
@@ -303,27 +321,50 @@ class Report:
     swing: pd.DataFrame
     failures: list[str] = field(default_factory=list)
     two_way: list[str] = field(default_factory=list)
+    postseason: bool = False
 
 
 def calibrate(store, seasons=SEASONS, season_label: str | None = None,
               verbose: bool = True, nfl_loader=None, line_loader=None,
-              log_loader=None) -> Report:
+              log_loader=None, postseason: bool = False,
+              post_loader=None) -> Report:
+    """``postseason`` counts playoff games among each player's games: the NFL's
+    playoff weeks in the anchor, and October's rounds for every MLB player
+    who played in them. The population is chosen on regular-season form
+    either way."""
     from whul.config.league import SEASON
+    from whul.sources import mlb as mlb_source
 
     scale = frozen_scale(store, season_label or SEASON.label)
     if verbose:
-        print(f"  NFL anchor, {seasons[0]}-{seasons[-1]} ...", flush=True)
-    nfl = nfl_rows(scale, seasons, loader=nfl_loader)
+        print(f"  NFL anchor, {seasons[0]}-{seasons[-1]}"
+              f"{', playoffs included' if postseason else ''} ...", flush=True)
+    nfl = nfl_rows(scale, seasons, loader=nfl_loader, postseason=postseason)
+    post_loader = post_loader or mlb_source.load_postseason_players
 
     rows, swing, failures, two_way = [], [], [], []
     for season in seasons:
         subjects = mlb_population(season, scale, loader=line_loader)
+        october: set[str] = set()
+        if postseason:
+            for group in ("hitting", "pitching"):
+                try:
+                    found = post_loader(season, group)
+                except Exception as exc:  # noqa: BLE001 -- a season, not the run
+                    failures.append(f"{season} postseason {group} lines: "
+                                    f"{type(exc).__name__}: {exc}")
+                    continue
+                if found is not None and len(found):
+                    october |= set(found["player_id"].astype(str))
         if verbose:
             counts = pd.Series([s.group for s in subjects]).value_counts().to_dict()
             print(f"  MLB {season}: {counts}", flush=True)
         for subject in subjects:
+            rounds = (mlb_source.POSTSEASON_GAME_TYPES
+                      if str(subject.player_id) in october else ())
             try:
-                games = mlb_games(subject, scale, log_loader=log_loader)
+                games = mlb_games(subject, scale, log_loader=log_loader,
+                                  postseason=rounds)
             except Exception as exc:  # noqa: BLE001 -- one player, not the run
                 failures.append(f"{subject.name} {season} ({subject.group}): "
                                 f"{type(exc).__name__}: {exc}")
@@ -347,7 +388,7 @@ def calibrate(store, seasons=SEASONS, season_label: str | None = None,
                          "two_way": subject.two_way,
                          **{f"best{k}": v for k, v in prefix(mine).items()}})
     return Report(tuple(seasons), nfl, pd.DataFrame(rows), pd.DataFrame(swing),
-                  failures, two_way)
+                  failures, two_way, postseason)
 
 
 # --- the report ---------------------------------------------------------------
@@ -366,7 +407,8 @@ def render(report: Report) -> str:
     first, last = report.seasons[0], report.seasons[-1]
     span = str(first) if first == last else f"{first}-{last}"
     say(f"\nBest-game calibration, {span}, on the frozen scale "
-        f"(a 99th-percentile season = 100)\n")
+        f"(a 99th-percentile season = 100)"
+        f"{', postseason games included' if report.postseason else ''}\n")
 
     nfl = _means(report.nfl)
     anchors = {"best week": nfl[1], "best three weeks": nfl[3]}

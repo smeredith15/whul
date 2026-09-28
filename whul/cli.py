@@ -2890,7 +2890,8 @@ def cmd_best_games(args: argparse.Namespace) -> int:
     else:
         seasons = tuple(int(x) for x in text.split(","))
 
-    report = calibration.calibrate(open_store(args.db), seasons)
+    report = calibration.calibrate(open_store(args.db), seasons,
+                                   postseason=args.postseason)
     print(calibration.render(report))
     if args.out:
         report.mlb.to_csv(f"{args.out}-mlb.csv", index=False)
@@ -4325,6 +4326,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="a range like 2021-2025, or a comma list")
     games.add_argument("--out", default="",
                        help="also write the per-player rows as <out>-mlb.csv and <out>-nfl.csv")
+    games.add_argument("--postseason", action="store_true",
+                       help="count playoff games too: NFL playoff weeks, MLB October")
     games.set_defaults(func=cmd_best_games)
 
     costs = sub.add_parser(
