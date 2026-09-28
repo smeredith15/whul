@@ -452,6 +452,17 @@ Four cautions, all of them the silent kind:
   August. Their seasons genuinely differ, but a stale file and a quiet season
   look identical, and seven of ten slots here are women's. The adapter has to
   report the ledger's own last date rather than infer a quiet week.
+
+  Both files lag in season, too: on 28 September 2026 neither held a match of
+  the September Nations League window, and every international slot read
+  zero. So each run tops them up past each file's last date from ESPN
+  (`whul/sources/intl_espn.py`) and from the Flashscore day feed
+  (`whul/sources/intl_flashscore.py`), ESPN's copy winning where both have a
+  match. Flashscore only shows the last week, so what the top-ups find is kept
+  in `feed_rows` under `intl-soccer-topup` and read back every run until the
+  file's own last date passes it. Each run names which source found what, the
+  status any ESPN slug was refused with, and the national-team competitions
+  Flashscore showed that the ladder does not score.
 * **The tournament name is the only key, it is not consistent, and it
   changes.** Men file the Gold Cup as `Gold Cup`; women file it as `CONCACAF
   Gold Cup`. Worse, the women's African championship appears under four names
