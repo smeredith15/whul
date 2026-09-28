@@ -37,6 +37,7 @@ See docs/INTL_SOCCER.md for the ladder itself and what it is worth.
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -65,7 +66,7 @@ COLUMNS = [
 
 
 def load_matches(
-    seasons: list[int] | None = None, verbose: bool = True
+    seasons: list[int] | None = None, verbose: bool = True, board=None,
 ) -> pd.DataFrame:
     """Every scoring match, classified, with its league year already decided.
 
@@ -76,6 +77,7 @@ def load_matches(
     """
     games = _ledgers(verbose=verbose)
     games = _supplement(games, verbose=verbose)
+    games = _past_the_ledger(games, verbose=verbose, board=board)
     kept, dropped = _classify(games)
     if verbose:
         _report_dropped(dropped)
@@ -119,6 +121,36 @@ def _ledgers(verbose: bool = True) -> pd.DataFrame:
                   f"latest {rows['date'].max().date()}", flush=True)
         frames.append(rows)
     return pd.concat(frames, ignore_index=True)
+
+
+def _past_the_ledger(games: pd.DataFrame, verbose: bool = True,
+                     board=None, today: date | None = None) -> pd.DataFrame:
+    """The matches played since each ledger's last date, from ESPN.
+
+    The ledgers lag by weeks; see ``whul.sources.intl_espn``. Only dates after
+    a gender's last ledger date are asked for, so nothing the ledger holds can
+    be counted twice, and a feed that cannot be reached leaves the ledgers as
+    they were.
+    """
+    from whul.sources import intl_espn
+
+    if games.empty:
+        return games
+    since = {str(g): pd.Timestamp(d).date()
+             for g, d in games.groupby("gender")["date"].max().items()}
+    report = intl_espn.Report()
+    try:
+        recent = intl_espn.matches(since, today or date.today(), board=board,
+                                   report=report)
+    except Exception as exc:  # noqa: BLE001 -- the ledgers still stand
+        print(f"  intl soccer (ESPN): not read ({type(exc).__name__}: {exc})", flush=True)
+        return games
+    if verbose:
+        for line in report.lines():
+            print(line, flush=True)
+    if recent.empty:
+        return games
+    return pd.concat([games, recent.drop(columns=["espn_event"])], ignore_index=True)
 
 
 def _supplement(games: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
