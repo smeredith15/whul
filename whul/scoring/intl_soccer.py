@@ -25,10 +25,14 @@ transfer, and this one is built to a design the league admin settled:
    Summing them put the United States' 2018-19, when they won the World Cup and
    the championship that qualified them for it, at twice the 99th percentile.
 
-5. **A fallow year is lifted** so the best rung the team actually played
-   reaches a full ceiling. Without it a European team's Nations League year
-   scores half its World Cup year for reasons of the calendar alone, and the
-   category goes quiet two years in three.
+5. **A league year is lifted by its calendar**, not by the team: the biggest
+   competition either gender plays that year sets one multiplier for every
+   team, so a World Cup year -- men's or women's, qualifying or finals -- is
+   scored at face value. It was per team until 28 September 2026, when a
+   single Nations League win was doubled as though the Nations League were
+   the biggest thing the year held; the year held the Women's World Cup. The
+   year in progress is read off ``whul/data/intl_calendar.csv`` as well as its
+   matches, so the lift is right before the tournament that sets it is played.
 
 See docs/INTL_SOCCER.md for how each of those was arrived at and what it does
 to real seasons.
@@ -44,6 +48,8 @@ from whul.scoring.competition import LEAGUE_WIN, Outcome, outcome_points
 from whul.scoring.soccer import BIG_MARGIN, PTS_BIG_MARGIN, PTS_CLEAN_SHEET
 
 EDITIONS = Path(__file__).resolve().parent.parent / "data" / "intl_editions.csv"
+CALENDAR = Path(__file__).resolve().parent.parent / "data" / "intl_calendar.csv"
+LADDER = Path(__file__).resolve().parent.parent / "data" / "intl_tournaments.csv"
 
 #: What a perfect run in a competition is worth, by rung. Deliberately shallow
 #: -- 2 : 1.5 : 1 rather than 3 : 2 : 1 -- because a steeper ladder let one
@@ -208,11 +214,30 @@ def _shape(rows: pd.DataFrame) -> pd.DataFrame:
         })
     shape = pd.DataFrame(known, columns=["gender", "competition", "edition", "G", "K"])
 
+    # An edition of the league year in progress is not read off its own
+    # matches: they are the part of it played so far. On 28 September 2026 the
+    # new Nations League had one or two matches a team, so it read as a
+    # two-match competition and one win paid a sixth of its ceiling -- 4.8
+    # times what the same win is worth in the six-match league phase and four
+    # knockout rounds it actually is. The last completed edition stands in, as
+    # it does for a qualifying campaign, and the stated file overrides both.
+    current = rows["season"].max()
+    partial = shape[shape["edition"] >= current]
+    shape = shape[shape["edition"] < current]
+
     every = rows[["gender", "competition", "edition"]].drop_duplicates()
     shape = every.merge(shape, on=["gender", "competition", "edition"], how="left")
     shape = shape.sort_values(["gender", "competition", "edition"])
     for column in ("G", "K"):
         shape[column] = shape.groupby(["gender", "competition"])[column].ffill().bfill()
+    # A competition with no completed edition at all has nothing to stand in,
+    # and reading its own matches is better than scoring them at nothing.
+    if not partial.empty:
+        keys = ["gender", "competition", "edition"]
+        fill = shape[keys].merge(partial, on=keys, how="left")
+        for column in ("G", "K"):
+            shape[column] = shape[column].fillna(pd.Series(fill[column].values,
+                                                           index=shape.index))
     return _stated(shape.dropna(subset=["G", "K"]))
 
 
@@ -337,7 +362,7 @@ def season_sections(rows: pd.DataFrame, shares: pd.DataFrame) -> dict:
     total says how much and cannot say where. What differs is that a club's
     competitions add up to its season and a national team's do not -- the best
     one counts whole, every other at half, and the year is then lifted so its
-    best rung reaches a full ceiling.
+    biggest competition, whoever played it, reaches a full ceiling.
 
     So a section carries two numbers. ``points`` is what the team earned there,
     which is the sum of the section's own boxes and can be read against its
@@ -386,9 +411,31 @@ def season_sections(rows: pd.DataFrame, shares: pd.DataFrame) -> dict:
     return out
 
 
+def year_rungs(rows: pd.DataFrame) -> dict[int, float]:
+    """The biggest ceiling each league year holds, whichever gender plays it.
+
+    What the matches show, raised to what ``intl_calendar.csv`` says the year
+    will hold. Both genders count because the category is one category: the
+    league admin's ruling, on seeing a men's Nations League win doubled in the
+    year of the Women's World Cup, was that the year's biggest tournament sets
+    the scale for everyone.
+    """
+    played = rows.groupby("season")["ceiling"].max()
+    tops = {int(k): float(v) for k, v in played.items()}
+    if CALENDAR.exists() and LADDER.exists():
+        ladder = pd.read_csv(LADDER, comment="#")
+        rung = dict(zip(zip(ladder["gender"], ladder["competition"]), ladder["rung"]))
+        for entry in pd.read_csv(CALENDAR, comment="#").itertuples():
+            ceiling = RUNG.get(rung.get((entry.gender, entry.competition), ""))
+            if ceiling is not None:
+                year = int(entry.season)
+                tops[year] = max(tops.get(year, 0.0), ceiling * SCALE)
+    return tops
+
+
 def _fold(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Team-seasons: the best competition whole, everything else at half,
-    then lifted so the year's best rung reaches a full ceiling.
+    then lifted so the year's biggest competition reaches a full ceiling.
 
     Returns the seasons and, beside them, what each competition was multiplied
     by to get there -- which is what a panel needs to say where a score came
@@ -425,7 +472,9 @@ def _fold(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         shootout_losses=("shootout_losses", "sum"), losses=("losses", "sum"),
         competitions=("competition", "size"), top_rung=("ceiling", "max"),
     )
-    out["lift"] = max(RUNG.values()) * SCALE / out["top_rung"]
+    out["year_rung"] = out["season"].map(year_rungs(rows)).fillna(out["top_rung"])
+    out["year_rung"] = out[["year_rung", "top_rung"]].max(axis=1)
+    out["lift"] = max(RUNG.values()) * SCALE / out["year_rung"]
     out["total_points"] = out["folded"] * out["lift"]
     out["league"] = out["gender"].map(LEAGUES)
     shares = ranked.assign(share=share).merge(

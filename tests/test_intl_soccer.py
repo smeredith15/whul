@@ -429,3 +429,76 @@ def test_narrowing_the_sections_does_not_change_them():
     assert list(narrowed["team"]) == list(full["team"])
     for one, two in zip(narrowed["sections"], full["sections"]):
         assert one == two
+
+
+# --- the year's lift and the edition in progress ---------------------------
+
+def _classified(rows):
+    frame = pd.DataFrame(rows)
+    frame["date"] = pd.to_datetime(frame["date"])
+    return frame
+
+
+def _match(day, season, gender, home, away, hs, as_, competition, rung, kind):
+    return {"date": day, "season": season, "gender": gender, "home_team": home,
+            "away_team": away, "home_score": hs, "away_score": as_,
+            "competition": competition, "rung": rung, "kind": kind,
+            "phase": "windows", "shootout_winner": None}
+
+
+def test_the_lift_is_the_years_and_either_gender_sets_it():
+    """A men's Nations League year is not lifted when the women play World Cup
+    qualifying in it: the year's biggest competition sets one scale for all."""
+    rows = [
+        _match("2021-09-05", 2021, "M", "Spain", "Italy", 2, 0,
+               "UEFA Nations League", "nations_league", "finals"),
+        _match("2021-09-06", 2021, "W", "Spain", "Italy", 1, 0,
+               "FIFA Women's World Cup", "world", "qualifying"),
+        _match("2019-09-05", 2019, "M", "Spain", "Italy", 2, 0,
+               "UEFA Nations League", "nations_league", "finals"),
+    ]
+    scored = scorer.score_teams(_classified(rows))
+    men = scored[(scored["league"] == "Men's Intl Soccer")
+                 & (scored["team"] == "Spain")].set_index("season")
+    assert men.loc[2021, "lift"] == 1.0
+    # A year holding nothing bigger than a Nations League, for anyone.
+    assert men.loc[2019, "lift"] == 2.0
+
+
+def test_the_calendar_sets_the_lift_before_the_tournament_is_played():
+    """2026-27 holds the Women's World Cup from June 2027; in September it is
+    already a World Cup year."""
+    rows = [_match("2026-09-25", 2026, "M", "Turkey", "France", 0, 1,
+                   "UEFA Nations League", "nations_league", "finals")]
+    scored = scorer.score_teams(_classified(rows))
+    assert scored.set_index("team").loc["France", "lift"] == 1.0
+
+
+def test_an_edition_in_progress_is_not_sized_by_its_first_matchday():
+    """One matchday of a long league phase is one match of it, not a one-match
+    competition: the last completed edition supplies the shape."""
+    rows = []
+    teams = ["A", "B", "C", "D"]
+    day = 1
+    # The completed edition: every team plays three group matches, and the
+    # champion two knockouts beyond them.
+    for i, home in enumerate(teams):
+        for away in teams[i + 1:]:
+            rows.append(_match(f"2024-09-{day:02d}", 2024, "M", home, away, 1, 0,
+                               "Test League", "nations_league", "finals"))
+            day += 1
+    rows.append(_match("2025-03-01", 2024, "M", "A", "B", 1, 0,
+                       "Test League", "nations_league", "finals"))
+    rows.append(_match("2025-03-05", 2024, "M", "A", "C", 1, 0,
+                       "Test League", "nations_league", "finals"))
+    # The new edition, one matchday in.
+    rows.append(_match("2026-09-25", 2026, "M", "A", "B", 1, 0,
+                       "Test League", "nations_league", "finals"))
+    rows.append(_match("2026-09-25", 2026, "M", "C", "D", 1, 0,
+                       "Test League", "nations_league", "finals"))
+    scored = scorer.score_teams(_classified(rows))
+    now = scored[scored["season"] == 2026].set_index("team")
+    # A 1-0 win is 3 for the win and 1 for the clean sheet, at the group
+    # stage's weight, against a path of 3 group matches and 2 knockouts.
+    path = scorer.MATCH_MAX * (3 * scorer.STAGE["group"] + 2 * scorer.STAGE["knockout"])
+    assert now.loc["A", "folded"] == pytest.approx(100 * scorer.STAGE["group"] * 4 / path)

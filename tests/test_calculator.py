@@ -243,12 +243,13 @@ def test_an_international_season_matches_the_scorer():
     quals = (3 * 3 + 1 * 1 + 2 * 1 + 2 * 1) * STAGE["qualifying"]
     group = ((3 * 3 + 3 * 1 + 3 * 1) + (1 * 3 + 0 + 1 * 1)) * STAGE["group"]
     knockout = (1 * 3 + 0 + 1 * 1) * STAGE["knockout"]
-    # The season's biggest rung is the federation cup, because it is the only
-    # thing Alpha played. Saying "World Cup" here would be describing a
-    # different season, and the lift would be 1 instead of 2/1.5 -- which is
-    # exactly the mistake the selector exists to let a reader make on purpose.
+    # The year's biggest competition is the World Cup even though Alpha played
+    # only a federation cup: 2026-27 holds the Women's World Cup
+    # (whul/data/intl_calendar.csv), and the lift is the year's, the same for
+    # every team. Saying "federation" here would lift by 2/1.5 and describe a
+    # year this is not.
     got = intl_total(quals + group + knockout, quals=4, group=4, knockout=1,
-                     rung="federation", best_rung="federation")
+                     rung="federation", best_rung="world")
     assert got == pytest.approx(alpha)
 
 

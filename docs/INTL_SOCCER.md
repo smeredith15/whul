@@ -206,7 +206,30 @@ inside one league year. The fold and the shallower rung ladder bring that to
 
 ### 6. A fallow year is scaled up
 
-**Adopted 2026-09-07.**
+**Replaced 2026-09-28** by the calendar rule below; the per-team rule is kept
+here because the benchmark frozen on 2026-09-07 was built with it.
+
+The first international window of 2026-27 scored France's single Nations
+League win at 39 on the 0-100 scale. Two faults compounded. The new edition's
+shape was read off its own first matchday, so it looked like a two-match
+competition (fixed: an edition of the year in progress takes the last
+completed edition's shape, or the stated one). And the lift doubled it,
+because the Nations League was the biggest thing France had played -- in the
+year of the Women's World Cup. The league admin's ruling:
+
+```
+multiplier = top ceiling / the biggest competition on the league year's calendar,
+             whichever gender plays it
+```
+
+One multiplier for every team in a league year. Every year holding a World Cup
+or its qualifying for either gender is ×1, which is nearly all of them; the
+year in progress reads `whul/data/intl_calendar.csv` so it is right before the
+tournament that sets it is played. Rescored under this rule the 2018-2025 pool
+falls from 165 to 136 (men) and 177 to 146 (women), so the benchmark has to be
+recomputed with it.
+
+The per-team rule, as adopted 2026-09-07:
 
 ```
 multiplier = top ceiling / the best rung the team actually played that season

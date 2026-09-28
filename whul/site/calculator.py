@@ -604,11 +604,12 @@ def _intl_soccer() -> Calc:
     * **Was this the season's best competition?** The best counts whole and
       everything after it at half, so a team that wins two trophies does not
       simply double.
-    * **The biggest rung played all season** sets the lift. A team whose year
-      contained no World Cup has its year scaled up so the best thing it did
-      play can still reach a full ceiling -- otherwise a European side's
-      Nations League year scores half its World Cup year for reasons of the
-      calendar alone.
+    * **The biggest competition on the year's calendar** sets the lift, men's
+      or women's, and it is the same for every team. A year holding a World
+      Cup or its qualifying for either gender is scored at face value; only a
+      year with nothing bigger than a continental championship is scaled up.
+      2026-27 holds the Women's World Cup, so it is a World Cup year for the
+      men's teams too.
     """
     outcome = {
         "win": OUTCOME_SHARE[Outcome.WIN],

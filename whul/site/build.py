@@ -2504,8 +2504,8 @@ def _intl_total(section: dict) -> dict:
 
     Two numbers because they are two things. A club's competitions add up to
     its season; a national team's do not -- the best one counts whole, every
-    other at half, and the year is then lifted so its best rung reaches a full
-    ceiling. So the big figure is what the team earned here, which is the sum
+    other at half, and the year is then lifted if its biggest competition, men's
+    or women's, sits below a World Cup. So the big figure is what the team earned here, which is the sum
     of this section's own boxes and can be read against its matches, and the
     superscript is what that became. The superscripts are what add up to the
     score.
@@ -2531,8 +2531,9 @@ def _intl_note(row: dict) -> str:
     """
     lift = float(row.get("lift") or 0)
     said = ("Best competition whole, every other at half"
-            + (f", then lifted ×{lift:,.2f} so the year's best rung reaches a "
-               f"full ceiling" if lift and abs(lift - 1.0) > 0.005 else "")
+            + (f", then lifted ×{lift:,.2f} because the biggest competition "
+               f"this year, men's or women's, sits below a World Cup"
+               if lift and abs(lift - 1.0) > 0.005 else "")
             + ".")
     return said
 

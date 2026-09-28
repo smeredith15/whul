@@ -442,9 +442,12 @@ def _intl_soccer_teams() -> Rules:
             "A team's year is its best competition in full plus "
             f"{num(BEYOND_BEST_SHARE * 100)}% of everything else, so winning two "
             "trophies does not simply double the score.",
-            "A year with no finals in it is lifted so the best competition the "
-            "team actually played still reaches a full ceiling — otherwise "
-            "European teams would go quiet two years in three.",
+            "A league year is scaled by the biggest competition on its "
+            "calendar, men's or women's, the same for every team: a year "
+            "holding a World Cup or its qualifying is scored at face value, and "
+            "only a year with nothing bigger than a continental championship "
+            "is lifted. 2026-27 holds the Women's World Cup, so nothing is "
+            "lifted this year.",
             "Friendlies, the Olympics and invitational tournaments score nothing.",
         ],
     )

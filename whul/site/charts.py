@@ -2111,7 +2111,7 @@ SCRIPT = """\
         function (value) { state.scale = value; show(); }));
     }
     if (calc.kind === 'intl') {
-      top.appendChild(picker('Biggest competition all season',
+      top.appendChild(picker('Biggest competition this year (men’s or women’s)',
         calc.ladder.rungs.map(function (r) { return r[0]; }), state.seasonRung,
         function (value) { state.seasonRung = value; show(); }));
     }
