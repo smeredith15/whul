@@ -48,7 +48,7 @@ from datetime import date
 
 import pandas as pd
 
-from whul.config.league import ALL_SLOTS, season_start
+from whul.config.league import ALL_SLOTS, SEASON, season_start
 from whul.store.db import Store, _as_text, _now
 
 #: The roster categories whose players have a best-performances slot, and the
@@ -562,6 +562,11 @@ def soccer_games(store: Store, players: list[Rostered], as_of,
         # pull keeps them under the competition's own key.
         everything = domestic | set(espn.continental_for(ledger))
         start, end = _window(league, as_of)
+        # From the league year's opening if the league itself opens later: a
+        # club's cup tie can come first -- Frankfurt played the DFB-Pokal on
+        # the 21st, a week before the Bundesliga began -- and the season line
+        # counts it, so its match record has to.
+        start = min(start, SEASON.start.isoformat())
         # Before the day, not on it: a match dated today may still be on.
         matches = [m for m in _ledger(store, ledger)
                    if str(m.get("competition_key")) in everything

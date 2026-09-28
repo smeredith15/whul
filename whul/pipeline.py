@@ -139,7 +139,10 @@ def game_records(store: Store, season: str, through: date | str | None = None
     """Every recorded game for the season, shaped for ``GameIndex``.
 
     Games dated before their league's start are dropped for the same reason
-    season scores are -- see ``_from_league_start``.
+    season scores are -- see ``_from_league_start`` -- except that the league
+    year's own opening is floor enough: a club can play a cup tie in the week
+    between the year opening and its league's first matchday, and the season
+    line counts it. Each sport's writer keeps to its own window besides.
     """
     sql = ("SELECT g.asset_id, g.game_key, g.date, g.role, g.score, a.league "
            "FROM game_scores g LEFT JOIN assets a ON a.asset_id = g.asset_id "
@@ -152,10 +155,10 @@ def game_records(store: Store, season: str, through: date | str | None = None
     if frame.empty:
         return frame
     frame["date"] = pd.to_datetime(frame["date"]).dt.date
-    return _from_league_start(frame)
+    return _from_league_start(frame, floor=SEASON.start)
 
 
-def _from_league_start(frame: pd.DataFrame) -> pd.DataFrame:
+def _from_league_start(frame: pd.DataFrame, floor: date | None = None) -> pd.DataFrame:
     """Drop scores dated before their league's results start counting.
 
     Ingest already refuses to record them, so this only ever catches rows
@@ -177,7 +180,8 @@ def _from_league_start(frame: pd.DataFrame) -> pd.DataFrame:
         return frame
     leagues = frame["league"].fillna("")
     starts = {
-        league: season_start(league) for league in leagues.unique() if league
+        league: (min(season_start(league), floor) if floor else season_start(league))
+        for league in leagues.unique() if league
     }
     keep = [
         not league or day >= starts[league]
