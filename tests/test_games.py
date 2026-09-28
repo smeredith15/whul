@@ -435,3 +435,40 @@ def test_mlb_october_rounds_are_read_once_october_can_have_started(store):
     assert set(rows["phase"]) == {"regular", "playoffs"}
     # October is not in the season line, so it is not held against it.
     assert report.problems == []
+
+
+
+def test_a_cup_tie_before_the_league_opens_is_his(store):
+    """Frankfurt's DFB-Pokal tie on the 21st, a week before the Bundesliga's
+    first matchday: inside the league year, and in his season line."""
+    history_row = pd.DataFrame([{"league": "Bundesliga", "role": "F", "season": y,
+                                 "total_points": 190} for y in (2023, 2024, 2025)])
+    bm.freeze(store, bm.save(store, bm.compute(pd.concat([history(), history_row]),
+                                               "Player", SEASON), SEASON, version="v3"))
+    hold(store, "yo", "Club Soccer Other", "Bundesliga", "F",
+         {"player": "Striker", "league": "Bundesliga", "team": "Arsenal",
+          "position": "F", "matches": 2})
+    ledger(store, "bundesliga",
+           [{**match("p1", "2026-08-21", "dfbpokal")},
+            {**match("b1", "2026-08-29", "bundesliga")},
+            {**match("x0", "2026-08-15", "dfbpokal")}],
+           key=lambda r: r["event_id"])
+    report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                          loaders={"soccer": lambda c, e: summary()})
+    assert list(recorded(store, "yo")["game_key"]) == ["p1", "b1"]
+    assert report.problems == []
+
+
+def test_the_rollup_keeps_a_cup_tie_before_the_league_opened(store):
+    store.upsert("assets", [{
+        "asset_id": "yo", "asset_type": "Player", "display_name": "Striker",
+        "league": "Bundesliga", "role": "F", "norm_key": "Bundesliga", "active": 1,
+        "created_at": "2026-08-21"}], keys=("asset_id",))
+    store.upsert("game_scores", [{
+        "season": SEASON, "asset_id": "yo", "game_key": k, "date": d, "role": "",
+        "phase": "regular", "points": 5.0, "score": 2.0, "opponent": "", "detail": "{}",
+        "source": "Club Soccer", "recorded_at": "x"}
+        for k, d in (("p1", "2026-08-21"), ("b1", "2026-08-29"), ("x0", "2026-08-15"))],
+        keys=("season", "asset_id", "game_key"))
+    kept = pipeline.game_records(store, SEASON, DAY)
+    assert sorted(kept["game_key"]) == ["b1", "p1"]
