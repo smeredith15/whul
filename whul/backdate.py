@@ -96,7 +96,10 @@ def rebuild(store: Store, season: str, write: bool = False,
     report = Report()
     restating: list[tuple] = []
     games = store.query(
-        "SELECT asset_id, date, points FROM game_scores WHERE season = ?", (season,))
+        # The regular season's games: they are what a season score is made
+        # of, and a playoff game in the ratio would spread October into August.
+        "SELECT asset_id, date, points FROM game_scores WHERE season = ? "
+        "AND phase = 'regular'", (season,))
     if games.empty:
         return report
     games["date"] = pd.to_datetime(games["date"]).dt.date

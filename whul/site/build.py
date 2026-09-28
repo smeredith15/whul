@@ -4624,10 +4624,11 @@ BEST_WORDS = {
     "NFL": "best 3 weeks",
     "NBA": "best 14 games",
     "NHL": "best 7 games",
-    "Club Soccer": "best 6 domestic matches",
+    "Club Soccer": "best 6 matches",
     "MLB": "best 10 games at the plate, 4 starts or 13 relief outings, "
            "traded at those rates",
 }
+# Every game counts: playoffs, the Play-In, cups and European ties included.
 
 
 def _figure_text(value: float) -> str:
@@ -4683,7 +4684,7 @@ def best_payloads(store, season: str, latest, bars: pd.DataFrame) -> dict[str, d
     day = latest if isinstance(latest, date) else date.fromisoformat(str(latest))
     index = GameIndex(pipeline.game_records(store, season, day))
     records = store.query(
-        "SELECT asset_id, game_key, date, role, points, score, opponent, detail "
+        "SELECT asset_id, game_key, date, role, phase, points, score, opponent, detail "
         "FROM game_scores WHERE season = ?", (season,))
     by_key = {(r.asset_id, r.game_key): r for r in records.itertuples()}
     slots = {s.slot_id: s for s in rosters.load_slots(store, season)}
@@ -4713,10 +4714,16 @@ def best_payloads(store, season: str, latest, bars: pd.DataFrame) -> dict[str, d
             opponent = str(record.opponent) if record is not None else ""
             role = {"start": "Start", "relief": "Relief", "bat": "At the plate"}.get(
                 game.role, "") if sport == "MLB" else ""
+            # Where the game was played, where that is not the regular season
+            # or the league: the playoffs, the Play-In, a cup or Europe.
+            phase = str(getattr(record, "phase", "") or "regular") if record is not None else ""
+            where = (str(detail.get("competition") or "")
+                     or {"playoffs": "Playoffs", "play-in": "Play-In"}.get(phase, ""))
             games.append({
                 "date": f"{game.date:%b} {game.date.day}",
                 "vs": f"v {opponent}" if opponent else "",
                 "role": role,
+                "phase": where,
                 "figs": _game_figures(sport, detail),
                 "score": f"{game.score:,.1f}",
                 "points": f"{float(record.points):,.1f}" if record is not None else "",
@@ -5325,7 +5332,8 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         "Every team-sport player's best games at face value, on the same scale "
         "as a season: the best 3 NFL weeks, 14 NBA games, 7 NHL games, 6 club "
         "soccer matches, and in MLB the best 10 games at the plate, 4 starts or "
-        "13 relief outings. Each category counts one player this way, "
+        "13 relief outings. Every game counts -- playoffs, the Play-In, cups and "
+        "European ties included. Each category counts one player this way, "
         "whichever arrangement scores most; the rest are faded and struck "
         "through. Click a bar for the games behind it.",
         f"{charts.legend(slotted, filterable=True)}"

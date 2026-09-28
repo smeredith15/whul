@@ -205,3 +205,37 @@ def test_a_pitching_night_his_bat_won_is_labelled_a_batting_game():
     assert batting > pitching
     assert game["role"] == "bat"
     assert game["score"] == pytest.approx(batting + 0.5 * pitching)
+
+
+def test_october_is_read_only_for_players_who_played_in_it(monkeypatch):
+    """One log a round for the players October's lines name, and nobody else."""
+    asked = []
+
+    def logs(pid, season, group, game_type="R"):
+        asked.append((str(pid), group, game_type))
+        return _logs(pid, season, group) if game_type == "R" else pd.DataFrame(
+            [log_row(900 + len(asked), "2025-10-05", **({"atBats": 4, "hits": 4, "doubles": 0,
+             "triples": 0, "homeRuns": 3, "baseOnBalls": 0, "hitByPitch": 0,
+             "stolenBases": 0, "caughtStealing": 0} if group == "hitting" else
+             {"inningsPitched": "9.0", "strikeOuts": 12, "hits": 0, "baseOnBalls": 0,
+              "hitByPitch": 0, "homeRuns": 0, "saves": 0, "holds": 0,
+              "gamesStarted": 1}))])
+
+    monkeypatch.setattr(calibration, "frozen_scale", lambda store, label: SCALE)
+    nfl = pd.DataFrame([
+        {"season": 2025, "season_type": t, "player_id": "A", "player_display_name": "A",
+         "position": "WR", "week": w, "receiving_yards": y, "receptions": 5}
+        for t, w, y in (("REG", 1, 100), ("REG", 2, 50), ("REG", 3, 20), ("POST", 19, 200))
+    ])
+    report = calibration.calibrate(
+        store=None, seasons=(2025,), verbose=False, postseason=True,
+        nfl_loader=lambda seasons: nfl, line_loader=lines, log_loader=logs,
+        post_loader=lambda season, group: pd.DataFrame([{"player_id": 1}]))
+
+    october = {pid for pid, _, t in asked if t != "R"}
+    assert october == {"1"}
+    # The playoff week is among the NFL anchor's games: 200 yards and five
+    # catches is 22.5 points, which displaces the 20-yard week's 4.5.
+    assert report.nfl.iloc[0]["best3"] == pytest.approx(22.5 + 12.5 + 7.5)
+    slugger = report.mlb[report.mlb["name"] == "Slugger"].iloc[0]
+    assert slugger["games"] == 3 + 4, "his four October rounds were not counted"

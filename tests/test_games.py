@@ -236,18 +236,23 @@ def test_a_match_is_scored_from_its_own_summary(store):
     ledger(store, "epl", [match("e1", "2026-09-13"), match("e2", "2026-09-20", "efl_cup"),
                           match("e3", "2026-09-17", "ucl")],
            key=lambda r: r["event_id"])
-    summaries = {"e1": summary(goals=2), "e2": summary(started=False, came_on=True, goals=0)}
+    summaries = {"e1": summary(goals=2), "e2": summary(started=False, came_on=True, goals=0),
+                 "e3": summary(goals=1)}
 
     report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
                           loaders={"soccer": lambda comp, event: summaries[event]})
     rows = recorded(store, "st")
     per_goal = soccer_scoring.goal_points_for("F")
 
+    # The Champions League tie counts too, labelled as the European game it
+    # is; the season line's two domestic matches still add up.
     assert report.problems == []
-    # The Champions League tie is a bonus, not a domestic match, and is not read.
-    assert list(rows["game_key"]) == ["e1", "e2"]
+    assert list(rows["game_key"]) == ["e1", "e3", "e2"]
     assert rows["points"].iloc[0] == pytest.approx(2 + 2 * per_goal - 1)
-    assert rows["points"].iloc[1] == pytest.approx(1 - 1)
+    assert rows["points"].iloc[2] == pytest.approx(1 - 1)
+    assert list(rows["phase"]) == ["regular", "europe", "regular"]
+    assert json.loads(rows["detail"].iloc[1])["competition"] == "Champions League"
+    assert json.loads(rows["detail"].iloc[2])["competition"] == "EFL Cup"
 
 
 def test_a_match_is_asked_about_once(store):
@@ -278,7 +283,7 @@ def test_matches_that_do_not_add_up_to_his_season_are_named(store):
     ledger(store, "epl", [match("e1", "2026-09-13")], key=lambda r: r["event_id"])
     report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
                           loaders={"soccer": lambda c, e: summary()})
-    assert any("Striker" in p and "1 match" in p for p in report.problems)
+    assert any("Striker" in p and "1 domestic match" in p for p in report.problems)
 
 
 # --- into the rollup ------------------------------------------------------------
@@ -343,3 +348,90 @@ def test_a_stored_lineup_is_not_read_as_a_fixture(store):
                  loaders={"soccer": lambda c, e: summary()})
     assert store.scalar("SELECT COUNT(*) FROM match_lineups") == 1
     headtohead.meetings(store, SEASON)
+
+
+
+# --- the postseason -----------------------------------------------------------
+
+def test_nfl_playoff_weeks_are_games_and_not_in_the_season_check(store):
+    hold(store, "qb", "NFL", "NFL", "QB",
+         {"player": "Quarterback", "player_id": "00-1", "position": "QB",
+          "regular_points": 0.04 * 300 + 4 * 3})
+    post = {**nfl_week(19, "2026_19_A_B", 400, 4), "season_type": "POST"}
+    ledger(store, "nfl", [nfl_week(1, "2026_01_A_B", 300, 3), post],
+           key=lambda r: f"{r['week']}")
+    ledger(store, "nfl-teams", [{"game_id": "2026_01_A_B", "gameday": "2026-09-13"},
+                                {"game_id": "2026_19_A_B", "gameday": "2027-01-10"}],
+           key=lambda r: r["game_id"])
+    report = games.record(store, SEASON, "2027-01-12", verbose=False, sports=("NFL",))
+    rows = recorded(store, "qb")
+    assert report.problems == []
+    assert list(rows["phase"]) == ["regular", "playoffs"]
+
+
+def test_the_nba_play_in_and_playoffs_are_games(store):
+    hold(store, "g", "NBA", "NBA", "G",
+         {"player": "Guard", "athlete_id": "11", "position": "G", "regular_points": 0})
+    box = {"season": 2027, "game_date": "2027-04-15", "team": "OKC", "athlete_id": "11",
+           "athlete_display_name": "Guard", "athlete_position_abbreviation": "G",
+           "points": 20, "rebounds": 5, "assists": 5, "steals": 0, "blocks": 0,
+           "turnovers": 2, "three_point_field_goals_made": 2, "plus_minus": "+3"}
+    ledger(store, "nba", [{**box, "game_id": "1", "season_type": 2},
+                          {**box, "game_id": "2", "season_type": 5},
+                          {**box, "game_id": "3", "season_type": 3},
+                          {**box, "game_id": "4", "season_type": 1}],
+           key=lambda r: r["game_id"])
+    history_row = pd.DataFrame([{"league": "NBA", "role": "G", "season": s,
+                                 "total_points": 4000} for s in (2023, 2024, 2025)])
+    bm.freeze(store, bm.save(store, bm.compute(pd.concat([history(), history_row]),
+                                               "Player", SEASON), SEASON, version="v2"))
+    games.record(store, SEASON, "2027-05-01", verbose=False, sports=("NBA",))
+    rows = recorded(store, "g").set_index("game_key")
+    assert rows["phase"].to_dict() == {"1": "regular", "2": "play-in", "3": "playoffs"}
+
+
+def test_nhl_playoff_logs_are_asked_for_only_once_they_can_have_started(store):
+    hold(store, "sk", "NHL", "NHL", "Skater",
+         {"player": "Skater", "player_id": "84", "role": "Skater", "total_points": 0})
+    asked = []
+
+    def logs(pid, season_id, game_type=2):
+        asked.append(game_type)
+        day = "2027-04-25" if game_type == 3 else "2026-10-08"
+        return {"gameLog": [{"gameId": game_type, "gameDate": day, "goals": 1,
+                             "assists": 0, "shots": 2, "plusMinus": 0}]}
+
+    games.record(store, SEASON, "2026-10-10", verbose=False, sports=("NHL",),
+                 loaders={"nhl": logs})
+    assert asked == [2]
+    asked.clear()
+    games.record(store, SEASON, "2027-04-30", verbose=False, sports=("NHL",),
+                 loaders={"nhl": logs})
+    assert asked == [2, 3]
+    assert set(recorded(store, "sk")["phase"]) == {"regular", "playoffs"}
+
+
+def test_mlb_october_rounds_are_read_once_october_can_have_started(store):
+    hold(store, "jr", "MLB", "MLB", "Batter",
+         {"player": "Jose Ramirez", "role": "Batter", "games": 1,
+          "season_lines": [{"ab": 4}]})
+    asked = []
+
+    def logs(pid, season, group, game_type="R"):
+        asked.append(game_type)
+        if season != 2026:
+            return log([])
+        day = "2026-09-05" if game_type == "R" else "2026-10-03"
+        return log([(f"{game_type}1", day, BAT)])
+
+    games.record(store, SEASON, "2026-09-27", verbose=False, sports=("MLB",),
+                 loaders={"mlb_lines": lines, "mlb_log": logs})
+    assert "F" not in asked
+    asked.clear()
+    report = games.record(store, SEASON, "2026-10-06", verbose=False, sports=("MLB",),
+                          loaders={"mlb_lines": lines, "mlb_log": logs})
+    assert {"R", "F", "D", "L", "W"} <= set(asked)
+    rows = recorded(store, "jr")
+    assert set(rows["phase"]) == {"regular", "playoffs"}
+    # October is not in the season line, so it is not held against it.
+    assert report.problems == []

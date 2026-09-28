@@ -959,6 +959,10 @@ dialog.profile .perf .fig i { font-style: normal; text-transform: uppercase;
   font-size: 9.5px; letter-spacing: 0.05em; color: var(--text-secondary); }
 dialog.profile .perf .fig.role { border-color: transparent; background: none;
   color: var(--muted); }
+/* A playoff game, the Play-In, a cup tie or a European night: marked, because
+   it is not the regular season the season score is made of. */
+dialog.profile .perf .fig.phase { border-color: var(--series-4); font-weight: 600;
+  background: color-mix(in srgb, var(--series-4) 14%, transparent); }
 dialog.profile .perf .pts { text-align: right; font-weight: 650;
   font-variant-numeric: tabular-nums; font-size: 14px; min-width: 44px; }
 dialog.profile .perf .pts small { display: block; font-weight: 500;

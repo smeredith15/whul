@@ -23,8 +23,15 @@ Where each sport's games come from:
 
 Only counting stats are in a game. MLB's Offense, Defense and WAR are run
 values for a season with no share in any one game, and no year multiplier
-applies -- see ``whul.scoring.best_game``. European matches are a season bonus
-in club soccer, not domestic matches, so they are not games here either.
+applies -- see ``whul.scoring.best_game``.
+
+Every game counts, not only the regular season's: playoff games, the NBA
+Play-In, and in club soccer the domestic cups and every European tie,
+qualifying rounds included. Each is scored exactly as a regular-season game is,
+on the same scale. ``phase`` says which kind a game was -- ``regular`` for what
+the season line is made of (a soccer player's league and domestic cups),
+``playoffs``, ``play-in``, or ``europe`` -- so the check against the season line
+reads only the games the season line holds.
 
 A game is written whether or not it will ever count: the slot's best k are
 chosen at rollup, from whatever the slot's occupants played while they held it.
@@ -59,6 +66,9 @@ SOCCER_LEDGERS = {
     "Ligue 1": "ligue1",
     "MLS": "mls",
 }
+
+#: What each phase is called where a game is listed.
+PHASE_LABELS = {"playoffs": "Playoffs", "play-in": "Play-In", "europe": ""}
 
 #: What a match summary calls each figure the soccer scorer reads. More than
 #: one name where ESPN has been seen to use more than one.
@@ -190,7 +200,8 @@ def nfl_games(store: Store, players: list[Rostered], as_of) -> tuple[list[dict],
     dates = {str(g.get("game_id")): str(g.get("gameday") or "")[:10]
              for g in _ledger(store, "nfl-teams")}
     # Scored rows keep the ledger rows' index, which is how each finds its game.
-    scored = nfl_game_points(raw)
+    # Playoff weeks come too.
+    scored = nfl_game_points(raw, postseason=True)
     start, end = _window("NFL", as_of)
     rows, problems = [], []
     for i, row in scored.iterrows():
@@ -204,6 +215,7 @@ def nfl_games(store: Store, players: list[Rostered], as_of) -> tuple[list[dict],
         rows.append({
             "asset_id": ids[str(row["player"])].asset_id,
             "game_key": game, "date": day, "role": "",
+            "phase": "playoffs" if bool(row["post"]) else "regular",
             "points": float(row["points"]), "norm_key": str(row["key"]),
             "opponent": str(raw.at[i, "opponent_team"]) if "opponent_team" in raw else "",
             "detail": {c: _number(row[c]) for c in NFL_DETAIL if _number(row[c])},
@@ -229,7 +241,8 @@ def nba_games(store: Store, players: list[Rostered], as_of) -> tuple[list[dict],
     raw = raw[raw["athlete_id"].astype(str).isin(ids)].reset_index(drop=True)
     if raw.empty:
         return [], []
-    games = nba.game_points(raw)
+    games = nba.game_points(raw, include=(nba.SEASON_TYPE_REGULAR, nba.SEASON_TYPE_POST,
+                                          nba.SEASON_TYPE_PLAYIN))
     games["league"] = "NBA"
     games["role"] = games["position"]
     games["norm_key"] = assign_norm_key(games, "Player")
@@ -242,6 +255,8 @@ def nba_games(store: Store, players: list[Rostered], as_of) -> tuple[list[dict],
         rows.append({
             "asset_id": ids[str(row.athlete_id)].asset_id,
             "game_key": str(row.game_id), "date": day, "role": "",
+            "phase": {nba.SEASON_TYPE_POST: "playoffs",
+                      nba.SEASON_TYPE_PLAYIN: "play-in"}.get(int(row.season_type), "regular"),
             "points": float(row.game_points), "norm_key": str(row.norm_key),
             "opponent": "",
             "detail": {c: _number(getattr(row, c)) for c in NBA_DETAIL
@@ -255,17 +270,26 @@ def nba_games(store: Store, players: list[Rostered], as_of) -> tuple[list[dict],
 NHL_FIELDS = {"goals": "goals", "assists": "assists", "shots": "shots",
               "plus_minus": "plusMinus"}
 
+#: (month, day) from which the NHL playoffs can have started.
+NHL_PLAYOFFS_FROM = (4, 1)
+
 
 def nhl_games(store: Store, players: list[Rostered], as_of,
               log_loader=None) -> tuple[list[dict], list[str]]:
     from whul.scoring import nhl as scoring
     from whul.sources import nhl as source
 
-    log_loader = log_loader or (lambda pid, season_id: source._web(
-        f"/player/{pid}/game-log/{season_id}/{source.GAME_TYPE_REGULAR}"))
+    log_loader = log_loader or (lambda pid, season_id, game_type=source.GAME_TYPE_REGULAR:
+                                source._web(f"/player/{pid}/game-log/{season_id}/{game_type}"))
     start, end = _window("NHL", as_of)
     # The season the league year's hockey is, by the API's own numbering.
-    season_id = source.season_id(date.fromisoformat(start).year + 1)
+    ends = date.fromisoformat(start).year + 1
+    season_id = source.season_id(ends)
+    # The playoffs are asked for once they can have started, so the rest of
+    # the year costs nothing.
+    kinds = [(source.GAME_TYPE_REGULAR, "regular")]
+    if end >= date(ends, *NHL_PLAYOFFS_FROM).isoformat():
+        kinds.append((source.GAME_TYPE_PLAYOFFS, "playoffs"))
     rows, problems = [], []
     for p in players:
         if str(p.line.get("role") or p.role) == scoring.GOALIE_ROLE:
@@ -275,12 +299,16 @@ def nhl_games(store: Store, players: list[Rostered], as_of,
             if p.line:
                 problems.append(f"NHL: {p.name} has no player id to ask for")
             continue
-        try:
-            payload = log_loader(pid, season_id)
-        except Exception as exc:  # noqa: BLE001 -- one player, not the run
-            problems.append(f"NHL: {p.name}: {type(exc).__name__}: {exc}")
-            continue
-        for game in (payload or {}).get("gameLog") or []:
+        logged = []
+        for game_type, phase in kinds:
+            try:
+                payload = (log_loader(pid, season_id) if game_type == source.GAME_TYPE_REGULAR
+                           else log_loader(pid, season_id, game_type))
+            except Exception as exc:  # noqa: BLE001 -- one player, not the run
+                problems.append(f"NHL: {p.name} ({phase}): {type(exc).__name__}: {exc}")
+                continue
+            logged += [(game, phase) for game in (payload or {}).get("gameLog") or []]
+        for game, phase in logged:
             day = str(game.get("gameDate") or "")[:10]
             if not (start <= day <= end):
                 continue
@@ -291,7 +319,8 @@ def nhl_games(store: Store, players: list[Rostered], as_of,
                       + stat["plus_minus"] * scoring.PTS_PLUS_MINUS)
             rows.append({
                 "asset_id": p.asset_id, "game_key": str(game.get("gameId")),
-                "date": day, "role": "", "points": points, "norm_key": "NHL",
+                "date": day, "role": "", "phase": phase, "points": points,
+                "norm_key": "NHL",
                 "opponent": str(game.get("opponentAbbrev") or ""),
                 "detail": {k: v for k, v in stat.items() if v},
             })
@@ -299,6 +328,9 @@ def nhl_games(store: Store, players: list[Rostered], as_of,
 
 
 # --- MLB ----------------------------------------------------------------------
+
+#: (month, day) from which a season's postseason can have started.
+MLB_OCTOBER_FROM = (9, 28)
 
 BAT_DETAIL = ("atBats", "hits", "doubles", "triples", "homeRuns", "baseOnBalls",
               "hitByPitch", "stolenBases", "caughtStealing")
@@ -340,15 +372,28 @@ def mlb_games(store: Store, players: list[Rostered], as_of, divisor: dict,
         batted = p.role == "Batter" or any(_number(s.get("ab")) for s in spans)
         pitched = p.role == "Pitcher" or any(_number(s.get("ip")) for s in spans)
         for year in years:
+            # October's rounds once the regular season can be over: one log a
+            # round, and nothing asked for the rest of the year.
+            rounds = (mlb.POSTSEASON_GAME_TYPES
+                      if end >= date(year, *MLB_OCTOBER_FROM).isoformat() else ())
             logs = {}
             for group, wanted in (("hitting", batted), ("pitching", pitched)):
                 if not wanted:
                     continue
-                try:
-                    logs[group] = log_loader(pid, year, group)
-                except Exception as exc:  # noqa: BLE001
-                    problems.append(f"MLB: {p.name} {year} {group}: "
-                                    f"{type(exc).__name__}: {exc}")
+                parts = []
+                for game_type in ("R", *rounds):
+                    try:
+                        log = (log_loader(pid, year, group) if game_type == "R"
+                               else log_loader(pid, year, group, game_type=game_type))
+                    except Exception as exc:  # noqa: BLE001
+                        problems.append(f"MLB: {p.name} {year} {group} {game_type}: "
+                                        f"{type(exc).__name__}: {exc}")
+                        continue
+                    if log is not None and len(log):
+                        parts.append(log.assign(
+                            _phase="regular" if game_type == "R" else "playoffs"))
+                if parts:
+                    logs[group] = pd.concat(parts, ignore_index=True)
             rows += _mlb_rows(p, logs, divisor, start, end, rules, mlb)
     return rows, problems
 
@@ -393,6 +438,7 @@ def _mlb_rows(p, logs, divisor, start, end, rules, mlb) -> list[dict]:
             "game_key": str(pk),
             "date": day,
             "role": role,
+            "phase": str(record.get("_phase") or "regular"),
             "points": (b[1] if b else 0.0) + (a[1] if a else 0.0),
             "score": rules.two_way_game(batting=bat_score, pitching=arm_score),
             "opponent": str(record.get("opponent") or ""),
@@ -437,6 +483,26 @@ def soccer_lineup(payload: dict) -> list[dict]:
                 "club": club, "started": started, **figures,
             })
     return out
+
+
+#: A competition's name as a game row shows it, by the feed's key.
+COMPETITION_LABELS = {
+    "ucl": "Champions League", "uel": "Europa League", "uecl": "Conference League",
+    "facup": "FA Cup", "efl_cup": "EFL Cup", "copadelrey": "Copa del Rey",
+    "dfbpokal": "DFB-Pokal", "coppaitalia": "Coppa Italia",
+    "coupedefrance": "Coupe de France", "usopencup": "US Open Cup",
+}
+
+
+def _competition_label(key: str, described: str) -> str:
+    """The competition's name, saying so where the tie was a qualifier."""
+    label = COMPETITION_LABELS.get(key, key)
+    words = described.lower()
+    if "qualif" in words:
+        label += " qualifying"
+    elif "playoff" in words or "play-off" in words or "knockout round play" in words:
+        label += " play-off"
+    return label
 
 
 def _finished(payload: dict) -> bool:
@@ -492,10 +558,13 @@ def soccer_games(store: Store, players: list[Rostered], as_of,
         if ledger is None:
             continue
         domestic = {ledger, *espn.DOMESTIC_CUPS.get(ledger, ())}
+        # Every European tie as well, qualifying rounds included: the team
+        # pull keeps them under the competition's own key.
+        everything = domestic | set(espn.continental_for(ledger))
         start, end = _window(league, as_of)
         # Before the day, not on it: a match dated today may still be on.
         matches = [m for m in _ledger(store, ledger)
-                   if str(m.get("competition_key")) in domestic
+                   if str(m.get("competition_key")) in everything
                    and start <= str(m.get("date") or "")[:10] < end
                    and m.get("goals_for") is not None]
         for p in mine:
@@ -526,19 +595,24 @@ def soccer_games(store: Store, players: list[Rostered], as_of,
                           + figures["assists"] * scoring.PTS_ASSIST
                           + figures["yellow"] * scoring.PTS_YELLOW
                           + figures["red"] * scoring.PTS_RED)
-                played += 1
+                key = str(match["competition_key"])
+                phase = "regular" if key in domestic else "europe"
+                played += phase == "regular"
+                label = _competition_label(key, str(match.get("competition") or ""))
                 rows.append({
                     "asset_id": p.asset_id, "game_key": str(match["event_id"]),
-                    "date": str(match["date"])[:10], "role": "",
+                    "date": str(match["date"])[:10], "role": "", "phase": phase,
                     "points": points, "norm_key": league,
                     "opponent": str(match.get("opponent") or ""),
                     "detail": {"started": entry["started"],
+                               **({"competition": label} if key != ledger else {}),
                                **{k: v for k, v in figures.items() if v}},
                 })
+            # Domestic matches only: they are what the season line counts.
             expected = _number(p.line.get("matches"))
             if expected and played != expected:
-                problems.append(f"Soccer: {p.name} has {played} match(es) on record "
-                                f"against {expected:g} in his season line")
+                problems.append(f"Soccer: {p.name} has {played} domestic match(es) "
+                                f"on record against {expected:g} in his season line")
     if missing_stats:
         problems.append(f"Soccer: {missing_stats} appearance(s) whose summary "
                         f"carried no goals/assists/cards; scored as appearances")
@@ -601,6 +675,10 @@ def reconcile(sport: str, players: list[Rostered], rows: list[dict]) -> list[str
         return []
     mine: dict[str, list[dict]] = {}
     for row in rows:
+        # The season line is the regular season's; playoff and European games
+        # are in the record and not in the line.
+        if row.get("phase", "regular") != "regular":
+            continue
         mine.setdefault(row["asset_id"], []).append(row)
     out = []
     for p in players:
@@ -637,7 +715,8 @@ def write(store: Store, season: str, rows: list[dict], divisor: dict,
         out.append({
             "season": season, "asset_id": row["asset_id"],
             "game_key": row["game_key"], "date": row["date"],
-            "role": row.get("role", ""), "points": round(float(row["points"]), 4),
+            "role": row.get("role", ""), "phase": row.get("phase", "regular"),
+            "points": round(float(row["points"]), 4),
             "score": round(float(score), 4), "opponent": row.get("opponent", ""),
             "detail": json.dumps(row.get("detail") or {}, sort_keys=True),
             "source": source, "recorded_at": now,

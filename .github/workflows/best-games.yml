@@ -20,6 +20,14 @@ on:
       seasons:
         description: "Seasons to measure, as a range or a comma list"
         default: "2021-2025"
+      postseason:
+        description: >-
+          Count playoff games among each player's games: the NFL's playoff
+          weeks in the anchor, October for every MLB player who played in it.
+          The best-performances slot counts them, so this is the calibration
+          that matches it.
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -49,10 +57,11 @@ jobs:
         # pipefail, or `tee` reports success however the command exited.
         env:
           SEASONS: ${{ inputs.seasons }}
+          POSTSEASON: ${{ inputs.postseason && '--postseason' || '' }}
         run: |
           set -o pipefail
           python -m whul.cli best-games --seasons "$SEASONS" --out best-games \
-            | tee best-games.txt
+            $POSTSEASON | tee best-games.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
