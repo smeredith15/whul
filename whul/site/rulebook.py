@@ -19,7 +19,9 @@ from whul.scoring.competition import (
     LEAGUE_WIN, OUTCOME_SHARE, CONTINENTAL_ENTRY_POINTS, CONTINENTAL_QUALIFYING_DISCOUNT,
     WIN_POINTS, Outcome, Tier,
 )
-from whul.scoring.intl_soccer import BEYOND_BEST_SHARE, MATCH_MAX, RUNG, STAGE
+from whul.scoring.intl_soccer import (
+    MATCH_MAX, RUNG, SCALE, SECONDARY_SHARE, STAGE, TITLE_BONUS,
+)
 from whul.scoring.postseason import DEFAULT_BONUS_SHARE, RULES
 
 MINUS = "−"
@@ -404,9 +406,9 @@ def _nhl_teams() -> Rules:
 # --- international soccer -------------------------------------------------
 
 RUNG_NAMES = {
-    "world": "World Cup and its qualifying",
-    "federation": "Euros, Copa América, AFCON, Asian Cup, Gold Cup and their qualifying",
-    "nations_league": "Nations League",
+    "world": "World Cup finals",
+    "federation": "Euros, Copa América, AFCON, Asian Cup, Gold Cup finals",
+    "nations_league": "Nations League, and every qualifying campaign",
 }
 
 STAGE_NAMES = {
@@ -434,20 +436,29 @@ def _intl_soccer_teams() -> Rules:
         + [item(RUNG_NAMES[key], value, "× multiplier")
            for key, value in RUNG.items()],
         [
-            "Each competition pays a fixed ceiling shared out along the "
-            "champion's own path, so winning the Gold Cup in six matches and "
-            "AFCON in seven are worth the same, and the 2026 World Cup's extra "
-            "round changes nothing about what a World Cup is worth. A perfect "
-            f"match is {num(MATCH_MAX)} points.",
-            "A team's year is its best competition in full plus "
-            f"{num(BEYOND_BEST_SHARE * 100)}% of everything else, so winning two "
-            "trophies does not simply double the score.",
-            "A league year is scaled by the biggest competition on its "
-            "calendar, men's or women's, the same for every team: a year "
-            "holding a World Cup or its qualifying is scored at face value, and "
-            "only a year with nothing bigger than a continental championship "
-            "is lifted. 2026-27 holds the Women's World Cup, so nothing is "
-            "lifted this year.",
+            "Each finals tournament pays a fixed ceiling shared out along the "
+            "champion's group and knockout path: a World Cup "
+            f"{num(RUNG['world'] * SCALE)}, a continental championship "
+            f"{num(RUNG['federation'] * SCALE)}, a Nations League "
+            f"{num(RUNG['nations_league'] * SCALE)}. So winning the Gold Cup in "
+            "six matches and AFCON in seven are worth the same, and a World Cup "
+            f"is worth twice a continental title. A perfect match is "
+            f"{num(MATCH_MAX)} points.",
+            "Qualifying is a competition of its own on the Nations League rung, "
+            "whatever it leads to, measured against the team's own campaign "
+            "(never shorter than the typical one).",
+            f"Winning a finals tournament adds {num(TITLE_BONUS * 100)}% of its "
+            "ceiling. Nations Leagues are left out.",
+            "A team's competitions are ranked by rung. The first counts in full "
+            "if it is on the biggest rung its gender plays that year, and in "
+            "proportion to its rung otherwise (a Nations League in a year with "
+            "continental championships counts two thirds); every other "
+            f"competition counts {num(SECONDARY_SHARE * 100)}%.",
+            "A league year is scaled by the biggest competition on its calendar, "
+            "men's or women's, the same for every team: a World Cup year is "
+            "scored at face value, a continental-championship year is doubled, "
+            "and a year of Nations Leagues and qualifying is tripled. 2026-27 "
+            "holds the Women's World Cup, so nothing is lifted this year.",
             "Friendlies, the Olympics and invitational tournaments score nothing.",
         ],
     )

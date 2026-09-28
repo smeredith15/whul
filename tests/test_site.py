@@ -3954,7 +3954,7 @@ def test_a_national_team_is_shown_the_way_a_club_is():
     assert [b["label"] for b in knockout["top"]] == ["W", "SO W", "L", "SO L"]
 
     # And the arithmetic between the sections and the score is on the page.
-    assert "half" in panel["note"] and "1.33" in panel["note"]
+    assert "a quarter" in panel["note"] and "1.33" in panel["note"]
 
 
 def test_a_club_soccer_panel_gains_nothing_from_the_international_one():

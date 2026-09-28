@@ -2449,6 +2449,11 @@ def _soccer_panel(row: dict) -> dict | None:
         elif kind == "international":
             block["head"] = _intl_head(section)
             block["total"] = _intl_total(section)
+            # The title bonus is in the section's points, so it has a box:
+            # without one the boxes would stop adding up to the section.
+            if section.get("title"):
+                block["outcomes"] = [_outcome_box(
+                    "Title", True, True, section.get("pts_title"))]
         phases = section.get("phases")
         if isinstance(phases, list) and phases:
             for phase in phases:
@@ -2503,9 +2508,10 @@ def _intl_total(section: dict) -> dict:
     """What the competition earned, and what that became in the season.
 
     Two numbers because they are two things. A club's competitions add up to
-    its season; a national team's do not -- the best one counts whole, every
-    other at half, and the year is then lifted if its biggest competition, men's
-    or women's, sits below a World Cup. So the big figure is what the team earned here, which is the sum
+    its season; a national team's do not -- the first counts whole or by its
+    rung, every other a quarter, and the year is then lifted if its biggest
+    competition, men's or women's, sits below a World Cup. So the big figure is
+    what the team earned here, which is the sum
     of this section's own boxes and can be read against its matches, and the
     superscript is what that became. The superscripts are what add up to the
     score.
@@ -2519,7 +2525,7 @@ def _intl_total(section: dict) -> dict:
         "label": "Earned", "value": f"{earned:,.1f}", "bare": True,
         "sup": f"→{counted:,.1f}",
         "suptitle": ("what this competition counted for in the season total, "
-                     "after the fold and the lift"),
+                     "after its weighting and the year's lift"),
     }
 
 
@@ -2530,9 +2536,11 @@ def _intl_note(row: dict) -> str:
     it they are three numbers a reader can add up.
     """
     lift = float(row.get("lift") or 0)
-    said = ("Best competition whole, every other at half"
-            + (f", then lifted ×{lift:,.2f} because the biggest competition "
-               f"this year, men's or women's, sits below a World Cup"
+    said = ("The first competition by rung counts in full, or by its rung when "
+            "it sits below the biggest its gender plays this year; every other "
+            "counts a quarter"
+            + (f". Then ×{lift:,.2f}, because the biggest competition this year, "
+               f"men's or women's, sits below a World Cup"
                if lift and abs(lift - 1.0) > 0.005 else "")
             + ".")
     return said

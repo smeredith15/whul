@@ -14,3 +14,5 @@
 # the rung. A row naming a competition the ladder does not know is ignored.
 season,gender,competition,note
 2026,W,FIFA Women's World Cup,"Brazil, 24 June to 25 July 2027; a block, so it scores whole in 2026-27"
+2026,M,Africa Cup of Nations,"East Africa, from June 2027; a block, so it scores whole in 2026-27. Sets the men's top rung for the year: continental"
+2026,M,AFC Asian Cup,"Saudi Arabia, January 2027"

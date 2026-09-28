@@ -6,7 +6,8 @@ USA) — and no adapter yet. Every one of them reads zero today, correctly: see
 [the calendar](#what-this-league-year-actually-holds).
 
 Design recorded 2026-09-04 from the league admin; formats and data verified
-2026-09-07. Nothing below is implemented.
+2026-09-07; the scheme in force adopted 2026-09-28 (see
+[the scheme in force](#the-scheme-in-force)).
 
 Written against this design rather than the club soccer one, because the
 problem is different: a club plays thirty-eight league matches a season, and a
@@ -110,9 +111,90 @@ Two structural notes that matter more than they look:
 
 ---
 
-## The scheme, as settled
+## The scheme in force
 
-Decided by the league admin 2026-09-07; the machinery below is built to it.
+**Adopted by the league admin 2026-09-28**, after the first international
+window of 2026-27 scored France's single Nations League win at 39 on the 0-100
+scale. It replaces the scheme recorded below, which stays because the reasoning
+in it still explains most of the machinery. The admin's goals, in their words
+reduced to rules:
+
+* the top team of every league year should land near 100, with only truly
+  exceptional seasons more than a point or two above it;
+* nobody compares across years, but a team that dominated the biggest thing it
+  could play should score like one in any year;
+* men's and women's teams are one asset type, with separate benchmarks only
+  because their tournament structures differ; a year that is fallow for one
+  gender is a drafting question, not a scoring one;
+* a Women's World Cup semi-final should generally be worth more than a
+  continental title, without being guaranteed to be.
+
+### The rules
+
+1. **A match is scored exactly as a club match is**, then multiplied by its
+   stage: qualifying 1, group 2, knockout 3. Unchanged.
+2. **A finals tournament pays a ceiling shared along the champion's finals
+   path** (group and knockout only): **World Cup 200, continental
+   championship 100, Nations League 67**. Qualifiers played in earlier league
+   years no longer take part of the champion's ceiling; with them in the path,
+   Argentina's 2022 World Cup was the tenth-best men's season of its year.
+3. **Qualifying is its own competition on the Nations League rung**, whatever
+   it leads to, measured against the team's own campaign but never a shorter
+   one than the edition's typical campaign.
+4. **Winning a finals tournament adds a quarter of its ceiling.** Not a
+   Nations League, whose division the ledger does not record. A champion is a
+   team that won every knockout match it played, which keeps the third-place
+   winner out.
+5. **Prestige decides what counts whole.** A team's competitions are ranked by
+   rung, then points. The first counts whole if it is on the biggest rung its
+   gender plays that year, and in proportion to its rung otherwise (a Nations
+   League in a continental year counts two thirds). Every other competition
+   counts a quarter. New Zealand's 2018-19 OFC title, won in the year of its
+   Women's World Cup group exit, counts a quarter; a team that won a whole
+   competition at a lower rung keeps most of it.
+6. **One lift per league year for the whole category**: 200 / the biggest rung
+   either gender plays. World Cup year x1, continental year x2, a year of
+   Nations Leagues and qualifying x3. The year in progress also reads
+   `whul/data/intl_calendar.csv`: 2026-27 is a World Cup year (the Women's
+   World Cup) and a continental year for the men (AFCON, the Asian Cup).
+
+### What it does, 2018-19 to 2025-26
+
+The top ten men's and ten women's teams of each year, divided by benchmarks
+recomputed under these rules (men 207.1, women 231.4):
+
+| Year | Lift | Top | Median of 20 | Men's #1 | Women's #1 |
+|---|---|---|---|---|---|
+| 2018-19 | x1 | 104.2 | 34.8 | Qatar 55.8 (Asian Cup) | USA 104.2 (World Cup and CONCACAF) |
+| 2019-20 | x3 | 80.0 | 47.6 | Jamaica 80.0 | Netherlands 48.4 |
+| 2020-21 | x2 | 104.6 | 41.7 | USA 104.6 (Gold Cup) | France 38.9 |
+| 2021-22 | x2 | 106.9 | 62.5 | Senegal 106.9 (AFCON) | Brazil 104.3 |
+| 2022-23 | x1 | 84.2 | 16.2 | Argentina 84.2 (World Cup) | Portugal 8.0 |
+| 2023-24 | x1 | 90.2 | 39.5 | Argentina 53.3 | Spain 90.2 (World Cup) |
+| 2024-25 | x2 | 100.4 | 49.1 | Mexico 100.4 (Gold Cup) | Nigeria 85.0 |
+| 2025-26 | x1 | 107.5 | 34.3 | Spain 107.5 (World Cup) | Japan 50.6 |
+
+The median moves with how many finals a year holds for each gender -- 2021-22
+held AFCON and five women's continental championships, 2022-23 the men's World
+Cup and nothing but qualifying for the women -- which the admin ruled is the
+calendar and not the scoring. In the two Women's World Cup years the
+semi-finalists score 48-57 and 40-62 against continental champions' 47-56 and
+41-53. Portugal winning the 2019 Nations League scores 14.0, where a flat
+quarter would have left it at 5.5.
+
+Weighed and set aside: a 150 continental rung (a continental title then beat
+every Women's World Cup semi-finalist of its year); 125 and 75 (the same, a
+little less); half and a third for secondary competitions (a runner-up's busy
+year beat the champion's); a 10% title bonus (too small to put Argentina above
+France in 2022-23); World Cup qualifying on the continental rung (2019-20's
+top fell to 46).
+
+---
+
+## The first scheme (2026-09-07, replaced)
+
+Decided by the league admin 2026-09-07 and replaced on 2026-09-28 by the scheme
+above. Kept for the reasoning, much of which still holds.
 `scripts/intl-soccer-ladder.py` implements it against the whole history and
 prints what comes out.
 

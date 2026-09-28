@@ -1882,8 +1882,8 @@ SCRIPT = """\
     state = {
       calc: calc, group: 0, scale: 0, values: {}, events: [],
       mode: calc.modes[0], postseason: false,
-      /* International football's two season-level controls. */
-      best: true, seasonRung: 0, format: {}
+      /* International football's season-level controls. */
+      best: true, title: false, seasonRung: 0, genderRung: 0, format: {}
     };
     (calc.ladder.format || []).forEach(function (f) {
       state.format[f.key] = f['default'];
@@ -1903,7 +1903,16 @@ SCRIPT = """\
     var group = state.calc.groups[state.group];
     return group ? spec.benchmarks[group[1]] : null;
   }
+  function intlQualifying() {
+    return state.calc.kind === 'intl'
+      && state.scale === state.calc.ladder.qualifying_scale;
+  }
   function shown(f) {
+    /* A national team's competition is qualifying or finals, never both: they
+       are priced as two competitions. */
+    if (state.calc.kind === 'intl' && f.stage) {
+      return (f.stage === 'qualifying') === intlQualifying();
+    }
     return !f.mode || f.mode === state.mode;
   }
 
@@ -1920,6 +1929,7 @@ SCRIPT = """\
   function intlUnits() {
     var calc = state.calc, stages = calc.ladder.stages, units = 0, quals = 0;
     calc.fields.forEach(function (f) {
+      if (!shown(f)) return;
       var n = num(state.values[f.key]);
       units += n * f.points * stages[f.stage];
       if (f.stage === 'qualifying' && /_(win|shootout_win|draw|loss)$/.test(f.key)) {
@@ -1931,16 +1941,25 @@ SCRIPT = """\
 
   function intlTotals() {
     var calc = state.calc, L = calc.ladder;
-    var got = intlUnits();
+    var got = intlUnits(), qualifying = intlQualifying();
     var G = num(state.format.group_matches), K = num(state.format.knockout_rounds);
-    var pathMax = L.match_max * (got.quals * L.stages.qualifying
-      + G * L.stages.group + K * L.stages.knockout);
-    var ceiling = calc.scales[state.scale].value * L.scale;
+    var pathMax = qualifying ? L.match_max * got.quals * L.stages.qualifying
+      : L.match_max * (G * L.stages.group + K * L.stages.knockout);
+    var rung = calc.scales[state.scale].value;
+    var ceiling = rung * L.scale;
     var points = pathMax > 0 ? ceiling * got.units / pathMax : 0;
-    var folded = points * (state.best ? 1 : L.beyond_best);
-    var lift = L.best_rung / L.rungs[state.seasonRung][1];
-    return { points: points, folded: folded, lift: lift, total: folded * lift,
-             pathMax: pathMax, ceiling: ceiling, units: got.units };
+    var titled = state.title && !qualifying && state.scale !== L.nations_scale;
+    var title = titled ? L.title_bonus * ceiling : 0;
+    /* The team's first competition counts by its rung against the biggest its
+       gender plays this year; every other one counts a quarter. */
+    var top = L.rungs[state.genderRung][1];
+    var weight = state.best
+      ? Math.min(1, Math.max(L.secondary, rung / top)) : L.secondary;
+    var lift = L.best_rung / Math.max(L.rungs[state.seasonRung][1], top);
+    var counted = (points + title) * weight;
+    return { points: points, title: title, weight: weight, lift: lift,
+             total: counted * lift, pathMax: pathMax, ceiling: ceiling,
+             units: got.units };
   }
 
   function raw() {
@@ -2111,6 +2130,9 @@ SCRIPT = """\
         function (value) { state.scale = value; show(); }));
     }
     if (calc.kind === 'intl') {
+      top.appendChild(picker('Biggest competition this gender plays this year',
+        calc.ladder.rungs.map(function (r) { return r[0]; }), state.genderRung,
+        function (value) { state.genderRung = value; show(); }));
       top.appendChild(picker('Biggest competition this year (men’s or women’s)',
         calc.ladder.rungs.map(function (r) { return r[0]; }), state.seasonRung,
         function (value) { state.seasonRung = value; show(); }));
@@ -2141,7 +2163,7 @@ SCRIPT = """\
       var grid = document.createElement('div');
       grid.className = 'calcgrid';
       calc.fields.forEach(function (f) { if (shown(f)) grid.appendChild(field(f)); });
-      (calc.ladder.format || []).forEach(function (f) {
+      (intlQualifying() ? [] : (calc.ladder.format || [])).forEach(function (f) {
         grid.appendChild(plain(f.label, state.format[f.key], function (value) {
           state.format[f.key] = value; showResult();
         }));
@@ -2153,9 +2175,15 @@ SCRIPT = """\
     switches.className = 'calcswitches';
     if (calc.kind === 'intl') {
       switches.appendChild(toggle(
-        'This was the season’s best competition (a lesser one counts at '
-        + Math.round(calc.ladder.beyond_best * 100) + '%)',
+        'This is the team’s first competition this year, by rung (any other '
+        + 'counts ' + Math.round(calc.ladder.secondary * 100) + '%)',
         state.best, function (on) { state.best = on; show(); }));
+      if (!intlQualifying() && state.scale !== calc.ladder.nations_scale) {
+        switches.appendChild(toggle(
+          'Won the tournament (+' + Math.round(calc.ladder.title_bonus * 100)
+          + '% of the ceiling)',
+          state.title, function (on) { state.title = on; show(); }));
+      }
     }
     if (calc.postseason && state.mode === 'game') {
       switches.appendChild(toggle('This was a postseason game',
@@ -2210,9 +2238,12 @@ SCRIPT = """\
     if (calc.kind === 'intl') {
       var t = intlTotals();
       lines.push('Ceiling ' + money(t.ceiling, 0) + ' × ' + money(t.units, 1)
-        + ' units ÷ ' + money(t.pathMax, 0) + ' the champion’s path = '
-        + money(t.points, 1) + ', then ×' + money(t.lift, 3) + ' for the '
-        + 'year’s biggest competition.');
+        + ' units ÷ ' + money(t.pathMax, 0)
+        + (intlQualifying() ? ' the qualifying campaign' : ' the champion’s path')
+        + ' = ' + money(t.points, 1)
+        + (t.title ? ', + ' + money(t.title, 1) + ' for the title' : '')
+        + ', counted ×' + money(t.weight, 3) + ', then ×' + money(t.lift, 3)
+        + ' for the year’s biggest competition.');
     }
     var d = doubles();
     if (d.hit.length) {
