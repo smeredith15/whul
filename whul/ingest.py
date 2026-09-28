@@ -21,6 +21,7 @@ could not match, by name.
 
 from __future__ import annotations
 
+import functools
 import json
 
 from dataclasses import dataclass, field
@@ -1226,6 +1227,15 @@ def _scored_on(score, kept, as_of: date):
     return score(kept, as_of=as_of) if takes else score(kept)
 
 
+def _takes(func, name: str) -> bool:
+    import inspect
+
+    try:
+        return name in inspect.signature(func).parameters
+    except (TypeError, ValueError):  # a builtin or a C callable
+        return False
+
+
 def _pull(
     source, as_of: date, verbose: bool, names: list[str] | None = None,
     notes: list[str] | None = None, upcoming: list | None = None,
@@ -1262,6 +1272,10 @@ def _pull(
         # for, and every NFL row on every roster was blank.
         _harvest_ahead(source, as_of, verbose, names, upcoming)
         return pd.DataFrame()
+    # A loader that keeps something of its own between runs says so by taking
+    # the store, as a scorer says it needs the date by taking `as_of`.
+    if store is not None and _takes(load, "store"):
+        load = functools.partial(load, store=store)
     # A roster-scoped loader is asked only for what the roster holds, which for
     # a team league is eight requests rather than a season of dates.
     fetch = (

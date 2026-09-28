@@ -519,7 +519,9 @@ def _intl_soccer():
         from whul.sources import intl_soccer as source
 
         return (
-            lambda seasons: source.load_matches(seasons),
+            # The store keeps what the top-ups past the ledgers found, since
+            # Flashscore's week-wide window forgets it; see `_past_the_ledger`.
+            lambda seasons, store=None: source.load_matches(seasons, store=store),
             scorer.score_teams,
         )
 

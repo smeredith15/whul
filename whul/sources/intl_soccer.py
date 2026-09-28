@@ -67,6 +67,7 @@ COLUMNS = [
 
 def load_matches(
     seasons: list[int] | None = None, verbose: bool = True, board=None,
+    store=None, flashscore: str | None = None,
 ) -> pd.DataFrame:
     """Every scoring match, classified, with its league year already decided.
 
@@ -77,7 +78,8 @@ def load_matches(
     """
     games = _ledgers(verbose=verbose)
     games = _supplement(games, verbose=verbose)
-    games = _past_the_ledger(games, verbose=verbose, board=board)
+    games = _past_the_ledger(games, verbose=verbose, board=board, store=store,
+                             flashscore=flashscore)
     kept, dropped = _classify(games)
     if verbose:
         _report_dropped(dropped)
@@ -123,34 +125,107 @@ def _ledgers(verbose: bool = True) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
+#: The ledger key the top-ups are kept under, and what identifies a match.
+TOPUP_SOURCE = "intl-soccer-topup"
+TOPUP_KEYS = ("gender", "date", "home_team", "away_team")
+
+
 def _past_the_ledger(games: pd.DataFrame, verbose: bool = True,
-                     board=None, today: date | None = None) -> pd.DataFrame:
-    """The matches played since each ledger's last date, from ESPN.
+                     board=None, today: date | None = None, store=None,
+                     flashscore: str | None = None) -> pd.DataFrame:
+    """The matches played since each ledger's last date, from ESPN and Flashscore.
 
     The ledgers lag by weeks; see ``whul.sources.intl_espn``. Only dates after
-    a gender's last ledger date are asked for, so nothing the ledger holds can
-    be counted twice, and a feed that cannot be reached leaves the ledgers as
-    they were.
+    a gender's last ledger date are taken, so nothing the ledger holds can be
+    counted twice, and a feed that cannot be reached leaves the ledgers as
+    they were. ESPN's copy of a match is preferred where both have it.
+
+    Flashscore shows a week, so what it found is written to the feed ledger
+    (``feed_rows``, under ``TOPUP_SOURCE``) when a store is given, and read
+    back from it every run until the martj42 ledger's own last date passes it.
     """
-    from whul.sources import intl_espn
+    from whul.sources import intl_espn, intl_flashscore
 
     if games.empty:
         return games
     since = {str(g): pd.Timestamp(d).date()
              for g, d in games.groupby("gender")["date"].max().items()}
+    until = today or date.today()
+    found = []
     report = intl_espn.Report()
     try:
-        recent = intl_espn.matches(since, today or date.today(), board=board,
-                                   report=report)
+        found.append(intl_espn.matches(since, until, board=board, report=report))
     except Exception as exc:  # noqa: BLE001 -- the ledgers still stand
         print(f"  intl soccer (ESPN): not read ({type(exc).__name__}: {exc})", flush=True)
-        return games
-    if verbose:
-        for line in report.lines():
-            print(line, flush=True)
+    else:
+        if verbose:
+            for line in report.lines():
+                print(line, flush=True)
+    flash = intl_flashscore.Report()
+    try:
+        found.append(intl_flashscore.matches(since, until, raw=flashscore, report=flash))
+    except Exception as exc:  # noqa: BLE001 -- the ledgers still stand
+        print(f"  intl soccer (Flashscore): not read ({type(exc).__name__}: {exc})",
+              flush=True)
+    else:
+        if verbose:
+            for line in flash.lines():
+                print(line, flush=True)
+    recent = one_per_match([f for f in found if f is not None and not f.empty])
+    if store is not None:
+        recent = _kept(store, recent, verbose)
     if recent.empty:
         return games
-    return pd.concat([games, recent.drop(columns=["espn_event"])], ignore_index=True)
+    recent = recent[[since.get(g) is not None and d.date() > since[g]
+                     for g, d in zip(recent["gender"], recent["date"])]]
+    if recent.empty:
+        return games
+    return pd.concat([games, recent.drop(columns=["event"], errors="ignore")],
+                     ignore_index=True)
+
+
+def one_per_match(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """The union of the top-ups, each match once, the earlier frame's copy kept.
+
+    Two feeds can date a late kickoff a day apart, so the same two sides
+    meeting within a day of each other is the same match.
+    """
+    if not frames:
+        return pd.DataFrame()
+    rows = pd.concat(frames, ignore_index=True)
+    seen: dict[tuple, list] = {}
+    keep = []
+    for row in rows.itertuples():
+        pair = (row.gender, frozenset((row.home_team, row.away_team)))
+        day = pd.Timestamp(row.date)
+        if any(abs((day - other).days) <= 1 for other in seen.get(pair, [])):
+            keep.append(False)
+            continue
+        seen.setdefault(pair, []).append(day)
+        keep.append(True)
+    return rows[keep].reset_index(drop=True)
+
+
+def _kept(store, recent: pd.DataFrame, verbose: bool) -> pd.DataFrame:
+    """Tonight's top-up written down, and everything the top-ups have found."""
+    from whul.store import feed_ledger
+
+    window = recent.copy()
+    if not window.empty:
+        window["date"] = window["date"].map(lambda d: pd.Timestamp(d).date().isoformat())
+    try:
+        held = feed_ledger.merge(store, TOPUP_SOURCE, window, TOPUP_KEYS)
+    except Exception as exc:  # noqa: BLE001 -- tonight's rows still count
+        print(f"  intl soccer: top-ups not kept ({type(exc).__name__}: {exc})", flush=True)
+        return recent
+    if held is None or held.empty:
+        return recent
+    held = held.copy()
+    held["date"] = pd.to_datetime(held["date"])
+    if verbose:
+        print(f"  intl soccer: {len(window)} top-up match(es) tonight, "
+              f"{len(held)} kept in all", flush=True)
+    return one_per_match([held])
 
 
 def _supplement(games: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
