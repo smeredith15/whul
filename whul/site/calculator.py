@@ -37,7 +37,7 @@ from whul.scoring.competition import (
     LEAGUE_WIN, OUTCOME_SHARE, WIN_POINTS, Outcome, Tier,
 )
 from whul.scoring.intl_soccer import (
-    BEYOND_BEST_SHARE, MATCH_MAX, RUNG, SCALE, STAGE,
+    MATCH_MAX, QUALIFYING_RUNG, RUNG, SCALE, SECONDARY_SHARE, STAGE, TITLE_BONUS,
 )
 from whul.scoring.postseason import RULES
 from whul.site import rulebook
@@ -581,9 +581,18 @@ def _tennis() -> Calc:
 
 #: What each rung is called, in the order a reader ranks them.
 RUNG_NAMES = (
-    ("World Cup (and its qualifying)", "world"),
-    ("Euros, Copa América, AFCON, Asian Cup, Gold Cup", "federation"),
+    ("World Cup", "world"),
+    ("Continental championship (Euros, Copa América, AFCON, Asian Cup, Gold Cup)",
+     "federation"),
     ("Nations League", "nations_league"),
+)
+
+#: The same rungs as the top of a year's calendar. Qualifying sits on the
+#: Nations League rung, so a year of nothing else reads as that.
+TOP_NAMES = (
+    ("World Cup", "world"),
+    ("Continental championship", "federation"),
+    ("Nations League or qualifying only", "nations_league"),
 )
 
 
@@ -593,22 +602,21 @@ def _intl_soccer() -> Calc:
     This looked unmodellable and is not; it is only unlike the others. A
     national team's score is not a sum of match points, it is a *share of a
     ceiling*: a competition pays a fixed amount divided along the champion's
-    own path, so winning the Gold Cup in six matches and AFCON in seven are
-    worth the same. Everything needed to compute that is a number a manager
-    can state -- how far they went, how long the format is, and what else they
-    played that year.
+    finals path, so winning the Gold Cup in six matches and AFCON in seven are
+    worth the same. Qualifying is a competition of its own on the Nations
+    League rung. Everything needed is a number a manager can state -- how far
+    they went, how long the format is, and what the year held.
 
-    The two season-level controls are the parts that surprise people, which is
-    why they are here rather than in a footnote:
+    The season-level controls are the parts that surprise people, which is why
+    they are here rather than in a footnote:
 
-    * **Was this the season's best competition?** The best counts whole and
-      everything after it at half, so a team that wins two trophies does not
-      simply double.
-    * **The biggest rung played all season** sets the lift. A team whose year
-      contained no World Cup has its year scaled up so the best thing it did
-      play can still reach a full ceiling -- otherwise a European side's
-      Nations League year scores half its World Cup year for reasons of the
-      calendar alone.
+    * **Is this the team's first competition?** A team's competitions are
+      ranked by rung. The first counts whole if it is on the biggest rung its
+      gender plays that year and in proportion to its rung otherwise; every
+      other competition counts a quarter.
+    * **The biggest competition on the year's calendar** sets the lift, men's
+      or women's, and it is the same for every team. 2026-27 holds the Women's
+      World Cup, so it is a World Cup year for the men's teams too.
     """
     outcome = {
         "win": OUTCOME_SHARE[Outcome.WIN],
@@ -631,23 +639,28 @@ def _intl_soccer() -> Calc:
             Field(f"{key}_clean", f"{name}: clean sheets",
                   float(soccer.PTS_CLEAN_SHEET), stage=key),
         ]
+    scales = [Choice(label, float(RUNG[key])) for label, key in RUNG_NAMES]
+    scales.append(Choice("Qualifying, for any tournament", float(RUNG[QUALIFYING_RUNG])))
     return Calc(
         "calc-intl-soccer", "International soccer — national team", "intl",
         "A national team is not scored on how many matches it won but on how "
         "far it got: a competition pays a fixed ceiling, shared out along the "
-        "champion's own path. Enter one competition, then say what else the "
-        "year held.",
+        "champion's path. Enter one competition, then say where it sits in the "
+        "team's year.",
         groups=[["Men's", "Men's Intl Soccer"], ["Women's", "Women's Intl Soccer"]],
         scale_label="This competition",
-        scales=[Choice(label, float(RUNG[key])) for label, key in RUNG_NAMES],
+        scales=scales,
         fields=fields,
         ladder={
             "stages": {key: float(STAGE[key]) for key in STAGE},
             "match_max": float(MATCH_MAX),
             "scale": float(SCALE),
-            "beyond_best": float(BEYOND_BEST_SHARE),
+            "secondary": float(SECONDARY_SHARE),
+            "title_bonus": float(TITLE_BONUS),
+            "qualifying_scale": len(RUNG_NAMES),
+            "nations_scale": [key for _, key in RUNG_NAMES].index("nations_league"),
             "best_rung": float(max(RUNG.values())),
-            "rungs": [[label, float(RUNG[key])] for label, key in RUNG_NAMES],
+            "rungs": [[label, float(RUNG[key])] for label, key in TOP_NAMES],
             "format": [
                 {"key": "group_matches", "label": "Matches in the group stage",
                  "default": 3},
@@ -657,12 +670,16 @@ def _intl_soccer() -> Calc:
         },
         notes=[
             "The format fields describe the *tournament*, not this team: the "
-            "denominator is the champion's whole path, which is why going out "
-            "in the group of a long tournament pays less than going out in "
-            "the group of a short one.",
-            "Qualifying length is the team's own, because a CONMEBOL campaign "
-            "is eighteen matches and a CAF one is six and both are the same "
-            "achievement -- so it is counted from what you enter.",
+            "denominator is the champion's group and knockout path, which is "
+            "why going out in the group of a long tournament pays less than "
+            "going out in the group of a short one.",
+            "Qualifying is its own competition on the Nations League rung. Its "
+            "length is the team's own, because a CONMEBOL campaign is eighteen "
+            "matches and a CAF one is six and both are the same achievement -- "
+            "so it is counted from what you enter. The scorer never measures a "
+            "campaign shorter than the edition's typical one.",
+            "Winning a tournament adds a quarter of its ceiling. Not a Nations "
+            "League, and not qualifying.",
             "Friendlies, the Olympics and invitational tournaments score "
             "nothing and should be left out.",
         ],

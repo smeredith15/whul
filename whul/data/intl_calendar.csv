@@ -1,0 +1,18 @@
+# The biggest competitions each league year holds, stated before they are played.
+#
+# A league year's lift is set by the biggest competition on its calendar,
+# whichever gender plays it (see whul/scoring/intl_soccer.py, `_fold`). For a
+# year already played the matches say what that was. For the year in progress
+# they cannot yet: in September 2026 the 2026-27 ledger holds a men's Nations
+# League window and African qualifiers, and the Women's World Cup that makes it
+# a World Cup year is nine months away. Without this file the year would be
+# read as a federation year until the first World Cup match arrived, and every
+# score would fall by a quarter on that night.
+#
+# `season` is the league year the competition scores in: 2026 is 2026-27.
+# `competition` is the canonical name from intl_tournaments.csv, which supplies
+# the rung. A row naming a competition the ladder does not know is ignored.
+season,gender,competition,note
+2026,W,FIFA Women's World Cup,"Brazil, 24 June to 25 July 2027; a block, so it scores whole in 2026-27"
+2026,M,Africa Cup of Nations,"East Africa, from June 2027; a block, so it scores whole in 2026-27. Sets the men's top rung for the year: continental"
+2026,M,AFC Asian Cup,"Saudi Arabia, January 2027"

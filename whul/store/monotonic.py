@@ -40,7 +40,7 @@ import re
 MEASURES: frozenset[str] = frozenset({
     "point_diff", "run_diff", "goal_diff", "goals_diff", "margin",
     "plus_minus", "war", "offense", "defense", "advanced_share",
-    "proration_factor", "schedule_factor", "lift", "top_rung",
+    "proration_factor", "schedule_factor", "lift", "top_rung", "year_rung",
     # A rate is a ratio of two counts and falls whenever the denominator wins.
     "era", "whip", "avg", "obp", "slg", "ops", "save_pct", "gaa",
 })

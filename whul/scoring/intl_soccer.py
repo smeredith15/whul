@@ -3,32 +3,45 @@
 A club plays thirty-eight league matches a season; a national team plays a
 handful of tournaments across a four-year cycle, and which tournaments depends
 on where in that cycle the year falls. So the club scorer's shape does not
-transfer, and this one is built to a design the league admin settled:
+transfer, and this one is built to a design the league admin settled on
+28 September 2026, after checking the top ten men's and women's teams of every
+league year from 2018-19 against what the scores should say:
 
-1. **A competition is its qualifying and its finals together**, at one of three
-   rungs. World Cup qualifying is therefore on the World Cup rung and worth
-   more than Euro qualifying, and a team that fails to qualify has still spent
-   its year on the World Cup rung -- which is what stops "miss the World Cup,
-   get the rest of your year upscaled" from being a strategy.
+1. **A match is scored exactly as a club match is** -- the same outcome table
+   and the same two bonuses -- then multiplied by its stage (qualifying 1,
+   group 2, knockout 3).
 
-2. **A match is scored exactly as a club match is** -- the same outcome table
-   and the same two bonuses -- then multiplied by its stage and its rung.
+2. **A finals tournament pays a ceiling shared along the champion's finals
+   path**: World Cup 200, continental championship 100, Nations League 67. The
+   World Cup is worth twice a continental title so that a World Cup semi-final
+   generally beats one. The path is the group and the knockout only, so
+   qualifiers played in earlier league years no longer take part of the
+   champion's ceiling -- which left Argentina's 2022 World Cup the tenth-best
+   men's season of its year.
 
-3. **A competition pays a ceiling, divided by the champion's own path.** So
-   winning the Gold Cup in six matches and AFCON in seven are worth the same,
-   and the 2026 World Cup's new Round of 32 changes nothing about what a World
-   Cup is worth. This is the tennis tier model in `whul.scoring.competition`,
-   applied to tournaments instead of tours.
+3. **Qualifying is its own competition, on the Nations League rung**, whatever
+   it leads to. It is measured against the team's own campaign, but never a
+   shorter one than the edition's typical campaign, so a two-match play-off
+   cannot pay a whole ceiling.
 
-4. **A season is its best competition whole plus half of everything else** --
-   the two-way rule `whul.scoring.mlb` uses for a player who bats and pitches.
-   Summing them put the United States' 2018-19, when they won the World Cup and
-   the championship that qualified them for it, at twice the 99th percentile.
+4. **Winning a finals tournament adds a quarter of its ceiling** -- 50 for a
+   World Cup, 25 for a continental title. Not a Nations League: the ledger does
+   not say which division a match was in.
 
-5. **A fallow year is lifted** so the best rung the team actually played
-   reaches a full ceiling. Without it a European team's Nations League year
-   scores half its World Cup year for reasons of the calendar alone, and the
-   category goes quiet two years in three.
+5. **Prestige decides what counts whole.** A team's competitions are ranked by
+   rung, then points. The first counts whole if it is on the biggest rung its
+   gender plays anywhere that year, and in proportion to its rung otherwise (a
+   Nations League in a continental year counts two thirds); everything else
+   counts a quarter. So New Zealand's OFC title in the year of its World Cup
+   group exit counts a quarter, and a team that won a whole competition at a
+   lower level still has most of it.
+
+6. **One lift per league year, for the whole category**: 200 / the biggest
+   rung either gender plays that year. A World Cup year is x1, a continental
+   year x2, a year of Nations Leagues and qualifying x3. Men and women are one
+   asset type; only their benchmarks are separate. The year in progress also
+   reads ``whul/data/intl_calendar.csv``, so the lift and the rung weights are
+   right before the tournaments that set them are played.
 
 See docs/INTL_SOCCER.md for how each of those was arrived at and what it does
 to real seasons.
@@ -44,17 +57,26 @@ from whul.scoring.competition import LEAGUE_WIN, Outcome, outcome_points
 from whul.scoring.soccer import BIG_MARGIN, PTS_BIG_MARGIN, PTS_CLEAN_SHEET
 
 EDITIONS = Path(__file__).resolve().parent.parent / "data" / "intl_editions.csv"
+CALENDAR = Path(__file__).resolve().parent.parent / "data" / "intl_calendar.csv"
+LADDER = Path(__file__).resolve().parent.parent / "data" / "intl_tournaments.csv"
 
-#: What a perfect run in a competition is worth, by rung. Deliberately shallow
-#: -- 2 : 1.5 : 1 rather than 3 : 2 : 1 -- because a steeper ladder let one
-#: two-trophy year outscore two very good ones put together.
-RUNG = {"nations_league": 1.0, "federation": 1.5, "world": 2.0}
+#: What a perfect run in a competition is worth, by rung, as a multiple of
+#: SCALE. The World Cup is twice a continental championship; the Nations League
+#: two thirds of one. Chosen against the 2018-2025 seasons: at 4:3 a continental
+#: title beat every Women's World Cup semi-finalist of its year.
+RUNG = {"nations_league": 2 / 3, "federation": 1.0, "world": 2.0}
+
+#: The rung every qualifying campaign is priced on, whatever it leads to.
+QUALIFYING_RUNG = "nations_league"
 
 #: What a match is worth by the stage it is played at.
 STAGE = {"qualifying": 1.0, "group": 2.0, "knockout": 3.0}
 
-#: Every competition after the best one in a season contributes half.
-BEYOND_BEST_SHARE = 0.5
+#: What every competition after a team's first contributes.
+SECONDARY_SHARE = 0.25
+
+#: What winning a finals tournament adds, as a share of its ceiling.
+TITLE_BONUS = 0.25
 
 #: What one match can be worth at most: won by two or more, to nil. The
 #: denominator is built from this rather than from a bare win, so no run can
@@ -208,12 +230,40 @@ def _shape(rows: pd.DataFrame) -> pd.DataFrame:
         })
     shape = pd.DataFrame(known, columns=["gender", "competition", "edition", "G", "K"])
 
+    # An edition of the league year in progress is not read off its own
+    # matches: they are the part of it played so far. On 28 September 2026 the
+    # new Nations League had one or two matches a team, so it read as a
+    # two-match competition and one win paid a sixth of its ceiling -- 4.8
+    # times what the same win is worth in the six-match league phase and four
+    # knockout rounds it actually is. The last completed edition stands in, as
+    # it does for a qualifying campaign, and the stated file overrides both.
+    current = rows["season"].max()
+    partial = shape[shape["edition"] >= current]
+    shape = shape[shape["edition"] < current]
+
     every = rows[["gender", "competition", "edition"]].drop_duplicates()
     shape = every.merge(shape, on=["gender", "competition", "edition"], how="left")
+    # Stated shapes first, so an edition with none of its own inherits the
+    # stated one. Carried forward before, a CONCACAF Nations League edition in
+    # progress took 2024-25's shape as read off the ledger -- the reading the
+    # stated file exists to replace -- and two League C wins led the year.
+    shape = _stated(shape)
     shape = shape.sort_values(["gender", "competition", "edition"])
+    by = shape.groupby(["gender", "competition"])
     for column in ("G", "K"):
-        shape[column] = shape.groupby(["gender", "competition"])[column].ffill().bfill()
-    return _stated(shape.dropna(subset=["G", "K"]))
+        # Both directions within the competition. An ungrouped backward fill
+        # reached across into the next competition's shape.
+        shape[column] = by[column].ffill()
+        shape[column] = shape.groupby(["gender", "competition"])[column].bfill()
+    # A competition with no completed edition at all has nothing to stand in,
+    # and reading its own matches is better than scoring them at nothing.
+    if not partial.empty:
+        keys = ["gender", "competition", "edition"]
+        fill = shape[keys].merge(partial, on=keys, how="left")
+        for column in ("G", "K"):
+            shape[column] = shape[column].fillna(pd.Series(fill[column].values,
+                                                           index=shape.index))
+    return shape.dropna(subset=["G", "K"])
 
 
 def _stated(shape: pd.DataFrame) -> pd.DataFrame:
@@ -245,7 +295,7 @@ def _stated(shape: pd.DataFrame) -> pd.DataFrame:
 
 
 def _price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
-    """Each match's share of its competition's ceiling."""
+    """Each match's share of its competition's ceiling, and any title bonus."""
     rows = rows.merge(shape, on=["gender", "competition", "edition"], how="left")
     rows["G"] = rows["G"].fillna(0).astype(int)
     rows["K"] = rows["K"].fillna(0).astype(int)
@@ -263,27 +313,63 @@ def _price(rows: pd.DataFrame, shape: pd.DataFrame) -> pd.DataFrame:
         for o, g in zip(order[finals], rows.loc[finals, "G"])
     ]
 
-    # The denominator is the champion's whole path: their qualifying, their
-    # group, their knockouts. Qualifying length is the team's own, because a
-    # CONMEBOL campaign is eighteen matches and a CAF one is six and both are
-    # the same achievement.
-    quals = rows[rows["kind"] == "qualifying"].groupby(
-        ["gender", "competition", "edition", "team"]).size().rename("Q")
-    rows = rows.merge(quals, on=["gender", "competition", "edition", "team"], how="left")
+    # A qualifying campaign is measured against the team's own length --
+    # CONMEBOL's eighteen matches and CAF's six are the same achievement -- but
+    # never a shorter one than the edition's typical campaign. Panama's women
+    # reached the 2023 World Cup through a two-match play-off, and on its own
+    # length that play-off paid a whole ceiling.
+    keys = ["gender", "competition", "edition"]
+    quals = rows[rows["kind"] == "qualifying"].groupby(keys + ["team"]).size().rename("Q")
+    typical = quals.groupby(level=keys).median().rename("Q_typical")
+    rows = rows.merge(quals, on=keys + ["team"], how="left")
+    rows = rows.merge(typical, on=keys, how="left")
     rows["Q"] = rows["Q"].fillna(0).astype(int)
-    rows["path_max"] = MATCH_MAX * (
-        rows["Q"] * STAGE["qualifying"]
-        + rows["G"] * STAGE["group"]
-        + rows["K"] * STAGE["knockout"]
-    )
-    rows["ceiling"] = rows["rung"].map(RUNG) * SCALE
+    q_path = rows[["Q", "Q_typical"]].max(axis=1).fillna(rows["Q"])
+    finals = rows["kind"] == "finals"
+
+    # Finals are measured along the finals path only. With the qualifiers in
+    # it too, a campaign played across earlier league years took most of the
+    # champion's ceiling with it: Argentina's 2022 World Cup paid 64 of 200.
+    rows["path_max"] = (MATCH_MAX * (
+        rows["G"] * STAGE["group"] + rows["K"] * STAGE["knockout"])).astype(float)
+    rows.loc[~finals, "path_max"] = MATCH_MAX * q_path[~finals] * STAGE["qualifying"]
+    rows["level"] = rows["rung"].where(finals, QUALIFYING_RUNG)
+    rows["ceiling"] = rows["level"].map(RUNG) * SCALE
+    rows["section"] = rows["competition"].where(finals, rows["competition"] + " qualifying")
     # What one club-scale point is worth in this match. Every part of the match
     # is multiplied by the same thing, which is what lets a section's boxes be
     # priced in the currency the section is quoted in.
     rows["factor"] = rows["ceiling"] * rows["stage"].map(STAGE) / rows[
         "path_max"].where(rows["path_max"] > 0)
     rows["points"] = rows["base"] * rows["factor"]
-    return rows[rows["points"].notna()]
+    rows = rows[rows["points"].notna()].copy()
+    rows["title"] = _titles(rows)
+    rows["points"] = rows["points"] + rows["title"]
+    return rows
+
+
+#: Endings that win a knockout tie.
+_WON = (Outcome.WIN.value, Outcome.SHOOTOUT_WIN.value)
+
+
+def _titles(rows: pd.DataFrame) -> pd.Series:
+    """The title bonus, on the final each champion won.
+
+    A champion is a team that played the whole group and every knockout round
+    and won each knockout match. Counting knockout wins alone is not enough: a
+    semi-final loser who wins the third-place match has played as many.
+    Nations Leagues are left out because the ledger does not say which
+    division a match was in.
+    """
+    bonus = pd.Series(0.0, index=rows.index)
+    cups = rows[(rows["kind"] == "finals") & (rows["K"] > 0)
+                & ~rows["competition"].str.contains("Nations League")]
+    for _, mine in cups.groupby(["gender", "competition", "edition", "team"]):
+        g, k = int(mine["G"].iloc[0]), int(mine["K"].iloc[0])
+        knockout = mine[mine["stage"] == "knockout"].sort_values("date")
+        if len(mine) == g + k and len(knockout) == k and knockout["outcome"].isin(_WON).all():
+            bonus[knockout.index[-1]] = TITLE_BONUS * float(mine["ceiling"].iloc[0])
+    return bonus
 
 
 #: What a rung is called on a page. The keys price the competition; these say
@@ -310,7 +396,7 @@ def _counted(block: pd.DataFrame) -> dict:
     the section they sit in. Priced in the section's own currency rather than
     on the club scale: each part of a match is multiplied by the same `factor`
     the match itself was, which is the only way a win box and the section total
-    can be the same kind of number.
+    can be the same kind of number. A title bonus is its own box.
     """
     out: dict = {"matches": int(len(block))}
     for name, ending in (("wins", Outcome.WIN), ("draws", Outcome.DRAW),
@@ -326,6 +412,9 @@ def _counted(block: pd.DataFrame) -> dict:
         out[name] = int(block[column].sum())
         out[f"pts_{name}"] = round(
             float((block[column] * worth * block["factor"]).sum()), 1)
+    title = block["title"] if "title" in block.columns else pd.Series(dtype=float)
+    out["title"] = int((title > 0).sum())
+    out["pts_title"] = round(float(title.sum()), 1)
     out["points"] = round(float(block["points"].sum()), 1)
     return out
 
@@ -335,37 +424,37 @@ def season_sections(rows: pd.DataFrame, shares: pd.DataFrame) -> dict:
 
     The club panel's shape, because the question is the same one: a season
     total says how much and cannot say where. What differs is that a club's
-    competitions add up to its season and a national team's do not -- the best
-    one counts whole, every other at half, and the year is then lifted so its
-    best rung reaches a full ceiling.
+    competitions add up to its season and a national team's do not -- one
+    counts whole or by its rung, every other a quarter, and the year is then
+    lifted by the biggest competition either gender plays in it.
 
     So a section carries two numbers. ``points`` is what the team earned there,
     which is the sum of the section's own boxes and can be read against its
     matches. ``counted`` is what that became in the season total, after the
-    halving and the lift. The counted figures are what add up to the score.
+    weighting and the lift. The counted figures are what add up to the score.
 
-    Qualifying and the finals it fed are one section, because that is what the
-    scoring says they are: a World Cup campaign is on the World Cup rung
-    whether or not the team reached the tournament, which is what stops missing
-    it from being worth more than entering it.
+    Qualifying is a section of its own, because the scoring says it is its own
+    competition.
     """
     if rows is None or rows.empty:
         return {}
     share = {
-        (r.gender, r.team, int(r.season), r.competition): (r.share, r.lift)
+        (r.gender, r.team, int(r.season), r.section): (r.share, r.lift)
         for r in shares.itertuples()
     }
     out: dict = {}
     for (gender, team, season), block in rows.groupby(
             ["gender", "team", "season"]):
         sections: list[dict] = []
-        for competition, here in block.groupby("competition", sort=False):
-            got, lift = share.get(
-                (gender, team, int(season), competition), (1.0, 1.0))
+        for name, here in block.groupby("section", sort=False):
+            got, lift = share.get((gender, team, int(season), name), (1.0, 1.0))
+            qualifying = bool((here["kind"] == "qualifying").all())
             section = {
                 "kind": "international",
-                "name": str(competition),
-                "rung": RUNG_NAMES.get(str(here["rung"].iloc[0]), ""),
+                "name": str(name),
+                "rung": "Qualifying" if qualifying
+                        else RUNG_NAMES.get(str(here["rung"].iloc[0]), ""),
+                "weight": round(float(got), 3),
                 "counted": round(float(here["points"].sum()) * got * lift, 1),
                 **_counted(here),
             }
@@ -381,14 +470,54 @@ def season_sections(rows: pd.DataFrame, shares: pd.DataFrame) -> dict:
                     p["matches"] for p in phases) == section["matches"]:
                 section["phases"] = phases
             sections.append(section)
-        sections.sort(key=lambda s: s["points"], reverse=True)
+        sections.sort(key=lambda s: s["counted"], reverse=True)
         out[(LEAGUES.get(gender, gender), str(team), int(season))] = sections
     return out
 
 
+def headlines(rows: pd.DataFrame) -> dict[tuple[str, int], float]:
+    """The biggest ceiling each gender plays in each league year.
+
+    What the matches show, raised to what ``intl_calendar.csv`` says the year
+    will hold, so a year's weights are right before its biggest tournament is
+    played: a men's Nations League in the autumn of an AFCON year is already
+    below the year's top rung, rather than whole until January and a fraction
+    after it.
+    """
+    played = rows.groupby(["gender", "season"])["ceiling"].max()
+    tops = {(str(g), int(y)): float(v) for (g, y), v in played.items()}
+    if CALENDAR.exists() and LADDER.exists():
+        ladder = pd.read_csv(LADDER, comment="#")
+        rung = dict(zip(zip(ladder["gender"], ladder["competition"]), ladder["rung"]))
+        for entry in pd.read_csv(CALENDAR, comment="#").itertuples():
+            ceiling = RUNG.get(rung.get((entry.gender, entry.competition), ""))
+            if ceiling is not None:
+                key = (str(entry.gender), int(entry.season))
+                tops[key] = max(tops.get(key, 0.0), ceiling * SCALE)
+    return tops
+
+
+def year_rungs(rows: pd.DataFrame) -> dict[int, float]:
+    """The biggest ceiling each league year holds, whichever gender plays it.
+
+    Both genders count because the category is one category: the league
+    admin's ruling, on seeing a men's Nations League win doubled in the year of
+    the Women's World Cup, was that the year's biggest tournament sets the
+    scale for everyone.
+    """
+    tops: dict[int, float] = {}
+    for (_, year), ceiling in headlines(rows).items():
+        tops[year] = max(tops.get(year, 0.0), ceiling)
+    return tops
+
+
 def _fold(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Team-seasons: the best competition whole, everything else at half,
-    then lifted so the year's best rung reaches a full ceiling.
+    """Team-seasons: competitions weighted by prestige, then the year's lift.
+
+    A team's competitions are ranked by rung, then points. The first counts
+    whole if it is on the biggest rung its gender plays that year, and in
+    proportion to its rung otherwise -- never less than a secondary one. Every
+    other competition counts ``SECONDARY_SHARE``.
 
     Returns the seasons and, beside them, what each competition was multiplied
     by to get there -- which is what a panel needs to say where a score came
@@ -404,7 +533,7 @@ def _fold(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         return ("outcome", lambda s, v=ending.value: int((s == v).sum()))
 
     per_comp = rows.groupby(
-        ["gender", "team", "season", "competition"], as_index=False
+        ["gender", "team", "season", "section"], as_index=False
     ).agg(points=("points", "sum"), ceiling=("ceiling", "max"),
           matches=("points", "size"),
           wins=counted(Outcome.WIN),
@@ -413,9 +542,14 @@ def _fold(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
           shootout_losses=counted(Outcome.SHOOTOUT_LOSS),
           losses=counted(Outcome.LOSS))
 
-    ranked = per_comp.sort_values("points", ascending=False)
-    share = pd.Series(BEYOND_BEST_SHARE, index=ranked.index)
-    share[ranked.groupby(["gender", "team", "season"]).cumcount() == 0] = 1.0
+    heads = headlines(rows)
+    years = year_rungs(rows)
+    ranked = per_comp.sort_values(["ceiling", "points"], ascending=False)
+    head = pd.Series([heads.get((g, int(y)), c) for g, y, c in zip(
+        ranked["gender"], ranked["season"], ranked["ceiling"])], index=ranked.index)
+    first = ranked.groupby(["gender", "team", "season"]).cumcount() == 0
+    share = pd.Series(SECONDARY_SHARE, index=ranked.index)
+    share[first] = (ranked["ceiling"] / head).clip(lower=SECONDARY_SHARE, upper=1.0)[first]
     ranked["folded"] = ranked["points"] * share
 
     out = ranked.groupby(["gender", "team", "season"], as_index=False).agg(
@@ -423,15 +557,19 @@ def _fold(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         matches=("matches", "sum"), wins=("wins", "sum"),
         shootout_wins=("shootout_wins", "sum"), draws=("draws", "sum"),
         shootout_losses=("shootout_losses", "sum"), losses=("losses", "sum"),
-        competitions=("competition", "size"), top_rung=("ceiling", "max"),
+        competitions=("section", "size"), top_rung=("ceiling", "max"),
     )
-    out["lift"] = max(RUNG.values()) * SCALE / out["top_rung"]
+    # One lift for everyone in a year. No team is held below it by its own
+    # rung: a guard that did so let a team's World Cup qualifying keep it at x1
+    # while the rest of its year was lifted.
+    out["year_rung"] = out["season"].map(years).fillna(out["top_rung"])
+    out["lift"] = max(RUNG.values()) * SCALE / out["year_rung"]
     out["total_points"] = out["folded"] * out["lift"]
     out["league"] = out["gender"].map(LEAGUES)
     shares = ranked.assign(share=share).merge(
         out[["gender", "team", "season", "lift"]],
         on=["gender", "team", "season"], how="left",
-    )[["gender", "team", "season", "competition", "share", "lift"]]
+    )[["gender", "team", "season", "section", "share", "lift"]]
     return out.drop(columns="gender").sort_values(
         ["season", "total_points"], ascending=[True, False]
     ).reset_index(drop=True), shares

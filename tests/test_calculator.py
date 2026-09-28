@@ -221,18 +221,25 @@ def intl_matches():
     return pd.DataFrame(rows)
 
 
-def intl_total(units, quals, group, knockout, rung, best_rung, best=True):
+def intl_total(units, rung, group=0, knockout=0, quals=0, qualifying=False,
+               first=True, title=False, gender_top="federation", year_top="world"):
     """The calculator's arithmetic, in Python. The browser does exactly this."""
-    from whul.scoring.intl_soccer import BEYOND_BEST_SHARE, MATCH_MAX, RUNG, SCALE, STAGE
+    from whul.scoring.intl_soccer import (
+        MATCH_MAX, RUNG, SCALE, SECONDARY_SHARE, STAGE, TITLE_BONUS)
 
-    path_max = MATCH_MAX * (quals * STAGE["qualifying"] + group * STAGE["group"]
-                            + knockout * STAGE["knockout"])
-    points = RUNG[rung] * SCALE * units / path_max
-    folded = points * (1.0 if best else BEYOND_BEST_SHARE)
-    return folded * (max(RUNG.values()) / RUNG[best_rung])
+    path_max = (MATCH_MAX * quals * STAGE["qualifying"] if qualifying else
+                MATCH_MAX * (group * STAGE["group"] + knockout * STAGE["knockout"]))
+    ceiling = RUNG[rung] * SCALE
+    points = ceiling * units / path_max + (TITLE_BONUS * ceiling if title else 0.0)
+    weight = (min(1.0, max(SECONDARY_SHARE, RUNG[rung] / RUNG[gender_top]))
+              if first else SECONDARY_SHARE)
+    lift = max(RUNG.values()) / max(RUNG[year_top], RUNG[gender_top])
+    return points * weight * lift
 
 
 def test_an_international_season_matches_the_scorer():
+    """Alpha won the Test Cup after qualifying for it: two competitions, the
+    finals counted whole with its title and the qualifying a quarter."""
     from whul.scoring import intl_soccer as isoc
     from whul.scoring.intl_soccer import STAGE
 
@@ -243,36 +250,45 @@ def test_an_international_season_matches_the_scorer():
     quals = (3 * 3 + 1 * 1 + 2 * 1 + 2 * 1) * STAGE["qualifying"]
     group = ((3 * 3 + 3 * 1 + 3 * 1) + (1 * 3 + 0 + 1 * 1)) * STAGE["group"]
     knockout = (1 * 3 + 0 + 1 * 1) * STAGE["knockout"]
-    # The season's biggest rung is the federation cup, because it is the only
-    # thing Alpha played. Saying "World Cup" here would be describing a
-    # different season, and the lift would be 1 instead of 2/1.5 -- which is
-    # exactly the mistake the selector exists to let a reader make on purpose.
-    got = intl_total(quals + group + knockout, quals=4, group=4, knockout=1,
-                     rung="federation", best_rung="federation")
-    assert got == pytest.approx(alpha)
+    # The men's top rung in 2026-27 is continental (AFCON is on the calendar)
+    # and the year's is the World Cup (the Women's World Cup), so the finals
+    # count whole and nothing is lifted.
+    finals = intl_total(group + knockout, "federation", group=4, knockout=1, title=True)
+    qualifying = intl_total(quals, "nations_league", quals=4, qualifying=True, first=False)
+    assert finals + qualifying == pytest.approx(alpha)
 
 
-def test_a_lesser_competition_counts_at_half():
-    """The best competition whole and everything after it at half, so winning
-    two trophies does not simply double."""
-    whole = intl_total(60, 4, 4, 1, "federation", "world", best=True)
-    lesser = intl_total(60, 4, 4, 1, "federation", "world", best=False)
-    from whul.scoring.intl_soccer import BEYOND_BEST_SHARE
-    assert lesser == pytest.approx(whole * BEYOND_BEST_SHARE)
+def test_every_competition_after_the_first_counts_a_quarter():
+    from whul.scoring.intl_soccer import SECONDARY_SHARE
+
+    whole = intl_total(60, "federation", group=4, knockout=1)
+    lesser = intl_total(60, "federation", group=4, knockout=1, first=False)
+    assert lesser == pytest.approx(whole * SECONDARY_SHARE)
 
 
-def test_a_fallow_year_is_lifted_so_its_best_rung_reaches_a_full_ceiling():
-    """A Nations League year is not worth half a World Cup year for reasons of
-    the calendar alone."""
+def test_a_first_competition_below_the_top_rung_counts_by_its_rung():
+    """A Nations League in a year with continental championships counts two
+    thirds: a team that won a whole competition keeps most of it."""
     from whul.scoring.intl_soccer import RUNG
 
-    world = intl_total(60, 4, 4, 1, "world", "world")
-    nations = intl_total(60, 4, 4, 1, "nations_league", "nations_league")
+    top = intl_total(60, "nations_league", group=4, knockout=1,
+                     gender_top="nations_league", year_top="nations_league")
+    below = intl_total(60, "nations_league", group=4, knockout=1,
+                       gender_top="federation", year_top="federation")
+    lift = max(RUNG.values()) / RUNG["federation"]
+    whole_lift = max(RUNG.values()) / RUNG["nations_league"]
+    assert below / lift == pytest.approx(
+        top / whole_lift * RUNG["nations_league"] / RUNG["federation"])
+
+
+def test_the_year_is_lifted_by_its_biggest_competition():
+    """A year of Nations Leagues and qualifying puts its best run on the same
+    scale as a World Cup year's."""
+    world = intl_total(60, "world", group=4, knockout=1,
+                       gender_top="world", year_top="world")
+    nations = intl_total(60, "nations_league", group=4, knockout=1,
+                         gender_top="nations_league", year_top="nations_league")
     assert nations == pytest.approx(world)
-    # But a Nations League run in a year that also held a World Cup is not.
-    alongside = intl_total(60, 4, 4, 1, "nations_league", "world")
-    assert alongside == pytest.approx(
-        nations * RUNG["nations_league"] / RUNG["world"])
 
 
 def test_the_international_calculator_carries_the_whole_ladder():
