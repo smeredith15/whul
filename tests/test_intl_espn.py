@@ -255,3 +255,30 @@ def test_kept_top_ups_step_aside_once_the_ledger_has_their_dates(monkeypatch):
                                        today=date(2026, 9, 28), store=store,
                                        flashscore="")
     assert len(out) == len(caught_up), "a match the ledger now holds came back twice"
+
+
+def test_the_feeds_spellings_become_the_ledgers_and_a_match_counts_once():
+    """ESPN's St. Lucia and Flashscore's Saint Lucia, both the ledger's."""
+    def frame(rows, source):
+        return pd.DataFrame([{
+            "date": pd.Timestamp(d), "gender": "M", "home_team": h, "away_team": a,
+            "home_score": 1.0, "away_score": 0.0, "tournament": "CONCACAF Nations League",
+            "shootout_winner": None, "event": f"{source}:{i}"}
+            for i, (d, h, a) in enumerate(rows)])
+
+    known = {"Barbados", "Saint Lucia", "Curaçao", "Costa Rica", "Trinidad and Tobago",
+             "Haiti", "United States Virgin Islands", "Saint Martin", "DR Congo",
+             "Guinea-Bissau"}
+    espn = frame([("2026-09-26", "Barbados", "St. Lucia"),
+                  ("2026-09-25", "Costa Rica", "Curaçao"),
+                  ("2026-09-26", "St. Martin", "US Virgin Islands")], "espn")
+    flash = frame([("2026-09-26", "Barbados", "Saint Lucia"),
+                   ("2026-09-25", "Costa Rica", "Curacao"),
+                   ("2026-09-25", "Haiti", "Trinidad & Tobago"),
+                   ("2026-09-26", "Saint Martin", "United States Virgin Islands"),
+                   ("2026-09-26", "D.R. Congo", "Guinea Bissau")], "flashscore")
+    got = intl_soccer.one_per_match([intl_soccer.in_ledger_spelling(f, known)
+                                     for f in (espn, flash)])
+    assert len(got) == 5
+    names = set(got["home_team"]) | set(got["away_team"])
+    assert names <= known | {"Central African Republic"}, names - known
