@@ -2579,6 +2579,50 @@ def test_a_drivers_corner_is_his_flag_and_not_his_car_number():
     assert profile["corner"] == ["flag", "great-britain"]
 
 
+def _umbrella_profile(asset_id, name, umbrella, payload, source):
+    """A flex-slot asset: filed under its umbrella, its row naming the member."""
+    from whul.site.build import asset_profiles
+
+    store = open_store(":memory:")
+    store.upsert("assets", [{
+        "asset_id": asset_id, "asset_type": "Player", "display_name": name,
+        "league": umbrella, "role": "", "norm_key": payload["league"],
+        "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    store.record_stats([{**payload, "player": name, "asset_id": asset_id}],
+                       source=source, season="2026-27", as_of=date(2026, 9, 28),
+                       league=umbrella)
+    return asset_profiles(store, "2026-27", date(2026, 9, 28), {asset_id})[asset_id]
+
+
+def test_a_flex_tennis_player_gets_her_tours_boxes():
+    """Rybakina, Noskova and Fritz are filed under "Tennis", the slot, and no
+    panel is drawn for an umbrella: the points were right and every box read
+    as a dash. The row says which tour she plays, and that decides."""
+    profile = _umbrella_profile(
+        "player-tennis-elena-rybakina", "Elena Rybakina", "Tennis",
+        {"league": "WTA", "role": "Singles", "total_points": 550.0,
+         "tier_detail": [{"label": "WTA 1000", "points": 550.0, "straight": 0.0,
+                          "note": "SF", "entered": 1}]},
+        source="tennis")
+    panel = profile["panel"]
+    assert panel and panel["kind"] == "boxes"
+    assert [b["value"] for b in panel["top"]] == ["550"]
+    assert "feed_league" not in str(profile.get("lines")), "an internal column leaked"
+
+
+def test_a_flex_driver_gets_his_series_boxes():
+    profile = _umbrella_profile(
+        "player-motorsports-lando-norris", "Lando Norris", "Motorsports",
+        {"league": "F1", "role": "Driver", "total_points": 31.0, "wins": 2,
+         "podiums": 5, "top_tens": 12},
+        source="motorsports")
+    panel = profile["panel"]
+    assert panel, "a flex driver had no panel"
+    values = [b["value"] for b in panel["top"]]
+    assert "2" in values and "5" in values, values
+
+
 # --- the NFL stat panel ---------------------------------------------------
 
 from whul.site import build as site_build

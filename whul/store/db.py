@@ -374,6 +374,12 @@ class Store:
         # would produce two columns of that name, and pandas then drops one
         # without saying which. The table's own value is the authoritative copy,
         # so the payload's is discarded rather than duplicated.
+        # Except that a payload's league is not always the same thing: a flex
+        # slot's feed files Rybakina's row under "Tennis" and says "WTA" inside
+        # it, and that is the only place her tour is written down. Kept under
+        # its own name for whoever needs the member rather than the umbrella.
+        if "league" in expanded.columns and "league" in kept.columns:
+            kept["feed_league"] = expanded["league"]
         expanded = expanded.drop(columns=[c for c in expanded.columns if c in kept.columns])
         return pd.concat([kept, expanded], axis=1)
 

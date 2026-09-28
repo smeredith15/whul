@@ -415,6 +415,13 @@ def asset_profiles(
             # only be read off the asset.
             asset_league = (str(meta.loc[asset_id, "league"])
                             if asset_id in meta.index else "")
+            # A flex slot's asset is filed under its umbrella -- Taylor Fritz
+            # is "Tennis", Lando Norris "Motorsports" -- and no panel is drawn
+            # for an umbrella, so every box read as a dash while the points
+            # were right. The row says which tour or series it is.
+            member = str(row.get("feed_league") or "")
+            if member in covered_by(asset_league):
+                asset_league = member
             finishes[asset_id] = _finish_list(row)
             bonuses[asset_id] = _bonus_list(row)
             notes[asset_id] = _scaling_notes(row)
@@ -461,7 +468,7 @@ def asset_profiles(
             elif asset_league == "PGA":
                 panels[asset_id] = _golf_panel(row)
             elif asset_league in TENNIS_TOURS:
-                panels[asset_id] = _tennis_panel(row)
+                panels[asset_id] = _tennis_panel({**row, "league": asset_league})
             elif _is_a_club_soccer_player(row):
                 panels[asset_id] = _soccer_player_panel(
                     row, club_games,
@@ -578,7 +585,7 @@ STAT_SKIP = {
     # touchdowns as though it were one of them.
     "player_id", "playerid", "athlete_id", "team_id", "driver_id", "id",
     "finishes", "tier_detail", "norm_key", "asset_type", "role_count",
-    "contract_year",
+    "contract_year", "feed_league",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
     # Shown as identity, above the figures. Left here as well they read as a
     # statistic -- "Position  F" in a column of goals and assists, and
