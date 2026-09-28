@@ -53,8 +53,14 @@ MEASURE_SUFFIXES: tuple[str, ...] = ("_diff", "_differential", "_pct",
 #: Figures derived from the rest rather than counted themselves. They fall
 #: exactly when their inputs say they should, so checking them would flag every
 #: honest fall the inputs are allowed to make -- the check is on the inputs.
-DERIVED = re.compile(r"^(pts_|points_|total_points$|role_points$|scaled_score$"
-                     r"|league_points$|folded$|gross$|counted$)")
+#:
+#: Any ``*_points`` field, not a list of them. `regular_points` was missing
+#: from the list, and a batter's regular points fall on every 0-for-4 -- an
+#: at-bat is priced below zero -- so each bad day held a rostered hitter's
+#: whole line at the day before: Ohtani read seventeen games for eight days
+#: while he played in them, and every stall read as the feed running behind.
+DERIVED = re.compile(r"^(pts_|points_)|_points$|^(total_points|role_points|"
+                     r"scaled_score|league_points|folded|gross|counted)$")
 
 #: Fields that identify the row rather than describe it.
 IDENTITY: frozenset[str] = frozenset({
@@ -74,7 +80,7 @@ def is_a_count(name: str) -> bool:
     key = str(name).strip().lower()
     if not key or key in IDENTITY or key in MEASURES:
         return False
-    if DERIVED.match(key):
+    if DERIVED.search(key):
         return False
     return not key.endswith(MEASURE_SUFFIXES)
 

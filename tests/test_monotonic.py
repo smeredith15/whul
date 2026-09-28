@@ -31,7 +31,8 @@ def test_these_can_only_rise(name):
     "save_pct", "completion_rate",
     # Derived from the rest, so checked through the rest.
     "total_points", "role_points", "pts_run_diff", "scaled_score",
-    "league_points",
+    "league_points", "regular_points", "postseason_points", "goal_points",
+    "appearance_points", "bonus_points", "bye_points",
     # Identity.
     "season", "asset_id", "conference", "game_id",
 ])
@@ -108,3 +109,11 @@ def test_the_sport_happening_is_not_a_fault(who, before, after):
     """These all lost points and every one of them is the truth. A pipeline
     that refused them would be refusing the sport."""
     assert monotonic.what_went_backwards(before, after) == [], who
+
+
+def test_a_batters_bad_day_is_not_a_count_going_backwards():
+    """Four more at-bats and no hits: the points fall and every count rises.
+    Held, the line froze at the day before for as long as he kept slumping."""
+    before = {"games": 17, "ab": 70.0, "h": 15, "regular_points": 60.0}
+    after = {"games": 18, "ab": 74.0, "h": 15, "regular_points": 56.0}
+    assert monotonic.what_went_backwards(before, after) == []
