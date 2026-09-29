@@ -201,6 +201,13 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
     """
     rows: list[dict] = []
     unfinished = 0
+    # What is still to be played, which the rows themselves cannot say: they
+    # hold finished games only. The regular season is over when none of its
+    # games is left, and the Wild Card field is set when its games are
+    # scheduled -- both a day or more before the first postseason pitch, and
+    # waiting for that pitch left every division title unpaid for it.
+    regular_left: dict[int, int] = {}
+    wild_card: dict[int, set[str]] = {}
     for season in seasons:
         payload = _get(
             f"{STATS_API}/schedule",
@@ -217,10 +224,19 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
             # Only a season that cannot gain another game.
             cache_key=(f"schedule/{season}" if season_is_over(season) else None),
         )
+        regular_left.setdefault(int(season), 0)
         for day in payload.get("dates", []):
             for game in day.get("games", []):
                 home = (game.get("teams") or {}).get("home", {})
                 away = (game.get("teams") or {}).get("away", {})
+                kind = game.get("gameType")
+                if kind == "F":
+                    wild_card.setdefault(int(game.get("season", season)), set()).update(
+                        str((side.get("team") or {}).get("name") or "")
+                        for side in (home, away))
+                if kind == "R" and not _is_final(game) and not _called_off(game):
+                    regular_left[int(game.get("season", season))] = \
+                        regular_left.get(int(game.get("season", season)), 0) + 1
                 if home.get("score") is None or away.get("score") is None:
                     continue
                 if not _is_final(game):
@@ -251,7 +267,17 @@ def load_schedule(seasons: list[int]) -> pd.DataFrame:
         # a feed stuck reporting live games for ever would look like.
         print(f"  mlb: {unfinished} game(s) in progress, counted when they are "
               f"final", flush=True)
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["regular_left"] = regular_left
+    out.attrs["wild_card"] = {s: {n for n in names if n} for s, names in wild_card.items()}
+    return out
+
+
+def _called_off(game: dict) -> bool:
+    """A game that will not be played on this entry: postponed games come back
+    as a new entry on their new date, and a cancelled one never does."""
+    detailed = str((game.get("status") or {}).get("detailedState") or "").lower()
+    return detailed.startswith(("postponed", "cancelled", "canceled"))
 
 
 #: What the Stats API calls a game that can no longer change. `abstractGameState`

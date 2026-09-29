@@ -5028,3 +5028,13 @@ def test_football_and_diamond_byes_ride_on_their_wins_boxes():
                                                     "conf_tourney_byes": 1})
     box = diamond["top"][0]
     assert (box["value"], box["sup"], box["points"]) == ("40", "+1", 82.0)
+
+
+def test_a_division_title_not_won_reads_no_once_the_season_is_over():
+    from whul.site.build import _mlb_team_panel
+
+    row = {**_mlb_club(), "is_division_champ": 0.0, "pts_div_champ": 0.0,
+           "titles_settled": 1.0}
+    title = _mlb_team_panel(row)["outcomes"][0]
+    unsettled = _mlb_team_panel({**row, "titles_settled": 0.0})["outcomes"][0]
+    assert title != unsettled

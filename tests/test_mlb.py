@@ -904,3 +904,70 @@ def test_a_benchmark_season_pays_the_bye_as_a_sweep():
     with_bye, before = year_n(POST), year_n([])
     assert with_bye - before == pytest.approx(
         2 * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + mlb.PTS_SERIES["wc"], abs=0.01)
+
+
+# --- the day between the regular season and the postseason -----------------
+
+def test_the_loader_says_what_is_left_to_play(monkeypatch):
+    from whul.sources import mlb as source
+
+    def game(pk, kind, home, away, state, detailed="", scores=True):
+        side = lambda name, runs: {"team": {"name": name},  # noqa: E731
+                                   **({"score": runs} if scores else {})}
+        return {"gamePk": pk, "gameType": kind, "season": 2026,
+                "officialDate": "2026-09-27",
+                "status": {"abstractGameState": state, "detailedState": detailed},
+                "teams": {"home": side(home, 5), "away": side(away, 3)}}
+
+    payload = {"dates": [{"date": "2026-09-27", "games": [
+        game(1, "R", "Leader", "Chaser", "Final", "Final"),
+        game(2, "R", "Bye", "Also-ran", "Preview", "Scheduled", scores=False),
+        game(3, "R", "Bye", "Also-ran", "Preview", "Postponed", scores=False),
+        game(4, "F", "Chaser", "Wildcard", "Preview", "Scheduled", scores=False),
+    ]}]}
+    monkeypatch.setattr(source, "_get", lambda url, params, cache_key=None: payload)
+    monkeypatch.setattr(source, "season_is_over", lambda season: False)
+    rows = source.load_schedule([2026])
+    assert list(rows["game_id"]) == [1]
+    assert rows.attrs["regular_left"] == {2026: 1}, "a postponed entry is not left"
+    assert rows.attrs["wild_card"] == {2026: {"Chaser", "Wildcard"}}
+
+
+def _between(left, wild_card=("Chaser", "Wildcard")):
+    schedule = _october(REGULAR)
+    schedule.attrs["regular_left"] = {2026: left}
+    schedule.attrs["wild_card"] = {2026: set(wild_card)}
+    return mlb.team_status(schedule, DIVISIONS).set_index("team")
+
+
+def test_titles_are_settled_when_the_regular_season_ends(monkeypatch):
+    """Not when the first postseason game does: the 2026 regular season ended
+    on a Sunday and every division title was still unpaid on the Tuesday."""
+    monkeypatch.setattr(mlb, "WILD_CARD_FIELD", 2)
+    status = _between(left=0)
+    assert status.loc["Bye", "is_division_champ"] == 1
+    assert status.loc["Leader", "is_division_champ"] == 1
+    assert status["titles_settled"].eq(1).all()
+    # The field is set, so the champions outside the Wild Card round have byes,
+    # and a club outside the field is done.
+    assert status.loc["Bye", "wc_bye"] == 1 and status.loc["Leader", "wc_bye"] == 1
+    assert status.loc["Chaser", "wc_bye"] == 0
+    assert status.loc["Also-ran", "season_over"] == 1
+    assert status.loc["Chaser", "season_over"] == 0
+    assert status.loc["Chaser", "in_postseason"] == 1
+
+
+def test_nothing_is_settled_while_regular_season_games_are_left(monkeypatch):
+    monkeypatch.setattr(mlb, "WILD_CARD_FIELD", 2)
+    status = _between(left=3)
+    assert status["is_division_champ"].sum() == 0
+    assert status["wc_bye"].sum() == 0 and status["season_over"].sum() == 0
+    assert status["titles_settled"].sum() == 0
+
+
+def test_no_bye_until_the_whole_wild_card_field_is_named():
+    """One matchup named and the rest to be decided would otherwise give a bye
+    to every champion not in that one game."""
+    status = _between(left=0, wild_card=("Chaser", "Wildcard"))
+    assert status["wc_bye"].sum() == 0
+    assert status.loc["Leader", "is_division_champ"] == 1

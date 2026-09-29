@@ -484,6 +484,10 @@ SERIES_LOST_AT = {GAME_TYPE_WC: 2, GAME_TYPE_LDS: 3, GAME_TYPE_LCS: 4, GAME_TYPE
 #: Wins that take the World Series, after which the champion's season is over too.
 WORLD_SERIES_WON_AT = 4
 
+#: Clubs in the Wild Card round since 2022: once all eight are named, every
+#: division champion outside it has a bye.
+WILD_CARD_FIELD = 8
+
 
 def team_status(schedule: pd.DataFrame,
                 divisions: pd.DataFrame | None = None) -> pd.DataFrame:
@@ -509,7 +513,7 @@ def team_status(schedule: pd.DataFrame,
     series answer: an unknown is left open rather than closed.
     """
     columns = ["season", "team", "in_postseason", "season_over",
-               "is_division_champ", "wc_bye"]
+               "is_division_champ", "wc_bye", "titles_settled"]
     games = _team_games(schedule)
     if games.empty:
         return pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
@@ -520,28 +524,47 @@ def team_status(schedule: pd.DataFrame,
     byes = set(zip(summary.loc[summary["wc_bye"] == 1, "season"],
                    summary.loc[summary["wc_bye"] == 1, "team"]))
     known_field = divisions is not None and not getattr(divisions, "empty", True)
+    # What the loader saw still to come (``whul.sources.mlb.load_schedule``).
+    attrs = getattr(schedule, "attrs", {}) or {}
+    regular_left = attrs.get("regular_left") or {}
+    wild_card = attrs.get("wild_card") or {}
 
     rows = []
     for season, block in games.groupby("season"):
         post = block[block["game_type"].isin(list(SERIES_LOST_AT))]
         started = not post.empty
-        playing = set(post["team"])
+        # Over when nothing of it is left to play -- the day after its last
+        # game, not the day the postseason's first one ends.
+        regular_over = started or (
+            regular_left.get(int(season)) == 0 and bool(block["is_reg"].any()))
+        # The Wild Card round's clubs, played or only scheduled. Its eight are
+        # named the day the regular season ends, and with them who has a bye.
+        in_wild_card = (set(post.loc[post["game_type"] == GAME_TYPE_WC, "team"])
+                        | (set(wild_card.get(int(season), ())) & set(block["team"])))
+        field_set = started or (regular_over and len(in_wild_card) >= WILD_CARD_FIELD)
+        playing = set(post["team"]) | in_wild_card
         for team, mine in block.groupby("team"):
-            in_field = team in playing or (season, team) in champs
+            champ = (season, team) in champs
+            in_field = team in playing or champ
             out = any(int((mine["is_loss"] & (mine["game_type"] == kind)).sum()) >= lost
                       for kind, lost in SERIES_LOST_AT.items())
             won = int((mine["is_win"] & (mine["game_type"] == GAME_TYPE_WS)).sum()) \
                 >= WORLD_SERIES_WON_AT
-            missed = started and known_field and not in_field
+            missed = field_set and known_field and not in_field
+            bye = (season, team) in byes or (
+                field_set and champ and team not in in_wild_card)
             rows.append({
                 "season": int(season), "team": str(team),
-                "in_postseason": int(started and in_field),
-                "season_over": int(started and (missed or out or won)),
+                "in_postseason": int(field_set and in_field),
+                "season_over": int((started or field_set) and (missed or out or won)),
                 # Settled facts about the regular season, for a scorer that
                 # sees only the league year's window of it: a division title
-                # and a bye exist once the postseason has begun, not before.
-                "is_division_champ": int(started and (season, team) in champs),
-                "wc_bye": int(started and (season, team) in byes),
+                # once the regular season is over, a bye once the field is set.
+                "is_division_champ": int(regular_over and champ),
+                "wc_bye": int(bye),
+                # So a club that did not win one reads "No" rather than
+                # "not yet" once nobody else can either.
+                "titles_settled": int(regular_over),
             })
     return pd.DataFrame(rows, columns=columns)
 
