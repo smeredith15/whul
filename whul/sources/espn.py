@@ -562,18 +562,23 @@ def team_index(league: str) -> dict[str, str]:
     return found
 
 
-def load_team_schedule(league: str, team_id: str, season: int) -> pd.DataFrame:
+def load_team_schedule(league: str, team_id: str, season: int,
+                       cache: bool = False) -> pd.DataFrame:
     """One team's whole season, in the shape the scorers read.
 
     A team's own schedule cannot be short of its own games, which the
     scoreboard can: it caps at twenty-five events a request and ignores both
     ``limit`` and ``page``, so it returns the featured games rather than the
     slate. For a roster of eight teams this is eight requests and complete.
+
+    ``cache`` for a season that is over: a benchmark reads every team in a
+    division for five of them, and a re-run should not ask again.
     """
     sport, path = LEAGUE_PATHS[league]
     url = f"{BASE}/{sport}/{path}/teams/{team_id}/schedule"
+    key = f"{league}/schedule/{season}/{team_id}" if cache else None
     payload = _get(url, {"season": season},
-                   cache_key=None)   # a season in progress changes daily
+                   cache_key=key)   # a season in progress changes daily
     events = list(payload.get("events", []))
     # The postseason, asked for by name. Unasked, the endpoint answered with
     # the regular season alone for football: a probe of the 2025 season found
@@ -581,7 +586,8 @@ def load_team_schedule(league: str, team_id: str, season: int) -> pd.DataFrame:
     # them. Asked for separately and merged by id, so a sport that already
     # returned them loses nothing and gains no duplicates.
     try:
-        post = _get(url, {"season": season, "seasontype": 3}, cache_key=None)
+        post = _get(url, {"season": season, "seasontype": 3},
+                    cache_key=f"{key}/post" if key else None)
     except Exception as exc:  # noqa: BLE001 -- the regular season still stands
         print(f"  {league}: team {team_id} postseason could not be read "
               f"({type(exc).__name__}) -- its playoff games will be missing",
@@ -801,6 +807,145 @@ def load_rostered_schedules(
     # per distinct team either way, and there is no sense paying for the same
     # game twice.
     return fill_conferences(league, both, max(seasons), verbose=verbose)
+
+
+#: How many teams each division holds, generously. A list outside this is not
+#: the division -- every college football program ESPN knows is about 760 -- and
+#: walking it would cost hours and score the wrong pool, so it stops instead.
+DIVISION_SIZE = {
+    "ncaaf": (120, 145), "ncaam": (340, 380), "ncaaw": (340, 380),
+    "ncaabaseball": (270, 320), "ncaasoftball": (270, 330),
+}
+
+#: A share of team schedules that may fail before a season is too thin to use.
+DIVISION_FAILURE_LIMIT = 0.02
+
+STANDINGS = "https://site.api.espn.com/apis/v2/sports"
+
+
+class DivisionUnknown(RuntimeError):
+    """Neither the standings nor the team list gave a plausible division."""
+
+
+def _standings_teams(node) -> dict[str, str]:
+    """Every team in a standings payload, however deeply it nests them."""
+    found: dict[str, str] = {}
+    if isinstance(node, dict):
+        for entry in node.get("entries") or []:
+            team = (entry or {}).get("team") or {}
+            if team.get("id") and team.get("displayName"):
+                found[str(team["id"])] = str(team["displayName"])
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                found.update(_standings_teams(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.update(_standings_teams(value))
+    return found
+
+
+def division_teams(league: str, season: int) -> tuple[dict[str, str], str]:
+    """``{ESPN id: display name}`` for a division in one season, and where from.
+
+    The standings first: they are per season, so a program that moved up is in
+    the years it played there and no others. The team list second, which is
+    today's membership. Either is checked against ``DIVISION_SIZE``.
+    """
+    sport, path = LEAGUE_PATHS[league]
+    group = DIVISION_I_GROUPS.get(league)
+    settled = _has_settled(season_span(season, league)[1])
+    low, high = DIVISION_SIZE[league]
+    tried: list[str] = []
+
+    params: dict = {"season": season}
+    if group:
+        params["group"] = group
+    try:
+        payload = _get(f"{STANDINGS}/{sport}/{path}/standings", params,
+                       cache_key=f"{league}/standings/{season}" if settled else None)
+        teams = _standings_teams(payload)
+    except Exception as exc:  # noqa: BLE001 -- the team list is tried next
+        teams = {}
+        tried.append(f"standings failed ({type(exc).__name__})")
+    if low <= len(teams) <= high:
+        return teams, "standings"
+    if teams:
+        tried.append(f"standings gave {len(teams)}")
+
+    params = {"limit": 1000}
+    if group:
+        params["groups"] = group
+    try:
+        payload = _get(f"{BASE}/{sport}/{path}/teams", params,
+                       cache_key=f"{league}/teams-division")
+        teams = {}
+        for block in payload.get("sports", []):
+            for entry in block.get("leagues", []):
+                for row in entry.get("teams", []):
+                    team = row.get("team") or {}
+                    if team.get("id") and team.get("displayName"):
+                        teams[str(team["id"])] = str(team["displayName"])
+    except Exception as exc:  # noqa: BLE001 -- reported below
+        teams = {}
+        tried.append(f"team list failed ({type(exc).__name__})")
+    if low <= len(teams) <= high:
+        return teams, "team list"
+    tried.append(f"team list gave {len(teams)}")
+    raise DivisionUnknown(
+        f"{league} {season}: no plausible division ({'; '.join(tried)}); "
+        f"one holds {low}-{high} teams. Nothing was walked.")
+
+
+def load_division_schedules(league: str, seasons: list[int],
+                            verbose: bool = True) -> pd.DataFrame:
+    """Every game every team in the division played, postseason included.
+
+    What a benchmark is drawn from, and the same feed and the same rows live
+    scoring reads (``load_rostered_schedules``), so the scale and the scores
+    measured against it see the same games labelled the same way. The NCAA's
+    own API calls every game regular season and names no rounds, so a
+    benchmark drawn from it held no playoff, no March Madness, no Regional
+    and no conference title at all.
+
+    The division's names ride on the frame as ``attrs["eligible"]``: a
+    schedule holds its opponents, and a lower-division one with two games
+    must not join the pool.
+    """
+    frames: list[pd.DataFrame] = []
+    eligible: set[str] = set()
+    attempted = failed = 0
+    for season in seasons:
+        teams, source = division_teams(league, season)
+        settled = _has_settled(season_span(season, league)[1])
+        if verbose:
+            print(f"  {league} {season}: {len(teams)} teams, from the {source}",
+                  flush=True)
+        season_frames = []
+        for index, (team_id, name) in enumerate(sorted(teams.items(), key=lambda t: t[1])):
+            attempted += 1
+            try:
+                season_frames.append(load_team_schedule(league, team_id, season,
+                                                        cache=settled))
+            except Exception as exc:  # noqa: BLE001 -- counted, and the rest go on
+                failed += 1
+                if verbose:
+                    print(f"    ! {name}: {type(exc).__name__}", flush=True)
+            if verbose and index and index % 50 == 0:
+                print(f"    {index}/{len(teams)} teams", flush=True)
+        eligible |= set(teams.values())
+        if season_frames:
+            games = pd.concat(season_frames, ignore_index=True)
+            games = games.drop_duplicates(subset=["game_id"]).reset_index(drop=True)
+            frames.append(fill_conferences(league, games, season, verbose=verbose))
+    if attempted and failed > attempted * DIVISION_FAILURE_LIMIT:
+        raise RuntimeError(
+            f"{league}: {failed} of {attempted} team schedules could not be read. "
+            f"Every one missing is a team short of its season, and a benchmark "
+            f"drawn from that sets the bar too low. Re-run: what was read is "
+            f"cached.")
+    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    out.attrs["eligible"] = eligible
+    return out
 
 
 def _match_key(name: str) -> str:

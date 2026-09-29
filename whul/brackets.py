@@ -426,3 +426,26 @@ def postseason_lines(team: str, rows: pd.DataFrame | None) -> list[str]:
         lines.append(f"    {row.game_date}  type {row.season_type}  "
                      f"{row.away_team} at {row.home_team}  [{row.notes}]")
     return lines
+
+
+def local_schedules(games: pd.DataFrame
+                    ) -> Callable[[int], Callable[[str], pd.DataFrame | None]]:
+    """Team schedules out of rows already in hand, for ``place_rounds``.
+
+    A benchmark holds every team in the division, so a bracket walk needs no
+    request of its own: each team's games are looked up here instead.
+    """
+    by_team: dict[tuple[int, str], list[int]] = {}
+    if games is not None and not games.empty:
+        for position, (season, home, away) in enumerate(
+                zip(games["season"], games["home_team"], games["away_team"])):
+            for team in (home, away):
+                by_team.setdefault((int(season), str(team)), []).append(position)
+
+    def for_season(season: int) -> Callable[[str], pd.DataFrame | None]:
+        def schedule(team: str) -> pd.DataFrame | None:
+            rows = by_team.get((int(season), str(team)))
+            return games.iloc[rows].reset_index(drop=True) if rows else None
+        return schedule
+
+    return for_season

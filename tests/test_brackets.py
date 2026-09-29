@@ -201,3 +201,12 @@ def test_a_new_format_is_placed_from_its_bracket_and_pays_the_double_bye():
     assert placed["bracket_round"].tolist() == [3, 4]
     scored = score_basketball(placed, "NCAAM").set_index("team")
     assert scored.loc["Gonzaga", "conf_tourney_byes"] == 2
+
+
+def test_a_benchmark_places_rounds_from_the_rows_it_already_has():
+    """Every team in the division is in hand, so no request is made."""
+    everything = _big12_baseball()
+    placed = bp.place_rounds("ncaabaseball", everything, bp.local_schedules(everything))
+    wv = placed[(placed["home_team"] == "West Virginia")
+                | (placed["away_team"] == "West Virginia")]
+    assert wv["bracket_round"].tolist() == [3, 4, 5]
