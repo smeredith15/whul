@@ -46,7 +46,12 @@ FB_WEIGHTS = {
     "point_diff": 0.05,
 }
 FB_REG_CHAMP_POOL = 6.0  # split evenly among co-champions
-FB_PLAYOFF_PATTERN = r"Playoff|CFP|Rose|Sugar|Orange|Cotton|Fiesta|Peach"
+#: The playoff by its own name. The bowls it is played in used to be here as
+#: well, for a feed that named only the bowl, and in the four-team years that
+#: paid a playoff berth to the four New Year's Six bowls that were not playoff
+#: games -- ESPN writes "College Football Playoff Semifinal at the ... Bowl"
+#: for the ones that were, and "Rose Bowl Game" for the ones that were not.
+FB_PLAYOFF_PATTERN = r"College Football Playoff|\bCFP\b|\bPlayoff\b"
 FB_TITLE_PATTERN = r"Championship"
 
 # --- basketball -----------------------------------------------------------
@@ -85,7 +90,7 @@ NOT_MM_PATTERN = r"NCAA|March Madness|^\s*(?:Men's|Women's)\s+Basketball\s+Champ
 #: Invitation Tournament" has the word in it -- nor the NCAA tournament, which
 #: every postseason game not otherwise named was taken to be. Not scored.
 OTHER_POSTSEASON_PATTERN = (
-    r"\bW?NIT\b|National Invitation|\bW?BIT\b|Basketball Invitation|"
+    r"\bW?NIT\b|National Invitation|\bW?BIT\b|\bWBI\b|Basketball Invitation|"
     r"\bCBI\b|\bCIT\b|Basketball Crown|Basketball Classic"
 )
 
@@ -478,7 +483,7 @@ def _round_part(note: str) -> str:
     "MAAC Championship - 1st Round" is a first round, not a final: the
     tournament's own name has the word in it.
     """
-    parts = re.split(r"\s+[-\u2013\u2014]\s+", str(note), maxsplit=1)
+    parts = re.split(r"\s*[-\u2013\u2014]\s+", str(note), maxsplit=1)
     return parts[1] if len(parts) > 1 else str(note)
 
 

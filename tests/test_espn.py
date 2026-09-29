@@ -1675,3 +1675,94 @@ def test_the_ncaa_benchmark_scores_the_division_and_not_its_opponents(monkeypatc
     scored = score(load([2025])).set_index("team")
     assert set(scored.index) == {"A Aces", "B Bees"}
     assert scored.loc["A Aces", "mm_wins"] == 1 and scored.loc["A Aces", "mm_appearance"] == 1
+
+
+def test_a_seasons_conferences_are_its_standings_top_level_groups():
+    """A football conference lists its teams under East and West; the division
+    is not the conference."""
+    from whul.sources import espn
+
+    payload = {"children": [{"id": "80", "children": [
+        {"id": "8", "name": "SEC", "children": [
+            {"name": "East", "standings": {"entries": [{"team": {"id": "61", "displayName": "Georgia"}}]}},
+            {"name": "West", "standings": {"entries": [{"team": {"id": "333", "displayName": "Alabama"}}]}}]},
+        {"id": "4", "name": "Big 12", "standings": {"entries": [
+            {"team": {"id": "251", "displayName": "Texas"}}]}}]}]}
+    assert espn.standings_conferences(payload) == {"61": "8", "333": "8", "251": "4"}
+
+
+def test_a_division_uses_its_seasons_own_conferences(monkeypatch):
+    """Texas's 2021 games were Big 12 games; its team record says SEC today."""
+    from whul.sources import espn
+
+    feed = _division_feed()
+
+    def fake(url, params, cache_key=None):
+        if url.endswith("/standings"):
+            groups = [{"id": "ACC", "standings": {"entries": [
+                {"team": {"id": "1", "displayName": "A Aces"}},
+                {"team": {"id": "2", "displayName": "B Bees"}}]}}]
+            groups += [{"id": f"X{n}", "standings": {"entries": [
+                {"team": {"id": f"9{n}", "displayName": f"Other {n}"}}]}}
+                for n in range(5)]
+            return {"children": groups}
+        if url.rsplit("/", 1)[1] in ("1", "2"):
+            raise AssertionError("a team record was asked for; the standings had it")
+        return feed(url, params, cache_key)
+
+    monkeypatch.setattr(espn, "_get", fake)
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaam", (2, 9))
+    # The fake schedules carry no ids; give them the ones ESPN sends.
+    original = espn.load_team_schedule
+
+    def with_ids(league, team_id, season, cache=False, strict=False):
+        rows = original(league, team_id, season, cache=cache, strict=strict)
+        if rows.empty:
+            return rows
+        ids = {"A Aces": "1", "B Bees": "2", "C Cats": "3"}
+        rows["home_team_id"] = rows["home_team"].map(ids)
+        rows["away_team_id"] = rows["away_team"].map(ids)
+        return rows
+
+    monkeypatch.setattr(espn, "load_team_schedule", with_ids)
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    rows = espn.load_division_schedules("ncaam", [2025], verbose=False)
+    ab = rows[rows["game_id"] == "g1"].iloc[0]
+    assert ab["home_conference"] == ab["away_conference"] == "ACC"
+    ac = rows[rows["game_id"] == "g2"].iloc[0]
+    assert ac["away_conference"] == "", "outside the division, no conference"
+
+
+def test_a_schedule_that_fails_once_is_asked_again(monkeypatch):
+    from whul.sources import espn
+
+    feed = _division_feed()
+    calls = {"n": 0}
+
+    def flaky(url, params, cache_key=None):
+        if url.endswith("/teams/1/schedule") and calls["n"] == 0:
+            calls["n"] += 1
+            raise ConnectionError("reset")
+        return feed(url, params, cache_key)
+
+    monkeypatch.setattr(espn, "_get", flaky)
+    monkeypatch.setattr(espn, "RETRY_PAUSE", 0)
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaam", (2, 3))
+    rows = espn.load_division_schedules("ncaam", [2025], verbose=False)
+    assert "g2" in set(rows["game_id"]), "A Aces' own schedule, read on the retry"
+
+
+def test_a_benchmark_does_not_take_a_season_without_its_postseason(monkeypatch):
+    from whul.sources import espn
+
+    feed = _division_feed()
+
+    def no_post(url, params, cache_key=None):
+        if params.get("seasontype") == 3:
+            raise ConnectionError("ssl")
+        return feed(url, params, cache_key)
+
+    monkeypatch.setattr(espn, "_get", no_post)
+    with pytest.raises(ConnectionError):
+        espn.load_team_schedule("ncaam", "1", 2025, strict=True)
+    assert len(espn.load_team_schedule("ncaam", "1", 2025)) == 2, "live keeps going"
