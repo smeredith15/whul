@@ -618,6 +618,10 @@ def load_team_schedule(league: str, team_id: str, season: int,
             # The feed's own ids, so a conference is looked up by the team and
             # not by a name that changes -- "Appalachian State" in a 2021
             # schedule is "App State" in today's team list.
+            # The start to the minute, for ordering: a late semifinal and the
+            # next evening's final share a UTC date, and a bracket read in the
+            # wrong order does not fit together at all.
+            "start": str(event.get("date", "")),
             "home_team_id": str((home.get("team") or {}).get("id") or ""),
             "away_team_id": str((away.get("team") or {}).get("id") or ""),
             "home_conference": _conference(home),
