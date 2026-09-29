@@ -1539,7 +1539,8 @@ def _team_panels() -> dict[str, TeamPanel]:
 
     diamond = lambda league: TeamPanel(  # noqa: E731
         top=(
-            TeamBox("reg_wins", "Wins", ncaa.DIAMOND_REG_WIN),
+            TeamBox("reg_wins", "Wins", ncaa.DIAMOND_REG_WIN,
+                    bye="conf_tourney_byes"),
             TeamBox("run_diff", "Run diff", ncaa.DIAMOND_RUN_DIFF),
         ),
         # The win counts are what decide the rounds above and are not scored
@@ -1610,7 +1611,8 @@ def _team_panels() -> dict[str, TeamPanel]:
                         outcome=True),
                 TeamBox("playoff_app", "Playoff", fb["playoff_app"], outcome=True),
             ),
-            post=(TeamBox("playoff_wins", "Playoff wins", fb["playoff_wins"]),),
+            post=(TeamBox("playoff_wins", "Playoff wins", fb["playoff_wins"],
+                          bye="playoff_byes"),),
         ),
         "NCAAM": hoops("NCAAM"),
         "NCAAW": hoops("NCAAW"),

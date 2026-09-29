@@ -504,6 +504,10 @@ def _ncaaf_teams() -> Rules:
         weights(ncaa.FB_WEIGHTS, FB_LABELS)
         + [item("Finishing top of the conference in the regular season",
                 ncaa.FB_REG_CHAMP_POOL, " shared among co-champions")],
+        [
+            "A playoff first-round bye is paid as a playoff win, as though the "
+            "team had played the round and won it.",
+        ],
     )
 
 
@@ -534,6 +538,11 @@ def _ncaa_diamond_teams() -> Rules:
             item("Winning a Regional", ncaa.PTS_SERIES_REGIONAL),
             item("Winning a Super Regional", ncaa.PTS_SERIES_SUPER),
             item("Winning the College World Series", ncaa.PTS_SERIES_CWS),
+        ],
+        [
+            "Conference tournament games count as wins like the rest of the "
+            "season, and a round skipped by seeding is paid as a win, as though "
+            "the team had played it and won it.",
         ],
     )
 

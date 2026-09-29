@@ -5015,3 +5015,16 @@ def test_a_conference_tournament_bye_rides_on_the_wins_box():
     march = _counted_team_panel("NCAAM", row)["posts"][0]["top"]
     box = next(b for b in march if b["label"] == "Conference tournament wins")
     assert (box["value"], box["sup"], box["points"]) == ("1", "+2", 6.0)
+
+
+def test_football_and_diamond_byes_ride_on_their_wins_boxes():
+    from whul.site.build import _counted_team_panel
+
+    football = _counted_team_panel("NCAAF", {"wins": 11, "losses": 1,
+                                             "playoff_wins": 1, "playoff_byes": 1})
+    box = football["posts"][0]["top"][0]
+    assert (box["value"], box["sup"], box["points"]) == ("1", "+1", 30.0)
+    diamond = _counted_team_panel("NCAA Baseball", {"reg_wins": 40, "reg_losses": 15,
+                                                    "conf_tourney_byes": 1})
+    box = diamond["top"][0]
+    assert (box["value"], box["sup"], box["points"]) == ("40", "+1", 82.0)

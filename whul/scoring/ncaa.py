@@ -92,9 +92,10 @@ ROUND_NAMES: tuple[tuple[str, str, int], ...] = (
     (r"\b(?:fourth|4th)\s+round", "start", 4),
 )
 
-#: Each conference tournament's bracket, as the league admin states it: how many
-#: rounds it has, and where its rounds are not called the usual names, what they
-#: are called. See the file's own header.
+#: Each bracket's shape, as the league admin states it -- the conference
+#: tournaments and the College Football Playoff: how many rounds it has, and
+#: where its rounds are not called the usual names, what they are called. See
+#: the file's own header.
 CONF_TOURNEY_FORMATS = (
     Path(__file__).resolve().parent.parent / "data" / "ncaa_conf_tournaments.csv")
 
@@ -363,8 +364,12 @@ def score_football(
 
     summary["pts_reg_champ"] = _split_conference_title(
         summary, FB_REG_CHAMP_POOL, settled_seasons(schedule))
+    # The twelve-team playoff's top four seeds skip its first round, and are
+    # paid it as a playoff win.
+    summary["playoff_byes"] = _bracket_byes(summary, games, "NCAAF", "is_playoff")
     summary["total_points"] = (
         sum(summary[c] * w for c, w in FB_WEIGHTS.items()) + summary["pts_reg_champ"]
+        + summary["playoff_byes"] * FB_WEIGHTS["playoff_wins"]
     )
     summary["league"] = "NCAAF"
     return summary.sort_values(["season", "total_points"], ascending=[True, False]).reset_index(
@@ -389,12 +394,7 @@ def score_basketball(
     # conference, where the feed does not already call it postseason: not
     # every feed does, and a game in the conference tournament is not a
     # regular-season conference game however it is labelled.
-    games["is_conf_tourney"] = (
-        (games["is_post"] | games["is_conf_game"])
-        & _matches(games["notes"], CONF_TOURNEY_PATTERN)
-        & ~_matches(games["notes"], NOT_MM_PATTERN)
-        & ~other
-    )
+    games["is_conf_tourney"] = _conf_tourney(games, other)
     # Anything in the postseason that is not a conference tournament game, nor
     # one of the other invitationals, is treated as the national tournament,
     # which catches rounds the notes do not name explicitly. A conference
@@ -434,7 +434,8 @@ def score_basketball(
 
     summary["pts_reg_champ"] = _split_conference_title(
         summary, BB_REG_CHAMP_POOL, settled_seasons(schedule))
-    summary["conf_tourney_byes"] = _conf_tourney_byes(summary, games, league)
+    summary["conf_tourney_byes"] = _bracket_byes(
+        summary, games, league, "is_conf_tourney")
     summary["total_points"] = (
         sum(summary[c] * w for c, w in BB_WEIGHTS.items()) + summary["pts_reg_champ"]
         + summary["conf_tourney_byes"] * BB_WEIGHTS["conf_tourney_wins"]
@@ -516,19 +517,20 @@ def conference_tournaments(path: Path | None = None) -> list[ConferenceTournamen
     return out
 
 
-def _conf_tourney_byes(summary: pd.DataFrame, games: pd.DataFrame,
-                       league: str) -> pd.Series:
-    """Conference tournament rounds a team skipped by its seed.
+def _bracket_byes(summary: pd.DataFrame, games: pd.DataFrame, league: str,
+                  column: str) -> pd.Series:
+    """Rounds of a bracket a team skipped by its seed.
 
     A bye scores as though the team swept the round it skipped, as it does in
     every sport here (``whul.scoring.postseason.BYE_COUNTS_AS_SWEEP``): each
-    round skipped is paid as a conference tournament win. A team's byes are
-    the rounds before the first one it played, read off the round's name in the
-    game's note and, where the name counts back from the final, the number of
-    rounds the conference's bracket has (``CONF_TOURNEY_FORMATS``).
+    round skipped is paid as a win in that bracket. A team's byes are the rounds
+    before the first one it played, read off the round's name in the game's
+    note and, where the name counts back from the final, the number of rounds
+    the bracket has (``CONF_TOURNEY_FORMATS``). ``column`` flags the bracket's
+    games.
 
     Paid once the team has played its first game, which is when the feed first
-    says it is in the tournament, and whether or not it won it.
+    says it is in the bracket, and whether or not it won it.
 
     Not derivable from the games alone: the live feed is the rostered teams' own
     schedules, so the rest of a bracket is never in it, and brackets do not
@@ -536,7 +538,7 @@ def _conf_tourney_byes(summary: pd.DataFrame, games: pd.DataFrame,
     conference and five in another.
     """
     zero = pd.Series(0, index=summary.index, dtype=int)
-    played = games[games["is_conf_tourney"]]
+    played = games[games[column]]
     if played.empty:
         return zero
     stated = [t for t in conference_tournaments() if t.league == league]
@@ -562,6 +564,22 @@ def _conf_tourney_byes(summary: pd.DataFrame, games: pd.DataFrame,
         index=summary.index, dtype=int)
 
 
+def _conf_tourney(games: pd.DataFrame, other: pd.Series) -> pd.Series:
+    """A conference tournament game: two members of the conference, a note
+    that says tournament, and not one of the national ones.
+
+    Not gated on the feed calling it postseason: not every feed does, and a
+    game in the conference tournament is not a regular-season conference game
+    however it is labelled.
+    """
+    return (
+        (games["is_post"] | games["is_conf_game"])
+        & _matches(games["notes"], CONF_TOURNEY_PATTERN)
+        & ~_matches(games["notes"], NOT_MM_PATTERN)
+        & ~other
+    )
+
+
 def score_diamond(
     schedule: pd.DataFrame,
     league: str = "NCAA Baseball",
@@ -579,7 +597,15 @@ def score_diamond(
     games["is_regional"] = (
         _matches(games["notes"], REGIONAL_PATTERN) & ~games["is_super"] & ~games["is_cws"]
     )
-    games["is_postseason"] = games["is_post"] | games["is_regional"] | games["is_super"] | games["is_cws"]
+    # A conference tournament is played for wins like the rest of the season:
+    # the benchmark's feed calls every game regular season and counted them,
+    # so a live feed that calls them postseason must not drop them.
+    games["is_conf_tourney"] = _conf_tourney(
+        games, _matches(games["notes"], OTHER_POSTSEASON_PATTERN)
+        | games["is_regional"] | games["is_super"] | games["is_cws"])
+    games["is_postseason"] = (
+        (games["is_post"] & ~games["is_conf_tourney"])
+        | games["is_regional"] | games["is_super"] | games["is_cws"])
 
     summary = games.groupby(["season", "team"], as_index=False).apply(
         lambda g: pd.Series(
@@ -601,12 +627,15 @@ def score_diamond(
     if summary.empty:
         return summary
 
+    # The NCAA tournament has no byes -- every team plays a Regional -- but a
+    # conference tournament does, and its rounds are paid as wins.
+    summary["conf_tourney_byes"] = _bracket_byes(summary, games, league, "is_conf_tourney")
     summary["series_regional"] = (summary["regional_wins"] >= 3).astype(int)
     summary["series_super"] = (summary["super_wins"] >= 2).astype(int)
     summary["series_cws_champ"] = (summary["cws_wins"] >= rules.cws_wins_for_title).astype(int)
 
     summary["total_points"] = (
-        summary["reg_wins"] * DIAMOND_REG_WIN
+        (summary["reg_wins"] + summary["conf_tourney_byes"]) * DIAMOND_REG_WIN
         + summary["run_diff"] * DIAMOND_RUN_DIFF
         + summary["series_regional"] * PTS_SERIES_REGIONAL
         + summary["series_super"] * PTS_SERIES_SUPER

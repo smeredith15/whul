@@ -316,13 +316,28 @@ def test_conference_is_only_required_where_scoring_uses_it():
     assert "ncaasoftball" not in espn.CONFERENCE_REQUIRED
 
 
-def test_diamond_scoring_never_reads_conference():
-    """Pins the assumption behind the exemption above."""
-    import inspect
+def test_diamond_scoring_does_not_need_a_conference():
+    """Pins the assumption behind the exemption above: a blank conference
+    scores exactly what a filled one does, conference tournament included."""
+    import pandas as pd
 
     from whul.scoring import ncaa
 
-    assert "conference" not in inspect.getsource(ncaa.score_diamond)
+    def played(notes, conference):
+        return {"season": 2027, "season_type": 3, "notes": notes,
+                "home_team": "LSU", "away_team": "Ole Miss",
+                "home_conference": conference, "away_conference": conference,
+                "home_score": 6, "away_score": 2, "completed": True,
+                "game_date": "2027-05-22"}
+
+    def score(conference):
+        games = pd.DataFrame([
+            played("SEC Tournament - Second Round", conference),
+            played("NCAA Baseball Championship - Baton Rouge Regional", conference)])
+        return ncaa.score_diamond(games, "NCAA Baseball").set_index("team")[
+            ["reg_wins", "conf_tourney_byes", "regional_wins", "total_points"]]
+
+    pd.testing.assert_frame_equal(score(""), score("SEC"))
 
 
 def test_discovery_offers_alternatives_for_the_failing_league():

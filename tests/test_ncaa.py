@@ -635,3 +635,79 @@ def test_the_playoff_final_is_not_a_conference_title():
     ])).set_index("team")
     assert out.loc["A", "conf_title_win"] == 1
     assert out.loc["A", "playoff_wins"] == 1
+
+
+def test_a_playoff_top_seed_is_paid_the_first_round_it_skipped():
+    """The twelve-team playoff: the top four seeds enter at the quarterfinals,
+    and the round they skipped is paid as a playoff win (15)."""
+    conference = {"Ohio State": "B1G", "Texas": "SEC", "Clemson": "ACC"}
+
+    def cfp(home, away, note, day):
+        return game(home, away, 30, 20, hc=conference[home], ac=conference[away],
+                    season_type=3, notes=note, season=2026, game_date=day)
+    out = score_football(pd.DataFrame([
+        cfp("Ohio State", "Texas", "CFP Quarterfinal at the Rose Bowl Game", "2027-01-01"),
+        cfp("Texas", "Clemson", "College Football Playoff First Round", "2026-12-19"),
+    ])).set_index("team")
+    assert out.loc["Ohio State", "playoff_byes"] == 1
+    assert out.loc["Ohio State", "playoff_wins"] == 1, "a bye is not a win"
+    assert out.loc["Texas", "playoff_byes"] == 0
+    assert out.loc["Clemson", "playoff_byes"] == 0
+    with_bye = out.loc["Ohio State"]
+    counted = sum(with_bye[c] * w for c, w in __import__(
+        "whul.scoring.ncaa", fromlist=["FB_WEIGHTS"]).FB_WEIGHTS.items())
+    assert with_bye["total_points"] - with_bye["pts_reg_champ"] - counted \
+        == pytest.approx(15.0)
+
+
+def test_the_four_team_playoff_had_no_byes():
+    out = score_football(pd.DataFrame([
+        game("A", "B", 30, 20, hc="B1G", ac="SEC", season_type=3, season=2022,
+             notes="College Football Playoff Semifinal at the Fiesta Bowl",
+             game_date="2022-12-31"),
+    ])).set_index("team")
+    assert out.loc["A", "playoff_byes"] == 0
+
+
+def _diamond(notes, season_type=3, **kw):
+    return game("LSU", "Ole Miss", 6, 2, hc="SEC", ac="SEC", season=2027,
+                season_type=season_type, notes=notes, game_date="2027-05-22", **kw)
+
+
+def test_a_conference_tournament_game_is_a_win_like_the_rest_of_the_season():
+    """The benchmark's feed calls every game regular season and counted these,
+    so a live feed that calls them postseason must not drop them."""
+    out = score_diamond(pd.DataFrame([_diamond("SEC Tournament - First Round")]),
+                        "NCAA Baseball").set_index("team")
+    assert out.loc["LSU", "reg_wins"] == 1 and out.loc["LSU", "run_diff"] == 4
+    assert out.loc["Ole Miss", "reg_losses"] == 1
+
+
+def test_a_conference_tournament_bye_in_baseball_is_paid_as_a_win():
+    out = score_diamond(pd.DataFrame([_diamond("SEC Tournament - Second Round")]),
+                        "NCAA Softball").set_index("team")
+    assert out.loc["LSU", "conf_tourney_byes"] == 1
+    assert out.loc["LSU", "total_points"] == pytest.approx(
+        (1 + 1) * 2.0 + 4 * 0.05)
+
+
+def test_the_ncaa_tournament_in_baseball_is_not_a_conference_tournament():
+    out = score_diamond(pd.DataFrame([
+        _diamond("NCAA Baseball Championship - Baton Rouge Regional - Game 1")]),
+        "NCAA Baseball").set_index("team")
+    assert out.loc["LSU", "reg_wins"] == 0 and out.loc["LSU", "regional_wins"] == 1
+    assert out.loc["LSU", "conf_tourney_byes"] == 0
+
+
+def test_a_first_four_win_is_a_march_madness_win_and_nobody_else_has_a_bye():
+    out = score_basketball(pd.DataFrame([
+        game("A", "B", 70, 60, hc="ACC", ac="MWC", season_type=3,
+             notes="Men's Basketball Championship - First Four", game_date="2027-03-17"),
+        game("C", "A", 80, 60, hc="SEC", ac="ACC", season_type=3,
+             notes="Men's Basketball Championship - South Region - 1st Round",
+             game_date="2027-03-19"),
+    ])).set_index("team")
+    assert out.loc["A", "mm_wins"] == 1 and out.loc["A", "mm_appearance"] == 1
+    assert out.loc["C", "mm_wins"] == 1
+    assert out.loc["C", "conf_tourney_byes"] == 0
+    assert out.loc["C", "total_points"] == pytest.approx(8 + 5 + 20 * 0.0)
