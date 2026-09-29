@@ -1474,7 +1474,8 @@ SCRIPT = """\
     // it scored -- a rate credited over a share of a season, greyed until the
     // competition is over and it stops moving.
     var posts = (panel.posts || []).map(function (s) {
-      return '<details class="body boxes post"><summary>' + s.name +
+      return '<details class="body boxes post"' + (s.open ? ' open' : '') +
+             '><summary>' + s.name +
              (s.games ? ' <span class="adds">' + s.games + ' game' +
                         (s.games === '1' ? '' : 's') + '</span>' : '') +
              '</summary>' + boxRows(s) +
@@ -1536,7 +1537,8 @@ SCRIPT = """\
     // October in the same boxes as the summer, collapsed, and priced by the
     // same box every other sport's postseason carries.
     var posts = (panel.posts || []).map(function (s) {
-      return '<details class="body boxes post"><summary>' + s.name +
+      return '<details class="body boxes post"' + (s.open ? ' open' : '') +
+             '><summary>' + s.name +
              (s.games ? ' <span class="adds">' + s.games + ' game' +
                         (s.games === '1' ? '' : 's') + '</span>' : '') +
              '</summary>' + boxRows(s) +

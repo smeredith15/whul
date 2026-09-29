@@ -1833,13 +1833,16 @@ def _across_feed_seasons(scored: pd.DataFrame) -> pd.DataFrame:
 
     if scored is None or scored.empty or "season" not in scored.columns:
         return scored
+    # Each season's own line from the first day, not only once there are two
+    # to tell apart: waiting for the second left every MLB club's 2026 tab a
+    # row of dashes for the whole of September, its only season in hand.
+    if "league" in scored.columns and str(scored["league"].iloc[0]) in SPLIT_BY_SEASON:
+        scored = _kept_season_by_season(scored)
     if scored["season"].nunique() <= 1:
         return scored
     keys = [c for c in IDENTITY_COLUMNS if c in scored.columns]
     if not keys:
         return scored
-    if str(scored["league"].iloc[0]) in SPLIT_BY_SEASON:
-        scored = _kept_season_by_season(scored)
     return baseline_store.combine_seasons(scored, keys)
 
 

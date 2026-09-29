@@ -397,6 +397,11 @@ class Store:
         # its own name for whoever needs the member rather than the umbrella.
         if "league" in expanded.columns and "league" in kept.columns:
             kept["feed_league"] = expanded["league"]
+        # The same for the season: the table's is the league year, "2026-27",
+        # and the payload's is the feed's own, 2026 -- the only place a row
+        # says which calendar season it is.
+        if "season" in expanded.columns and "season" in kept.columns:
+            kept["feed_season"] = expanded["season"]
         expanded = expanded.drop(columns=[c for c in expanded.columns if c in kept.columns])
         return pd.concat([kept, expanded], axis=1)
 
