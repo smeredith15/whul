@@ -1030,13 +1030,30 @@ def _division_by_record(league: str, teams: dict[str, str]
                           parent)
     above = {group: parent for group, is_conference, parent in shape.values()
              if is_conference and parent}
-    division = {team_id: (parent if is_conference else above.get(parent, ""))
+    divisions = set(above.values())
+
+    def division_of(is_conference: bool, parent: str) -> str:
+        if is_conference:
+            return parent
+        # Not a conference itself: its parent is either its conference (a
+        # football conference split into halves) or the division directly
+        # (baseball and softball file most of theirs that way).
+        return parent if parent in divisions else above.get(parent, "")
+
+    division = {team_id: division_of(is_conference, parent)
                 for team_id, (_, is_conference, parent) in shape.items()}
     counts = Counter(d for d in division.values() if d)
     if not counts:
         return {}, ""
     top = counts.most_common(1)[0][0]
-    return {t: teams[t] for t, d in division.items() if d == top}, top
+    kept = {t: teams[t] for t, d in division.items() if d == top}
+    low, high = DIVISION_SIZE[league]
+    if not low <= len(kept) <= high:
+        # Said with what was seen, so the next attempt is not a guess.
+        seen = Counter((is_conference, parent) for _, is_conference, parent in shape.values())
+        print(f"  {league}: team records by (is a conference, parent): "
+              + ", ".join(f"{k}: {n}" for k, n in seen.most_common(8)), flush=True)
+    return kept, top
 
 
 def load_division_schedules(league: str, seasons: list[int],

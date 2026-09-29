@@ -1773,7 +1773,7 @@ def test_a_team_list_of_every_division_is_kept_to_the_one_most_are_in(monkeypatc
     ESPN covers; each team's own record says which is Division I."""
     from whul.sources import espn
 
-    listed = {"1": "A", "2": "B", "3": "C", "4": "D", "5": "E"}
+    listed = {"1": "A", "2": "B", "3": "C", "4": "D", "5": "E", "6": "F"}
     records = {
         "1": {"id": "SEC", "isConference": True, "parent": {"id": "26"}},
         "2": {"id": "SEC", "isConference": True, "parent": {"id": "26"}},
@@ -1781,6 +1781,8 @@ def test_a_team_list_of_every_division_is_kept_to_the_one_most_are_in(monkeypatc
         # A conference split into halves: the record names the conference.
         "4": {"id": "ACC-East", "isConference": False, "parent": {"id": "ACC"}},
         "5": {"id": "GLIAC", "isConference": True, "parent": {"id": "99"}},
+        # Filed straight under the division, as most of baseball's are.
+        "6": {"id": "Big 12", "isConference": False, "parent": {"id": "26"}},
     }
 
     def fake(url, params, cache_key=None):
@@ -1793,6 +1795,6 @@ def test_a_team_list_of_every_division_is_kept_to_the_one_most_are_in(monkeypatc
         return {"team": {"groups": records[url.rsplit("/", 1)[1]]}}
 
     monkeypatch.setattr(espn, "_get", fake)
-    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (3, 4))
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (3, 5))
     teams, source = espn.division_teams("ncaabaseball", 2025)
-    assert set(teams) == {"1", "2", "3", "4"} and "26" in source
+    assert set(teams) == {"1", "2", "3", "4", "6"} and "26" in source
