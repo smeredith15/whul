@@ -1766,3 +1766,33 @@ def test_a_benchmark_does_not_take_a_season_without_its_postseason(monkeypatch):
     with pytest.raises(ConnectionError):
         espn.load_team_schedule("ncaam", "1", 2025, strict=True)
     assert len(espn.load_team_schedule("ncaam", "1", 2025)) == 2, "live keeps going"
+
+
+def test_a_team_list_of_every_division_is_kept_to_the_one_most_are_in(monkeypatch):
+    """Baseball's standings held 37 teams and its team list 437, every division
+    ESPN covers; each team's own record says which is Division I."""
+    from whul.sources import espn
+
+    listed = {"1": "A", "2": "B", "3": "C", "4": "D", "5": "E"}
+    records = {
+        "1": {"id": "SEC", "isConference": True, "parent": {"id": "26"}},
+        "2": {"id": "SEC", "isConference": True, "parent": {"id": "26"}},
+        "3": {"id": "ACC", "isConference": True, "parent": {"id": "26"}},
+        # A conference split into halves: the record names the conference.
+        "4": {"id": "ACC-East", "isConference": False, "parent": {"id": "ACC"}},
+        "5": {"id": "GLIAC", "isConference": True, "parent": {"id": "99"}},
+    }
+
+    def fake(url, params, cache_key=None):
+        if url.endswith("/standings"):
+            return {"children": [{"standings": {"entries": [
+                {"team": {"id": "1", "displayName": "A"}}]}}]}
+        if url.endswith("/teams"):
+            return {"sports": [{"leagues": [{"teams": [
+                {"team": {"id": i, "displayName": n}} for i, n in listed.items()]}]}]}
+        return {"team": {"groups": records[url.rsplit("/", 1)[1]]}}
+
+    monkeypatch.setattr(espn, "_get", fake)
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (3, 4))
+    teams, source = espn.division_teams("ncaabaseball", 2025)
+    assert set(teams) == {"1", "2", "3", "4"} and "26" in source

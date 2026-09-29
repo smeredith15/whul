@@ -955,6 +955,13 @@ def division_teams(league: str, season: int) -> tuple[dict[str, str], str]:
     if low <= len(teams) <= high:
         return teams, "team list"
     tried.append(f"team list gave {len(teams)}")
+    if len(teams) > high:
+        # Every division ESPN covers, as baseball's and softball's lists are:
+        # kept to the one most of them belong to, by each team's own record.
+        kept, division = _division_by_record(league, teams)
+        if low <= len(kept) <= high:
+            return kept, f"team list, division {division} by team record"
+        tried.append(f"division {division or '?'} by team record gave {len(kept)}")
     raise DivisionUnknown(
         f"{league} {season}: no plausible division ({'; '.join(tried)}); "
         f"one holds {low}-{high} teams. Nothing was walked.")
@@ -978,6 +985,11 @@ def _season_conferences(league: str, games: pd.DataFrame, season: int,
     usable = (len(set(grouping.values())) >= FEWEST_CONFERENCES
               and sum(1 for t in division if t in grouping) >= 0.9 * len(division))
     if not usable:
+        if league not in CONFERENCE_REQUIRED:
+            # Baseball and softball are scored without one: a conference
+            # tournament is found by its note and its month. Today's
+            # conference would be wrong for every program that has moved.
+            return games
         if verbose:
             print(f"  {league} {season}: the standings gave no usable conferences; "
                   f"each team's current one is used, so a team that has moved "
@@ -987,6 +999,44 @@ def _season_conferences(league: str, games: pd.DataFrame, season: int,
         games[f"{side}_conference"] = (
             games[f"{side}_team_id"].astype(str).map(grouping).fillna(""))
     return games
+
+
+def team_record(league: str, team_id: str) -> dict:
+    """A team's own record as it stands today. Cached once, not per season."""
+    sport, path = LEAGUE_PATHS[league]
+    payload = _get(f"{BASE}/{sport}/{path}/teams/{team_id}", {},
+                   cache_key=f"{league}/team/{team_id}")
+    return payload.get("team") or payload
+
+
+def _division_by_record(league: str, teams: dict[str, str]
+                        ) -> tuple[dict[str, str], str]:
+    """The teams in the division most of ``teams`` belong to, and its id.
+
+    A conference's record names its division as ``groups.parent`` (80 is the
+    FBS); a team in a conference split into divisions names the conference
+    instead, and takes the division of the conference's other members. The
+    division is today's -- a program that has moved up since is counted in
+    every season -- which is why the standings are asked first.
+    """
+    shape: dict[str, tuple[str, bool, str]] = {}
+    for team_id in teams:
+        try:
+            groups = team_record(league, team_id).get("groups") or {}
+        except Exception:  # noqa: BLE001 -- a team with no record is left out
+            continue
+        parent = str((groups.get("parent") or {}).get("id") or "")
+        shape[team_id] = (str(groups.get("id") or ""), bool(groups.get("isConference")),
+                          parent)
+    above = {group: parent for group, is_conference, parent in shape.values()
+             if is_conference and parent}
+    division = {team_id: (parent if is_conference else above.get(parent, ""))
+                for team_id, (_, is_conference, parent) in shape.items()}
+    counts = Counter(d for d in division.values() if d)
+    if not counts:
+        return {}, ""
+    top = counts.most_common(1)[0][0]
+    return {t: teams[t] for t, d in division.items() if d == top}, top
 
 
 def load_division_schedules(league: str, seasons: list[int],
