@@ -1,12 +1,11 @@
-"""NCAA brackets as ESPN labels them, so the bye rule can be checked before it pays.
+"""NCAA brackets, worked out from their games.
 
 A team that skips rounds of a bracket by its seed is paid them as wins
 (``whul.scoring.ncaa._bracket_byes``), and which round a team entered is read
-off the game's note. Whether that works depends on words nobody here has seen:
-the agent sandbox this project is developed in cannot reach ESPN. So this
-reads last season's brackets, which are the best guide to how this season's
-will be labelled, and says for each one whether the scorer would have paid
-every team what the bracket itself says it skipped.
+off the game's note where the note says. Where it does not -- the Big 12's
+baseball tournament called its first three rounds all "Big 12 Tournament" --
+the round is worked out from the bracket itself, here, and carried on the game
+as ``bracket_round`` for the scorer to read instead.
 
 **The bracket, not the labels, is the answer.** A team's own schedule holds its
 own games only, so the rest of its bracket is found by following its opponents'
@@ -14,11 +13,15 @@ schedules, and theirs, until no new team turns up -- a single-elimination
 bracket is connected through its champion, so this reaches all of it. The round
 each game was is then worked back from the final: whoever met in a game both
 won their previous one, so each of those was one round earlier. That needs no
-label at all, and is what the labels are checked against.
+label at all. It does need the final, so a bracket still being played is
+placed once it is finished.
 
-A bracket that is not single elimination -- double elimination, pool play --
-is printed game by game with its labels, because its rounds cannot be worked
-out that way. Those are the ones a stated ``round_names`` has to describe.
+The same walk is the ``probe-brackets`` command, which reads last season's
+brackets -- the best guide to how this season's will be labelled -- and says
+for each whether the scorer reads every team's entry round right. A bracket
+that is not single elimination (double elimination, pool play) is printed
+game by game with its labels, because its rounds cannot be worked out this
+way; those are the ones a stated ``round_names`` has to describe.
 """
 
 from __future__ import annotations
@@ -154,6 +157,11 @@ class Shape:
     rounds: int
     round_of: dict[str, int]      # game id -> round, from 1
     entered: dict[str, int]       # team -> the round of its first game
+    #: Whether the last game is called a final. Until the final is played the
+    #: bracket's two halves meet nowhere, and a half on its own is a smaller
+    #: bracket that works out perfectly -- a round short, with its semifinal
+    #: for a final. Only the name of its last game can say it is the whole.
+    final_named: bool = False
 
 
 def single_elimination(bracket: Bracket) -> Shape | None:
@@ -191,7 +199,8 @@ def single_elimination(bracket: Bracket) -> Shape | None:
     rounds = max(depth.values()) + 1
     round_of = {gid: rounds - d for gid, d in depth.items()}
     entered = {t: round_of[gs[0].game_id] for t, gs in played.items()}
-    return Shape(rounds, round_of, entered)
+    return Shape(rounds, round_of, entered,
+                 final_named=ncaa._round_from_end(games[-1].notes) == 0)
 
 
 def _label(notes: str) -> str:
@@ -233,6 +242,9 @@ def report(bracket: Bracket) -> list[str]:
         return lines
 
     lines.append(f"  single elimination, {shape.rounds} rounds")
+    if not shape.final_named:
+        lines.append("  ! its last game is not called a final, so this may be only "
+                     "part of the bracket -- the rounds below could be a round short")
     by_round: dict[int, dict[str, int]] = {}
     for g in games:
         labels = by_round.setdefault(shape.round_of[g.game_id], {})
@@ -289,3 +301,103 @@ def rostered(db_path: str, season: str, league: str) -> list[str]:
         "WHERE r.season = ? AND a.league = ? ORDER BY 1", (season, league),
     ).fetchall()
     return [str(r[0]) for r in rows]
+
+
+def espn_schedules(league: str, season: int) -> Callable[[str], pd.DataFrame | None]:
+    """A team's season from ESPN by name, or None where ESPN has no such team.
+
+    Fetched once a team: a bracket walk meets most teams twice.
+    """
+    from whul.sources import espn
+
+    index = espn.team_index(league)
+    lookup = {espn._match_key(n): i for n, i in index.items()}
+    cache: dict[str, pd.DataFrame | None] = {}
+
+    def schedule(team: str) -> pd.DataFrame | None:
+        if team in cache:
+            return cache[team]
+        team_id = lookup.get(espn._match_key(team))
+        rows = None
+        if team_id:
+            try:
+                rows = espn.load_team_schedule(league, team_id, season)
+            except Exception as exc:  # noqa: BLE001 -- one team must not stop the walk
+                print(f"  ! {team}: {type(exc).__name__}: {exc}", flush=True)
+        cache[team] = rows
+        return rows
+
+    return schedule
+
+
+def place_rounds(league: str, games: pd.DataFrame,
+                 schedules: Callable[[int], Callable[[str], pd.DataFrame | None]]
+                 ) -> pd.DataFrame:
+    """Each bracket game's round, from the bracket, where its note cannot say.
+
+    Only brackets with a game whose round the scorer cannot read are walked,
+    so a conference that names its rounds costs nothing. ``schedules`` gives a
+    season's fetcher. A walk that fails leaves the rows as they were: the
+    scorer then pays no byes there rather than guessed ones.
+    """
+    if games is None or games.empty or "notes" not in games.columns:
+        return games
+    scorer_league = LEAGUES[league]
+    stated = [t for t in ncaa.conference_tournaments() if t.league == scorer_league]
+    out = games.copy()
+    if "bracket_round" not in out.columns:
+        out["bracket_round"] = pd.NA
+    need: dict[tuple[int, str], set[str]] = {}
+    for row in out.itertuples(index=False):
+        if "completed" in out.columns and not bool(row.completed):
+            continue
+        name = bracket_of(scorer_league, row.notes, getattr(row, "season_type", 2))
+        if name is None:
+            continue
+        season = int(row.season)
+        bracket = next((t for t in stated if t.season == season
+                        and t.called(row.notes, "")), None)
+        read = (bracket.round_of(row.notes) if bracket
+                else ncaa.round_number(row.notes, None))
+        if read is None:
+            need.setdefault((season, name), set()).update(
+                {str(row.home_team), str(row.away_team)})
+    for (season, name), teams in need.items():
+        try:
+            found = [b for b in collect(league, season, sorted(teams), schedules(season))
+                     if b.name == name]
+        except Exception as exc:  # noqa: BLE001 -- the rows stand without it
+            print(f"  {scorer_league}: the {name} bracket could not be walked "
+                  f"({type(exc).__name__}); no byes are paid there yet", flush=True)
+            continue
+        shape = single_elimination(found[0]) if found else None
+        stated_rounds = {t.rounds for t in stated if t.season == season
+                         and t.called(name, "")}
+        if shape is not None and not (shape.final_named
+                                      or shape.rounds in stated_rounds):
+            shape = None
+        if shape is None:
+            print(f"  {scorer_league}: the {name} bracket is not finished or not "
+                  f"single elimination, so its rounds are not placed yet", flush=True)
+            continue
+        ids = out["game_id"].astype(str)
+        for game_id, number in shape.round_of.items():
+            out.loc[ids == game_id, "bracket_round"] = number
+    return out
+
+
+def postseason_lines(team: str, rows: pd.DataFrame | None) -> list[str]:
+    """A starting team's postseason games and bracket games, with their notes,
+    so a label the bracket reader does not recognise is seen rather than
+    missed."""
+    if rows is None:
+        return [f"{team}: no such team in ESPN's index"]
+    types = rows["season_type"].value_counts().to_dict() if not rows.empty else {}
+    lines = [f"{team}: {len(rows)} games, by season type {types}"]
+    notable = rows[(rows["season_type"] == 3)
+                   | rows["notes"].astype(str).str.contains(
+                       r"Tournament|Championship|Playoff|Bowl", case=False)]
+    for row in notable.itertuples(index=False):
+        lines.append(f"    {row.game_date}  type {row.season_type}  "
+                     f"{row.away_team} at {row.home_team}  [{row.notes}]")
+    return lines

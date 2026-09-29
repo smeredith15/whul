@@ -560,13 +560,26 @@ def load_team_schedule(league: str, team_id: str, season: int) -> pd.DataFrame:
     slate. For a roster of eight teams this is eight requests and complete.
     """
     sport, path = LEAGUE_PATHS[league]
-    payload = _get(
-        f"{BASE}/{sport}/{path}/teams/{team_id}/schedule",
-        {"season": season},
-        cache_key=None,   # a season in progress changes daily
-    )
+    url = f"{BASE}/{sport}/{path}/teams/{team_id}/schedule"
+    payload = _get(url, {"season": season},
+                   cache_key=None)   # a season in progress changes daily
+    events = list(payload.get("events", []))
+    # The postseason, asked for by name. Unasked, the endpoint answered with
+    # the regular season alone for football: a probe of the 2025 season found
+    # no playoff game for any of ten rostered teams, the two finalists among
+    # them. Asked for separately and merged by id, so a sport that already
+    # returned them loses nothing and gains no duplicates.
+    try:
+        post = _get(url, {"season": season, "seasontype": 3}, cache_key=None)
+    except Exception as exc:  # noqa: BLE001 -- the regular season still stands
+        print(f"  {league}: team {team_id} postseason could not be read "
+              f"({type(exc).__name__}) -- its playoff games will be missing",
+              flush=True)
+        post = {}
+    seen = {str(e.get("id", "")) for e in events}
+    events += [e for e in post.get("events", []) if str(e.get("id", "")) not in seen]
     rows: list[dict] = []
-    for event in payload.get("events", []):
+    for event in events:
         competition = (event.get("competitions") or [{}])[0]
         status = (competition.get("status") or {}).get("type", {}) or {}
         home, away = _competitor(competition, "home"), _competitor(competition, "away")

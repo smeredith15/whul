@@ -1550,3 +1550,29 @@ def test_a_team_schedule_carries_the_rounds_headline_not_the_matchup(monkeypatch
         payload = {"events": [event(notes)]}
         monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: payload)
         assert espn.load_team_schedule("ncaam", "150", 2027).iloc[0]["notes"] == expected
+
+
+def test_a_team_schedule_asks_for_the_postseason_by_name(monkeypatch):
+    """Unasked, the endpoint gave football's regular season alone: no playoff
+    game for any of ten rostered teams, the two finalists among them."""
+    from whul.sources import espn
+
+    def event(event_id, season_type):
+        return {"id": event_id, "date": "2026-01-19T23:00Z", "name": "x",
+                "seasonType": {"id": season_type}, "competitions": [{
+                    "status": {"type": {"completed": True}},
+                    "competitors": [
+                        {"homeAway": "home", "score": {"value": 27},
+                         "team": {"displayName": "Indiana Hoosiers"}},
+                        {"homeAway": "away", "score": {"value": 21},
+                         "team": {"displayName": "Miami Hurricanes"}}]}]}
+
+    def fake(url, params, cache_key=None):
+        if params.get("seasontype") == 3:
+            return {"events": [event("2", 3), event("1", 2)]}
+        return {"events": [event("1", 2)]}
+
+    monkeypatch.setattr(espn, "_get", fake)
+    rows = espn.load_team_schedule("ncaaf", "84", 2025)
+    assert sorted(rows["game_id"]) == ["1", "2"]
+    assert sorted(rows["season_type"]) == [2, 3]

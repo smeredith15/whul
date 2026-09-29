@@ -1,8 +1,8 @@
-"""The bracket probe, against brackets built by hand."""
+"""NCAA brackets, worked out from their games, against brackets built by hand."""
 
 import pandas as pd
 
-from whul import bracket_probe as bp
+from whul import brackets as bp
 
 
 def _acc(labels=("First Round", "Second Round", "Quarterfinal", "Semifinal",
@@ -96,3 +96,64 @@ def test_the_last_finished_season_by_how_each_sport_numbers_it():
     assert bp.last_season("ncaam", today) == 2026
     assert bp.last_season("ncaaf", today) == 2025
     assert bp.last_season("ncaabaseball", today) == 2026
+
+
+def _big12_baseball():
+    """Twelve teams, five rounds, and the first three all called
+    "Big 12 Tournament" -- as ESPN labelled the 2026 one. West Virginia, the
+    top seed, enters in round three."""
+    labels = ("", "", "", " - Semifinal", " - Championship")
+    games = []
+
+    def play(day, a, b, rnd):
+        games.append({"season": 2027, "game_id": f"{a}-{b}", "game_date": day,
+                      "season_type": 3, "completed": True,
+                      "home_team": a, "away_team": b,
+                      "home_score": 6, "away_score": 2,
+                      "home_conference": "Big 12", "away_conference": "Big 12",
+                      "notes": f"Big 12 Tournament{labels[rnd - 1]}"})
+        return a
+
+    r1 = [play("2027-05-19", a, b, 1) for a, b in (("T9", "T12"), ("T10", "T11"))]
+    r2 = [play("2027-05-20", a, b, 2) for a, b in (("T7", r1[1]), ("T8", r1[0]))]
+    r3 = [play("2027-05-21", a, b, 3) for a, b in (("West Virginia", r2[1]),
+                                                   ("T2", r2[0]), ("T3", "T6"),
+                                                   ("T4", "T5"))]
+    sf = [play("2027-05-22", r3[0], r3[3], 4), play("2027-05-22", r3[1], r3[2], 4)]
+    play("2027-05-23", sf[0], sf[1], 5)
+    return pd.DataFrame(games)
+
+
+def test_a_bracket_whose_notes_do_not_name_the_rounds_is_placed_from_its_games():
+    from whul.scoring.ncaa import score_diamond
+
+    everything = _big12_baseball()
+    mine = _fetch(everything)("West Virginia")
+    placed = bp.place_rounds("ncaabaseball", mine, lambda season: _fetch(everything))
+    assert placed["bracket_round"].tolist() == [3, 4, 5]
+    scored = score_diamond(placed, "NCAA Baseball").set_index("team")
+    assert scored.loc["West Virginia", "conf_tourney_byes"] == 2
+    # Without the walk the rounds cannot be read, and nothing is paid.
+    unplaced = score_diamond(mine, "NCAA Baseball").set_index("team")
+    assert unplaced.loc["West Virginia", "conf_tourney_byes"] == 0
+
+
+def test_a_bracket_that_names_its_rounds_costs_no_requests():
+    asked = []
+
+    def schedules(season):
+        asked.append(season)
+        return _fetch(_acc())
+
+    # T10 plays a first and a second round, both named from the start.
+    mine = _fetch(_acc())("T10")
+    placed = bp.place_rounds("ncaam", mine, schedules)
+    assert asked == [] and placed["bracket_round"].isna().all()
+
+
+def test_an_unfinished_bracket_is_left_unplaced():
+    everything = _big12_baseball()
+    unfinished = everything[everything["notes"] != "Big 12 Tournament - Championship"]
+    mine = _fetch(unfinished)("West Virginia")
+    placed = bp.place_rounds("ncaabaseball", mine, lambda season: _fetch(unfinished))
+    assert placed["bracket_round"].isna().all()
