@@ -69,8 +69,18 @@ MM_OWN_PATTERN = (
     r"Basketball Championship"
 )
 MM_MONTHS = (3, 4)
-CONF_TOURNEY_PATTERN = r"Tournament"
-NOT_MM_PATTERN = r"NCAA|March Madness|Basketball Championship"
+#: A conference tournament calls itself one or the other: "SEC Tournament",
+#: "MAAC Championship".
+CONF_TOURNEY_PATTERN = r"Tournament|Championship"
+#: When they are played, as months. November's invitationals call themselves
+#: tournaments and championships too -- "Players Era Championship", "OU
+#: Tournament" -- and two conference members can meet in one.
+CONF_TOURNEY_MONTHS = {"basketball": (2, 3, 4), "diamond": (4, 5, 6)}
+#: The national tournaments' own names. ESPN writes "NCAA Men's Basketball
+#: Championship - ..."; one that dropped the NCAA would still start with the
+#: rest, where a conference's own "Big Sky Men's Basketball Championship" does
+#: not.
+NOT_MM_PATTERN = r"NCAA|March Madness|^\s*(?:Men's|Women's)\s+Basketball\s+Championship"
 #: The other postseason tournaments. Neither a conference tournament -- "National
 #: Invitation Tournament" has the word in it -- nor the NCAA tournament, which
 #: every postseason game not otherwise named was taken to be. Not scored.
@@ -86,7 +96,11 @@ ROUND_NAMES: tuple[tuple[str, str, int], ...] = (
     (r"quarter", "end", 2),
     (r"semi", "end", 1),
     (r"championship|\bfinals?\b|title game", "end", 0),
-    (r"\b(?:opening|first|1st)\s+round|play-?in", "start", 1),
+    # A play-in is not a round a seed skips: the conferences that hold one
+    # call the seeds after it single and double byes counting from the round
+    # after, and the First Four is not a bye for the sixty teams outside it.
+    (r"play-?in", "start", 0),
+    (r"\b(?:opening|first|1st)\s+round", "start", 1),
     (r"\b(?:second|2nd)\s+round", "start", 2),
     (r"\b(?:third|3rd)\s+round", "start", 3),
     (r"\b(?:fourth|4th)\s+round", "start", 4),
@@ -111,6 +125,9 @@ PTS_SERIES_CWS = 8.0
 REGIONAL_PATTERN = r"Regional"
 SUPER_PATTERN = r"Super Regional"
 CWS_PATTERN = r"College World Series|Women's College World Series|WCWS|CWS"
+#: The tail ESPN puts on a series-deciding game: "- Auburn advances to Super
+#: Regional".
+ADVANCES_PATTERN = r"\s*[-\u2013\u2014]\s*[^-\u2013\u2014]*\badvances?\s+to\b.*$"
 
 
 @dataclass(frozen=True)
@@ -341,7 +358,11 @@ def score_football(
         | (~tougher_field & (games["margin"] >= FB_BIG_WIN_NONCONF))
     )
     # The playoff's own final is a championship too, and not a conference's.
-    games["is_conf_title"] = (games["is_post"] & ~games["is_playoff"]
+    # A conference title game is two members of the conference -- ESPN calls it
+    # regular season (the 2026 probe: "SEC Championship", type 2), so waiting
+    # for the postseason never paid one live.
+    games["is_conf_title"] = ((games["is_post"] | games["is_conf_game"])
+                              & ~games["is_playoff"]
                               & _matches(games["notes"], FB_TITLE_PATTERN))
 
     summary = games.groupby(["season", "team", "conference"], as_index=False).apply(
@@ -399,7 +420,7 @@ def score_basketball(
     # conference, where the feed does not already call it postseason: not
     # every feed does, and a game in the conference tournament is not a
     # regular-season conference game however it is labelled.
-    games["is_conf_tourney"] = _conf_tourney(games, other)
+    games["is_conf_tourney"] = _conf_tourney(games, other, "basketball")
     # Anything in the postseason that is not a conference tournament game, nor
     # one of the other invitationals, is treated as the national tournament,
     # which catches rounds the notes do not name explicitly. A conference
@@ -451,11 +472,21 @@ def score_basketball(
     )
 
 
+def _round_part(note: str) -> str:
+    """What a note says after the bracket's name, where it names one first.
+
+    "MAAC Championship - 1st Round" is a first round, not a final: the
+    tournament's own name has the word in it.
+    """
+    parts = re.split(r"\s+[-\u2013\u2014]\s+", str(note), maxsplit=1)
+    return parts[1] if len(parts) > 1 else str(note)
+
+
 def _round_from_end(note: str) -> int | None:
     """How many rounds before the final a note's round is, where its name says
     so: the final 0, a semifinal 1, a quarterfinal 2."""
     for pattern, counted, position in ROUND_NAMES:
-        if re.search(pattern, str(note), re.IGNORECASE):
+        if re.search(pattern, _round_part(note), re.IGNORECASE):
             return position if counted == "end" else None
     return None
 
@@ -469,6 +500,10 @@ class ConferenceTournament:
     names: tuple[str, ...]    # what the conference is called in a note
     rounds: int               # rounds in the bracket, the final included
     round_names: tuple[str, ...] = ()   # in order, where not the usual ones
+    #: Place every round from the bracket itself (``whul.brackets``), never
+    #: from the labels: a format new enough that nobody has seen how ESPN
+    #: labels it. Byes there are paid once the final is played.
+    from_bracket: bool = False
 
     def called(self, note: str, conference: str) -> bool:
         text = f" {note} "
@@ -494,7 +529,7 @@ def round_number(note: str, rounds: int | None) -> int | None:
     is the second round of an eleven-team bracket and the third of a fifteen.
     """
     for pattern, counted, position in ROUND_NAMES:
-        if re.search(pattern, str(note), re.IGNORECASE):
+        if re.search(pattern, _round_part(note), re.IGNORECASE):
             if counted == "start":
                 return position
             return rounds - position if rounds else None
@@ -518,6 +553,8 @@ def conference_tournaments(path: Path | None = None) -> list[ConferenceTournamen
             names=tuple(n.strip() for n in row.conference.split("|") if n.strip()),
             rounds=rounds,
             round_names=tuple(n.strip() for n in row.round_names.split("|") if n.strip()),
+            from_bracket=str(getattr(row, "from_bracket", "")).strip().lower()
+            in ("yes", "true", "1"),
         ))
     return out
 
@@ -552,10 +589,15 @@ def _bracket_byes(summary: pd.DataFrame, games: pd.DataFrame, league: str,
     for row in played.itertuples(index=False):
         bracket = next((t for t in stated if t.season == int(row.season)
                         and t.called(row.notes, row.conference)), None)
-        number = (bracket.round_of(row.notes) if bracket
-                  else round_number(row.notes, None))
-        if number is None and pd.notna(row.bracket_round):
+        # The bracket's own answer first, where it has been worked out: it
+        # needs no label. A bracket stated to be read that way waits for it.
+        if pd.notna(row.bracket_round):
             number = int(row.bracket_round)
+        elif bracket is not None and bracket.from_bracket:
+            number = None
+        else:
+            number = (bracket.round_of(row.notes) if bracket
+                      else round_number(row.notes, None))
         key = (int(row.season), str(row.team))
         if number is None:
             # Any game whose round cannot be read might be the first one, and
@@ -571,16 +613,24 @@ def _bracket_byes(summary: pd.DataFrame, games: pd.DataFrame, league: str,
         index=summary.index, dtype=int)
 
 
-def _conf_tourney(games: pd.DataFrame, other: pd.Series) -> pd.Series:
-    """A conference tournament game: two members of the conference, a note
-    that says tournament, and not one of the national ones.
+def _conf_tourney(games: pd.DataFrame, other: pd.Series, sport: str) -> pd.Series:
+    """A conference tournament game: two members of the conference, in the
+    weeks the conference tournaments are played, with a note that says
+    tournament or championship, and not one of the national ones.
 
-    Not gated on the feed calling it postseason: not every feed does, and a
-    game in the conference tournament is not a regular-season conference game
-    however it is labelled.
+    Not gated on the feed calling it postseason: ESPN calls every conference
+    tournament game regular season (the 2026 probe), and a game in the
+    conference tournament is not a regular-season conference game however it
+    is labelled. A side with no conference on it passes, since baseball and
+    softball are scored without one and the month and the note still say it.
     """
+    month = pd.to_datetime(games["game_date"], errors="coerce").dt.month
+    in_season = month.isin(CONF_TOURNEY_MONTHS[sport]) | month.isna()
+    unknown = (games["conference"].fillna("").astype(str) == "") | (
+        games["opp_conference"].fillna("").astype(str) == "")
     return (
-        (games["is_post"] | games["is_conf_game"])
+        (games["is_post"] | games["is_conf_game"] | unknown)
+        & in_season
         & _matches(games["notes"], CONF_TOURNEY_PATTERN)
         & ~_matches(games["notes"], NOT_MM_PATTERN)
         & ~other
@@ -598,6 +648,12 @@ def score_diamond(
     if games.empty:
         return pd.DataFrame()
 
+    # What a game's note says comes next is not what the game was: the game that
+    # won the Auburn Regional is "... Auburn Regional - Auburn advances to Super
+    # Regional", and read whole it was a Super Regional win -- leaving every
+    # regional winner a win short of the Regional it won.
+    games["notes"] = games["notes"].str.replace(
+        ADVANCES_PATTERN, "", regex=True, flags=re.IGNORECASE)
     # Super Regional must be tested before Regional, since it contains the word.
     games["is_super"] = _matches(games["notes"], SUPER_PATTERN)
     games["is_cws"] = _matches(games["notes"], CWS_PATTERN)
@@ -609,7 +665,7 @@ def score_diamond(
     # so a live feed that calls them postseason must not drop them.
     games["is_conf_tourney"] = _conf_tourney(
         games, _matches(games["notes"], OTHER_POSTSEASON_PATTERN)
-        | games["is_regional"] | games["is_super"] | games["is_cws"])
+        | games["is_regional"] | games["is_super"] | games["is_cws"], "diamond")
     games["is_postseason"] = (
         (games["is_post"] & ~games["is_conf_tourney"])
         | games["is_regional"] | games["is_super"] | games["is_cws"])

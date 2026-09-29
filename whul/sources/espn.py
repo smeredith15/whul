@@ -541,6 +541,7 @@ def team_index(league: str) -> dict[str, str]:
         cache_key=f"{league}/teams-index",
     )
     found: dict[str, str] = {}
+    places: dict[str, list[str]] = {}
     for group in payload.get("sports", []):
         for entry in group.get("leagues", []):
             for row in entry.get("teams", []):
@@ -548,6 +549,16 @@ def team_index(league: str) -> dict[str, str]:
                 name = team.get("displayName") or team.get("name") or ""
                 if name and team.get("id"):
                     found[str(name)] = str(team["id"])
+                    place = str(team.get("location") or "").strip()
+                    if place:
+                        places.setdefault(place, []).append(str(team["id"]))
+    # The school alone, where only one team carries it: a roster that says
+    # "Texas" means the Longhorns, and matching on the full name alone left the
+    # 2026 softball Longhorns with no schedule at all. "Texas A&M" is a place of
+    # its own, so it does not collide; an ambiguous place is left out.
+    for place, ids in places.items():
+        if len(ids) == 1 and place not in found:
+            found[place] = ids[0]
     return found
 
 

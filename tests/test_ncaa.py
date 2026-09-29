@@ -183,7 +183,8 @@ def test_march_madness_appearance_and_wins():
 
 def test_conference_tournament_is_distinguished_from_march_madness():
     sched = pd.DataFrame(pad([
-        game("A", "B", 70, 60, season_type=3, notes="ACC Tournament Championship"),
+        game("A", "B", 70, 60, season_type=3, notes="ACC Tournament Championship",
+             game_date="2025-03-15"),
     ], 10))
     out = score_basketball(sched, "NCAAM").set_index("team")
     assert out.loc["A", "conf_tourney_wins"] == 1
@@ -702,12 +703,89 @@ def test_the_ncaa_tournament_in_baseball_is_not_a_conference_tournament():
 def test_a_first_four_win_is_a_march_madness_win_and_nobody_else_has_a_bye():
     out = score_basketball(pd.DataFrame([
         game("A", "B", 70, 60, hc="ACC", ac="MWC", season_type=3,
-             notes="Men's Basketball Championship - First Four", game_date="2027-03-17"),
+             notes="NCAA Men's Basketball Championship - First Four",
+             game_date="2027-03-17"),
         game("C", "A", 80, 60, hc="SEC", ac="ACC", season_type=3,
-             notes="Men's Basketball Championship - South Region - 1st Round",
+             notes="NCAA Men's Basketball Championship - South Region - 1st Round",
              game_date="2027-03-19"),
     ])).set_index("team")
     assert out.loc["A", "mm_wins"] == 1 and out.loc["A", "mm_appearance"] == 1
     assert out.loc["C", "mm_wins"] == 1
     assert out.loc["C", "conf_tourney_byes"] == 0
     assert out.loc["C", "total_points"] == pytest.approx(8 + 5 + 20 * 0.0)
+
+
+# --- what the 2026 probe showed -----------------------------------------------
+
+def test_a_conference_that_calls_it_a_championship_has_a_tournament():
+    """The MAAC's is "MAAC Championship", and ESPN calls it regular season."""
+    out = score_basketball(pd.DataFrame([
+        game("Fairfield", "Sacred Heart", 70, 60, hc="MAAC", ac="MAAC",
+             notes="MAAC Championship - 1st Round", game_date="2027-03-05"),
+        game("Fairfield", "Merrimack", 70, 60, hc="MAAC", ac="MAAC",
+             notes="MAAC Championship - Final", game_date="2027-03-09"),
+    ]), "NCAAW").set_index("team")
+    assert out.loc["Fairfield", "conf_tourney_wins"] == 2
+    assert out.loc["Fairfield", "conf_wins"] == 0, "not regular-season conference games"
+    assert out.loc["Fairfield", "conf_tourney_champ"] == 1
+    assert out.loc["Fairfield", "conf_tourney_byes"] == 0, \
+        "a 1st Round is a first round, whatever the tournament is called"
+
+
+def test_a_november_championship_between_conference_rivals_is_not_theirs():
+    out = score_basketball(pd.DataFrame([
+        game("Duke", "Clemson", 70, 60, notes="Players Era Championship - Championship",
+             game_date="2026-11-27"),
+    ])).set_index("team")
+    assert out.loc["Duke", "conf_tourney_wins"] == 0
+    assert out.loc["Duke", "conf_tourney_champ"] == 0
+
+
+def test_a_play_in_is_not_a_round_anyone_skipped(tmp_path, monkeypatch):
+    """The Pac-12 calls its top two seeds' bye a double one: the 8 v 9 play-in
+    ahead of the first round does not count."""
+    _acc_bracket(tmp_path, monkeypatch, rows="2027,NCAAM,Pac-12,4,")
+    out = score_basketball(_tourney({
+        "Boise State": ["Pac-12 Tournament - First Round"],
+        "Texas State": ["Pac-12 Tournament - Play-In", "Pac-12 Tournament - First Round"],
+        "Gonzaga": ["Pac-12 Tournament - Semifinal"],
+    }).assign(home_conference="Pac-12", away_conference="Pac-12")).set_index("team")
+    assert out.loc["Boise State", "conf_tourney_byes"] == 0
+    assert out.loc["Texas State", "conf_tourney_byes"] == 0
+    assert out.loc["Gonzaga", "conf_tourney_byes"] == 2
+
+
+def test_a_conference_title_game_espn_calls_regular_season_still_pays():
+    """"SEC Championship" is type 2 in ESPN's feed."""
+    out = score_football(pd.DataFrame([
+        game("Georgia", "Alabama", 28, 7, hc="SEC", ac="SEC", season_type=2,
+             notes="SEC Championship", game_date="2025-12-06"),
+    ])).set_index("team")
+    assert out.loc["Georgia", "conf_title_win"] == 1
+
+
+def test_the_game_that_wins_a_regional_is_a_regional_game():
+    """"... Auburn Regional - Auburn advances to Super Regional" was being read
+    as a Super Regional win, leaving the winner a win short of its Regional."""
+    regional = [game("Auburn", opp, 6, 2, hc="", ac="", season_type=3, season=2026,
+                     notes=f"NCAA Baseball Championship - Auburn Regional{tail}",
+                     game_date="2026-05-30")
+                for opp, tail in (("Milwaukee", ""), ("UCF", " - Elimination Game"),
+                                  ("NC State", " - Auburn advances to Super Regional"))]
+    out = score_diamond(pd.DataFrame(regional), "NCAA Baseball").set_index("team")
+    assert out.loc["Auburn", "regional_wins"] == 3 and out.loc["Auburn", "super_wins"] == 0
+    assert out.loc["Auburn", "series_regional"] == 1
+
+
+def test_a_diamond_conference_tournament_is_found_without_a_conference():
+    """ESPN calls it regular season, and baseball is scored with no conference
+    on the rows -- the note and the month still say what it is."""
+    out = score_diamond(pd.DataFrame([
+        game("LSU", "Auburn", 6, 2, hc="", ac="", season=2027,
+             notes="SEC Tournament - Second Round", game_date="2027-05-20"),
+        game("Oklahoma", "Sam Houston", 6, 2, hc="", ac="", season=2027,
+             notes="OU Tournament", game_date="2027-02-27"),
+    ]), "NCAA Softball").set_index("team")
+    assert out.loc["LSU", "conf_tourney_byes"] == 1
+    assert out.loc["Oklahoma", "conf_tourney_byes"] == 0
+    assert out.loc["Oklahoma", "reg_wins"] == 1

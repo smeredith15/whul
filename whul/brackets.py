@@ -59,13 +59,24 @@ def last_season(league: str, today: date | None = None) -> int:
     return y if m >= 7 else y - 1             # played within the year
 
 
-def bracket_of(league: str, notes: str, season_type: int) -> str | None:
-    """Which bracket a game belongs to, from its note; None for any other game."""
+def bracket_of(league: str, notes: str, season_type: int,
+               day: str = "") -> str | None:
+    """Which bracket a game belongs to, from its note; None for any other game.
+
+    Conference tournaments only in the weeks they are played, as the scorer
+    has it: February's "OU Tournament" is a round robin of non-conference
+    games, and November's championships are invitationals.
+    """
     notes = str(notes or "")
     if league == "NCAAF":
         playoff = re.search(ncaa.FB_PLAYOFF_PATTERN, notes, re.IGNORECASE)
         return CFP if playoff and int(season_type) == 3 else None
-    national = (ncaa.NOT_MM_PATTERN + "|" + ncaa.OTHER_POSTSEASON_PATTERN + "|"
+    sport = "basketball" if league in ("NCAAM", "NCAAW") else "diamond"
+    month = pd.to_datetime(day, errors="coerce").month if day else None
+    if month is not None and month == month \
+            and month not in ncaa.CONF_TOURNEY_MONTHS[sport]:
+        return None
+    national =(ncaa.NOT_MM_PATTERN + "|" + ncaa.OTHER_POSTSEASON_PATTERN + "|"
                 + ncaa.REGIONAL_PATTERN + "|" + ncaa.CWS_PATTERN)
     if not re.search(ncaa.CONF_TOURNEY_PATTERN, notes, re.IGNORECASE):
         return None
@@ -133,7 +144,8 @@ def collect(league: str, season: int, start: list[str],
         for row in rows.itertuples(index=False):
             if not bool(row.completed):
                 continue
-            name = bracket_of(scorer_league, row.notes, row.season_type)
+            name = bracket_of(scorer_league, row.notes, row.season_type,
+                              str(row.game_date))
             if name is None or (wanted is not None and name != wanted):
                 continue
             bracket = brackets.setdefault(name, Bracket(scorer_league, season, name))
@@ -154,8 +166,8 @@ def collect(league: str, season: int, start: list[str],
 class Shape:
     """A single-elimination bracket's rounds, worked back from its final."""
 
-    rounds: int
-    round_of: dict[str, int]      # game id -> round, from 1
+    rounds: int                   # rounds from the first, a play-in not among them
+    round_of: dict[str, int]      # game id -> round, from 1; a play-in is 0
     entered: dict[str, int]       # team -> the round of its first game
     #: Whether the last game is called a final. Until the final is played the
     #: bracket's two halves meet nowhere, and a half on its own is a smaller
@@ -198,6 +210,14 @@ def single_elimination(bracket: Bracket) -> Shape | None:
                 return None
     rounds = max(depth.values()) + 1
     round_of = {gid: rounds - d for gid, d in depth.items()}
+    # A single game ahead of a bigger round is a play-in -- the Pac-12's 8 v 9
+    # -- and is not a round the seeds after it skipped: the conference calls
+    # its top two seeds' bye a double one, not a triple. Numbered 0, so the
+    # rounds a seed skipped are counted from the round after it.
+    sizes = [sum(1 for r in round_of.values() if r == k) for k in (1, 2)]
+    if rounds > 2 and sizes[0] == 1 and sizes[1] > 1:
+        round_of = {gid: r - 1 for gid, r in round_of.items()}
+        rounds -= 1
     entered = {t: round_of[gs[0].game_id] for t, gs in played.items()}
     return Shape(rounds, round_of, entered,
                  final_named=ncaa._round_from_end(games[-1].notes) == 0)
@@ -245,6 +265,9 @@ def report(bracket: Bracket) -> list[str]:
     if not shape.final_named:
         lines.append("  ! its last game is not called a final, so this may be only "
                      "part of the bracket -- the rounds below could be a round short")
+    if any(r == 0 for r in shape.round_of.values()):
+        lines.append("  its opening game is a play-in, which is not counted as a "
+                     "round a seed skipped (round 0 below)")
     by_round: dict[int, dict[str, int]] = {}
     for g in games:
         labels = by_round.setdefault(shape.round_of[g.game_id], {})
@@ -351,13 +374,15 @@ def place_rounds(league: str, games: pd.DataFrame,
     for row in out.itertuples(index=False):
         if "completed" in out.columns and not bool(row.completed):
             continue
-        name = bracket_of(scorer_league, row.notes, getattr(row, "season_type", 2))
+        name = bracket_of(scorer_league, row.notes, getattr(row, "season_type", 2),
+                          str(getattr(row, "game_date", "") or ""))
         if name is None:
             continue
         season = int(row.season)
         bracket = next((t for t in stated if t.season == season
                         and t.called(row.notes, "")), None)
-        read = (bracket.round_of(row.notes) if bracket
+        read = (None if bracket is not None and bracket.from_bracket
+                else bracket.round_of(row.notes) if bracket
                 else ncaa.round_number(row.notes, None))
         if read is None:
             need.setdefault((season, name), set()).update(

@@ -157,3 +157,47 @@ def test_an_unfinished_bracket_is_left_unplaced():
     mine = _fetch(unfinished)("West Virginia")
     placed = bp.place_rounds("ncaabaseball", mine, lambda season: _fetch(unfinished))
     assert placed["bracket_round"].isna().all()
+
+
+def _pac12():
+    """Nine teams, as the conference published the 2027 bracket: 8 v 9 on
+    day one, then 5 v the play-in winner and 6 v 7, then 3 and 4 enter, then 1
+    and 2. Labelled in a way nobody could read, to show the labels are not
+    used."""
+    games = []
+
+    def play(day, a, b):
+        games.append({"season": 2027, "game_id": f"{a}-{b}", "game_date": day,
+                      "season_type": 2, "completed": True,
+                      "home_team": a, "away_team": b,
+                      "home_score": 80, "away_score": 70,
+                      "home_conference": "Pac-12", "away_conference": "Pac-12",
+                      "notes": "Pac-12 Tournament"
+                      + (" - Championship" if day.endswith("13") else "")})
+        return a
+
+    p = play("2027-03-09", "S8", "S9")
+    r1 = [play("2027-03-10", "S5", p), play("2027-03-10", "S6", "S7")]
+    qf = [play("2027-03-11", "S4", r1[0]), play("2027-03-11", "S3", r1[1])]
+    sf = [play("2027-03-12", "Gonzaga", qf[0]), play("2027-03-12", "S2", qf[1])]
+    play("2027-03-13", sf[0], sf[1])
+    return pd.DataFrame(games)
+
+
+def test_a_one_game_opening_round_is_a_play_in():
+    bracket = bp.collect("ncaam", 2027, ["Gonzaga"], _fetch(_pac12()))[0]
+    shape = bp.single_elimination(bracket)
+    assert shape.rounds == 4
+    assert shape.entered["Gonzaga"] == 3 and shape.entered["S3"] == 2
+    assert shape.entered["S5"] == 1 and shape.entered["S8"] == 0
+
+
+def test_a_new_format_is_placed_from_its_bracket_and_pays_the_double_bye():
+    from whul.scoring.ncaa import score_basketball
+
+    everything = _pac12()
+    mine = _fetch(everything)("Gonzaga")
+    placed = bp.place_rounds("ncaam", mine, lambda season: _fetch(everything))
+    assert placed["bracket_round"].tolist() == [3, 4]
+    scored = score_basketball(placed, "NCAAM").set_index("team")
+    assert scored.loc["Gonzaga", "conf_tourney_byes"] == 2
