@@ -864,3 +864,43 @@ def test_a_club_swept_in_the_division_series_still_got_past_the_wild_card_round(
         ("D", "Bye", "Chaser", 2, 1), ("D", "Bye", "Chaser", 2, 1),
         ("D", "Bye", "Chaser", 2, 1)]), DIVISIONS).set_index("team")
     assert summary.loc["Chaser", "series_wc_or_bye"] == 1
+
+
+def test_a_bye_is_paid_as_a_sweep_of_the_round_it_skipped():
+    """The series bonus and the games: two wins in a best-of-three round, at
+    the year's weight, and not counted among the games the club won."""
+    got = _live()
+    leader = got.loc["Leader"]
+    assert leader["bye_wins"] == 2 and leader["playoff_game_wins"] == 0
+    assert leader["pts_playoff"] == pytest.approx(
+        2 * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + mlb.PTS_SERIES["wc"])
+
+
+def test_the_sweep_is_as_long_as_that_seasons_wild_card_round():
+    assert [mlb.wc_sweep_wins(s) for s in (2012, 2019, 2020, 2021, 2022, 2026)] \
+        == [1, 1, 2, 1, 2, 2]
+
+
+def test_no_bye_before_there_was_a_wild_card_round_to_skip():
+    """Before 2012 every division champion went straight to the Division
+    Series, as every other club in the field did."""
+    old = _october(REGULAR + [("D", "Bye", "Chaser", 2, 1)], season=2010)
+    divisions = DIVISIONS.assign(season=2010)
+    summary = mlb.summarize_teams(old, divisions).set_index("team")
+    assert summary["wc_bye"].sum() == 0 and summary["bye_wins"].sum() == 0
+
+
+def test_a_benchmark_season_pays_the_bye_as_a_sweep():
+    """A benchmark contract year is two summers, so the fixture has the next."""
+    after = _october(REGULAR, season=2027).assign(game_id=lambda d: d["game_id"] + 1000)
+    divisions = pd.concat([DIVISIONS, DIVISIONS.assign(season=2027)])
+
+    def year_n(post):
+        games = pd.concat([_october(REGULAR + post), after], ignore_index=True)
+        out = mlb.score_teams(games, divisions=divisions)
+        return out[out["contract_year"] == 2026].set_index("team").loc[
+            "Leader", "year_n_points"]
+
+    with_bye, before = year_n(POST), year_n([])
+    assert with_bye - before == pytest.approx(
+        2 * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + mlb.PTS_SERIES["wc"], abs=0.01)

@@ -104,8 +104,9 @@ def _carry_forward(teams: pd.DataFrame, seasons: list[int]) -> pd.DataFrame:
         # A division and a name carry forward; a division *standing* does not.
         # Last year's champion is not this year's, and a borrowed rank would
         # award a title in a season nobody has played.
-        if "div_rank" in borrowed.columns:
-            borrowed["div_rank"] = pd.NA
+        for standing in ("div_rank", "seed"):
+            if standing in borrowed.columns:
+                borrowed[standing] = pd.NA
         frames.append(borrowed)
         print(f"  NFL: nflverse has no {season} teams yet, so they come "
               f"from {latest}.", flush=True)
@@ -146,9 +147,11 @@ def load_teams(seasons: list[int] | None = None) -> pd.DataFrame:
     # who won a division. Deriving it from wins and point differential got
     # three of the last twenty-four titles wrong, every one of them a division
     # tied on record and settled head to head.
-    columns = ["season", "team", "division"] + (
-        ["div_rank"] if "div_rank" in df.columns else []
-    )
+    # `seed` as well: the only record of which clubs skipped the Wild Card
+    # round, which a schedule shows as no game at all.
+    columns = ["season", "team", "division"] + [
+        c for c in ("div_rank", "seed") if c in df.columns
+    ]
     teams = (
         df[columns]
         .rename(columns={"team": "team_abbr", "division": "team_division"})

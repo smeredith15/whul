@@ -262,6 +262,36 @@ def _division_champions(summary: pd.DataFrame,
     return (done & (rank == 1)).astype(int)
 
 
+def _byes(summary: pd.DataFrame, games: pd.DataFrame) -> pd.Series:
+    """Wild Card rounds skipped by seeding, each paid as a playoff win.
+
+    A bye scores as though the team swept the round it skipped, as it does in
+    every sport here (``whul.scoring.postseason.BYE_COUNTS_AS_SWEEP``). It is
+    kept apart from ``playoff_wins`` because it is not one: nobody played.
+
+    Read off the seed rather than the schedule. A seed that has not played its
+    Wild Card game *yet* -- Monday night's -- looks from the schedule exactly
+    like one that never will. The top seed in each conference has the bye in a
+    seven-team field (2020 on), the top two in a six-team one. Reaching the
+    Divisional round without a Wild Card game says the same thing, and covers a
+    standings file that has no seeds yet.
+    """
+    seed = (pd.to_numeric(summary["seed"], errors="coerce")
+            if "seed" in summary.columns
+            else pd.Series(float("nan"), index=summary.index))
+    field = seed.groupby(summary["season"]).transform("max")
+    by_seed = seed <= (field >= 7).map({True: 1, False: 2})
+
+    wc = games["game_type"] == "WC"
+    div = games["game_type"] == "DIV"
+    played_wc = set(zip(games.loc[wc, "season"].astype(int), games.loc[wc, "team"]))
+    in_div = set(zip(games.loc[div, "season"].astype(int), games.loc[div, "team"]))
+    keys = list(zip(summary["season"].astype(int), summary["team"]))
+    by_schedule = pd.Series([k in in_div and k not in played_wc for k in keys],
+                            index=summary.index)
+    return (by_seed | by_schedule).astype(int)
+
+
 def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFrame:
     """Season fantasy totals per NFL team.
 
@@ -299,7 +329,7 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
 
     meta = teams_meta.rename(columns={"team_abbr": "team"})
     columns = ["team", "team_division"] + [
-        c for c in ("team_name", "div_rank") if c in meta.columns
+        c for c in ("team_name", "div_rank", "seed") if c in meta.columns
     ]
     # Per season as well as per team: a division standing is a fact about one
     # year, and joining on the team alone would give every season the newest
@@ -311,13 +341,20 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
         on=on, how="left",
     )
     summary["div_champ"] = _division_champions(summary, schedules)
+    summary["bye_wins"] = _byes(summary, games)
+    # A bye is a place in the playoffs before it is a game in them.
+    summary["playoff_appearance"] = summary[
+        ["playoff_appearance", "bye_wins"]].max(axis=1).clip(upper=1)
     # Whether the season these figures belong to is over. A profile cannot
     # otherwise tell "did not win the division" from "nobody has won anything
     # yet", and in September those are the same zero.
     settled = settled_seasons(schedules)
     summary["season_settled"] = summary["season"].astype(int).isin(settled or [])
 
-    summary["total_points"] = sum(summary[c] * w for c, w in TEAM_WEIGHTS.items())
+    summary["total_points"] = (
+        sum(summary[c] * w for c, w in TEAM_WEIGHTS.items())
+        + summary["bye_wins"] * TEAM_WEIGHTS["playoff_wins"]
+    )
     summary["league"] = "NFL"
     # The abbreviation stays the key; the full name is what a roster calls it.
     if "team_name" not in summary.columns:

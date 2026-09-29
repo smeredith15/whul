@@ -374,7 +374,7 @@ TEAM_SUMMARY_COLUMNS = [
     "shutouts",
     "run_diff",
     "wc_wins", "lds_wins", "lcs_wins", "ws_wins",
-    "wc_losses", "lds_losses", "lcs_losses", "ws_losses", "wc_bye",
+    "wc_losses", "lds_losses", "lcs_losses", "ws_losses", "wc_bye", "bye_wins",
     "series_wc_or_bye", "series_lds", "series_lcs", "series_ws",
     "playoff_game_wins", "is_division_champ",
 ]
@@ -441,10 +441,20 @@ def _byes(summary: pd.DataFrame, games: pd.DataFrame) -> pd.Series:
     two in each league since 2022, all three before 2020, and none in 2020,
     when every division winner played the round.
     """
-    post = set(games.loc[games["game_type"].isin([k for k, _ in ROUNDS]), "season"])
+    # Seasons with a Wild Card round to skip. Before 2012 there was none, and
+    # a division champion went straight to the Division Series as everybody
+    # else did.
+    post = set(games.loc[games["game_type"] == GAME_TYPE_WC, "season"])
     played_wc = summary["wc_wins"] + summary["wc_losses"]
     return ((summary["is_division_champ"] == 1) & (played_wc == 0)
             & summary["season"].isin(post)).astype(int)
+
+
+def wc_sweep_wins(season: int) -> int:
+    """Wins that sweep the Wild Card round: one game from 2012 to 2021 except
+    2020's best-of-three, and best of three from 2022."""
+    season = int(season)
+    return 2 if season == 2020 or season >= 2022 else 1
 
 
 def _series_milestones(summary: pd.DataFrame) -> None:
@@ -461,6 +471,10 @@ def _series_milestones(summary: pd.DataFrame) -> None:
     summary["playoff_game_wins"] = (
         summary["wc_wins"] + summary["lds_wins"] + summary["lcs_wins"] + summary["ws_wins"]
     )
+    # A bye is paid as though the club swept the round it skipped: the series,
+    # above, and the games, here. Kept out of `playoff_game_wins`, which counts
+    # games won, because nobody played them.
+    summary["bye_wins"] = summary["wc_bye"] * summary["season"].map(wc_sweep_wins)
 
 
 #: Losses that end a postseason series, by round: the Wild Card round is best
@@ -732,6 +746,7 @@ def _window_points(summary: pd.DataFrame,
         **{f"{prefix}_{end}": summary[f"{prefix}_{end}"]
            for _, prefix in ROUNDS for end in ("wins", "losses")},
         "wc_bye": summary["wc_bye"],
+        "bye_wins": summary["bye_wins"],
         "series_wc_or_bye": summary["series_wc_or_bye"],
         "series_lds": summary["series_lds"],
         "series_lcs": summary["series_lcs"],
@@ -772,7 +787,8 @@ def _window_points(summary: pd.DataFrame,
         # match the scale now, and apply the multiplier on both sides the next
         # time one is built.
         "pts_playoff": (
-            summary["playoff_game_wins"] * BASE_PLAYOFF_WIN * weight
+            (summary["playoff_game_wins"] + summary["bye_wins"])
+            * BASE_PLAYOFF_WIN * weight
             + _series_points(summary)
         ),
     })
@@ -948,6 +964,9 @@ def _reweighted_club(figures: dict, was: float, weight: float,
         out["pts_div_champ"] = float(title) * weight
 
     wins, paid = figures.get("playoff_game_wins"), figures.get("pts_playoff")
+    bye = figures.get("bye_wins")
+    if isinstance(wins, (int, float)) and isinstance(bye, (int, float)):
+        wins = float(wins) + float(bye)
     if isinstance(wins, (int, float)) and isinstance(paid, (int, float)):
         # The series are what is left once the game wins are taken out, and
         # they carry no weight at all -- `year_n_points` leaves them outside
@@ -1028,7 +1047,8 @@ def score_teams(
             + summary["shutouts"] * SHARE_POST_ASB * PTS_SHUTOUT * MULT_YEAR_N
             + summary["run_diff"] * SHARE_POST_ASB * PTS_RUN_DIFF * MULT_YEAR_N
             + summary["is_division_champ"] * PTS_DIV_CHAMP * MULT_YEAR_N
-            + summary["playoff_game_wins"] * BASE_PLAYOFF_WIN * MULT_YEAR_N
+            + (summary["playoff_game_wins"] + summary["bye_wins"])
+            * BASE_PLAYOFF_WIN * MULT_YEAR_N
             + _series_points(summary)
         ),
     })

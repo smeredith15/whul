@@ -570,3 +570,74 @@ def test_a_team_carries_what_it_lost_as_well_as_what_it_won():
             out.loc["BUF", "reg_ties"]) == (1, 1, 1)
     assert (out.loc["MIA", "reg_wins"], out.loc["MIA", "reg_losses"],
             out.loc["MIA", "reg_ties"]) == (1, 1, 1)
+
+
+# --- byes --------------------------------------------------------------------
+
+def _seeded(seeds: dict) -> pd.DataFrame:
+    return pd.DataFrame([
+        {"season": 2026, "team_abbr": t, "team_division": "AFC East",
+         "div_rank": i + 1, "seed": s}
+        for i, (t, s) in enumerate(seeds.items())])
+
+
+#: A seven-team field: KC the top seed, BUF and MIA meeting in the Wild Card
+#: round, and a tail of seeds to make the field seven.
+FIELD = {"KC": 1, "BUF": 2, "MIA": 7, "PIT": 3, "HOU": 6, "BAL": 4, "LAC": 5}
+
+
+def test_a_top_seed_is_paid_the_wild_card_round_it_skipped():
+    """A bye scores as though the team won the round it skipped, and it is a
+    playoff berth before the team has played a playoff game."""
+    sched = pd.DataFrame([game("BUF", "MIA", 20, 10, game_type="WC",
+                               gameday="2027-01-09")])
+    out = score_teams(sched, _seeded(FIELD)).set_index("team")
+    assert "KC" not in out.index or out.loc["KC", "bye_wins"] == 1
+    sched = pd.concat([sched, pd.DataFrame([
+        game("KC", "BUF", 17, 24, game_type="DIV", gameday="2027-01-17")])])
+    out = score_teams(sched, _seeded(FIELD)).set_index("team")
+    assert out.loc["KC", "bye_wins"] == 1
+    assert out.loc["KC", "playoff_wins"] == 0, "a bye is not a win"
+    assert out.loc["KC", "playoff_appearance"] == 1
+    assert out.loc["BUF", "bye_wins"] == 0
+
+
+def test_a_bye_is_worth_a_playoff_win():
+    from whul.scoring.nfl import TEAM_WEIGHTS
+
+    lost_divisional = pd.DataFrame([
+        game("KC", "BUF", 17, 24, game_type="DIV", gameday="2027-01-17")])
+    kc = score_teams(lost_divisional, _seeded(FIELD)).set_index("team").loc["KC"]
+    counted = sum(kc[c] * w for c, w in TEAM_WEIGHTS.items())
+    assert kc["total_points"] - counted == pytest.approx(TEAM_WEIGHTS["playoff_wins"])
+
+
+def test_a_seed_still_to_play_its_wild_card_game_has_no_bye():
+    """Monday night's Wild Card game is not played yet on Sunday, and the
+    schedule alone would read its two clubs as having skipped the round."""
+    sched = pd.DataFrame([game("PIT", "HOU", 20, 10, game_type="WC",
+                               gameday="2027-01-10")])
+    out = score_teams(sched, _seeded(FIELD)).set_index("team")
+    assert out.loc["PIT", "bye_wins"] == 0
+
+
+def test_a_six_team_field_gave_the_top_two_seeds_a_bye():
+    field = {"KC": 1, "BUF": 2, "MIA": 6, "PIT": 3, "HOU": 5, "BAL": 4}
+    sched = pd.DataFrame([game("MIA", "PIT", 20, 10, game_type="WC",
+                               gameday="2020-01-05", season=2026)])
+    out = score_teams(sched, _seeded(field)).set_index("team")
+    assert out.loc["MIA", "bye_wins"] == 0
+    for team in ("KC", "BUF"):
+        assert team not in out.index or out.loc[team, "bye_wins"] == 1
+
+
+def test_reaching_the_divisional_round_without_a_wild_card_game_is_a_bye():
+    """For a standings file that has no seeds yet."""
+    sched = pd.DataFrame([
+        game("BUF", "MIA", 20, 10, game_type="WC", gameday="2027-01-09"),
+        game("KC", "BUF", 30, 24, game_type="DIV", gameday="2027-01-17")])
+    unseeded = pd.concat([DIVISIONS, pd.DataFrame([
+        {"season": 2026, "team_abbr": "KC", "team_division": "AFC West",
+         "div_rank": 1}])])
+    out = score_teams(sched, unseeded).set_index("team")
+    assert out.loc["KC", "bye_wins"] == 1 and out.loc["BUF", "bye_wins"] == 0

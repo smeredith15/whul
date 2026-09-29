@@ -221,6 +221,10 @@ def _nfl_teams() -> Rules:
         "A team is paid for winning, for winning big, and for how far it goes in "
         "January.",
         weights(nfl.TEAM_WEIGHTS, NFL_TEAM_LABELS),
+        [
+            "A first-round bye is paid as a playoff win, as though the team "
+            "had played the Wild Card round and won it.",
+        ],
     )
 
 

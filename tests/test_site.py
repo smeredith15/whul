@@ -4141,7 +4141,7 @@ def test_the_series_share_one_box_in_the_order_they_were_played():
            "series_lds": 1.0, "series_lcs": 0.0, "wc_bye": 1.0,
            "wc_wins": 0.0, "wc_losses": 0.0, "lds_wins": 3.0, "lds_losses": 1.0,
            "lcs_wins": 2.0, "lcs_losses": 4.0, "ws_wins": 0.0, "ws_losses": 0.0,
-           "pts_playoff": 5 * 3 * 0.75 + 5 + 6}
+           "bye_wins": 2.0, "pts_playoff": (5 + 2) * 3 * 0.75 + 5 + 6}
     series = _mlb_team_panel(row)["posts"][0]["top"][1]
     assert series["rounds"] == [
         {"round": "WC", "result": "Bye", "points": 5},
@@ -4150,7 +4150,9 @@ def test_the_series_share_one_box_in_the_order_they_were_played():
     ]
     assert series["points"] == 11
     wins = _mlb_team_panel(row)["posts"][0]["top"][0]
-    assert wins["value"] == "5" and wins["points"] == pytest.approx(11.25, abs=0.06)
+    # The bye's two wins are paid in the box and not counted in it.
+    assert wins["value"] == "5" and wins["sup"] == "+2"
+    assert wins["points"] == pytest.approx(15.75, abs=0.06)
 
 
 def test_a_club_out_in_its_first_round_still_shows_the_round():
@@ -4990,3 +4992,15 @@ def test_the_worker_is_registered_for_the_whole_site_not_one_page(site):
 
     assert "window.WHUL_BASE || './'" in script
     assert "scope: base" in script
+
+
+def test_a_football_bye_rides_on_the_playoff_wins_box():
+    """Paid as a win and not counted as one, the way a soccer club's is."""
+    from whul.site.build import _nfl_team_panel
+
+    row = {"league": "NFL", "team": "KC", "team_division": "AFC West",
+           "div_rank": 1, "reg_wins": 14, "reg_losses": 3, "playoff_wins": 0,
+           "bye_wins": 1, "playoff_appearance": 1}
+    box = _nfl_team_panel(row)["post"]["top"][0]
+    assert (box["value"], box["sup"], box["points"]) == ("0", "+1", 15.0)
+    assert "post" not in _nfl_team_panel({**row, "bye_wins": 0})

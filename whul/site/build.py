@@ -1111,8 +1111,14 @@ def _nfl_team_panel(row: dict) -> dict | None:
     if head:
         panel["head"] = head
 
-    wins = _nfl_team_box(row, "playoff_wins")
-    if wins and wins["value"] != "0":
+    wins = _nfl_team_box(row, "playoff_wins", keep_zero=True)
+    bye = _stat_number(row, "bye_wins") or 0.0
+    if bye:
+        # Paid as a win and not counted as one: nobody played it.
+        wins["sup"] = f"+{bye:,.0f}"
+        wins["suptitle"] = "the Wild Card round, skipped by seeding and paid as a win"
+        wins["points"] = round(wins["points"] + bye * 15.0, 1)
+    if wins["value"] != "0" or bye:
         panel["post"] = {"top": [wins], "secondary": []}
     return panel
 
@@ -2098,6 +2104,7 @@ def _mlb_team_october(row: dict) -> dict | None:
     from whul.scoring.mlb import BASE_PLAYOFF_WIN
 
     bonus = sum(r["points"] or 0 for r in series)
+    bye = _stat_number(row, "bye_wins") or 0.0
     if played is None:
         win_points = None
     elif paid is not None:
@@ -2105,10 +2112,16 @@ def _mlb_team_october(row: dict) -> dict | None:
         # year's weight and the series bonuses do not.
         win_points = round(paid - bonus, 1)
     else:
-        win_points = round(played * BASE_PLAYOFF_WIN, 1)
-    top = [{"label": "Playoff wins",
+        win_points = round((played + bye) * BASE_PLAYOFF_WIN, 1)
+    wins = {"label": "Playoff wins",
             "value": "\u2014" if played is None else f"{played:,.0f}",
-            "points": win_points}]
+            "points": win_points}
+    if bye:
+        # A bye is paid as the sweep it stands for and is not counted as the
+        # wins: they ride on the box as a superscript, as a soccer club's do.
+        wins["sup"] = f"+{bye:,.0f}"
+        wins["suptitle"] = "the Wild Card round, skipped by seeding and paid as a sweep"
+    top = [wins]
     if series:
         top.append({"label": "Series", "rounds": series,
                     "value": "", "points": round(bonus, 1)})
