@@ -1,0 +1,64 @@
+# How ESPN labelled last season's NCAA brackets, so the bye rule can be checked.
+#
+# A team that skips rounds of a conference tournament or the College Football
+# Playoff by its seed is paid them as wins, and which round it entered is read
+# off the game's note. The words in those notes have never been seen from where
+# this project is developed: the agent sandbox answers 403 to every outbound
+# request. This reads each rostered team's bracket from last season, works out
+# its rounds from the games themselves, and says whether the scorer reads every
+# team's entry round right -- with the format-table row to add for this season.
+#
+# Reads only. No database write, no commit, no branch.
+
+name: Probe brackets
+
+on:
+  workflow_dispatch:
+    inputs:
+      leagues:
+        description: "ESPN league keys, space separated"
+        default: "ncaam ncaaw ncaaf ncaabaseball ncaasoftball"
+      season:
+        description: "Season to read. Empty means the last finished one."
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -e .
+
+      # The roster decides which brackets are read, so it comes from the data
+      # branch rather than a list typed in here.
+      - name: Take the database from the data branch
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+
+      - name: Probe
+        # pipefail because a pipeline exits with its last command's status and
+        # the default shell is `bash -e`: without it `tee` reports success
+        # however the command exited.
+        run: |
+          set -o pipefail
+          python -m whul.cli probe-brackets --leagues "${{ inputs.leagues }}" \
+            ${{ inputs.season && format('--season {0}', inputs.season) || '' }} \
+            | tee probe-brackets.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: probe-brackets
+          path: probe-brackets.txt
+          if-no-files-found: warn

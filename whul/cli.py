@@ -3667,6 +3667,60 @@ def cmd_probe_rounds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_probe_brackets(args: argparse.Namespace) -> int:
+    """How ESPN labelled last season's NCAA brackets, and whether the bye rule
+    reads them right. See ``whul.bracket_probe``."""
+    from whul import bracket_probe
+    from whul.config.league import SEASON
+    from whul.sources import espn
+
+    failed = 0
+    for league in args.leagues.split():
+        if league not in bracket_probe.LEAGUES:
+            print(f"\n{league}: not one of {sorted(bracket_probe.LEAGUES)}\n",
+                  file=sys.stderr)
+            return 2
+        season = args.season or bracket_probe.last_season(league)
+        names = ([n.strip() for n in args.teams.split(",") if n.strip()]
+                 if args.teams else
+                 bracket_probe.rostered(args.db, SEASON.label,
+                                        bracket_probe.LEAGUES[league]))
+        print(f"\n=== {bracket_probe.LEAGUES[league]} {season}: "
+              f"{len(names)} team(s) to start from\n", flush=True)
+        if not names:
+            print("  nobody rostered, and no --teams given\n")
+            continue
+        try:
+            index = espn.team_index(league)
+        except Exception as exc:  # noqa: BLE001 -- reported, and the next league runs
+            print(f"  ! ESPN's team index failed: {type(exc).__name__}: {exc}\n")
+            failed += 1
+            continue
+        lookup = {espn._match_key(n): i for n, i in index.items()}
+
+        def schedule(team: str, league=league, season=season, lookup=lookup):
+            team_id = lookup.get(espn._match_key(team))
+            if not team_id:
+                return None
+            try:
+                return espn.load_team_schedule(league, team_id, season)
+            except Exception as exc:  # noqa: BLE001 -- one team must not stop the walk
+                print(f"  ! {team}: {type(exc).__name__}: {exc}", flush=True)
+                return None
+
+        brackets = bracket_probe.collect(league, season, names, schedule)
+        if not brackets:
+            print("  no bracket games found for these teams -- either none of "
+                  "them played one,\n  or the notes do not say \"Tournament\" "
+                  "(or, for football, name the playoff)\n")
+            continue
+        for bracket in sorted(brackets, key=lambda b: b.name):
+            for line in bracket_probe.report(bracket):
+                print(f"  {line}")
+            print(flush=True)
+    return 1 if failed else 0
+
+
 #: How many of a list the terminal shows. The file gets all of them: "eleven
 #: matches missing" is a fact and *which* eleven is the diagnosis, and a
 #: diagnosis that scrolls off the top of a terminal is one nobody sends on.
@@ -4680,6 +4734,20 @@ def main(argv: list[str] | None = None) -> int:
     rounds.add_argument("--season", type=int, default=2025, help="season to read")
     rounds.add_argument("--seasons", default="", help="several, space separated")
     rounds.set_defaults(func=cmd_probe_rounds)
+
+    brackets = sub.add_parser(
+        "probe-brackets",
+        help="how ESPN labelled last season's NCAA brackets, for the bye rule")
+    brackets.add_argument("--leagues", default=" ".join(
+        ("ncaam", "ncaaw", "ncaaf", "ncaabaseball", "ncaasoftball")),
+        help="ESPN league keys, space separated")
+    brackets.add_argument("--season", type=int, default=0,
+                          help="season to read; default the last finished one")
+    brackets.add_argument("--db", default="data/whul.sqlite3",
+                          help="where the roster is read from")
+    brackets.add_argument("--teams", default="",
+                          help="comma-separated team names instead of the roster")
+    brackets.set_defaults(func=cmd_probe_brackets)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     # Cups and European competitions are probeable even though they are not

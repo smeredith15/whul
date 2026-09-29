@@ -28,3 +28,13 @@ season,league,conference,rounds,round_names
 2024,NCAAF,College Football Playoff|CFP,4,
 2025,NCAAF,College Football Playoff|CFP,4,
 2026,NCAAF,College Football Playoff|CFP,4,
+# 2026-27 basketball, as the league admin confirmed them in September 2026.
+2027,NCAAM,ACC|Atlantic Coast,5,
+2027,NCAAM,Big Ten,5,
+2027,NCAAM,Big 12,5,
+2027,NCAAM,SEC|Southeastern,5,
+2027,NCAAM,Big East,4,
+2027,NCAAW,ACC|Atlantic Coast,5,
+2027,NCAAW,Big Ten,5,
+2027,NCAAW,SEC|Southeastern,5,
+2027,NCAAW,Big East,4,
