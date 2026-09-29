@@ -229,3 +229,18 @@ def test_a_round_after_a_dash_with_no_space_before_it_is_read():
 
     assert round_number("OVC Championship- First Round", 5) == 1
     assert round_number("OVC Championship- Semifinal", 5) == 4
+
+
+def test_a_semifinal_and_final_on_one_utc_date_are_ordered_by_start():
+    """UConn's 2026 Big East semifinal was late enough to fall on the final's
+    UTC date, and the final carried the lower game id."""
+    games = _acc()
+    games["start"] = games["game_date"] + "T19:00Z"
+    last = games["notes"].str.endswith("Championship")
+    semis = games["notes"].str.endswith("Semifinal")
+    games.loc[semis, "game_date"] = "2026-03-14"
+    games.loc[semis, "start"] = "2026-03-14T02:30Z"
+    games.loc[last, "start"] = "2026-03-14T23:30Z"
+    games.loc[last, "game_id"] = "0-final"
+    shape = bp.single_elimination(bp.collect("ncaam", 2026, ["T1"], _fetch(games))[0])
+    assert shape is not None and shape.rounds == 5 and shape.final_named

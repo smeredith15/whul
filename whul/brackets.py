@@ -173,8 +173,14 @@ def collect(league: str, season: int, start: list[str],
             if len(bracket.teams) >= MOST_TEAMS:
                 continue
             home_won = float(row.home_score) > float(row.away_score)
+            # Ordered by the start where the row has one, not the date: a late
+            # semifinal and the next night's final share a UTC date, and the
+            # Big East's did in 2026.
+            when = str(getattr(row, "start", "") or "") or str(row.game_date)
+            if when.lower() == "nan":
+                when = str(row.game_date)
             bracket.games[str(row.game_id)] = Game(
-                str(row.game_id), str(row.game_date), str(row.home_team),
+                str(row.game_id), when, str(row.home_team),
                 str(row.away_team), str(row.home_team if home_won else row.away_team),
                 str(row.notes))
             for other in (row.home_team, row.away_team):
