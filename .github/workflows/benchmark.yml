@@ -51,7 +51,11 @@ name: Benchmarks
 #            freezes it. This is what makes a long recompute splittable: the
 #            six club-soccer leagues are about twelve hours cold and a job is
 #            capped at six, so name three, then run again with Version set to
-#            the draft this one reports and the other three.
+#            the draft this one reports and the other three. The five NCAA
+#            leagues read every team's own schedule -- roughly 1,500 requests
+#            for ncaaf and 5,000 for each of the others, three to four hours
+#            together cold -- so split them the same way: `ncaaf ncaam ncaaw`,
+#            then `ncaabaseball ncaasoftball`. A re-run reads them from cache.
 
 on:
   workflow_dispatch:

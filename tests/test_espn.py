@@ -1596,3 +1596,82 @@ def test_a_school_named_alone_finds_its_team(monkeypatch):
     assert index["Texas"] == "251" and index["Texas Longhorns"] == "251"
     assert index["Texas A&M"] == "245"
     assert "Miami" not in index, "two teams share it, so it names neither"
+
+
+# --- the division, for a benchmark ------------------------------------------
+
+def _division_feed(sizes_ok=True):
+    def event(event_id, home, away, day, season_type=2, notes=""):
+        return {"id": event_id, "date": f"{day}T23:00Z", "name": f"{away} at {home}",
+                "seasonType": {"id": season_type}, "competitions": [{
+                    "status": {"type": {"completed": True}},
+                    "notes": [{"headline": notes}] if notes else [],
+                    "competitors": [
+                        {"homeAway": "home", "score": {"value": 70},
+                         "team": {"displayName": home}},
+                        {"homeAway": "away", "score": {"value": 60},
+                         "team": {"displayName": away}}]}]}
+
+    schedules = {
+        "1": [event("g1", "A Aces", "B Bees", "2025-01-10"),
+              event("g2", "A Aces", "C Cats", "2024-11-10")],
+        "2": [event("g1", "A Aces", "B Bees", "2025-01-10")],
+    }
+    post = {"1": [event("g3", "A Aces", "B Bees", "2025-03-20", 3,
+                        "NCAA Men's Basketball Championship - East Region - 1st Round")],
+            "2": [event("g3", "A Aces", "B Bees", "2025-03-20", 3,
+                        "NCAA Men's Basketball Championship - East Region - 1st Round")]}
+
+    def fake(url, params, cache_key=None):
+        if url.endswith("/standings"):
+            entries = [{"team": {"id": "1", "displayName": "A Aces"}},
+                       {"team": {"id": "2", "displayName": "B Bees"}}]
+            return {"children": [{"standings": {"entries": entries if sizes_ok else []}}]}
+        if url.endswith("/teams"):
+            teams = [("1", "A Aces"), ("2", "B Bees"), ("3", "C Cats")]
+            return {"sports": [{"leagues": [{"teams": [
+                {"team": {"id": i, "displayName": n}} for i, n in teams]}]}]}
+        if url.endswith("/schedule"):
+            team = url.split("/teams/")[1].split("/")[0]
+            chosen = post if params.get("seasontype") == 3 else schedules
+            return {"events": chosen.get(team, [])}
+        team = url.rsplit("/", 1)[1]
+        return {"team": {"groups": {"id": "C" + team if team == "3" else "ACC",
+                                    "isConference": True}}}
+    return fake
+
+
+def test_a_division_is_every_team_in_it_postseason_included(monkeypatch):
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "_get", _division_feed())
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaam", (2, 3))
+    rows = espn.load_division_schedules("ncaam", [2025], verbose=False)
+    assert sorted(rows["game_id"]) == ["g1", "g2", "g3"], "once each, postseason in"
+    assert rows.attrs["eligible"] == {"A Aces", "B Bees"}
+    ab = rows[rows["game_id"] == "g1"].iloc[0]
+    assert ab["home_conference"] == ab["away_conference"] == "ACC"
+    assert int(rows.loc[rows["game_id"] == "g3", "season_type"].iloc[0]) == 3
+
+
+def test_a_division_that_is_not_one_is_not_walked(monkeypatch):
+    """The team list is every program ESPN knows when the filter is ignored;
+    walking it would take hours and score the wrong pool."""
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "_get", _division_feed(sizes_ok=False))
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaam", (5, 9))
+    with pytest.raises(espn.DivisionUnknown):
+        espn.load_division_schedules("ncaam", [2025], verbose=False)
+
+
+def test_the_ncaa_benchmark_scores_the_division_and_not_its_opponents(monkeypatch):
+    from whul import benchmark_sources
+    from whul.sources import espn
+
+    monkeypatch.setattr(espn, "_get", _division_feed())
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaam", (2, 3))
+    load, score = benchmark_sources._ncaa("ncaam", "NCAAM")()
+    scored = score(load([2025])).set_index("team")
+    assert set(scored.index) == {"A Aces", "B Bees"}
+    assert scored.loc["A Aces", "mm_wins"] == 1 and scored.loc["A Aces", "mm_appearance"] == 1

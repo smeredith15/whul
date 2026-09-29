@@ -496,13 +496,37 @@ def _ncaa_score(category: str):
 
 
 def _ncaa(key: str, category: str):
-    def build():
-        from whul.sources import ncaa_api
+    """Every team in the division, from ESPN's own team schedules.
 
-        return (
-            lambda seasons: ncaa_api.load_team_results(key, seasons),
-            _ncaa_score(category),
-        )
+    The same feed and rows live scoring reads, so the scale and what is
+    measured against it see the same games labelled the same way. The NCAA's
+    own API, which this used to read, calls every game regular season and
+    names no rounds -- a benchmark drawn from it held no playoff, no March
+    Madness, no Regional and no conference title, and did not move when the
+    scorer learned any of them (September 2026).
+    """
+    def build():
+        from whul import brackets
+        from whul.scoring.ncaa import SCORERS
+        from whul.sources import espn
+
+        held: dict = {}
+
+        def load(seasons):
+            rows = espn.load_division_schedules(key, seasons)
+            held["eligible"] = set(rows.attrs.get("eligible", set()))
+            # Every team's games are already here, so a bracket whose notes do
+            # not name its rounds is placed without asking again.
+            return brackets.place_rounds(key, rows, brackets.local_schedules(rows))
+
+        def score(raw):
+            # The division as ESPN listed it, not everyone its schedules name:
+            # a lower-division opponent with two games must not join the pool.
+            eligible = held.get("eligible") or (set(raw["home_team"])
+                                                | set(raw["away_team"]))
+            return SCORERS[category](raw, eligible)
+
+        return load, score
 
     return build
 
