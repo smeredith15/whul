@@ -919,6 +919,17 @@ dialog.profile .statbox .bv .aside {
   font-size: 9.5px; font-weight: 500; line-height: 1.15; text-align: left;
   color: var(--muted); font-variant-numeric: tabular-nums;
 }
+/* Baseball's series, one line a round in the order they were played. */
+dialog.profile .statbox .bv.list { font-size: 12px; font-weight: 500; padding: 6px 8px 7px; }
+dialog.profile .statbox .rounds { display: grid; gap: 2px; }
+dialog.profile .statbox .rounds .rd {
+  display: grid; grid-template-columns: 3em 1fr auto; gap: 6px;
+  text-align: left; letter-spacing: 0;
+}
+dialog.profile .statbox .rounds .rd b { font-weight: 650; color: var(--text-secondary); }
+dialog.profile .statbox .rounds .rd em {
+  font-style: normal; color: var(--text-secondary); text-align: right;
+}
 /* A strip saying where its points went rather than printing a number. */
 .statbox.bare .bv{padding-bottom:6px}
 .statbox.muted{opacity:.6;border-style:dashed}

@@ -382,11 +382,11 @@ def _mlb_teams_live():
         return schedule
 
     def score(raw):
+        status = held.get("status")
         out = _prorated(
-            mlb.score_teams(raw, partial=True), "MLB",
+            mlb.score_teams(raw, partial=True, status=status), "MLB",
             columns=list(mlb.WINDOW_COUNTING),
         )
-        status = held.get("status")
         if status is None or getattr(status, "empty", True) or out.empty:
             return out
         over = {(int(s), str(t)): int(v) for s, t, v in zip(

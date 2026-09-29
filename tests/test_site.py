@@ -4128,8 +4128,39 @@ def test_a_baseball_club_reconciles_with_its_own_score():
     # And October's own boxes add up to what October paid.
     assert sum(b["points"] for b in october["top"] + october["secondary"]) \
         == pytest.approx(row["pts_playoff"], abs=0.2)
-    assert [b["label"] for b in october["secondary"]] == [
-        "Wild card", "Division series", "Championship series"]
+    assert [b["label"] for b in october["top"]] == ["Playoff wins", "Series"]
+    assert [r["round"] for r in october["top"][1]["rounds"]] == ["WC", "DS", "LCS"]
+
+
+def test_the_series_share_one_box_in_the_order_they_were_played():
+    """A bye is paid as the Wild Card round and listed as a bye, not a win;
+    a round lost shows its record and pays nothing."""
+    from whul.site.build import _mlb_team_panel
+
+    row = {**_mlb_club(), "playoff_game_wins": 5.0, "series_wc_or_bye": 1.0,
+           "series_lds": 1.0, "series_lcs": 0.0, "wc_bye": 1.0,
+           "wc_wins": 0.0, "wc_losses": 0.0, "lds_wins": 3.0, "lds_losses": 1.0,
+           "lcs_wins": 2.0, "lcs_losses": 4.0, "ws_wins": 0.0, "ws_losses": 0.0,
+           "pts_playoff": 5 * 3 * 0.75 + 5 + 6}
+    series = _mlb_team_panel(row)["posts"][0]["top"][1]
+    assert series["rounds"] == [
+        {"round": "WC", "result": "Bye", "points": 5},
+        {"round": "DS", "result": "Won 3\u20131", "points": 6},
+        {"round": "LCS", "result": "Lost 2\u20134", "points": None},
+    ]
+    assert series["points"] == 11
+    wins = _mlb_team_panel(row)["posts"][0]["top"][0]
+    assert wins["value"] == "5" and wins["points"] == pytest.approx(11.25, abs=0.06)
+
+
+def test_a_club_out_in_its_first_round_still_shows_the_round():
+    from whul.site.build import _mlb_team_panel
+
+    row = {**_mlb_club(), "playoff_game_wins": 0.0, "series_wc_or_bye": 0.0,
+           "series_lds": 0.0, "series_lcs": 0.0, "wc_bye": 0.0,
+           "wc_wins": 0.0, "wc_losses": 2.0, "pts_playoff": 0.0}
+    series = _mlb_team_panel(row)["posts"][0]["top"][1]
+    assert series["rounds"] == [{"round": "WC", "result": "Lost 0\u20132", "points": None}]
 
 
 def test_a_baseball_club_says_which_summer_a_figure_came_from():

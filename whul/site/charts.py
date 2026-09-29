@@ -1358,6 +1358,16 @@ SCRIPT = """\
     var aside = box.aside
       ? '<div class="aside">' + box.aside.split('\\n').join('<br>') + '</div>'
       : '';
+    // A box holding a list, one line a round: baseball's series, in the
+    // order they were played, each with what it paid.
+    if (box.rounds) {
+      box.value = '<div class="rounds">' + box.rounds.map(function (r) {
+        var p = r.points === null || r.points === undefined ? ''
+          : '+' + (Math.round(r.points * 10) / 10).toFixed(0);
+        return '<div class="rd"><b>' + r.round + '</b><span>' + r.result +
+               '</span><em>' + p + '</em></div>';
+      }).join('') + '</div>';
+    }
     // Where the points are real but counted in another box, the strip says so
     // rather than repeating them or leaving a blank that reads as free.
     if (box.note) shown = box.note;
@@ -1367,8 +1377,8 @@ SCRIPT = """\
            // The superscript is part of the width. Without it in the test a
            // 687.5 carrying a +112.5 was measured as five characters and
            // printed as "687.5+1", the rest over the edge of the box.
-           '<div class="bv' +
-             ((String(box.value) + (box.sup || '')).length > 7 ? ' tight' : '') +
+           '<div class="bv' + (box.rounds ? ' list' :
+             ((String(box.value) + (box.sup || '')).length > 7 ? ' tight' : '')) +
              '">' + box.value + sup + aside + '</div>' +
            // Counted, not scored. A strip under "Top 5" would print either a
            // sum that is not a category or a blank that reads as nothing

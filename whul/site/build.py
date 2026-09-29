@@ -2005,11 +2005,11 @@ MLB_TEAM_TOP: tuple[tuple[str, str, str], ...] = (
     ("shutouts", "pts_shutouts", "Shutouts"),
 )
 
-#: October, by the round a club reached. Each is worth more than the last, so
-#: they are shown as what they are rather than folded into one playoff figure.
-MLB_TEAM_SERIES: tuple[tuple[str, str], ...] = (
-    ("series_wc_or_bye", "Wild card"), ("series_lds", "Division series"),
-    ("series_lcs", "Championship series"), ("series_ws", "World Series"),
+#: October's rounds in the order they are played: the column prefix the scorer
+#: gives each round's record, its series flag, and the name it goes by.
+MLB_TEAM_SERIES: tuple[tuple[str, str, str], ...] = (
+    ("wc", "series_wc_or_bye", "WC"), ("lds", "series_lds", "DS"),
+    ("lcs", "series_lcs", "LCS"), ("ws", "series_ws", "WS"),
 )
 
 
@@ -2043,41 +2043,80 @@ def _mlb_team_boxes(figures: dict) -> dict:
     }
 
 
+def _mlb_series_rows(row: dict) -> list[dict]:
+    """Each round the club was in, top to bottom in the order they happen.
+
+    A bye is paid what winning the Wild Card round is paid, and is listed as
+    what it was -- a round the club did not have to play -- rather than as a
+    series it won. A round still being played shows its record and no points.
+    """
+    from whul.scoring.mlb import PTS_SERIES, ROUNDS, SERIES_LOST_AT
+
+    lost_at = {prefix: SERIES_LOST_AT[kind] for kind, prefix in ROUNDS}
+    rows = []
+    for prefix, flag, name in MLB_TEAM_SERIES:
+        won = bool(_stat_number(row, flag))
+        wins = _stat_number(row, f"{prefix}_wins")
+        losses = _stat_number(row, f"{prefix}_losses")
+        record = ("" if wins is None or losses is None
+                  else f"{wins:,.0f}\u2013{losses:,.0f}")
+        if prefix == "wc" and _stat_number(row, "wc_bye"):
+            rows.append({"round": name, "result": "Bye",
+                         "points": PTS_SERIES[prefix]})
+        elif won:
+            rows.append({"round": name, "result": f"Won {record}".strip(),
+                         "points": PTS_SERIES[prefix]})
+        elif record and (wins or losses):
+            done = losses >= lost_at[prefix]
+            rows.append({"round": name,
+                         "result": f"Lost {record}" if done else record,
+                         "points": None})
+    return rows
+
+
 def _mlb_team_october(row: dict) -> dict | None:
-    """The postseason, in the rounds it was actually played in.
+    """The postseason: the games it won, and the series.
 
     Its own section rather than an outcome box, because a playoff run is not
     one thing that happened: it is a number of wins and a number of rounds
     reached, each priced differently. The total is what the run paid, and the
     boxes above it are what paid it.
+
+    The series share one box, a line a round in the order they were played,
+    so a run reads as the run it was: Bye, then Won 3\u20131, then Lost 2\u20134.
     """
     played = _stat_number(row, "playoff_game_wins")
     paid = _stat_number(row, "pts_playoff")
+    series = _mlb_series_rows(row)
     if played is None and paid is None:
         # Not yet known, which is not the same as none. A club before October
         # gets the section with dashes in it; one that has been eliminated gets
         # zeroes, which is a different and true thing.
         played = paid = None
-    elif not played and not paid:
+    elif not played and not paid and not series:
         return None
-    from whul.scoring.mlb import BASE_PLAYOFF_WIN, PTS_SERIES
+    from whul.scoring.mlb import BASE_PLAYOFF_WIN
 
-    rounds = []
-    for column, label in MLB_TEAM_SERIES:
-        got = _stat_number(row, column) or 0.0
-        if not got:
-            continue
-        worth = PTS_SERIES[column.replace("series_", "").replace("wc_or_bye", "wc")]
-        rounds.append({"label": label, "value": f"{got:,.0f}",
-                       "points": round(got * worth, 1)})
+    bonus = sum(r["points"] or 0 for r in series)
+    if played is None:
+        win_points = None
+    elif paid is not None:
+        # The scorer's figure, less the series: game wins carry the contract
+        # year's weight and the series bonuses do not.
+        win_points = round(paid - bonus, 1)
+    else:
+        win_points = round(played * BASE_PLAYOFF_WIN, 1)
+    top = [{"label": "Playoff wins",
+            "value": "\u2014" if played is None else f"{played:,.0f}",
+            "points": win_points}]
+    if series:
+        top.append({"label": "Series", "rounds": series,
+                    "value": "", "points": round(bonus, 1)})
     return {
         "name": "Postseason",
         "games": "" if played is None else f"{played:,.0f}",
-        "top": [{"label": "Playoff wins",
-                 "value": "\u2014" if played is None else f"{played:,.0f}",
-                 "points": None if played is None
-                 else round(played * BASE_PLAYOFF_WIN, 1)}],
-        "secondary": rounds,
+        "top": top,
+        "secondary": [],
         "total": {"label": "Postseason", "bare": True,
                   "value": "\u2014" if paid is None else f"{paid:,.1f}"},
     }

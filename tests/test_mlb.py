@@ -815,3 +815,52 @@ def test_losing_a_series_ends_a_season_and_so_does_winning_it_all():
 def test_without_divisions_a_missed_field_is_not_guessed():
     out = mlb.team_status(_october(REGULAR + [("F", "Chaser", "Wildcard", 3, 1)]), None)
     assert set(out["season_over"]) == {0}
+
+
+# --- division titles and byes in the live window ----------------------------
+
+POST = [("F", "Chaser", "Wildcard", 3, 1), ("F", "Chaser", "Wildcard", 4, 2),
+        ("D", "Bye", "Chaser", 2, 1), ("D", "Bye", "Chaser", 2, 1),
+        ("D", "Bye", "Chaser", 2, 1)]
+
+
+def _live(with_status=True):
+    """The window a live pull scores -- the season's tail, with the games that
+    won the East cut off -- with or without the full season's facts beside it."""
+    full = _october(REGULAR + POST)
+    window = full.iloc[3:]
+    status = mlb.team_status(full, DIVISIONS) if with_status else None
+    return mlb.score_teams(window, partial=True, status=status).set_index("team")
+
+
+def test_a_division_title_is_paid_live_once_the_regular_season_is_over():
+    """The window cannot see the summer the title was won in, and for all of
+    September 2026 no club was paid one."""
+    got = _live()
+    weight = mlb.MULT_YEAR_N
+    assert got.loc["Bye", "pts_div_champ"] == pytest.approx(mlb.PTS_DIV_CHAMP * weight)
+    assert got.loc["Leader", "pts_div_champ"] == pytest.approx(mlb.PTS_DIV_CHAMP * weight)
+    assert got.loc["Chaser", "pts_div_champ"] == 0
+
+
+def test_a_bye_is_paid_as_the_wild_card_round_and_marked_as_a_bye():
+    got = _live()
+    assert got.loc["Leader", "wc_bye"] == 1 and got.loc["Leader", "series_wc_or_bye"] == 1
+    assert got.loc["Leader", "wc_wins"] == 0, "a bye is not a win"
+    assert got.loc["Chaser", "wc_bye"] == 0 and got.loc["Chaser", "series_wc_or_bye"] == 1
+    assert got.loc["Chaser", "lds_losses"] == 3
+
+
+def test_the_window_alone_cannot_award_a_title():
+    got = _live(with_status=False)
+    assert got["pts_div_champ"].sum() == 0
+
+
+def test_a_club_swept_in_the_division_series_still_got_past_the_wild_card_round():
+    """Before 2022 the Wild Card round was one game, so a winner has one win
+    and not two; reaching the Division Series is what says it advanced."""
+    summary = mlb.summarize_teams(_october(REGULAR + [
+        ("F", "Chaser", "Wildcard", 3, 1),
+        ("D", "Bye", "Chaser", 2, 1), ("D", "Bye", "Chaser", 2, 1),
+        ("D", "Bye", "Chaser", 2, 1)]), DIVISIONS).set_index("team")
+    assert summary.loc["Chaser", "series_wc_or_bye"] == 1
