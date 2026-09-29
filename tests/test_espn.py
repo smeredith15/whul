@@ -1576,3 +1576,23 @@ def test_a_team_schedule_asks_for_the_postseason_by_name(monkeypatch):
     rows = espn.load_team_schedule("ncaaf", "84", 2025)
     assert sorted(rows["game_id"]) == ["1", "2"]
     assert sorted(rows["season_type"]) == [2, 3]
+
+
+def test_a_school_named_alone_finds_its_team(monkeypatch):
+    """The 2026 softball roster says "Texas"; ESPN says "Texas Longhorns"."""
+    from whul.sources import espn
+
+    def team(tid, display, location):
+        return {"team": {"id": tid, "displayName": display, "location": location}}
+
+    payload = {"sports": [{"leagues": [{"teams": [
+        team("251", "Texas Longhorns", "Texas"),
+        team("245", "Texas A&M Aggies", "Texas A&M"),
+        team("1", "Miami Hurricanes", "Miami"),
+        team("2", "Miami RedHawks", "Miami"),
+    ]}]}]}
+    monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: payload)
+    index = espn.team_index("ncaasoftball")
+    assert index["Texas"] == "251" and index["Texas Longhorns"] == "251"
+    assert index["Texas A&M"] == "245"
+    assert "Miami" not in index, "two teams share it, so it names neither"

@@ -22,32 +22,49 @@
 #                are not called First Round / Second Round / Quarterfinal /
 #                Semifinal / Final -- a stepladder, or an "Opening Round"
 #                ahead of the first
-season,league,conference,rounds,round_names
+#   from_bracket yes to place every round from the bracket itself once its
+#                final is played, never from the labels: a format too new for
+#                anyone to know how ESPN will label it
+#
+# A play-in -- one game ahead of a bigger round, or a game called one -- is not
+# a round, and is not counted in `rounds`: the seeds after it did not skip it.
+season,league,conference,rounds,round_names,from_bracket
 # The twelve-team playoff: a first round, then the quarterfinals the top four
 # seeds enter at.
-2024,NCAAF,College Football Playoff|CFP,4,
-2025,NCAAF,College Football Playoff|CFP,4,
-2026,NCAAF,College Football Playoff|CFP,4,
+2024,NCAAF,College Football Playoff|CFP,4,,
+2025,NCAAF,College Football Playoff|CFP,4,,
+2026,NCAAF,College Football Playoff|CFP,4,,
 # 2026-27, from the brackets ESPN served for 2025-26 (the probe-brackets
 # workflow, September 2026) and the league admin's confirmation. Every one of
 # these names its rounds First/Second/Third Round, Quarterfinal(s),
 # Semifinal(s), Final/Championship, which the scorer reads with the count alone.
 #
 # The Big Ten men's tournament took all eighteen teams in 2026: six rounds.
-2027,NCAAM,ACC|Atlantic Coast,5,
-2027,NCAAM,Big Ten,6,
-2027,NCAAM,Big 12,5,
-2027,NCAAM,SEC|Southeastern,5,
-2027,NCAAM,Big East,4,
-2027,NCAAW,ACC|Atlantic Coast,5,
-2027,NCAAW,Big Ten,5,
-2027,NCAAW,SEC|Southeastern,5,
-2027,NCAAW,Big East,4,
-2027,NCAA Baseball,ACC|Atlantic Coast,5,
-2027,NCAA Baseball,SEC|Southeastern,5,
+2027,NCAAM,ACC|Atlantic Coast,5,,
+2027,NCAAM,Big Ten,6,,
+2027,NCAAM,Big 12,5,,
+2027,NCAAM,SEC|Southeastern,5,,
+2027,NCAAM,Big East,4,,
+2027,NCAAW,ACC|Atlantic Coast,5,,
+2027,NCAAW,Big Ten,5,,
+2027,NCAAW,SEC|Southeastern,5,,
+2027,NCAAW,Big East,4,,
+2027,NCAA Baseball,ACC|Atlantic Coast,5,,
+2027,NCAA Baseball,SEC|Southeastern,5,,
 # Called its first three rounds all "Big 12 Tournament" in 2026, so those are
 # placed from the bracket itself once it is finished (whul/brackets.py); the
 # count is stated for the semifinal and final, which it does name.
-2027,NCAA Baseball,Big 12,5,
-2027,NCAA Softball,Big 12,3,
-2027,NCAA Softball,SEC|Southeastern,5,
+2027,NCAA Baseball,Big 12,5,,
+2027,NCAA Softball,Big 12,3,,
+2027,NCAA Softball,SEC|Southeastern,5,,
+# The WCC after Gonzaga, Oregon State and Washington State left: ten teams,
+# a first round of 8 v 9 and 7 v 10, then quarterfinals with seeds 1-6
+# waiting. Las Vegas, 5-9 March 2027.
+2027,NCAAM,West Coast Conference|WCC,4,,
+2027,NCAAW,West Coast Conference|WCC,4,,
+# The rebuilt Pac-12: nine teams, an 8 v 9 play-in, then a first round, the
+# quarterfinals seeds 3 and 4 enter at, the semifinals seeds 1 and 2 enter at,
+# and the final. Four rounds after the play-in -- the conference's own "double
+# bye" for its top two. Its first year, so it is read off the bracket.
+2027,NCAAM,Pac-12|Pac 12|Pacific-12,4,,yes
+2027,NCAAW,Pac-12|Pac 12|Pacific-12,4,,yes
