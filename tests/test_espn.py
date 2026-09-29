@@ -1511,3 +1511,27 @@ def test_a_pairing_played_too_often_is_named_too(monkeypatch, capsys):
     printed = capsys.readouterr().out
     assert "13 match(es)" in printed
     assert "Alpha v Beta: 3 of 2" in printed
+
+
+def test_a_team_schedule_carries_the_rounds_headline_not_the_matchup(monkeypatch):
+    """The scorers read the round off the note; the event's name is only who
+    played whom, and every conference tournament game read as March Madness."""
+    from whul.sources import espn
+
+    def event(notes):
+        return {"id": "9", "date": "2027-03-12T23:00Z", "name": "Duke at Clemson",
+                "seasonType": {"id": 3}, "competitions": [{
+                    "status": {"type": {"completed": True}}, "notes": notes,
+                    "competitors": [
+                        {"homeAway": "home", "score": {"value": 70},
+                         "team": {"displayName": "Clemson Tigers"}},
+                        {"homeAway": "away", "score": {"value": 80},
+                         "team": {"displayName": "Duke Blue Devils"}}]}]}
+
+    for notes, expected in (
+            ([{"type": "event", "headline": "ACC Tournament - Quarterfinal"}],
+             "ACC Tournament - Quarterfinal"),
+            ([], "Duke at Clemson")):
+        payload = {"events": [event(notes)]}
+        monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: payload)
+        assert espn.load_team_schedule("ncaam", "150", 2027).iloc[0]["notes"] == expected

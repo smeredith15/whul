@@ -526,3 +526,112 @@ def test_a_season_wide_feed_that_forgets_a_game_says_so():
     notes: list[str] = []
     ing._report_forgotten(Feed(), held.iloc[1:], held, False, notes)
     assert notes and "1" in notes[0]
+
+
+# --- conference tournament byes ---------------------------------------------
+
+def _acc_bracket(tmp_path, monkeypatch, rows="2027,NCAAM,ACC,5,"):
+    from whul.scoring import ncaa
+
+    table = tmp_path / "formats.csv"
+    table.write_text("season,league,conference,rounds,round_names\n" + rows + "\n")
+    monkeypatch.setattr(ncaa, "CONF_TOURNEY_FORMATS", table)
+
+
+def _tourney(notes_by_team, season=2027):
+    """Each team's conference tournament games, first to last, all won but the
+    last, against filler opponents."""
+    rows = []
+    for team, notes in notes_by_team.items():
+        for i, note in enumerate(notes):
+            won = i < len(notes) - 1
+            rows.append(game(team, f"{team} opp {i}", 80 if won else 60,
+                             60 if won else 80, season_type=3, notes=note,
+                             season=season, game_date="2027-03-12"))
+    return pd.DataFrame(rows)
+
+
+def test_a_seed_that_skipped_rounds_is_paid_them_as_wins(tmp_path, monkeypatch):
+    """Duke enters a five-round bracket at the quarterfinal: two rounds skipped,
+    each paid as a conference tournament win."""
+    _acc_bracket(tmp_path, monkeypatch)
+    out = score_basketball(_tourney({
+        "Duke": ["ACC Tournament - Quarterfinal", "ACC Tournament - Semifinal"],
+        "Clemson": ["ACC Tournament - Second Round", "ACC Tournament - Quarterfinal"],
+        "Boston College": ["ACC Tournament - First Round"],
+    })).set_index("team")
+    assert out.loc["Duke", "conf_tourney_byes"] == 2
+    assert out.loc["Duke", "conf_tourney_wins"] == 1, "a bye is not a win"
+    assert out.loc["Clemson", "conf_tourney_byes"] == 1
+    assert out.loc["Boston College", "conf_tourney_byes"] == 0
+    counted = out.loc["Duke", "conf_tourney_wins"] * 2.0
+    assert out.loc["Duke", "total_points"] - out.loc["Duke", "pts_reg_champ"] \
+        - out.loc["Duke", "reg_wins"] * 2.0 - out.loc["Duke", "big_wins"] * 1.5 \
+        - out.loc["Duke", "conf_wins"] * 1.0 - out.loc["Duke", "point_diff"] * 0.03 \
+        == pytest.approx(counted + 2 * 2.0)
+
+
+def test_a_round_counted_from_the_start_needs_no_stated_bracket(tmp_path, monkeypatch):
+    _acc_bracket(tmp_path, monkeypatch, rows="")
+    out = score_basketball(_tourney({
+        "Clemson": ["ACC Tournament - Second Round"],
+        "Duke": ["ACC Tournament - Quarterfinal"],
+    })).set_index("team")
+    assert out.loc["Clemson", "conf_tourney_byes"] == 1
+    # A quarterfinal is the second round of one bracket and the third of
+    # another, so without the bracket nothing is paid rather than a guess.
+    assert out.loc["Duke", "conf_tourney_byes"] == 0
+
+
+def test_a_stepladder_names_its_own_rounds(tmp_path, monkeypatch):
+    _acc_bracket(tmp_path, monkeypatch, rows=(
+        "2027,NCAAM,WCC|West Coast,6,First Round|Second Round|Third Round|"
+        "Quarterfinal|Semifinal|Final"))
+    out = score_basketball(_tourney({
+        "Saint Mary's": ["WCC Tournament - Semifinal"],
+    }, ).assign(home_conference="WCC", away_conference="WCC")).set_index("team")
+    assert out.loc["Saint Mary's", "conf_tourney_byes"] == 4
+
+
+def test_a_round_that_cannot_be_read_pays_no_byes(tmp_path, monkeypatch):
+    """A later round read as the first would pay for rounds that were played."""
+    _acc_bracket(tmp_path, monkeypatch)
+    out = score_basketball(_tourney({
+        "Duke": ["ACC Tournament", "ACC Tournament - Semifinal"],
+    })).set_index("team")
+    assert out.loc["Duke", "conf_tourney_byes"] == 0
+
+
+def test_a_semifinal_win_is_not_the_conference_title(tmp_path, monkeypatch):
+    _acc_bracket(tmp_path, monkeypatch)
+    out = score_basketball(_tourney({
+        "Duke": ["ACC Tournament - Semifinal", "ACC Tournament - Final"],
+        "Clemson": ["ACC Tournament - Semifinal", "ACC Tournament - Championship",
+                    "ACC Tournament - Championship"],
+    })).set_index("team")
+    assert out.loc["Duke", "conf_tourney_champ"] == 0
+    assert out.loc["Clemson", "conf_tourney_champ"] == 1
+
+
+def test_a_november_first_round_is_not_march_madness():
+    out = score_basketball(pd.DataFrame([
+        game("A", "B", 80, 60, hc="ACC", ac="SEC", notes="Maui Invitational - First Round",
+             game_date="2026-11-24"),
+        game("A", "C", 80, 60, hc="ACC", ac="B1G", season_type=3,
+             notes="NIT - First Round", game_date="2027-03-19"),
+    ])).set_index("team")
+    assert out.loc["A", "mm_appearance"] == 0 and out.loc["A", "mm_wins"] == 0
+    assert out.loc["A", "reg_wins"] == 1, "the invitational is a regular-season game"
+    assert out.loc["A", "conf_tourney_wins"] == 0, "the NIT is not a conference's"
+
+
+def test_the_playoff_final_is_not_a_conference_title():
+    out = score_football(pd.DataFrame([
+        game("A", "B", 30, 20, hc="B1G", ac="SEC", season_type=3,
+             notes="College Football Playoff National Championship",
+             game_date="2027-01-19"),
+        game("A", "C", 30, 20, hc="B1G", ac="B1G", season_type=3,
+             notes="Big Ten Championship", game_date="2026-12-05"),
+    ])).set_index("team")
+    assert out.loc["A", "conf_title_win"] == 1
+    assert out.loc["A", "playoff_wins"] == 1

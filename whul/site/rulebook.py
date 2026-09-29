@@ -515,6 +515,11 @@ def _ncaab_teams() -> Rules:
         weights(ncaa.BB_WEIGHTS, BB_LABELS)
         + [item("Finishing top of the conference in the regular season",
                 ncaa.BB_REG_CHAMP_POOL, " shared among co-champions")],
+        [
+            "A conference tournament round skipped by seeding is paid as a "
+            "conference tournament win, as though the team had played it and "
+            "won it.",
+        ],
     )
 
 

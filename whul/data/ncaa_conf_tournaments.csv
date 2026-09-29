@@ -1,0 +1,22 @@
+# Conference tournament brackets, as the league admin states them.
+#
+# A team that skips rounds of its conference tournament by its seed is paid each
+# round skipped as a conference tournament win, as though it had played the
+# round and won it (whul/scoring/ncaa.py, `_conf_tourney_byes`). Which round a
+# team entered is read off the game's note -- "ACC Tournament - Quarterfinal".
+# A round named from the start ("Second Round") needs nothing here. A round
+# named back from the final ("Quarterfinal", "Semifinal") needs the number of
+# rounds, because a quarterfinal is the second round of an eleven-team bracket
+# and the third of a fifteen-team one. A tournament with no row here pays
+# nothing for a team that entered at a quarterfinal or later.
+#
+#   season       the season as the feed numbers it: the year it ends in
+#   league       NCAAM or NCAAW
+#   conference   what the conference is called in a game's note, or the feed's
+#                conference name; alternatives separated by |
+#   rounds       rounds in the bracket, the final included
+#   round_names  optional, first to last and separated by |, where the rounds
+#                are not called First Round / Second Round / Quarterfinal /
+#                Semifinal / Final -- a stepladder, or an "Opening Round"
+#                ahead of the first
+season,league,conference,rounds,round_names

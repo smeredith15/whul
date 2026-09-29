@@ -1472,6 +1472,9 @@ class TeamBox:
     #: How that value is worded. "of 9" for a denominator; "3 won" for a count
     #: that decided the box it sits on rather than sitting under it.
     of_text: str = "of {n:,.0f}"
+    #: Rounds skipped by seeding, paid at this box's weight and not counted in
+    #: it: they ride on the box as a superscript, as a soccer club's byes do.
+    bye: str = ""
 
 
 @dataclass(frozen=True)
@@ -1529,7 +1532,7 @@ def _team_panels() -> dict[str, TeamPanel]:
         post=(
             TeamBox("mm_wins", "Tournament wins", bb["mm_wins"]),
             TeamBox("conf_tourney_wins", "Conference tournament wins",
-                    bb["conf_tourney_wins"]),
+                    bb["conf_tourney_wins"], bye="conf_tourney_byes"),
         ),
         post_name="March",
     )
@@ -1649,6 +1652,11 @@ def _counted_box(row: dict, spec: TeamBox, scale: float,
         paid = got * spec.weight * (scale if spec.scaled else 1.0)
     box = {"label": spec.label, "value": f"{got:,.0f}",
            "points": round(paid, 1) or 0.0}
+    skipped = _stat_number(row, spec.bye) if spec.bye else None
+    if skipped:
+        box["sup"] = f"+{skipped:,.0f}"
+        box["suptitle"] = "rounds skipped by seeding, paid as wins"
+        box["points"] = round(paid + skipped * spec.weight, 1)
     beside = _stat_number(row, spec.of) if spec.of else None
     if beside is not None:
         box["aside"] = spec.of_text.format(n=beside)

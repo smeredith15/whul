@@ -5004,3 +5004,14 @@ def test_a_football_bye_rides_on_the_playoff_wins_box():
     box = _nfl_team_panel(row)["post"]["top"][0]
     assert (box["value"], box["sup"], box["points"]) == ("0", "+1", 15.0)
     assert "post" not in _nfl_team_panel({**row, "bye_wins": 0})
+
+
+def test_a_conference_tournament_bye_rides_on_the_wins_box():
+    """Paid as wins and not counted as them."""
+    from whul.site.build import _counted_team_panel
+
+    row = {"league": "NCAAM", "reg_wins": 25, "reg_losses": 6,
+           "conf_tourney_wins": 1, "conf_tourney_byes": 2}
+    march = _counted_team_panel("NCAAM", row)["posts"][0]["top"]
+    box = next(b for b in march if b["label"] == "Conference tournament wins")
+    assert (box["value"], box["sup"], box["points"]) == ("1", "+2", 6.0)
