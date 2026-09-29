@@ -757,3 +757,61 @@ def test_a_playoff_run_keeps_its_series_outside_the_weight():
     assert problem == ""
     assert out["pts_playoff"] == pytest.approx(
         wins * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + series)
+
+
+# --- whose season is over ---------------------------------------------------
+
+def _october(games, season=2026):
+    rows = []
+    for i, (kind, home, away, hs, as_) in enumerate(games):
+        rows.append({"season": season, "game_id": i, "game_date": f"{season}-09-{10 + i % 20:02d}",
+                     "game_type": kind, "home_team": home, "away_team": away,
+                     "home_score": hs, "away_score": as_})
+    return pd.DataFrame(rows)
+
+
+# Two divisions of two. Bye and Leader win theirs; Chaser and Also-ran do not.
+DIVISIONS = pd.DataFrame([
+    {"season": 2026, "team": t, "division": d}
+    for t, d in (("Bye", "East"), ("Also-ran", "East"),
+                 ("Leader", "West"), ("Chaser", "West"))])
+
+REGULAR = [("R", "Bye", "Also-ran", 5, 1)] * 3 + [("R", "Leader", "Chaser", 4, 2)] * 3 \
+    + [("R", "Chaser", "Also-ran", 3, 1)] * 2 + [("R", "Wildcard", "Also-ran", 2, 1)] * 2
+
+
+def _status(post):
+    out = mlb.team_status(_october(REGULAR + post), DIVISIONS)
+    return dict(zip(out["team"], out["season_over"]))
+
+
+def test_nobody_is_done_before_the_postseason_starts():
+    assert set(_status([]).values()) == {0}
+
+
+def test_a_club_outside_the_field_is_done_once_the_postseason_starts():
+    """Also-ran won nothing and played no postseason game. Bye won its
+    division and waits out the Wild Card round with nothing played: it is in
+    the field, not done."""
+    done = _status([("F", "Chaser", "Wildcard", 3, 1)])
+    assert done["Also-ran"] == 1
+    assert done["Bye"] == 0 and done["Leader"] == 0
+    assert done["Chaser"] == 0 and done["Wildcard"] == 0
+
+
+def test_losing_a_series_ends_a_season_and_so_does_winning_it_all():
+    done = _status([
+        ("F", "Chaser", "Wildcard", 3, 1), ("F", "Chaser", "Wildcard", 4, 2),
+        ("D", "Bye", "Chaser", 2, 1), ("D", "Bye", "Chaser", 2, 1),
+        ("D", "Bye", "Chaser", 2, 1),
+        *[("W", "Bye", "Leader", 5, 0)] * 4,
+    ])
+    assert done["Wildcard"] == 1, "two Wild Card losses"
+    assert done["Chaser"] == 1, "three Division Series losses"
+    assert done["Leader"] == 1, "swept in the World Series"
+    assert done["Bye"] == 1, "the champion has nothing left to play either"
+
+
+def test_without_divisions_a_missed_field_is_not_guessed():
+    out = mlb.team_status(_october(REGULAR + [("F", "Chaser", "Wildcard", 3, 1)]), None)
+    assert set(out["season_over"]) == {0}

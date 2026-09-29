@@ -362,6 +362,8 @@ CREATE TABLE IF NOT EXISTS club_games (
     league TEXT NOT NULL,
     club   TEXT NOT NULL,
     games  REAL NOT NULL,
+    -- Whether the club has played its last game of the league year.
+    season_over INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (season, as_of, league, club)
 );
 

@@ -1424,14 +1424,19 @@ SCRIPT = """\
   function yearViews(panel, render) {
     var views = [{ year: 'Total', pane: render(panel) }].concat(
       (panel.years || []).map(function (v) {
-        return { year: v.year, raw: v.raw, pane: render(v) };
+        return { year: v.year, raw: v.raw, over: v.over, pane: render(v) };
       }));
     var tabs = views.map(function (v, i) {
       // The year carries what it is worth, so the strip beneath can follow the
       // tab. Total carries none and falls back to the scorer's own figure,
       // which is the one number here that was not rebuilt from boxes.
+      // A finished calendar season says so on its tab, drawn by the stylesheet
+      // rather than written into the button: the click handler reads the
+      // button's text to label the score beneath it.
       return '<button class="yr' + (i === 0 ? ' on' : '') +
+             (v.over ? ' over' : '') +
              '" data-year="' + i + '"' +
+             (v.over ? ' title="This season is over"' : '') +
              (v.raw == null ? '' : ' data-raw="' + pts(v.raw) + '"') +
              '>' + v.year + '</button>';
     }).join('');
@@ -1665,6 +1670,7 @@ SCRIPT = """\
       '<div class="head">' + a.avatar +
         '<div><div class="nm">' + a.name + (a.badge || '') + '</div>' +
         '<div class="meta">' + who + '</div>' +
+        (a.over ? '<div class="seasonover">' + a.over + '</div>' : '') +
         (a.group ? '<div class="grp">' + a.group + '</div>' : '') +
         '</div></div>' + tabs +
       (best ? '<div class="perfpane" data-pane="season"' +
@@ -1686,8 +1692,11 @@ SCRIPT = """\
       '<div class="scoreline">' +
         '<div><div class="label rawlabel">Raw score</div>' +
           '<div class="value rawvalue">' + a.raw + '</div></div>' +
-        '<div><div class="label">Normalized</div>' +
-          '<div class="value scaledvalue">' + a.scaled + '</div></div>' +
+        '<div><div class="label">Normalized' +
+          (a.final ? ' <span class="finaltag">Final</span>' : '') + '</div>' +
+          '<div class="value scaledvalue' + (a.final ? ' final' : '') +
+          '"' + (a.final ? ' title="Final: this score can no longer change"' : '') +
+          '>' + a.scaled + '</div></div>' +
       '</div>' +
       (best ? '</div>' + renderBest(best) : '');
     dialog.querySelectorAll('button.pt').forEach(function (tab) {

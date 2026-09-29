@@ -364,13 +364,40 @@ def _mlb_teams_live():
     from whul.scoring import mlb
     from whul.sources import mlb as source
 
+    held: dict[str, object] = {}
+
+    # Whether a club's season is over is a question about the whole season --
+    # who won the division, who reached the postseason -- and the scorer only
+    # sees the league year's window of it. So it is answered here, off the
+    # full schedule, before the window is cut.
+    def load(seasons):
+        schedule = source.load_schedule(seasons)
+        try:
+            divisions = source.load_divisions(seasons)
+        except Exception as exc:  # noqa: BLE001 -- the series still answer
+            print(f"  mlb: divisions not read ({type(exc).__name__}: {exc}); "
+                  f"a club that missed the postseason cannot be told so", flush=True)
+            divisions = None
+        held["status"] = mlb.team_status(schedule, divisions)
+        return schedule
+
     def score(raw):
-        return _prorated(
+        out = _prorated(
             mlb.score_teams(raw, partial=True), "MLB",
             columns=list(mlb.WINDOW_COUNTING),
         )
+        status = held.get("status")
+        if status is None or getattr(status, "empty", True) or out.empty:
+            return out
+        over = {(int(s), str(t)): int(v) for s, t, v in zip(
+            status["season"], status["team"], status["season_over"])}
+        # Only the season the window belongs to: a club whose 2026 is over
+        # has not finished 2027, and next year's rows must not inherit it.
+        out["season_over"] = [over.get((int(s), str(t)), 0) for s, t in zip(
+            pd.to_numeric(out["season"], errors="coerce").fillna(0), out["team"])]
+        return out
 
-    return lambda seasons: source.load_schedule(seasons), score
+    return load, score
 
 
 def _nba_players():

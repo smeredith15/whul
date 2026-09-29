@@ -334,11 +334,14 @@ def _record_club_games(store: Store, scored: pd.DataFrame, source,
     leagues = (scored["league"].astype(str)
                if "league" in scored.columns
                else pd.Series(source.league, index=scored.index))
+    over = (pd.to_numeric(scored["season_over"], errors="coerce").fillna(0)
+            if "season_over" in scored.columns else pd.Series(0, index=scored.index))
     written = 0
-    for league, block in scored.assign(_g=played, _l=leagues).groupby("_l"):
+    for league, block in scored.assign(_g=played, _l=leagues, _o=over).groupby("_l"):
         written += store.record_club_games(
             dict(zip(block["team"].astype(str), block["_g"])),
             season, as_of, str(league),
+            over=dict(zip(block["team"].astype(str), block["_o"].astype(int))),
         )
     return written
 

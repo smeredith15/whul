@@ -2623,6 +2623,75 @@ def test_a_flex_driver_gets_his_series_boxes():
     assert "2" in values and "5" in values, values
 
 
+def test_a_baseball_club_that_is_done_says_its_2026_is_over_and_is_not_final():
+    """Out of the postseason in October, with 2027's first half still to
+    score: the season is over and the score is not."""
+    from whul.site.build import _season_state
+
+    over, final, label = _season_state(
+        "MLB", "Team", {"season_over": 1}, "", set(), date(2026, 10, 2))
+    assert over and not final
+    assert label == "2026 season over"
+
+
+def test_a_player_is_done_when_his_club_is_even_one_nobody_drafted():
+    from whul.site.build import _season_state
+
+    done = {"Colorado Rockies"}
+    over, _, _ = _season_state("MLB", "Player", {}, "Colorado Rockies", done,
+                               date(2026, 10, 2))
+    assert over
+    over, _, _ = _season_state("MLB", "Player", {}, "Los Angeles Dodgers", done,
+                               date(2026, 10, 2))
+    assert not over
+
+
+def test_a_score_is_final_once_its_league_can_no_longer_move():
+    from whul.site.build import _season_state
+
+    over, final, label = _season_state("NFL", "Team", {}, "", set(), date(2027, 3, 1))
+    assert over and final and label == "Season over"
+    over, final, _ = _season_state("NFL", "Team", {}, "", set(), date(2026, 12, 1))
+    assert not over and not final
+
+
+def test_only_the_finished_years_tab_is_marked():
+    from whul.site.build import _mark_year_over
+
+    panel = {"years": [{"year": "2026"}, {"year": "2027"}]}
+    _mark_year_over(panel)
+    assert [y.get("over", False) for y in panel["years"]] == [True, False]
+
+
+def test_the_fixture_column_says_a_season_is_over_where_nothing_is_next():
+    from whul.site.build import _fixture_cell
+
+    assert "Season over" in _fixture_cell(None, "Season over")
+    assert _fixture_cell(None) == "<td class='fixture'></td>"
+    # A fixture that is known still wins: a club in the postseason has one.
+    cell = _fixture_cell({"date": "2026-10-04", "opponent": "Padres", "home": True},
+                         "2026 season over")
+    assert "Padres" in cell
+
+
+def test_a_final_score_is_carried_to_the_profile():
+    from whul.site.build import asset_profiles
+
+    store = open_store(":memory:")
+    store.upsert("assets", [{
+        "asset_id": "team-nfl-buffalo-bills", "asset_type": "Team",
+        "display_name": "Buffalo Bills", "league": "NFL", "role": "",
+        "norm_key": "NFL", "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    store.record_stats([{"team": "Buffalo Bills", "league": "NFL", "total_points": 90.0,
+                         "asset_id": "team-nfl-buffalo-bills"}],
+                       source="nfl-teams", season="2026-27", as_of=date(2027, 3, 1),
+                       league="NFL")
+    got = asset_profiles(store, "2026-27", date(2027, 3, 1), {"team-nfl-buffalo-bills"})
+    profile = got["team-nfl-buffalo-bills"]
+    assert profile["over"] == "Season over" and profile["final"] is True
+
+
 # --- the NFL stat panel ---------------------------------------------------
 
 from whul.site import build as site_build

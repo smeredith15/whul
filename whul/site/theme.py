@@ -66,6 +66,10 @@ STYLESHEET = """\
   --ok-bg: #e6f4ee;
   --alert: #c03403;
   --alert-bg: #fceceb;
+  /* A score that can no longer change. Gold rather than the good/bad pair:
+     final is a fact about the calendar, not a verdict on the score. */
+  --final: #7a5500;
+  --final-bg: #fbf0d4;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -89,6 +93,8 @@ STYLESHEET = """\
     --ok-bg: #14312a;
     --alert: #ff8f6b;
     --alert-bg: #3a1d1c;
+    --final: #f0c451;
+    --final-bg: #372a0c;
   }
 }
 :root[data-theme="dark"] {
@@ -112,6 +118,8 @@ STYLESHEET = """\
   --ok-bg: #14312a;
   --alert: #ff8f6b;
   --alert-bg: #3a1d1c;
+  --final: #f0c451;
+  --final-bg: #372a0c;
 }
 
 * { box-sizing: border-box; }
@@ -874,6 +882,33 @@ dialog.profile .yrtabs button.yr {
 dialog.profile .yrtabs button.yr.on {
   background: var(--text-primary); border-color: var(--text-primary);
   color: var(--surface-1);
+}
+
+/* The end of an asset's season. "Season over" is quiet, because it is only
+   information; a final score is ringed in gold wherever it is shown, because
+   it is the one number on the page that will not move again. */
+.final {
+  display: inline-block; padding: 0 7px; border-radius: 999px;
+  background: var(--final-bg); color: var(--final); font-weight: 600;
+  box-shadow: 0 0 0 1.5px var(--final);
+}
+td.fixture.over .done {
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+  color: var(--muted); white-space: nowrap;
+}
+dialog.profile .seasonover {
+  display: inline-block; margin-top: 5px; padding: 1px 9px; border-radius: 999px;
+  border: 1px solid var(--grid); color: var(--text-secondary);
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+}
+dialog.profile .scaledvalue.final { padding: 0 10px; }
+dialog.profile .finaltag {
+  display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 999px;
+  background: var(--final-bg); color: var(--final);
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+}
+dialog.profile .yrtabs button.yr.over::after {
+  content: "\u00b7 over"; margin-left: 5px; font-weight: 500; opacity: 0.75;
 }
 
 dialog.profile .statbox .bv.tight { font-size: 15px; white-space: nowrap; }

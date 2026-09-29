@@ -406,6 +406,7 @@ def asset_profiles(
     # Built once for the whole day rather than per player: it is a scan of
     # every club's row, and there are fifty footballers asking.
     club_games = _club_games(stats, store.read_club_games(season, as_of))
+    clubs_done = store.read_clubs_done(season, as_of)
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
@@ -526,6 +527,14 @@ def asset_profiles(
         # be handled correctly by anything downstream. So this holds what the
         # thing is called, every use escapes it, and `_profile_payload`
         # escapes the fields the browser writes into innerHTML.
+        # A club is looked up by its own name, a player by his club's.
+        club = (name if str(info["asset_type"]) == "Team"
+                else _affiliation(meta, asset_id))
+        over, final, label = _season_state(
+            league, str(info["asset_type"]), raw_rows.get(asset_id, {}),
+            club, clubs_done, as_of)
+        if over and league == "MLB":
+            _mark_year_over(panels.get(asset_id))
         out[asset_id] = {
             "name": marked_name(name, league),
             # The league only where the identity line above it does not
@@ -572,8 +581,52 @@ def asset_profiles(
             "finishes": finishes.get(asset_id, []),
             "bonus": bonuses.get(asset_id, []),
             "notes": notes.get(asset_id, []),
+            # The season's end, said once here and read by every table: a
+            # marker where the asset has played its last game of the league
+            # year, and a badge where its score can no longer move.
+            "over": label if over else "",
+            "final": bool(final),
         }
     return out
+
+
+def _season_state(league: str, asset_type: str, row: dict, club: str,
+                  clubs_done: set[str], as_of) -> tuple[bool, bool, str]:
+    """Whether an asset's season is over, whether its score is final, and what
+    to call the first.
+
+    ``club`` is the club's own name for a club and his club's for a player,
+    which may be one nobody drafted -- hence ``clubs_done``, kept for every
+    club. A club's own row can answer too. A flex slot's asset is filed under
+    its umbrella; the row names the member league, which is the one with a
+    calendar.
+    """
+    from whul import season_end
+
+    member = str(row.get("feed_league") or "")
+    if member in covered_by(league):
+        league = member
+    day = as_of if isinstance(as_of, date) else date.fromisoformat(str(as_of)[:10])
+    own = _stat_number(row, "season_over") if row and asset_type == "Team" else None
+    club_done = bool(own) or (bool(club) and club in clubs_done)
+    over = season_end.season_over(league, day, club_done)
+    final = over and season_end.score_final(league, day)
+    # Baseball's league year is the rest of 2026 and half of 2027, so what is
+    # over is the 2026 part of it; the rest says only that the season is.
+    label = (f"{SEASON.start.year} season over" if league in season_end.NEVER_FINAL
+             else "Season over")
+    return over, final, label
+
+
+def _mark_year_over(panel: dict | None) -> None:
+    """Flag the league year's first calendar season as finished on a baseball
+    panel's year tabs, so the 2026 tab says so and 2027 does not."""
+    if not isinstance(panel, dict):
+        return
+    first = str(SEASON.start.year)
+    for entry in panel.get("years") or []:
+        if str(entry.get("year")) == first:
+            entry["over"] = True
 
 
 #: Columns that identify the row rather than describe the performance, and the
@@ -4093,7 +4146,8 @@ def _figure_index(items: list[tuple[str, str]]) -> str:
 #: escaped on the way into the payload rather than where they are read. The
 #: rest are markup already (`avatar`, `badge`), numbers, or structures the
 #: renderer walks itself.
-PAYLOAD_TEXT = ("name", "meta", "position", "team", "group", "kind", "league")
+PAYLOAD_TEXT = ("name", "meta", "position", "team", "group", "kind", "league",
+                "over")
 
 
 def _profile_payload(profiles: dict[str, dict]) -> str:
@@ -5410,7 +5464,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
     )
 
 
-def _fixture_cell(fixture: dict | None) -> str:
+def _fixture_cell(fixture: dict | None, over: str = "") -> str:
     """What this asset plays next, small, between its name and its score.
 
     Two shapes. A fixture is a date and an opponent; a tour event is a date and
@@ -5419,8 +5473,12 @@ def _fixture_cell(fixture: dict | None) -> str:
 
     Empty where nothing is known, and empty deliberately: a league between
     seasons has nothing to play next, and filling that with a guess would make
-    the column untrustworthy for the leagues where it is right.
+    the column untrustworthy for the leagues where it is right. Where the
+    season is known to be over, it says so: nothing is next.
     """
+    if over and not fixture:
+        return (f"<td class='fixture over'><span class='done'>{escape(over)}"
+                f"</span></td>")
     if not fixture:
         return "<td class='fixture'></td>"
     try:
@@ -5519,6 +5577,10 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                 # how a manager knows how close the bench is to the cut.
                 season_cell = (f"{scaled:,.1f}" if how == "season"
                                else f'<span class="struck">{scaled:,.1f}</span>')
+                if profile and profile.get("final"):
+                    season_cell = (
+                        "<span class='final' title=\"Final: this score can no "
+                        f"longer change\">{season_cell}</span>")
                 best_cell = ("" if not has_best
                              else f"{best:,.1f}" if how == "best"
                              else f'<span class="struck">{best:,.1f}</span>')
@@ -5529,7 +5591,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     f"<tr class='{'' if counts else 'bench'}'>"
                     f"<td class='slotname'>{escape(category)}{tag}</td>"
                     f"<td>{_asset_button(asset, name, counts, depth=1, profile=profile)}</td>"
-                    f"{_fixture_cell(upcoming.get(asset))}"
+                    f"{_fixture_cell(upcoming.get(asset), (profile or {}).get('over', ''))}"
                     f"<td class='num'>{season_cell}</td>"
                     + (f"<td class='num'>{best_cell}</td>" if two else "") + "</tr>"
                 )

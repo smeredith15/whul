@@ -432,6 +432,67 @@ def summarize_teams(
     return summary
 
 
+#: Losses that end a postseason series, by round: the Wild Card round is best
+#: of three, the Division Series best of five, the rest best of seven.
+SERIES_LOST_AT = {GAME_TYPE_WC: 2, GAME_TYPE_LDS: 3, GAME_TYPE_LCS: 4, GAME_TYPE_WS: 4}
+
+#: Wins that take the World Series, after which the champion's season is over too.
+WORLD_SERIES_WON_AT = 4
+
+
+def team_status(schedule: pd.DataFrame,
+                divisions: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Which clubs' seasons are over, per season: ``season``, ``team``,
+    ``in_postseason``, ``season_over``.
+
+    Read off the full season's results, so the caller must pass the whole
+    schedule rather than the league year's window: the field is decided by
+    the whole regular season. Nothing here needs a feed of its own.
+
+    * The regular season is over for everyone once a postseason game has been
+      played: the postseason starts after the last regular-season day.
+    * The field is the division champions -- in the twelve-team format every
+      one qualifies, and the top two in each league wait out the Wild Card
+      round with no game to show for it -- plus every club that has played a
+      postseason game. On the first day of the postseason all eight Wild Card
+      clubs play, so from then on the field is complete.
+    * A club is out when it is not in the field, when it has lost a series
+      (two losses in the Wild Card round, three in the Division Series, four
+      in the LCS or the World Series), or when it has won the World Series.
+
+    Without divisions nobody can be told they missed the field, so only the
+    series answer: an unknown is left open rather than closed.
+    """
+    columns = ["season", "team", "in_postseason", "season_over"]
+    games = _team_games(schedule)
+    if games.empty:
+        return pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
+    games["is_loss"] = games["margin"] < 0
+    summary = summarize_teams(schedule, divisions)
+    champs = set(zip(summary.loc[summary["is_division_champ"] == 1, "season"],
+                     summary.loc[summary["is_division_champ"] == 1, "team"]))
+    known_field = divisions is not None and not getattr(divisions, "empty", True)
+
+    rows = []
+    for season, block in games.groupby("season"):
+        post = block[block["game_type"].isin(list(SERIES_LOST_AT))]
+        started = not post.empty
+        playing = set(post["team"])
+        for team, mine in block.groupby("team"):
+            in_field = team in playing or (season, team) in champs
+            out = any(int((mine["is_loss"] & (mine["game_type"] == kind)).sum()) >= lost
+                      for kind, lost in SERIES_LOST_AT.items())
+            won = int((mine["is_win"] & (mine["game_type"] == GAME_TYPE_WS)).sum()) \
+                >= WORLD_SERIES_WON_AT
+            missed = started and known_field and not in_field
+            rows.append({
+                "season": int(season), "team": str(team),
+                "in_postseason": int(started and in_field),
+                "season_over": int(started and (missed or out or won)),
+            })
+    return pd.DataFrame(rows, columns=columns)
+
+
 def _division_champs(
     summary: pd.DataFrame,
     divisions: pd.DataFrame | None,
