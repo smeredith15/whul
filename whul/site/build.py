@@ -638,7 +638,7 @@ STAT_SKIP = {
     # touchdowns as though it were one of them.
     "player_id", "playerid", "athlete_id", "team_id", "driver_id", "id",
     "finishes", "tier_detail", "norm_key", "asset_type", "role_count",
-    "contract_year", "feed_league",
+    "contract_year", "feed_league", "feed_season",
     # Flags a panel reads, not figures: whether nobody else can win the title.
     "titles_settled",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
@@ -2108,10 +2108,11 @@ def _mlb_team_october(row: dict) -> dict | None:
     series = _mlb_series_rows(row)
     if played is None and paid is None:
         # Not yet known, which is not the same as none. A club before October
-        # gets the section with dashes in it; one that has been eliminated gets
-        # zeroes, which is a different and true thing.
+        # gets the section with dashes in it.
         played = paid = None
     elif not played and not paid and not series:
+        # No October: a club outside the field has no section, and one in the
+        # Wild Card round gets it with its first game.
         return None
     from whul.scoring.mlb import BASE_PLAYOFF_WIN
 
@@ -2134,12 +2135,20 @@ def _mlb_team_october(row: dict) -> dict | None:
         wins["sup"] = f"+{bye:,.0f}"
         wins["suptitle"] = "the Wild Card round, skipped by seeding and paid as a sweep"
     top = [wins]
-    if series:
-        top.append({"label": "Series", "rounds": series,
-                    "value": "", "points": round(bonus, 1)})
+    top.append({"label": "Series", "rounds": series, "value": "", "points": round(bonus, 1)}
+               if series else
+               {"label": "Series", "value": "\u2014",
+                "points": None if played is None else 0.0})
+    # Games played, not won: a bye club with none played read "0 games" beside
+    # a section full of what its bye paid, and one that won two of five read 2.
+    games = [_stat_number(row, f"{prefix}_{end}") for prefix, _, _ in MLB_TEAM_SERIES
+             for end in ("wins", "losses")]
+    count = sum(g for g in games if g is not None) if any(
+        g is not None for g in games) else played
     return {
         "name": "Postseason",
-        "games": "" if played is None else f"{played:,.0f}",
+        "open": True,
+        "games": "" if count is None else f"{count:,.0f}",
         "top": top,
         "secondary": [],
         "total": {"label": "Postseason", "bare": True,
@@ -2196,14 +2205,30 @@ def _mlb_team_by_year(row: dict) -> list[dict]:
     from whul.config.league import SEASON
 
     lines = _season_lines(row)
+    if not lines:
+        # A row of one season is that season's line. Rows stored before the
+        # lines were kept for a single season carry none, and read as dashes.
+        # The feed's season, not the table's league year "2026-27".
+        for key in ("feed_season", "season"):
+            try:
+                lines = {f"{int(float(row[key]))}": row}
+                break
+            except (KeyError, TypeError, ValueError):
+                continue
     years = sorted(set(f"{y}" for y in
                        range(SEASON.start.year, SEASON.end.year + 1)) | set(lines))
     if len(years) < 2:
         return []
     out = []
     for year in years:
-        boxes = _mlb_team_boxes(lines.get(year, {}))
-        out.append({"year": year, **boxes, "raw": _section_points([boxes])})
+        line = lines.get(year, {})
+        boxes = _mlb_team_boxes(line)
+        # What the year was worth, its title and its October included: both
+        # were won in it, and a tab reading the four boxes alone said 0 for a
+        # division champion before any box was filled.
+        once = sum(_stat_number(line, c) or 0.0 for c in ("pts_div_champ", "pts_playoff"))
+        out.append({"year": year, **boxes,
+                    "raw": round(_section_points([boxes]) + once, 1)})
     return out
 
 

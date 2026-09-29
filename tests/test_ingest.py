@@ -547,6 +547,16 @@ def test_two_feed_seasons_for_one_slot_are_summed_not_split():
     assert summed.iloc[0]["matches_played"] == 13
 
 
+def test_a_baseball_club_keeps_its_season_line_while_it_has_one_season():
+    """Waiting for a second season to tell apart left every MLB club's 2026
+    tab a row of dashes for the whole of September."""
+    one = pd.DataFrame([{"team": "Milwaukee Brewers", "league": "MLB",
+                         "season": 2026, "reg_wins": 28, "total_points": 78.2}])
+    kept = ingest._across_feed_seasons(one)
+    lines = kept.iloc[0]["season_lines"]
+    assert len(lines) == 1 and lines[0]["season"] == 2026 and lines[0]["reg_wins"] == 28
+
+
 def test_mls_scores_only_the_season_it_was_drafted_for(store):
     """The clubs were picked for 2027 and the 2026 season is being played now.
     Both halves used to be summed into one total, which paid a manager for a

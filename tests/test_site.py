@@ -5038,3 +5038,35 @@ def test_a_division_title_not_won_reads_no_once_the_season_is_over():
     title = _mlb_team_panel(row)["outcomes"][0]
     unsettled = _mlb_team_panel({**row, "titles_settled": 0.0})["outcomes"][0]
     assert title != unsettled
+
+
+def test_a_baseball_clubs_year_tab_is_its_row_when_it_has_no_lines():
+    """Rows stored before single-season lines were kept carry none; the row is
+    that season's line, and the tab counts the title and October won in it."""
+    from whul.site.build import _mlb_team_panel
+
+    row = {k: v for k, v in _mlb_club().items() if k != "season_lines"}
+    row.update({"season": "2026-27", "feed_season": 2026})
+    years = {y["year"]: y for y in _mlb_team_panel(row)["years"]}
+    assert years["2026"]["top"][0]["value"] == "94"
+    boxes = sum(b["points"] for b in years["2026"]["top"])
+    assert years["2026"]["raw"] == pytest.approx(
+        boxes + row["pts_div_champ"] + row["pts_playoff"], abs=0.2)
+    assert years["2027"]["top"][0]["value"] == "\u2014"
+
+
+def test_the_postseason_section_is_open_and_only_for_a_club_in_october():
+    from whul.site.build import _mlb_team_panel
+
+    none = {**_mlb_club(), "playoff_game_wins": 0.0, "pts_playoff": 0.0,
+            "series_wc_or_bye": 0.0, "series_lds": 0.0, "series_lcs": 0.0,
+            "wc_bye": 0.0, "wc_wins": 0.0, "wc_losses": 0.0}
+    assert "posts" not in _mlb_team_panel(none)
+    bye = {**none, "wc_bye": 1.0, "bye_wins": 2.0, "series_wc_or_bye": 1.0,
+           "pts_playoff": 9.5}
+    post = _mlb_team_panel(bye)["posts"][0]
+    assert post["open"] is True and post["games"] == "0"
+    # Games played, not won.
+    run = {**none, "playoff_game_wins": 2.0, "wc_wins": 2.0, "wc_losses": 1.0,
+           "lds_wins": 0.0, "lds_losses": 3.0, "series_wc_or_bye": 1.0}
+    assert _mlb_team_panel(run)["posts"][0]["games"] == "6"

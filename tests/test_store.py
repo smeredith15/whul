@@ -445,3 +445,15 @@ def test_a_row_with_no_position_leaves_the_asset_alone(store):
                        source="epl", season="2026-27", as_of=date(2026, 9, 16),
                        league="Premier League")
     assert store.query("SELECT role FROM assets")["role"].iloc[0] == ""
+
+
+def test_a_row_keeps_the_feeds_own_season_beside_the_league_year(store):
+    """The table's season is "2026-27"; the payload's 2026 is the only place a
+    row says which calendar season it is, and a profile's year tabs need it."""
+    add_asset(store)
+    store.record_stats(
+        [{"asset_id": "nfl-lamar-jackson", "season": 2026, "passing_yards": 3200}],
+        source="nflverse", season="2026-27", as_of="2026-12-01", league="NFL",
+    )
+    back = store.read_stats("2026-27", "2026-12-01").iloc[0]
+    assert back["season"] == "2026-27" and int(back["feed_season"]) == 2026
