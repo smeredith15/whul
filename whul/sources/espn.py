@@ -585,7 +585,14 @@ def load_team_schedule(league: str, team_id: str, season: int) -> pd.DataFrame:
             "away_conference": _conference(away),
             "home_score": _score_of(home),
             "away_score": _score_of(away),
-            "notes": str(event.get("name", "")),
+            # The competition's own headline -- "ACC Tournament - Quarterfinal"
+            # -- which the scorers read for the round. The event's name is only
+            # the matchup, and every conference tournament game was reading as
+            # March Madness for want of this.
+            "notes": " ".join(
+                str(n.get("headline", "")) for n in (competition.get("notes") or [])
+                if isinstance(n, dict) and n.get("headline")
+            ) or str(event.get("name", "")),
         })
     return pd.DataFrame(rows)
 

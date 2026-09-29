@@ -2579,6 +2579,119 @@ def test_a_drivers_corner_is_his_flag_and_not_his_car_number():
     assert profile["corner"] == ["flag", "great-britain"]
 
 
+def _umbrella_profile(asset_id, name, umbrella, payload, source):
+    """A flex-slot asset: filed under its umbrella, its row naming the member."""
+    from whul.site.build import asset_profiles
+
+    store = open_store(":memory:")
+    store.upsert("assets", [{
+        "asset_id": asset_id, "asset_type": "Player", "display_name": name,
+        "league": umbrella, "role": "", "norm_key": payload["league"],
+        "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    store.record_stats([{**payload, "player": name, "asset_id": asset_id}],
+                       source=source, season="2026-27", as_of=date(2026, 9, 28),
+                       league=umbrella)
+    return asset_profiles(store, "2026-27", date(2026, 9, 28), {asset_id})[asset_id]
+
+
+def test_a_flex_tennis_player_gets_her_tours_boxes():
+    """Rybakina, Noskova and Fritz are filed under "Tennis", the slot, and no
+    panel is drawn for an umbrella: the points were right and every box read
+    as a dash. The row says which tour she plays, and that decides."""
+    profile = _umbrella_profile(
+        "player-tennis-elena-rybakina", "Elena Rybakina", "Tennis",
+        {"league": "WTA", "role": "Singles", "total_points": 550.0,
+         "tier_detail": [{"label": "WTA 1000", "points": 550.0, "straight": 0.0,
+                          "note": "SF", "entered": 1}]},
+        source="tennis")
+    panel = profile["panel"]
+    assert panel and panel["kind"] == "boxes"
+    assert [b["value"] for b in panel["top"]] == ["550"]
+    assert "feed_league" not in str(profile.get("lines")), "an internal column leaked"
+
+
+def test_a_flex_driver_gets_his_series_boxes():
+    profile = _umbrella_profile(
+        "player-motorsports-lando-norris", "Lando Norris", "Motorsports",
+        {"league": "F1", "role": "Driver", "total_points": 31.0, "wins": 2,
+         "podiums": 5, "top_tens": 12},
+        source="motorsports")
+    panel = profile["panel"]
+    assert panel, "a flex driver had no panel"
+    values = [b["value"] for b in panel["top"]]
+    assert "2" in values and "5" in values, values
+
+
+def test_a_baseball_club_that_is_done_says_its_2026_is_over_and_is_not_final():
+    """Out of the postseason in October, with 2027's first half still to
+    score: the season is over and the score is not."""
+    from whul.site.build import _season_state
+
+    over, final, label = _season_state(
+        "MLB", "Team", {"season_over": 1}, "", set(), date(2026, 10, 2))
+    assert over and not final
+    assert label == "2026 season over"
+
+
+def test_a_player_is_done_when_his_club_is_even_one_nobody_drafted():
+    from whul.site.build import _season_state
+
+    done = {"Colorado Rockies"}
+    over, _, _ = _season_state("MLB", "Player", {}, "Colorado Rockies", done,
+                               date(2026, 10, 2))
+    assert over
+    over, _, _ = _season_state("MLB", "Player", {}, "Los Angeles Dodgers", done,
+                               date(2026, 10, 2))
+    assert not over
+
+
+def test_a_score_is_final_once_its_league_can_no_longer_move():
+    from whul.site.build import _season_state
+
+    over, final, label = _season_state("NFL", "Team", {}, "", set(), date(2027, 3, 1))
+    assert over and final and label == "Season over"
+    over, final, _ = _season_state("NFL", "Team", {}, "", set(), date(2026, 12, 1))
+    assert not over and not final
+
+
+def test_only_the_finished_years_tab_is_marked():
+    from whul.site.build import _mark_year_over
+
+    panel = {"years": [{"year": "2026"}, {"year": "2027"}]}
+    _mark_year_over(panel)
+    assert [y.get("over", False) for y in panel["years"]] == [True, False]
+
+
+def test_the_fixture_column_says_a_season_is_over_where_nothing_is_next():
+    from whul.site.build import _fixture_cell
+
+    assert "Season over" in _fixture_cell(None, "Season over")
+    assert _fixture_cell(None) == "<td class='fixture'></td>"
+    # A fixture that is known still wins: a club in the postseason has one.
+    cell = _fixture_cell({"date": "2026-10-04", "opponent": "Padres", "home": True},
+                         "2026 season over")
+    assert "Padres" in cell
+
+
+def test_a_final_score_is_carried_to_the_profile():
+    from whul.site.build import asset_profiles
+
+    store = open_store(":memory:")
+    store.upsert("assets", [{
+        "asset_id": "team-nfl-buffalo-bills", "asset_type": "Team",
+        "display_name": "Buffalo Bills", "league": "NFL", "role": "",
+        "norm_key": "NFL", "active": 1, "created_at": "2026-08-21",
+    }], keys=("asset_id",))
+    store.record_stats([{"team": "Buffalo Bills", "league": "NFL", "total_points": 90.0,
+                         "asset_id": "team-nfl-buffalo-bills"}],
+                       source="nfl-teams", season="2026-27", as_of=date(2027, 3, 1),
+                       league="NFL")
+    got = asset_profiles(store, "2026-27", date(2027, 3, 1), {"team-nfl-buffalo-bills"})
+    profile = got["team-nfl-buffalo-bills"]
+    assert profile["over"] == "Season over" and profile["final"] is True
+
+
 # --- the NFL stat panel ---------------------------------------------------
 
 from whul.site import build as site_build
@@ -4015,8 +4128,41 @@ def test_a_baseball_club_reconciles_with_its_own_score():
     # And October's own boxes add up to what October paid.
     assert sum(b["points"] for b in october["top"] + october["secondary"]) \
         == pytest.approx(row["pts_playoff"], abs=0.2)
-    assert [b["label"] for b in october["secondary"]] == [
-        "Wild card", "Division series", "Championship series"]
+    assert [b["label"] for b in october["top"]] == ["Playoff wins", "Series"]
+    assert [r["round"] for r in october["top"][1]["rounds"]] == ["WC", "DS", "LCS"]
+
+
+def test_the_series_share_one_box_in_the_order_they_were_played():
+    """A bye is paid as the Wild Card round and listed as a bye, not a win;
+    a round lost shows its record and pays nothing."""
+    from whul.site.build import _mlb_team_panel
+
+    row = {**_mlb_club(), "playoff_game_wins": 5.0, "series_wc_or_bye": 1.0,
+           "series_lds": 1.0, "series_lcs": 0.0, "wc_bye": 1.0,
+           "wc_wins": 0.0, "wc_losses": 0.0, "lds_wins": 3.0, "lds_losses": 1.0,
+           "lcs_wins": 2.0, "lcs_losses": 4.0, "ws_wins": 0.0, "ws_losses": 0.0,
+           "bye_wins": 2.0, "pts_playoff": (5 + 2) * 3 * 0.75 + 5 + 6}
+    series = _mlb_team_panel(row)["posts"][0]["top"][1]
+    assert series["rounds"] == [
+        {"round": "WC", "result": "Bye", "points": 5},
+        {"round": "DS", "result": "Won 3\u20131", "points": 6},
+        {"round": "LCS", "result": "Lost 2\u20134", "points": None},
+    ]
+    assert series["points"] == 11
+    wins = _mlb_team_panel(row)["posts"][0]["top"][0]
+    # The bye's two wins are paid in the box and not counted in it.
+    assert wins["value"] == "5" and wins["sup"] == "+2"
+    assert wins["points"] == pytest.approx(15.75, abs=0.06)
+
+
+def test_a_club_out_in_its_first_round_still_shows_the_round():
+    from whul.site.build import _mlb_team_panel
+
+    row = {**_mlb_club(), "playoff_game_wins": 0.0, "series_wc_or_bye": 0.0,
+           "series_lds": 0.0, "series_lcs": 0.0, "wc_bye": 0.0,
+           "wc_wins": 0.0, "wc_losses": 2.0, "pts_playoff": 0.0}
+    series = _mlb_team_panel(row)["posts"][0]["top"][1]
+    assert series["rounds"] == [{"round": "WC", "result": "Lost 0\u20132", "points": None}]
 
 
 def test_a_baseball_club_says_which_summer_a_figure_came_from():
@@ -4846,3 +4992,39 @@ def test_the_worker_is_registered_for_the_whole_site_not_one_page(site):
 
     assert "window.WHUL_BASE || './'" in script
     assert "scope: base" in script
+
+
+def test_a_football_bye_rides_on_the_playoff_wins_box():
+    """Paid as a win and not counted as one, the way a soccer club's is."""
+    from whul.site.build import _nfl_team_panel
+
+    row = {"league": "NFL", "team": "KC", "team_division": "AFC West",
+           "div_rank": 1, "reg_wins": 14, "reg_losses": 3, "playoff_wins": 0,
+           "bye_wins": 1, "playoff_appearance": 1}
+    box = _nfl_team_panel(row)["post"]["top"][0]
+    assert (box["value"], box["sup"], box["points"]) == ("0", "+1", 15.0)
+    assert "post" not in _nfl_team_panel({**row, "bye_wins": 0})
+
+
+def test_a_conference_tournament_bye_rides_on_the_wins_box():
+    """Paid as wins and not counted as them."""
+    from whul.site.build import _counted_team_panel
+
+    row = {"league": "NCAAM", "reg_wins": 25, "reg_losses": 6,
+           "conf_tourney_wins": 1, "conf_tourney_byes": 2}
+    march = _counted_team_panel("NCAAM", row)["posts"][0]["top"]
+    box = next(b for b in march if b["label"] == "Conference tournament wins")
+    assert (box["value"], box["sup"], box["points"]) == ("1", "+2", 6.0)
+
+
+def test_football_and_diamond_byes_ride_on_their_wins_boxes():
+    from whul.site.build import _counted_team_panel
+
+    football = _counted_team_panel("NCAAF", {"wins": 11, "losses": 1,
+                                             "playoff_wins": 1, "playoff_byes": 1})
+    box = football["posts"][0]["top"][0]
+    assert (box["value"], box["sup"], box["points"]) == ("1", "+1", 30.0)
+    diamond = _counted_team_panel("NCAA Baseball", {"reg_wins": 40, "reg_losses": 15,
+                                                    "conf_tourney_byes": 1})
+    box = diamond["top"][0]
+    assert (box["value"], box["sup"], box["points"]) == ("40", "+1", 82.0)

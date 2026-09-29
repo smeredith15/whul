@@ -98,6 +98,9 @@ ADDED_COLUMNS = (
     ("slot_scores", "best_score", "REAL NOT NULL DEFAULT 0"),
     ("slot_scores", "scored_as", "TEXT NOT NULL DEFAULT ''"),
     ("game_scores", "phase", "TEXT NOT NULL DEFAULT 'regular'"),
+    # Whether the club has played its last game of the league year: out of the
+    # postseason, or never in it once the regular season ended.
+    ("club_games", "season_over", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -263,7 +266,7 @@ class Store:
 
     def record_club_games(
         self, games: dict[str, float], season: str, as_of: date | str,
-        league: str,
+        league: str, over: dict[str, int] | None = None,
     ) -> int:
         """How many games each club in a league has played, drafted or not.
 
@@ -275,9 +278,11 @@ class Store:
         down before the pull is narrowed to the roster.
         """
         when = _as_text(as_of)
+        over = over or {}
         rows = [
             {"season": season, "as_of": when, "league": league,
-             "club": str(club), "games": float(played)}
+             "club": str(club), "games": float(played),
+             "season_over": int(bool(over.get(club, 0)))}
             for club, played in games.items()
             if str(club).strip() and played == played
         ]
@@ -295,6 +300,18 @@ class Store:
             params.append(league)
         return {str(row["club"]): float(row["games"])
                 for _, row in self.query(sql, tuple(params)).iterrows()}
+
+    def read_clubs_done(
+        self, season: str, as_of: date | str, league: str | None = None
+    ) -> set[str]:
+        """The clubs whose season was over on a day, by the club's own name."""
+        sql = ("SELECT club FROM club_games WHERE season = ? AND as_of = ? "
+               "AND season_over = 1")
+        params: list = [season, _as_text(as_of)]
+        if league:
+            sql += " AND league = ?"
+            params.append(league)
+        return {str(club) for club in self.query(sql, tuple(params))["club"]}
 
     def _learn_roles(self, rows: Iterable[dict]) -> int:
         """Keep the position a scored row carries, on the asset itself.
@@ -374,6 +391,12 @@ class Store:
         # would produce two columns of that name, and pandas then drops one
         # without saying which. The table's own value is the authoritative copy,
         # so the payload's is discarded rather than duplicated.
+        # Except that a payload's league is not always the same thing: a flex
+        # slot's feed files Rybakina's row under "Tennis" and says "WTA" inside
+        # it, and that is the only place her tour is written down. Kept under
+        # its own name for whoever needs the member rather than the umbrella.
+        if "league" in expanded.columns and "league" in kept.columns:
+            kept["feed_league"] = expanded["league"]
         expanded = expanded.drop(columns=[c for c in expanded.columns if c in kept.columns])
         return pd.concat([kept, expanded], axis=1)
 

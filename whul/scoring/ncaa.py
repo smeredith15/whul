@@ -27,11 +27,13 @@ short seasons intact.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 
-from whul.scoring.base import resolve_num, resolve_str, settled_seasons
+from whul.scoring.base import DATE_COLUMNS, resolve_num, resolve_str, settled_seasons
 
 # --- football -------------------------------------------------------------
 #: A blowout is harder to achieve against a conference opponent or in the
@@ -60,9 +62,42 @@ MM_PATTERN = (
     r"NCAA Tournament|March Madness|First Four|First Round|Second Round|"
     r"Sweet 16|Elite Eight|Final Four|National Championship"
 )
+#: The names only the national tournament uses. "First Round" is also every
+#: November invitational's, so it counts only in the postseason months.
+MM_OWN_PATTERN = (
+    r"NCAA|March Madness|First Four|Sweet 16|Elite Eight|Final Four|"
+    r"Basketball Championship"
+)
+MM_MONTHS = (3, 4)
 CONF_TOURNEY_PATTERN = r"Tournament"
-NOT_MM_PATTERN = r"NCAA|March Madness"
-CONF_TOURNEY_TITLE_PATTERN = r"Championship|Final"
+NOT_MM_PATTERN = r"NCAA|March Madness|Basketball Championship"
+#: The other postseason tournaments. Neither a conference tournament -- "National
+#: Invitation Tournament" has the word in it -- nor the NCAA tournament, which
+#: every postseason game not otherwise named was taken to be. Not scored.
+OTHER_POSTSEASON_PATTERN = (
+    r"\bW?NIT\b|National Invitation|\bW?BIT\b|Basketball Invitation|"
+    r"\bCBI\b|\bCIT\b|Basketball Crown|Basketball Classic"
+)
+
+#: A round's name, and where it sits: counted from the first round, or back from
+#: the final. Quarterfinal and semifinal are tested before the final, whose
+#: name they contain.
+ROUND_NAMES: tuple[tuple[str, str, int], ...] = (
+    (r"quarter", "end", 2),
+    (r"semi", "end", 1),
+    (r"championship|\bfinals?\b|title game", "end", 0),
+    (r"\b(?:opening|first|1st)\s+round|play-?in", "start", 1),
+    (r"\b(?:second|2nd)\s+round", "start", 2),
+    (r"\b(?:third|3rd)\s+round", "start", 3),
+    (r"\b(?:fourth|4th)\s+round", "start", 4),
+)
+
+#: Each bracket's shape, as the league admin states it -- the conference
+#: tournaments and the College Football Playoff: how many rounds it has, and
+#: where its rounds are not called the usual names, what they are called. See
+#: the file's own header.
+CONF_TOURNEY_FORMATS = (
+    Path(__file__).resolve().parent.parent / "data" / "ncaa_conf_tournaments.csv")
 
 SEASON_TYPE_REGULAR = 2
 SEASON_TYPE_POST = 3
@@ -115,6 +150,7 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
             "away_conference": resolve_str(schedule, ["away_conference"]),
             "home_score": resolve_num(schedule, ["home_score"], default=float("nan")),
             "away_score": resolve_num(schedule, ["away_score"], default=float("nan")),
+            "game_date": resolve_str(schedule, list(DATE_COLUMNS)),
         }
     )
     if "completed" in schedule.columns:
@@ -135,6 +171,7 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
                     "opp_conference": base[f"{other}_conference"],
                     "points_for": base[f"{side}_score"],
                     "points_against": base[f"{other}_score"],
+                    "game_date": base["game_date"],
                 }
             )
         )
@@ -298,7 +335,9 @@ def score_football(
         (tougher_field & (games["margin"] >= FB_BIG_WIN_CONF))
         | (~tougher_field & (games["margin"] >= FB_BIG_WIN_NONCONF))
     )
-    games["is_conf_title"] = games["is_post"] & _matches(games["notes"], FB_TITLE_PATTERN)
+    # The playoff's own final is a championship too, and not a conference's.
+    games["is_conf_title"] = (games["is_post"] & ~games["is_playoff"]
+                              & _matches(games["notes"], FB_TITLE_PATTERN))
 
     summary = games.groupby(["season", "team", "conference"], as_index=False).apply(
         lambda g: pd.Series(
@@ -325,8 +364,12 @@ def score_football(
 
     summary["pts_reg_champ"] = _split_conference_title(
         summary, FB_REG_CHAMP_POOL, settled_seasons(schedule))
+    # The twelve-team playoff's top four seeds skip its first round, and are
+    # paid it as a playoff win.
+    summary["playoff_byes"] = _bracket_byes(summary, games, "NCAAF", "is_playoff")
     summary["total_points"] = (
         sum(summary[c] * w for c, w in FB_WEIGHTS.items()) + summary["pts_reg_champ"]
+        + summary["playoff_byes"] * FB_WEIGHTS["playoff_wins"]
     )
     summary["league"] = "NCAAF"
     return summary.sort_values(["season", "total_points"], ascending=[True, False]).reset_index(
@@ -346,20 +389,24 @@ def score_basketball(
         ((~games["is_conf_game"]) & (games["margin"] >= BB_BIG_WIN_NONCONF))
         | (games["is_conf_game"] & (games["margin"] >= BB_BIG_WIN_CONF))
     )
-    games["is_conf_tourney"] = (
-        games["is_post"]
-        & _matches(games["notes"], CONF_TOURNEY_PATTERN)
-        & ~_matches(games["notes"], NOT_MM_PATTERN)
-    )
-    # Anything in the postseason that is not a conference tournament game is
-    # treated as the national tournament, which catches rounds the notes do not
-    # name explicitly.
-    games["is_mm"] = _matches(games["notes"], MM_PATTERN) | (
-        games["is_post"] & ~games["is_conf_tourney"]
-    )
-    games["is_ct_title"] = games["is_conf_tourney"] & _matches(
-        games["notes"], CONF_TOURNEY_TITLE_PATTERN
-    )
+    other = _matches(games["notes"], OTHER_POSTSEASON_PATTERN)
+    # A conference tournament game is one between two members of the
+    # conference, where the feed does not already call it postseason: not
+    # every feed does, and a game in the conference tournament is not a
+    # regular-season conference game however it is labelled.
+    games["is_conf_tourney"] = _conf_tourney(games, other)
+    # Anything in the postseason that is not a conference tournament game, nor
+    # one of the other invitationals, is treated as the national tournament,
+    # which catches rounds the notes do not name explicitly. A conference
+    # tournament's "First Round" is not March Madness's.
+    month = pd.to_datetime(games["game_date"], errors="coerce").dt.month
+    in_march = month.isin(MM_MONTHS) | month.isna()
+    games["is_mm"] = ~games["is_conf_tourney"] & ~other & (
+        games["is_post"] | _matches(games["notes"], MM_OWN_PATTERN)
+        | (_matches(games["notes"], MM_PATTERN) & in_march))
+    games["is_reg"] &= ~games["is_conf_tourney"] & ~games["is_mm"] & ~other
+    games["is_ct_title"] = games["is_conf_tourney"] & (
+        games["notes"].map(_round_from_end) == 0)
 
     summary = games.groupby(["season", "team", "conference"], as_index=False).apply(
         lambda g: pd.Series(
@@ -387,12 +434,149 @@ def score_basketball(
 
     summary["pts_reg_champ"] = _split_conference_title(
         summary, BB_REG_CHAMP_POOL, settled_seasons(schedule))
+    summary["conf_tourney_byes"] = _bracket_byes(
+        summary, games, league, "is_conf_tourney")
     summary["total_points"] = (
         sum(summary[c] * w for c, w in BB_WEIGHTS.items()) + summary["pts_reg_champ"]
+        + summary["conf_tourney_byes"] * BB_WEIGHTS["conf_tourney_wins"]
     )
     summary["league"] = league
     return summary.sort_values(["season", "total_points"], ascending=[True, False]).reset_index(
         drop=True
+    )
+
+
+def _round_from_end(note: str) -> int | None:
+    """How many rounds before the final a note's round is, where its name says
+    so: the final 0, a semifinal 1, a quarterfinal 2."""
+    for pattern, counted, position in ROUND_NAMES:
+        if re.search(pattern, str(note), re.IGNORECASE):
+            return position if counted == "end" else None
+    return None
+
+
+@dataclass(frozen=True)
+class ConferenceTournament:
+    """One conference tournament's bracket, as stated."""
+
+    league: str
+    season: int
+    names: tuple[str, ...]    # what the conference is called in a note
+    rounds: int               # rounds in the bracket, the final included
+    round_names: tuple[str, ...] = ()   # in order, where not the usual ones
+
+    def called(self, note: str, conference: str) -> bool:
+        text = f" {note} "
+        return any(re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", text, re.IGNORECASE)
+                   or n.casefold() == str(conference).casefold()
+                   for n in self.names)
+
+    def round_of(self, note: str) -> int | None:
+        """Which round a game was, from 1; None where the note does not say."""
+        # The longest first, so a stated "Final" does not claim a semifinal.
+        for name in sorted(self.round_names, key=len, reverse=True):
+            if name.casefold() in str(note).casefold():
+                return self.round_names.index(name) + 1
+        return round_number(note, self.rounds)
+
+
+def round_number(note: str, rounds: int | None) -> int | None:
+    """A round's number from its name, the first round being 1.
+
+    A round counted from the start ("Second Round") needs nothing else. One
+    counted back from the final ("Quarterfinal") needs to know how many rounds
+    there are, and without that is None -- not a guess, because a quarterfinal
+    is the second round of an eleven-team bracket and the third of a fifteen.
+    """
+    for pattern, counted, position in ROUND_NAMES:
+        if re.search(pattern, str(note), re.IGNORECASE):
+            if counted == "start":
+                return position
+            return rounds - position if rounds else None
+    return None
+
+
+def conference_tournaments(path: Path | None = None) -> list[ConferenceTournament]:
+    """The stated brackets, from ``whul/data/ncaa_conf_tournaments.csv``."""
+    path = path or CONF_TOURNEY_FORMATS
+    if not path.exists():
+        return []
+    table = pd.read_csv(path, comment="#", dtype=str).fillna("")
+    out = []
+    for row in table.itertuples(index=False):
+        try:
+            rounds = int(row.rounds)
+        except ValueError:
+            continue
+        out.append(ConferenceTournament(
+            league=row.league.strip(), season=int(row.season),
+            names=tuple(n.strip() for n in row.conference.split("|") if n.strip()),
+            rounds=rounds,
+            round_names=tuple(n.strip() for n in row.round_names.split("|") if n.strip()),
+        ))
+    return out
+
+
+def _bracket_byes(summary: pd.DataFrame, games: pd.DataFrame, league: str,
+                  column: str) -> pd.Series:
+    """Rounds of a bracket a team skipped by its seed.
+
+    A bye scores as though the team swept the round it skipped, as it does in
+    every sport here (``whul.scoring.postseason.BYE_COUNTS_AS_SWEEP``): each
+    round skipped is paid as a win in that bracket. A team's byes are the rounds
+    before the first one it played, read off the round's name in the game's
+    note and, where the name counts back from the final, the number of rounds
+    the bracket has (``CONF_TOURNEY_FORMATS``). ``column`` flags the bracket's
+    games.
+
+    Paid once the team has played its first game, which is when the feed first
+    says it is in the bracket, and whether or not it won it.
+
+    Not derivable from the games alone: the live feed is the rostered teams' own
+    schedules, so the rest of a bracket is never in it, and brackets do not
+    follow from the number of teams -- fifteen teams play four rounds in one
+    conference and five in another.
+    """
+    zero = pd.Series(0, index=summary.index, dtype=int)
+    played = games[games[column]]
+    if played.empty:
+        return zero
+    stated = [t for t in conference_tournaments() if t.league == league]
+    first: dict[tuple[int, str], int] = {}
+    unread: set[tuple[int, str]] = set()
+    for row in played.itertuples(index=False):
+        bracket = next((t for t in stated if t.season == int(row.season)
+                        and t.called(row.notes, row.conference)), None)
+        number = (bracket.round_of(row.notes) if bracket
+                  else round_number(row.notes, None))
+        key = (int(row.season), str(row.team))
+        if number is None:
+            # Any game whose round cannot be read might be the first one, and
+            # a later round read as the first would pay rounds that were
+            # played. Nothing, rather than a guess.
+            unread.add(key)
+            continue
+        first[key] = min(first.get(key, number), number)
+    return pd.Series(
+        [0 if (int(s), str(t)) in unread
+         else max(first.get((int(s), str(t)), 1) - 1, 0)
+         for s, t in zip(summary["season"], summary["team"])],
+        index=summary.index, dtype=int)
+
+
+def _conf_tourney(games: pd.DataFrame, other: pd.Series) -> pd.Series:
+    """A conference tournament game: two members of the conference, a note
+    that says tournament, and not one of the national ones.
+
+    Not gated on the feed calling it postseason: not every feed does, and a
+    game in the conference tournament is not a regular-season conference game
+    however it is labelled.
+    """
+    return (
+        (games["is_post"] | games["is_conf_game"])
+        & _matches(games["notes"], CONF_TOURNEY_PATTERN)
+        & ~_matches(games["notes"], NOT_MM_PATTERN)
+        & ~other
     )
 
 
@@ -413,7 +597,15 @@ def score_diamond(
     games["is_regional"] = (
         _matches(games["notes"], REGIONAL_PATTERN) & ~games["is_super"] & ~games["is_cws"]
     )
-    games["is_postseason"] = games["is_post"] | games["is_regional"] | games["is_super"] | games["is_cws"]
+    # A conference tournament is played for wins like the rest of the season:
+    # the benchmark's feed calls every game regular season and counted them,
+    # so a live feed that calls them postseason must not drop them.
+    games["is_conf_tourney"] = _conf_tourney(
+        games, _matches(games["notes"], OTHER_POSTSEASON_PATTERN)
+        | games["is_regional"] | games["is_super"] | games["is_cws"])
+    games["is_postseason"] = (
+        (games["is_post"] & ~games["is_conf_tourney"])
+        | games["is_regional"] | games["is_super"] | games["is_cws"])
 
     summary = games.groupby(["season", "team"], as_index=False).apply(
         lambda g: pd.Series(
@@ -435,12 +627,15 @@ def score_diamond(
     if summary.empty:
         return summary
 
+    # The NCAA tournament has no byes -- every team plays a Regional -- but a
+    # conference tournament does, and its rounds are paid as wins.
+    summary["conf_tourney_byes"] = _bracket_byes(summary, games, league, "is_conf_tourney")
     summary["series_regional"] = (summary["regional_wins"] >= 3).astype(int)
     summary["series_super"] = (summary["super_wins"] >= 2).astype(int)
     summary["series_cws_champ"] = (summary["cws_wins"] >= rules.cws_wins_for_title).astype(int)
 
     summary["total_points"] = (
-        summary["reg_wins"] * DIAMOND_REG_WIN
+        (summary["reg_wins"] + summary["conf_tourney_byes"]) * DIAMOND_REG_WIN
         + summary["run_diff"] * DIAMOND_RUN_DIFF
         + summary["series_regional"] * PTS_SERIES_REGIONAL
         + summary["series_super"] * PTS_SERIES_SUPER

@@ -316,13 +316,28 @@ def test_conference_is_only_required_where_scoring_uses_it():
     assert "ncaasoftball" not in espn.CONFERENCE_REQUIRED
 
 
-def test_diamond_scoring_never_reads_conference():
-    """Pins the assumption behind the exemption above."""
-    import inspect
+def test_diamond_scoring_does_not_need_a_conference():
+    """Pins the assumption behind the exemption above: a blank conference
+    scores exactly what a filled one does, conference tournament included."""
+    import pandas as pd
 
     from whul.scoring import ncaa
 
-    assert "conference" not in inspect.getsource(ncaa.score_diamond)
+    def played(notes, conference):
+        return {"season": 2027, "season_type": 3, "notes": notes,
+                "home_team": "LSU", "away_team": "Ole Miss",
+                "home_conference": conference, "away_conference": conference,
+                "home_score": 6, "away_score": 2, "completed": True,
+                "game_date": "2027-05-22"}
+
+    def score(conference):
+        games = pd.DataFrame([
+            played("SEC Tournament - Second Round", conference),
+            played("NCAA Baseball Championship - Baton Rouge Regional", conference)])
+        return ncaa.score_diamond(games, "NCAA Baseball").set_index("team")[
+            ["reg_wins", "conf_tourney_byes", "regional_wins", "total_points"]]
+
+    pd.testing.assert_frame_equal(score(""), score("SEC"))
 
 
 def test_discovery_offers_alternatives_for_the_failing_league():
@@ -1511,3 +1526,27 @@ def test_a_pairing_played_too_often_is_named_too(monkeypatch, capsys):
     printed = capsys.readouterr().out
     assert "13 match(es)" in printed
     assert "Alpha v Beta: 3 of 2" in printed
+
+
+def test_a_team_schedule_carries_the_rounds_headline_not_the_matchup(monkeypatch):
+    """The scorers read the round off the note; the event's name is only who
+    played whom, and every conference tournament game read as March Madness."""
+    from whul.sources import espn
+
+    def event(notes):
+        return {"id": "9", "date": "2027-03-12T23:00Z", "name": "Duke at Clemson",
+                "seasonType": {"id": 3}, "competitions": [{
+                    "status": {"type": {"completed": True}}, "notes": notes,
+                    "competitors": [
+                        {"homeAway": "home", "score": {"value": 70},
+                         "team": {"displayName": "Clemson Tigers"}},
+                        {"homeAway": "away", "score": {"value": 80},
+                         "team": {"displayName": "Duke Blue Devils"}}]}]}
+
+    for notes, expected in (
+            ([{"type": "event", "headline": "ACC Tournament - Quarterfinal"}],
+             "ACC Tournament - Quarterfinal"),
+            ([], "Duke at Clemson")):
+        payload = {"events": [event(notes)]}
+        monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: payload)
+        assert espn.load_team_schedule("ncaam", "150", 2027).iloc[0]["notes"] == expected

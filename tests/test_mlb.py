@@ -757,3 +757,150 @@ def test_a_playoff_run_keeps_its_series_outside_the_weight():
     assert problem == ""
     assert out["pts_playoff"] == pytest.approx(
         wins * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + series)
+
+
+# --- whose season is over ---------------------------------------------------
+
+def _october(games, season=2026):
+    rows = []
+    for i, (kind, home, away, hs, as_) in enumerate(games):
+        rows.append({"season": season, "game_id": i, "game_date": f"{season}-09-{10 + i % 20:02d}",
+                     "game_type": kind, "home_team": home, "away_team": away,
+                     "home_score": hs, "away_score": as_})
+    return pd.DataFrame(rows)
+
+
+# Two divisions of two. Bye and Leader win theirs; Chaser and Also-ran do not.
+DIVISIONS = pd.DataFrame([
+    {"season": 2026, "team": t, "division": d}
+    for t, d in (("Bye", "East"), ("Also-ran", "East"),
+                 ("Leader", "West"), ("Chaser", "West"))])
+
+REGULAR = [("R", "Bye", "Also-ran", 5, 1)] * 3 + [("R", "Leader", "Chaser", 4, 2)] * 3 \
+    + [("R", "Chaser", "Also-ran", 3, 1)] * 2 + [("R", "Wildcard", "Also-ran", 2, 1)] * 2
+
+
+def _status(post):
+    out = mlb.team_status(_october(REGULAR + post), DIVISIONS)
+    return dict(zip(out["team"], out["season_over"]))
+
+
+def test_nobody_is_done_before_the_postseason_starts():
+    assert set(_status([]).values()) == {0}
+
+
+def test_a_club_outside_the_field_is_done_once_the_postseason_starts():
+    """Also-ran won nothing and played no postseason game. Bye won its
+    division and waits out the Wild Card round with nothing played: it is in
+    the field, not done."""
+    done = _status([("F", "Chaser", "Wildcard", 3, 1)])
+    assert done["Also-ran"] == 1
+    assert done["Bye"] == 0 and done["Leader"] == 0
+    assert done["Chaser"] == 0 and done["Wildcard"] == 0
+
+
+def test_losing_a_series_ends_a_season_and_so_does_winning_it_all():
+    done = _status([
+        ("F", "Chaser", "Wildcard", 3, 1), ("F", "Chaser", "Wildcard", 4, 2),
+        ("D", "Bye", "Chaser", 2, 1), ("D", "Bye", "Chaser", 2, 1),
+        ("D", "Bye", "Chaser", 2, 1),
+        *[("W", "Bye", "Leader", 5, 0)] * 4,
+    ])
+    assert done["Wildcard"] == 1, "two Wild Card losses"
+    assert done["Chaser"] == 1, "three Division Series losses"
+    assert done["Leader"] == 1, "swept in the World Series"
+    assert done["Bye"] == 1, "the champion has nothing left to play either"
+
+
+def test_without_divisions_a_missed_field_is_not_guessed():
+    out = mlb.team_status(_october(REGULAR + [("F", "Chaser", "Wildcard", 3, 1)]), None)
+    assert set(out["season_over"]) == {0}
+
+
+# --- division titles and byes in the live window ----------------------------
+
+POST = [("F", "Chaser", "Wildcard", 3, 1), ("F", "Chaser", "Wildcard", 4, 2),
+        ("D", "Bye", "Chaser", 2, 1), ("D", "Bye", "Chaser", 2, 1),
+        ("D", "Bye", "Chaser", 2, 1)]
+
+
+def _live(with_status=True):
+    """The window a live pull scores -- the season's tail, with the games that
+    won the East cut off -- with or without the full season's facts beside it."""
+    full = _october(REGULAR + POST)
+    window = full.iloc[3:]
+    status = mlb.team_status(full, DIVISIONS) if with_status else None
+    return mlb.score_teams(window, partial=True, status=status).set_index("team")
+
+
+def test_a_division_title_is_paid_live_once_the_regular_season_is_over():
+    """The window cannot see the summer the title was won in, and for all of
+    September 2026 no club was paid one."""
+    got = _live()
+    weight = mlb.MULT_YEAR_N
+    assert got.loc["Bye", "pts_div_champ"] == pytest.approx(mlb.PTS_DIV_CHAMP * weight)
+    assert got.loc["Leader", "pts_div_champ"] == pytest.approx(mlb.PTS_DIV_CHAMP * weight)
+    assert got.loc["Chaser", "pts_div_champ"] == 0
+
+
+def test_a_bye_is_paid_as_the_wild_card_round_and_marked_as_a_bye():
+    got = _live()
+    assert got.loc["Leader", "wc_bye"] == 1 and got.loc["Leader", "series_wc_or_bye"] == 1
+    assert got.loc["Leader", "wc_wins"] == 0, "a bye is not a win"
+    assert got.loc["Chaser", "wc_bye"] == 0 and got.loc["Chaser", "series_wc_or_bye"] == 1
+    assert got.loc["Chaser", "lds_losses"] == 3
+
+
+def test_the_window_alone_cannot_award_a_title():
+    got = _live(with_status=False)
+    assert got["pts_div_champ"].sum() == 0
+
+
+def test_a_club_swept_in_the_division_series_still_got_past_the_wild_card_round():
+    """Before 2022 the Wild Card round was one game, so a winner has one win
+    and not two; reaching the Division Series is what says it advanced."""
+    summary = mlb.summarize_teams(_october(REGULAR + [
+        ("F", "Chaser", "Wildcard", 3, 1),
+        ("D", "Bye", "Chaser", 2, 1), ("D", "Bye", "Chaser", 2, 1),
+        ("D", "Bye", "Chaser", 2, 1)]), DIVISIONS).set_index("team")
+    assert summary.loc["Chaser", "series_wc_or_bye"] == 1
+
+
+def test_a_bye_is_paid_as_a_sweep_of_the_round_it_skipped():
+    """The series bonus and the games: two wins in a best-of-three round, at
+    the year's weight, and not counted among the games the club won."""
+    got = _live()
+    leader = got.loc["Leader"]
+    assert leader["bye_wins"] == 2 and leader["playoff_game_wins"] == 0
+    assert leader["pts_playoff"] == pytest.approx(
+        2 * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + mlb.PTS_SERIES["wc"])
+
+
+def test_the_sweep_is_as_long_as_that_seasons_wild_card_round():
+    assert [mlb.wc_sweep_wins(s) for s in (2012, 2019, 2020, 2021, 2022, 2026)] \
+        == [1, 1, 2, 1, 2, 2]
+
+
+def test_no_bye_before_there_was_a_wild_card_round_to_skip():
+    """Before 2012 every division champion went straight to the Division
+    Series, as every other club in the field did."""
+    old = _october(REGULAR + [("D", "Bye", "Chaser", 2, 1)], season=2010)
+    divisions = DIVISIONS.assign(season=2010)
+    summary = mlb.summarize_teams(old, divisions).set_index("team")
+    assert summary["wc_bye"].sum() == 0 and summary["bye_wins"].sum() == 0
+
+
+def test_a_benchmark_season_pays_the_bye_as_a_sweep():
+    """A benchmark contract year is two summers, so the fixture has the next."""
+    after = _october(REGULAR, season=2027).assign(game_id=lambda d: d["game_id"] + 1000)
+    divisions = pd.concat([DIVISIONS, DIVISIONS.assign(season=2027)])
+
+    def year_n(post):
+        games = pd.concat([_october(REGULAR + post), after], ignore_index=True)
+        out = mlb.score_teams(games, divisions=divisions)
+        return out[out["contract_year"] == 2026].set_index("team").loc[
+            "Leader", "year_n_points"]
+
+    with_bye, before = year_n(POST), year_n([])
+    assert with_bye - before == pytest.approx(
+        2 * mlb.BASE_PLAYOFF_WIN * mlb.MULT_YEAR_N + mlb.PTS_SERIES["wc"], abs=0.01)

@@ -1358,6 +1358,16 @@ SCRIPT = """\
     var aside = box.aside
       ? '<div class="aside">' + box.aside.split('\\n').join('<br>') + '</div>'
       : '';
+    // A box holding a list, one line a round: baseball's series, in the
+    // order they were played, each with what it paid.
+    if (box.rounds) {
+      box.value = '<div class="rounds">' + box.rounds.map(function (r) {
+        var p = r.points === null || r.points === undefined ? ''
+          : '+' + (Math.round(r.points * 10) / 10).toFixed(0);
+        return '<div class="rd"><b>' + r.round + '</b><span>' + r.result +
+               '</span><em>' + p + '</em></div>';
+      }).join('') + '</div>';
+    }
     // Where the points are real but counted in another box, the strip says so
     // rather than repeating them or leaving a blank that reads as free.
     if (box.note) shown = box.note;
@@ -1367,8 +1377,8 @@ SCRIPT = """\
            // The superscript is part of the width. Without it in the test a
            // 687.5 carrying a +112.5 was measured as five characters and
            // printed as "687.5+1", the rest over the edge of the box.
-           '<div class="bv' +
-             ((String(box.value) + (box.sup || '')).length > 7 ? ' tight' : '') +
+           '<div class="bv' + (box.rounds ? ' list' :
+             ((String(box.value) + (box.sup || '')).length > 7 ? ' tight' : '')) +
              '">' + box.value + sup + aside + '</div>' +
            // Counted, not scored. A strip under "Top 5" would print either a
            // sum that is not a category or a blank that reads as nothing
@@ -1424,14 +1434,19 @@ SCRIPT = """\
   function yearViews(panel, render) {
     var views = [{ year: 'Total', pane: render(panel) }].concat(
       (panel.years || []).map(function (v) {
-        return { year: v.year, raw: v.raw, pane: render(v) };
+        return { year: v.year, raw: v.raw, over: v.over, pane: render(v) };
       }));
     var tabs = views.map(function (v, i) {
       // The year carries what it is worth, so the strip beneath can follow the
       // tab. Total carries none and falls back to the scorer's own figure,
       // which is the one number here that was not rebuilt from boxes.
+      // A finished calendar season says so on its tab, drawn by the stylesheet
+      // rather than written into the button: the click handler reads the
+      // button's text to label the score beneath it.
       return '<button class="yr' + (i === 0 ? ' on' : '') +
+             (v.over ? ' over' : '') +
              '" data-year="' + i + '"' +
+             (v.over ? ' title="This season is over"' : '') +
              (v.raw == null ? '' : ' data-raw="' + pts(v.raw) + '"') +
              '>' + v.year + '</button>';
     }).join('');
@@ -1665,6 +1680,7 @@ SCRIPT = """\
       '<div class="head">' + a.avatar +
         '<div><div class="nm">' + a.name + (a.badge || '') + '</div>' +
         '<div class="meta">' + who + '</div>' +
+        (a.over ? '<div class="seasonover">' + a.over + '</div>' : '') +
         (a.group ? '<div class="grp">' + a.group + '</div>' : '') +
         '</div></div>' + tabs +
       (best ? '<div class="perfpane" data-pane="season"' +
@@ -1686,8 +1702,11 @@ SCRIPT = """\
       '<div class="scoreline">' +
         '<div><div class="label rawlabel">Raw score</div>' +
           '<div class="value rawvalue">' + a.raw + '</div></div>' +
-        '<div><div class="label">Normalized</div>' +
-          '<div class="value scaledvalue">' + a.scaled + '</div></div>' +
+        '<div><div class="label">Normalized' +
+          (a.final ? ' <span class="finaltag">Final</span>' : '') + '</div>' +
+          '<div class="value scaledvalue' + (a.final ? ' final' : '') +
+          '"' + (a.final ? ' title="Final: this score can no longer change"' : '') +
+          '>' + a.scaled + '</div></div>' +
       '</div>' +
       (best ? '</div>' + renderBest(best) : '');
     dialog.querySelectorAll('button.pt').forEach(function (tab) {

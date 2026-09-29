@@ -406,6 +406,7 @@ def asset_profiles(
     # Built once for the whole day rather than per player: it is a scan of
     # every club's row, and there are fifty footballers asking.
     club_games = _club_games(stats, store.read_club_games(season, as_of))
+    clubs_done = store.read_clubs_done(season, as_of)
     if not stats.empty:
         for row in stats.to_dict("records"):
             asset_id = row["asset_id"]
@@ -415,6 +416,13 @@ def asset_profiles(
             # only be read off the asset.
             asset_league = (str(meta.loc[asset_id, "league"])
                             if asset_id in meta.index else "")
+            # A flex slot's asset is filed under its umbrella -- Taylor Fritz
+            # is "Tennis", Lando Norris "Motorsports" -- and no panel is drawn
+            # for an umbrella, so every box read as a dash while the points
+            # were right. The row says which tour or series it is.
+            member = str(row.get("feed_league") or "")
+            if member in covered_by(asset_league):
+                asset_league = member
             finishes[asset_id] = _finish_list(row)
             bonuses[asset_id] = _bonus_list(row)
             notes[asset_id] = _scaling_notes(row)
@@ -461,7 +469,7 @@ def asset_profiles(
             elif asset_league == "PGA":
                 panels[asset_id] = _golf_panel(row)
             elif asset_league in TENNIS_TOURS:
-                panels[asset_id] = _tennis_panel(row)
+                panels[asset_id] = _tennis_panel({**row, "league": asset_league})
             elif _is_a_club_soccer_player(row):
                 panels[asset_id] = _soccer_player_panel(
                     row, club_games,
@@ -519,6 +527,14 @@ def asset_profiles(
         # be handled correctly by anything downstream. So this holds what the
         # thing is called, every use escapes it, and `_profile_payload`
         # escapes the fields the browser writes into innerHTML.
+        # A club is looked up by its own name, a player by his club's.
+        club = (name if str(info["asset_type"]) == "Team"
+                else _affiliation(meta, asset_id))
+        over, final, label = _season_state(
+            league, str(info["asset_type"]), raw_rows.get(asset_id, {}),
+            club, clubs_done, as_of)
+        if over and league == "MLB":
+            _mark_year_over(panels.get(asset_id))
         out[asset_id] = {
             "name": marked_name(name, league),
             # The league only where the identity line above it does not
@@ -565,8 +581,52 @@ def asset_profiles(
             "finishes": finishes.get(asset_id, []),
             "bonus": bonuses.get(asset_id, []),
             "notes": notes.get(asset_id, []),
+            # The season's end, said once here and read by every table: a
+            # marker where the asset has played its last game of the league
+            # year, and a badge where its score can no longer move.
+            "over": label if over else "",
+            "final": bool(final),
         }
     return out
+
+
+def _season_state(league: str, asset_type: str, row: dict, club: str,
+                  clubs_done: set[str], as_of) -> tuple[bool, bool, str]:
+    """Whether an asset's season is over, whether its score is final, and what
+    to call the first.
+
+    ``club`` is the club's own name for a club and his club's for a player,
+    which may be one nobody drafted -- hence ``clubs_done``, kept for every
+    club. A club's own row can answer too. A flex slot's asset is filed under
+    its umbrella; the row names the member league, which is the one with a
+    calendar.
+    """
+    from whul import season_end
+
+    member = str(row.get("feed_league") or "")
+    if member in covered_by(league):
+        league = member
+    day = as_of if isinstance(as_of, date) else date.fromisoformat(str(as_of)[:10])
+    own = _stat_number(row, "season_over") if row and asset_type == "Team" else None
+    club_done = bool(own) or (bool(club) and club in clubs_done)
+    over = season_end.season_over(league, day, club_done)
+    final = over and season_end.score_final(league, day)
+    # Baseball's league year is the rest of 2026 and half of 2027, so what is
+    # over is the 2026 part of it; the rest says only that the season is.
+    label = (f"{SEASON.start.year} season over" if league in season_end.NEVER_FINAL
+             else "Season over")
+    return over, final, label
+
+
+def _mark_year_over(panel: dict | None) -> None:
+    """Flag the league year's first calendar season as finished on a baseball
+    panel's year tabs, so the 2026 tab says so and 2027 does not."""
+    if not isinstance(panel, dict):
+        return
+    first = str(SEASON.start.year)
+    for entry in panel.get("years") or []:
+        if str(entry.get("year")) == first:
+            entry["over"] = True
 
 
 #: Columns that identify the row rather than describe the performance, and the
@@ -578,7 +638,7 @@ STAT_SKIP = {
     # touchdowns as though it were one of them.
     "player_id", "playerid", "athlete_id", "team_id", "driver_id", "id",
     "finishes", "tier_detail", "norm_key", "asset_type", "role_count",
-    "contract_year",
+    "contract_year", "feed_league",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
     # Shown as identity, above the figures. Left here as well they read as a
     # statistic -- "Position  F" in a column of goals and assists, and
@@ -1051,8 +1111,14 @@ def _nfl_team_panel(row: dict) -> dict | None:
     if head:
         panel["head"] = head
 
-    wins = _nfl_team_box(row, "playoff_wins")
-    if wins and wins["value"] != "0":
+    wins = _nfl_team_box(row, "playoff_wins", keep_zero=True)
+    bye = _stat_number(row, "bye_wins") or 0.0
+    if bye:
+        # Paid as a win and not counted as one: nobody played it.
+        wins["sup"] = f"+{bye:,.0f}"
+        wins["suptitle"] = "the Wild Card round, skipped by seeding and paid as a win"
+        wins["points"] = round(wins["points"] + bye * 15.0, 1)
+    if wins["value"] != "0" or bye:
         panel["post"] = {"top": [wins], "secondary": []}
     return panel
 
@@ -1406,6 +1472,9 @@ class TeamBox:
     #: How that value is worded. "of 9" for a denominator; "3 won" for a count
     #: that decided the box it sits on rather than sitting under it.
     of_text: str = "of {n:,.0f}"
+    #: Rounds skipped by seeding, paid at this box's weight and not counted in
+    #: it: they ride on the box as a superscript, as a soccer club's byes do.
+    bye: str = ""
 
 
 @dataclass(frozen=True)
@@ -1463,14 +1532,15 @@ def _team_panels() -> dict[str, TeamPanel]:
         post=(
             TeamBox("mm_wins", "Tournament wins", bb["mm_wins"]),
             TeamBox("conf_tourney_wins", "Conference tournament wins",
-                    bb["conf_tourney_wins"]),
+                    bb["conf_tourney_wins"], bye="conf_tourney_byes"),
         ),
         post_name="March",
     )
 
     diamond = lambda league: TeamPanel(  # noqa: E731
         top=(
-            TeamBox("reg_wins", "Wins", ncaa.DIAMOND_REG_WIN),
+            TeamBox("reg_wins", "Wins", ncaa.DIAMOND_REG_WIN,
+                    bye="conf_tourney_byes"),
             TeamBox("run_diff", "Run diff", ncaa.DIAMOND_RUN_DIFF),
         ),
         # The win counts are what decide the rounds above and are not scored
@@ -1541,7 +1611,8 @@ def _team_panels() -> dict[str, TeamPanel]:
                         outcome=True),
                 TeamBox("playoff_app", "Playoff", fb["playoff_app"], outcome=True),
             ),
-            post=(TeamBox("playoff_wins", "Playoff wins", fb["playoff_wins"]),),
+            post=(TeamBox("playoff_wins", "Playoff wins", fb["playoff_wins"],
+                          bye="playoff_byes"),),
         ),
         "NCAAM": hoops("NCAAM"),
         "NCAAW": hoops("NCAAW"),
@@ -1583,6 +1654,11 @@ def _counted_box(row: dict, spec: TeamBox, scale: float,
         paid = got * spec.weight * (scale if spec.scaled else 1.0)
     box = {"label": spec.label, "value": f"{got:,.0f}",
            "points": round(paid, 1) or 0.0}
+    skipped = _stat_number(row, spec.bye) if spec.bye else None
+    if skipped:
+        box["sup"] = f"+{skipped:,.0f}"
+        box["suptitle"] = "rounds skipped by seeding, paid as wins"
+        box["points"] = round(paid + skipped * spec.weight, 1)
     beside = _stat_number(row, spec.of) if spec.of else None
     if beside is not None:
         box["aside"] = spec.of_text.format(n=beside)
@@ -1945,11 +2021,11 @@ MLB_TEAM_TOP: tuple[tuple[str, str, str], ...] = (
     ("shutouts", "pts_shutouts", "Shutouts"),
 )
 
-#: October, by the round a club reached. Each is worth more than the last, so
-#: they are shown as what they are rather than folded into one playoff figure.
-MLB_TEAM_SERIES: tuple[tuple[str, str], ...] = (
-    ("series_wc_or_bye", "Wild card"), ("series_lds", "Division series"),
-    ("series_lcs", "Championship series"), ("series_ws", "World Series"),
+#: October's rounds in the order they are played: the column prefix the scorer
+#: gives each round's record, its series flag, and the name it goes by.
+MLB_TEAM_SERIES: tuple[tuple[str, str, str], ...] = (
+    ("wc", "series_wc_or_bye", "WC"), ("lds", "series_lds", "DS"),
+    ("lcs", "series_lcs", "LCS"), ("ws", "series_ws", "WS"),
 )
 
 
@@ -1983,41 +2059,87 @@ def _mlb_team_boxes(figures: dict) -> dict:
     }
 
 
+def _mlb_series_rows(row: dict) -> list[dict]:
+    """Each round the club was in, top to bottom in the order they happen.
+
+    A bye is paid what winning the Wild Card round is paid, and is listed as
+    what it was -- a round the club did not have to play -- rather than as a
+    series it won. A round still being played shows its record and no points.
+    """
+    from whul.scoring.mlb import PTS_SERIES, ROUNDS, SERIES_LOST_AT
+
+    lost_at = {prefix: SERIES_LOST_AT[kind] for kind, prefix in ROUNDS}
+    rows = []
+    for prefix, flag, name in MLB_TEAM_SERIES:
+        won = bool(_stat_number(row, flag))
+        wins = _stat_number(row, f"{prefix}_wins")
+        losses = _stat_number(row, f"{prefix}_losses")
+        record = ("" if wins is None or losses is None
+                  else f"{wins:,.0f}\u2013{losses:,.0f}")
+        if prefix == "wc" and _stat_number(row, "wc_bye"):
+            rows.append({"round": name, "result": "Bye",
+                         "points": PTS_SERIES[prefix]})
+        elif won:
+            rows.append({"round": name, "result": f"Won {record}".strip(),
+                         "points": PTS_SERIES[prefix]})
+        elif record and (wins or losses):
+            done = losses >= lost_at[prefix]
+            rows.append({"round": name,
+                         "result": f"Lost {record}" if done else record,
+                         "points": None})
+    return rows
+
+
 def _mlb_team_october(row: dict) -> dict | None:
-    """The postseason, in the rounds it was actually played in.
+    """The postseason: the games it won, and the series.
 
     Its own section rather than an outcome box, because a playoff run is not
     one thing that happened: it is a number of wins and a number of rounds
     reached, each priced differently. The total is what the run paid, and the
     boxes above it are what paid it.
+
+    The series share one box, a line a round in the order they were played,
+    so a run reads as the run it was: Bye, then Won 3\u20131, then Lost 2\u20134.
     """
     played = _stat_number(row, "playoff_game_wins")
     paid = _stat_number(row, "pts_playoff")
+    series = _mlb_series_rows(row)
     if played is None and paid is None:
         # Not yet known, which is not the same as none. A club before October
         # gets the section with dashes in it; one that has been eliminated gets
         # zeroes, which is a different and true thing.
         played = paid = None
-    elif not played and not paid:
+    elif not played and not paid and not series:
         return None
-    from whul.scoring.mlb import BASE_PLAYOFF_WIN, PTS_SERIES
+    from whul.scoring.mlb import BASE_PLAYOFF_WIN
 
-    rounds = []
-    for column, label in MLB_TEAM_SERIES:
-        got = _stat_number(row, column) or 0.0
-        if not got:
-            continue
-        worth = PTS_SERIES[column.replace("series_", "").replace("wc_or_bye", "wc")]
-        rounds.append({"label": label, "value": f"{got:,.0f}",
-                       "points": round(got * worth, 1)})
+    bonus = sum(r["points"] or 0 for r in series)
+    bye = _stat_number(row, "bye_wins") or 0.0
+    if played is None:
+        win_points = None
+    elif paid is not None:
+        # The scorer's figure, less the series: game wins carry the contract
+        # year's weight and the series bonuses do not.
+        win_points = round(paid - bonus, 1)
+    else:
+        win_points = round((played + bye) * BASE_PLAYOFF_WIN, 1)
+    wins = {"label": "Playoff wins",
+            "value": "\u2014" if played is None else f"{played:,.0f}",
+            "points": win_points}
+    if bye:
+        # A bye is paid as the sweep it stands for and is not counted as the
+        # wins: they ride on the box as a superscript, as a soccer club's do.
+        wins["sup"] = f"+{bye:,.0f}"
+        wins["suptitle"] = "the Wild Card round, skipped by seeding and paid as a sweep"
+    top = [wins]
+    if series:
+        top.append({"label": "Series", "rounds": series,
+                    "value": "", "points": round(bonus, 1)})
     return {
         "name": "Postseason",
         "games": "" if played is None else f"{played:,.0f}",
-        "top": [{"label": "Playoff wins",
-                 "value": "\u2014" if played is None else f"{played:,.0f}",
-                 "points": None if played is None
-                 else round(played * BASE_PLAYOFF_WIN, 1)}],
-        "secondary": rounds,
+        "top": top,
+        "secondary": [],
         "total": {"label": "Postseason", "bare": True,
                   "value": "\u2014" if paid is None else f"{paid:,.1f}"},
     }
@@ -4086,7 +4208,8 @@ def _figure_index(items: list[tuple[str, str]]) -> str:
 #: escaped on the way into the payload rather than where they are read. The
 #: rest are markup already (`avatar`, `badge`), numbers, or structures the
 #: renderer walks itself.
-PAYLOAD_TEXT = ("name", "meta", "position", "team", "group", "kind", "league")
+PAYLOAD_TEXT = ("name", "meta", "position", "team", "group", "kind", "league",
+                "over")
 
 
 def _profile_payload(profiles: dict[str, dict]) -> str:
@@ -5403,7 +5526,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
     )
 
 
-def _fixture_cell(fixture: dict | None) -> str:
+def _fixture_cell(fixture: dict | None, over: str = "") -> str:
     """What this asset plays next, small, between its name and its score.
 
     Two shapes. A fixture is a date and an opponent; a tour event is a date and
@@ -5412,8 +5535,12 @@ def _fixture_cell(fixture: dict | None) -> str:
 
     Empty where nothing is known, and empty deliberately: a league between
     seasons has nothing to play next, and filling that with a guess would make
-    the column untrustworthy for the leagues where it is right.
+    the column untrustworthy for the leagues where it is right. Where the
+    season is known to be over, it says so: nothing is next.
     """
+    if over and not fixture:
+        return (f"<td class='fixture over'><span class='done'>{escape(over)}"
+                f"</span></td>")
     if not fixture:
         return "<td class='fixture'></td>"
     try:
@@ -5512,6 +5639,10 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                 # how a manager knows how close the bench is to the cut.
                 season_cell = (f"{scaled:,.1f}" if how == "season"
                                else f'<span class="struck">{scaled:,.1f}</span>')
+                if profile and profile.get("final"):
+                    season_cell = (
+                        "<span class='final' title=\"Final: this score can no "
+                        f"longer change\">{season_cell}</span>")
                 best_cell = ("" if not has_best
                              else f"{best:,.1f}" if how == "best"
                              else f'<span class="struck">{best:,.1f}</span>')
@@ -5522,7 +5653,7 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
                     f"<tr class='{'' if counts else 'bench'}'>"
                     f"<td class='slotname'>{escape(category)}{tag}</td>"
                     f"<td>{_asset_button(asset, name, counts, depth=1, profile=profile)}</td>"
-                    f"{_fixture_cell(upcoming.get(asset))}"
+                    f"{_fixture_cell(upcoming.get(asset), (profile or {}).get('over', ''))}"
                     f"<td class='num'>{season_cell}</td>"
                     + (f"<td class='num'>{best_cell}</td>" if two else "") + "</tr>"
                 )

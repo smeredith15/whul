@@ -1655,6 +1655,28 @@ def test_every_club_in_the_league_is_written_down_not_only_the_drafted_ones():
         "every competition, because his own count is read the same way"
 
 
+def test_every_clubs_season_over_is_written_down_drafted_or_not():
+    """A player's page asks whether his club is done, and his club may be one
+    nobody drafted -- so the flag is kept for all thirty, like the counts."""
+    from datetime import date as _date
+
+    from whul import ingest as ing
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+    scored = pd.DataFrame([
+        {"team": "Colorado Rockies", "games_played": 40, "season_over": 1},
+        {"team": "Los Angeles Dodgers", "games_played": 40, "season_over": 0},
+    ])
+
+    class Source:
+        key, league, asset_type = "mlb-teams", "MLB", "Team"
+
+    ing._record_club_games(store, scored, Source(), "2026-27", _date(2026, 9, 30))
+    assert store.read_clubs_done("2026-27", "2026-09-30") == {"Colorado Rockies"}
+    assert store.read_clubs_done("2026-27", "2026-09-30", league="NBA") == set()
+
+
 def test_a_player_pull_writes_no_club_counts():
     """It sees one squad at a time and not the league's calendar."""
     from datetime import date as _date

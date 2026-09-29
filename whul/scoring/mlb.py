@@ -373,10 +373,15 @@ TEAM_SUMMARY_COLUMNS = [
     "season", "team", "games_played", "reg_wins", "reg_losses", "reg_big_wins",
     "shutouts",
     "run_diff",
-    "wc_wins", "lds_wins", "lcs_wins", "ws_wins", "series_wc_or_bye",
-    "series_lds", "series_lcs", "series_ws", "playoff_game_wins",
-    "is_division_champ",
+    "wc_wins", "lds_wins", "lcs_wins", "ws_wins",
+    "wc_losses", "lds_losses", "lcs_losses", "ws_losses", "wc_bye", "bye_wins",
+    "series_wc_or_bye", "series_lds", "series_lcs", "series_ws",
+    "playoff_game_wins", "is_division_champ",
 ]
+
+#: The postseason rounds, in the order they are played, as (game type, the
+#: prefix their columns carry).
+ROUNDS = (("F", "wc"), ("D", "lds"), ("L", "lcs"), ("W", "ws"))
 
 
 def summarize_teams(
@@ -413,14 +418,52 @@ def summarize_teams(
                 "lds_wins": int((g["is_win"] & (g["game_type"] == GAME_TYPE_LDS)).sum()),
                 "lcs_wins": int((g["is_win"] & (g["game_type"] == GAME_TYPE_LCS)).sum()),
                 "ws_wins": int((g["is_win"] & (g["game_type"] == GAME_TYPE_WS)).sum()),
+                # Losses by round as well: a series is two numbers, and a
+                # profile lists the ones a club lost as well as the ones it won.
+                **{f"{prefix}_losses": int(((g["margin"] < 0)
+                                            & (g["game_type"] == kind)).sum())
+                   for kind, prefix in ROUNDS},
             }
         ),
         include_groups=False,
     )
+    summary["is_division_champ"] = _division_champs(summary, divisions, games)
+    summary["wc_bye"] = _byes(summary, games)
+    _series_milestones(summary)
+    return summary
 
-    # Series milestones, allowing for first-round byes.
+
+def _byes(summary: pd.DataFrame, games: pd.DataFrame) -> pd.Series:
+    """Division champions that skipped the Wild Card round, per season.
+
+    A seed with a bye plays no Wild Card game in a season whose postseason has
+    begun. Every division champion does, in the formats that had one: the top
+    two in each league since 2022, all three before 2020, and none in 2020,
+    when every division winner played the round.
+    """
+    # Seasons with a Wild Card round to skip. Before 2012 there was none, and
+    # a division champion went straight to the Division Series as everybody
+    # else did.
+    post = set(games.loc[games["game_type"] == GAME_TYPE_WC, "season"])
+    played_wc = summary["wc_wins"] + summary["wc_losses"]
+    return ((summary["is_division_champ"] == 1) & (played_wc == 0)
+            & summary["season"].isin(post)).astype(int)
+
+
+def wc_sweep_wins(season: int) -> int:
+    """Wins that sweep the Wild Card round: one game from 2012 to 2021 except
+    2020's best-of-three, and best of three from 2022."""
+    season = int(season)
+    return 2 if season == 2020 or season >= 2022 else 1
+
+
+def _series_milestones(summary: pd.DataFrame) -> None:
+    """The series won, as flags. A bye is paid as the Wild Card round, and so
+    is reaching the Division Series by any route: a club swept there still got
+    past the round before it."""
+    reached_ds = (summary["lds_wins"] + summary["lds_losses"]) > 0
     summary["series_wc_or_bye"] = (
-        (summary["lds_wins"] > 0) | (summary["wc_wins"] >= 2)
+        (summary["wc_wins"] >= 2) | reached_ds | (summary["wc_bye"] == 1)
     ).astype(int)
     summary["series_lds"] = (summary["lds_wins"] >= 3).astype(int)
     summary["series_lcs"] = (summary["lcs_wins"] >= 4).astype(int)
@@ -428,8 +471,79 @@ def summarize_teams(
     summary["playoff_game_wins"] = (
         summary["wc_wins"] + summary["lds_wins"] + summary["lcs_wins"] + summary["ws_wins"]
     )
-    summary["is_division_champ"] = _division_champs(summary, divisions, games)
-    return summary
+    # A bye is paid as though the club swept the round it skipped: the series,
+    # above, and the games, here. Kept out of `playoff_game_wins`, which counts
+    # games won, because nobody played them.
+    summary["bye_wins"] = summary["wc_bye"] * summary["season"].map(wc_sweep_wins)
+
+
+#: Losses that end a postseason series, by round: the Wild Card round is best
+#: of three, the Division Series best of five, the rest best of seven.
+SERIES_LOST_AT = {GAME_TYPE_WC: 2, GAME_TYPE_LDS: 3, GAME_TYPE_LCS: 4, GAME_TYPE_WS: 4}
+
+#: Wins that take the World Series, after which the champion's season is over too.
+WORLD_SERIES_WON_AT = 4
+
+
+def team_status(schedule: pd.DataFrame,
+                divisions: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Which clubs' seasons are over, per season: ``season``, ``team``,
+    ``in_postseason``, ``season_over``.
+
+    Read off the full season's results, so the caller must pass the whole
+    schedule rather than the league year's window: the field is decided by
+    the whole regular season. Nothing here needs a feed of its own.
+
+    * The regular season is over for everyone once a postseason game has been
+      played: the postseason starts after the last regular-season day.
+    * The field is the division champions -- in the twelve-team format every
+      one qualifies, and the top two in each league wait out the Wild Card
+      round with no game to show for it -- plus every club that has played a
+      postseason game. On the first day of the postseason all eight Wild Card
+      clubs play, so from then on the field is complete.
+    * A club is out when it is not in the field, when it has lost a series
+      (two losses in the Wild Card round, three in the Division Series, four
+      in the LCS or the World Series), or when it has won the World Series.
+
+    Without divisions nobody can be told they missed the field, so only the
+    series answer: an unknown is left open rather than closed.
+    """
+    columns = ["season", "team", "in_postseason", "season_over",
+               "is_division_champ", "wc_bye"]
+    games = _team_games(schedule)
+    if games.empty:
+        return pd.DataFrame({c: pd.Series(dtype="object") for c in columns})
+    games["is_loss"] = games["margin"] < 0
+    summary = summarize_teams(schedule, divisions)
+    champs = set(zip(summary.loc[summary["is_division_champ"] == 1, "season"],
+                     summary.loc[summary["is_division_champ"] == 1, "team"]))
+    byes = set(zip(summary.loc[summary["wc_bye"] == 1, "season"],
+                   summary.loc[summary["wc_bye"] == 1, "team"]))
+    known_field = divisions is not None and not getattr(divisions, "empty", True)
+
+    rows = []
+    for season, block in games.groupby("season"):
+        post = block[block["game_type"].isin(list(SERIES_LOST_AT))]
+        started = not post.empty
+        playing = set(post["team"])
+        for team, mine in block.groupby("team"):
+            in_field = team in playing or (season, team) in champs
+            out = any(int((mine["is_loss"] & (mine["game_type"] == kind)).sum()) >= lost
+                      for kind, lost in SERIES_LOST_AT.items())
+            won = int((mine["is_win"] & (mine["game_type"] == GAME_TYPE_WS)).sum()) \
+                >= WORLD_SERIES_WON_AT
+            missed = started and known_field and not in_field
+            rows.append({
+                "season": int(season), "team": str(team),
+                "in_postseason": int(started and in_field),
+                "season_over": int(started and (missed or out or won)),
+                # Settled facts about the regular season, for a scorer that
+                # sees only the league year's window of it: a division title
+                # and a bye exist once the postseason has begun, not before.
+                "is_division_champ": int(started and (season, team) in champs),
+                "wc_bye": int(started and (season, team) in byes),
+            })
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _division_champs(
@@ -582,7 +696,8 @@ def contract_weight(seasons, opened: int | None = None) -> pd.Series:
 
 
 def _window_points(summary: pd.DataFrame,
-                   schedule: pd.DataFrame | None = None) -> pd.DataFrame:
+                   schedule: pd.DataFrame | None = None,
+                   settled_titles: bool = False) -> pd.DataFrame:
     """Points for the games in front of us, as components a prorater can scale.
 
     The historical path splits a whole season into its post- and pre-break
@@ -627,6 +742,11 @@ def _window_points(summary: pd.DataFrame,
         "shutouts": summary["shutouts"],
         "run_diff": summary["run_diff"],
         "playoff_game_wins": summary["playoff_game_wins"],
+        # Each round's record, for the profile's series box. Counts, carried.
+        **{f"{prefix}_{end}": summary[f"{prefix}_{end}"]
+           for _, prefix in ROUNDS for end in ("wins", "losses")},
+        "wc_bye": summary["wc_bye"],
+        "bye_wins": summary["bye_wins"],
         "series_wc_or_bye": summary["series_wc_or_bye"],
         "series_lds": summary["series_lds"],
         "series_lcs": summary["series_lcs"],
@@ -644,7 +764,12 @@ def _window_points(summary: pd.DataFrame,
         # an earlier rule paid four clubs for titles in the first three weeks
         # of a league year. The title lands when the season it belongs to has
         # been played out, and not before.
-        "pts_div_champ": _settled_division_titles(summary, schedule) * weight,
+        # Where the titles came from the full season (``team_status``) they
+        # are already the settled ones; otherwise the window decides.
+        "pts_div_champ": (
+            pd.to_numeric(summary["is_division_champ"], errors="coerce").fillna(0)
+            * PTS_DIV_CHAMP if settled_titles
+            else _settled_division_titles(summary, schedule)) * weight,
         # Game wins take the year's weight and the series do not, which is what
         # the benchmark does with them -- `_series_points` sits outside the
         # `MULT_YEAR_N` product in `year_n_points`, alone among the terms in
@@ -662,7 +787,8 @@ def _window_points(summary: pd.DataFrame,
         # match the scale now, and apply the multiplier on both sides the next
         # time one is built.
         "pts_playoff": (
-            summary["playoff_game_wins"] * BASE_PLAYOFF_WIN * weight
+            (summary["playoff_game_wins"] + summary["bye_wins"])
+            * BASE_PLAYOFF_WIN * weight
             + _series_points(summary)
         ),
     })
@@ -838,6 +964,9 @@ def _reweighted_club(figures: dict, was: float, weight: float,
         out["pts_div_champ"] = float(title) * weight
 
     wins, paid = figures.get("playoff_game_wins"), figures.get("pts_playoff")
+    bye = figures.get("bye_wins")
+    if isinstance(wins, (int, float)) and isinstance(bye, (int, float)):
+        wins = float(wins) + float(bye)
     if isinstance(wins, (int, float)) and isinstance(paid, (int, float)):
         # The series are what is left once the game wins are taken out, and
         # they carry no weight at all -- `year_n_points` leaves them outside
@@ -865,6 +994,7 @@ def score_teams(
     schedule: pd.DataFrame,
     partial: bool = False,
     divisions: pd.DataFrame | None = None,
+    status: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Rolling twelve-month contract points per team.
 
@@ -888,8 +1018,19 @@ def score_teams(
     lowers the benchmark by up to five points for the clubs that won one. A
     benchmark computed without it is a different scale, so the benchmark source
     checks for it rather than letting it default quietly.
+
+    ``status`` is ``team_status`` read off the full season, for a live window
+    that cannot see the regular season it was cut from: it supplies the
+    division titles and the byes, which the window's own games cannot. Live
+    division titles went unpaid all through September 2026 for want of it.
     """
     summary = summarize_teams(schedule, divisions)
+    if status is not None and not status.empty and not summary.empty:
+        facts = status.set_index(["season", "team"])
+        keys = list(zip(summary["season"].astype(int), summary["team"].astype(str)))
+        for column in ("is_division_champ", "wc_bye"):
+            summary[column] = [int(facts[column].get(k, 0)) for k in keys]
+        _series_milestones(summary)
     if summary.empty:
         return pd.DataFrame({
             c: pd.Series(dtype="object")
@@ -906,7 +1047,8 @@ def score_teams(
             + summary["shutouts"] * SHARE_POST_ASB * PTS_SHUTOUT * MULT_YEAR_N
             + summary["run_diff"] * SHARE_POST_ASB * PTS_RUN_DIFF * MULT_YEAR_N
             + summary["is_division_champ"] * PTS_DIV_CHAMP * MULT_YEAR_N
-            + summary["playoff_game_wins"] * BASE_PLAYOFF_WIN * MULT_YEAR_N
+            + (summary["playoff_game_wins"] + summary["bye_wins"])
+            * BASE_PLAYOFF_WIN * MULT_YEAR_N
             + _series_points(summary)
         ),
     })
@@ -923,7 +1065,8 @@ def score_teams(
     })
 
     if partial:
-        return _window_points(summary, schedule)
+        return _window_points(summary, schedule,
+                              settled_titles=status is not None and not status.empty)
 
     out = year_n.merge(year_n1, on=["contract_year", "team"], how="inner")
     out["year_n1_points"] = out["year_n1_points"].fillna(0.0)
