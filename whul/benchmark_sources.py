@@ -523,10 +523,19 @@ def _ncaa_live(key: str, category: str):
     requests, and no cap can hide a team's own game from it.
     """
     def build():
+        from whul import brackets
         from whul.sources import espn
 
+        def load(seasons, names):
+            rows = espn.load_rostered_schedules(key, seasons, names)
+            # A bracket whose notes do not name its rounds is worked out from
+            # its games, so a bye there is still paid. Costs nothing where the
+            # notes say.
+            return brackets.place_rounds(
+                key, rows, lambda season: brackets.espn_schedules(key, season))
+
         return (
-            lambda seasons, names: espn.load_rostered_schedules(key, seasons, names),
+            load,
             _ncaa_score(category),
         )
 

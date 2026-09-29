@@ -151,6 +151,10 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
             "home_score": resolve_num(schedule, ["home_score"], default=float("nan")),
             "away_score": resolve_num(schedule, ["away_score"], default=float("nan")),
             "game_date": resolve_str(schedule, list(DATE_COLUMNS)),
+            # A bracket game's round where the note could not say it, worked
+            # out from the bracket by `whul.brackets.place_rounds`.
+            "bracket_round": resolve_num(schedule, ["bracket_round"],
+                                         default=float("nan")),
         }
     )
     if "completed" in schedule.columns:
@@ -172,6 +176,7 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
                     "points_for": base[f"{side}_score"],
                     "points_against": base[f"{other}_score"],
                     "game_date": base["game_date"],
+                    "bracket_round": base["bracket_round"],
                 }
             )
         )
@@ -549,6 +554,8 @@ def _bracket_byes(summary: pd.DataFrame, games: pd.DataFrame, league: str,
                         and t.called(row.notes, row.conference)), None)
         number = (bracket.round_of(row.notes) if bracket
                   else round_number(row.notes, None))
+        if number is None and pd.notna(row.bracket_round):
+            number = int(row.bracket_round)
         key = (int(row.season), str(row.team))
         if number is None:
             # Any game whose round cannot be read might be the first one, and

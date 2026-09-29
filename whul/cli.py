@@ -3669,10 +3669,9 @@ def cmd_probe_rounds(args: argparse.Namespace) -> int:
 
 def cmd_probe_brackets(args: argparse.Namespace) -> int:
     """How ESPN labelled last season's NCAA brackets, and whether the bye rule
-    reads them right. See ``whul.bracket_probe``."""
-    from whul import bracket_probe
+    reads them right. See ``whul.brackets``."""
+    from whul import brackets as bracket_probe
     from whul.config.league import SEASON
-    from whul.sources import espn
 
     failed = 0
     for league in args.leagues.split():
@@ -3691,22 +3690,18 @@ def cmd_probe_brackets(args: argparse.Namespace) -> int:
             print("  nobody rostered, and no --teams given\n")
             continue
         try:
-            index = espn.team_index(league)
+            schedule = bracket_probe.espn_schedules(league, season)
         except Exception as exc:  # noqa: BLE001 -- reported, and the next league runs
             print(f"  ! ESPN's team index failed: {type(exc).__name__}: {exc}\n")
             failed += 1
             continue
-        lookup = {espn._match_key(n): i for n, i in index.items()}
-
-        def schedule(team: str, league=league, season=season, lookup=lookup):
-            team_id = lookup.get(espn._match_key(team))
-            if not team_id:
-                return None
-            try:
-                return espn.load_team_schedule(league, team_id, season)
-            except Exception as exc:  # noqa: BLE001 -- one team must not stop the walk
-                print(f"  ! {team}: {type(exc).__name__}: {exc}", flush=True)
-                return None
+        # Each starting team's postseason as ESPN gave it: the labels the
+        # reader below did not recognise are here if they are anywhere.
+        print("  postseason and bracket games, by starting team:")
+        for name in names:
+            for line in bracket_probe.postseason_lines(name, schedule(name)):
+                print(f"    {line}")
+        print(flush=True)
 
         brackets = bracket_probe.collect(league, season, names, schedule)
         if not brackets:

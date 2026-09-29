@@ -28,9 +28,14 @@ season,league,conference,rounds,round_names
 2024,NCAAF,College Football Playoff|CFP,4,
 2025,NCAAF,College Football Playoff|CFP,4,
 2026,NCAAF,College Football Playoff|CFP,4,
-# 2026-27 basketball, as the league admin confirmed them in September 2026.
+# 2026-27, from the brackets ESPN served for 2025-26 (the probe-brackets
+# workflow, September 2026) and the league admin's confirmation. Every one of
+# these names its rounds First/Second/Third Round, Quarterfinal(s),
+# Semifinal(s), Final/Championship, which the scorer reads with the count alone.
+#
+# The Big Ten men's tournament took all eighteen teams in 2026: six rounds.
 2027,NCAAM,ACC|Atlantic Coast,5,
-2027,NCAAM,Big Ten,5,
+2027,NCAAM,Big Ten,6,
 2027,NCAAM,Big 12,5,
 2027,NCAAM,SEC|Southeastern,5,
 2027,NCAAM,Big East,4,
@@ -38,3 +43,11 @@ season,league,conference,rounds,round_names
 2027,NCAAW,Big Ten,5,
 2027,NCAAW,SEC|Southeastern,5,
 2027,NCAAW,Big East,4,
+2027,NCAA Baseball,ACC|Atlantic Coast,5,
+2027,NCAA Baseball,SEC|Southeastern,5,
+# Called its first three rounds all "Big 12 Tournament" in 2026, so those are
+# placed from the bracket itself once it is finished (whul/brackets.py); the
+# count is stated for the semifinal and final, which it does name.
+2027,NCAA Baseball,Big 12,5,
+2027,NCAA Softball,Big 12,3,
+2027,NCAA Softball,SEC|Southeastern,5,
