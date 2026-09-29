@@ -639,6 +639,8 @@ STAT_SKIP = {
     "player_id", "playerid", "athlete_id", "team_id", "driver_id", "id",
     "finishes", "tier_detail", "norm_key", "asset_type", "role_count",
     "contract_year", "feed_league",
+    # Flags a panel reads, not figures: whether nobody else can win the title.
+    "titles_settled",
     "proration_factor", "schedule_factor", "scaled_score", "advanced_share",
     # Shown as identity, above the figures. Left here as well they read as a
     # statistic -- "Position  F" in a column of goals and assists, and
@@ -2156,7 +2158,10 @@ def _mlb_team_panel(row: dict, force: bool = False) -> dict | None:
     """
     if not force and _stat_number(row, "games_played") is None:
         return None
-    settled = bool(_stat_number(row, "pts_div_champ"))
+    # Settled when a title was paid, or when the regular season is over and
+    # this club did not win one -- "No", not "not yet".
+    settled = (bool(_stat_number(row, "pts_div_champ"))
+               or bool(_stat_number(row, "titles_settled")))
     panel: dict = {"kind": "nfl-team", **_mlb_team_boxes(row)}
 
     head = _record_head(row)

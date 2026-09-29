@@ -393,8 +393,13 @@ def _mlb_teams_live():
             status["season"], status["team"], status["season_over"])}
         # Only the season the window belongs to: a club whose 2026 is over
         # has not finished 2027, and next year's rows must not inherit it.
-        out["season_over"] = [over.get((int(s), str(t)), 0) for s, t in zip(
-            pd.to_numeric(out["season"], errors="coerce").fillna(0), out["team"])]
+        keys = list(zip(pd.to_numeric(out["season"], errors="coerce").fillna(0),
+                        out["team"]))
+        out["season_over"] = [over.get((int(s), str(t)), 0) for s, t in keys]
+        if "titles_settled" in status.columns:
+            settled = {(int(s), str(t)): int(v) for s, t, v in zip(
+                status["season"], status["team"], status["titles_settled"])}
+            out["titles_settled"] = [settled.get((int(s), str(t)), 0) for s, t in keys]
         return out
 
     return load, score
