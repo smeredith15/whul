@@ -210,3 +210,22 @@ def test_a_benchmark_places_rounds_from_the_rows_it_already_has():
     wv = placed[(placed["home_team"] == "West Virginia")
                 | (placed["away_team"] == "West Virginia")]
     assert wv["bracket_round"].tolist() == [3, 4, 5]
+
+
+def test_a_tournament_that_changes_its_name_is_still_one_bracket():
+    """The MAC was "MAC Tournament" one day and "MAC TOURNAMENT PRES. BY VISIT
+    MYRTLE BEACH" the next; by name each half was a bracket nothing could place."""
+    games = _acc().assign(home_conference="ACC", away_conference="ACC")
+    late = games["game_date"] >= "2026-03-12"
+    games.loc[late, "notes"] = games.loc[late, "notes"].str.replace(
+        "ACC Tournament", "T. ROWE PRICE ACC TOURNAMENT")
+    found = bp.collect("ncaam", 2026, ["T1"], _fetch(games))
+    assert len(found) == 1 and len(found[0].games) == 14
+    assert bp.single_elimination(found[0]).rounds == 5
+
+
+def test_a_round_after_a_dash_with_no_space_before_it_is_read():
+    from whul.scoring.ncaa import round_number
+
+    assert round_number("OVC Championship- First Round", 5) == 1
+    assert round_number("OVC Championship- Semifinal", 5) == 4

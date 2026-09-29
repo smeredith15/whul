@@ -563,7 +563,7 @@ def team_index(league: str) -> dict[str, str]:
 
 
 def load_team_schedule(league: str, team_id: str, season: int,
-                       cache: bool = False) -> pd.DataFrame:
+                       cache: bool = False, strict: bool = False) -> pd.DataFrame:
     """One team's whole season, in the shape the scorers read.
 
     A team's own schedule cannot be short of its own games, which the
@@ -589,6 +589,10 @@ def load_team_schedule(league: str, team_id: str, season: int,
         post = _get(url, {"season": season, "seasontype": 3},
                     cache_key=f"{key}/post" if key else None)
     except Exception as exc:  # noqa: BLE001 -- the regular season still stands
+        if strict:
+            # A benchmark cannot take a champion without its March: raised, so
+            # the caller retries it and counts it if it keeps failing.
+            raise
         print(f"  {league}: team {team_id} postseason could not be read "
               f"({type(exc).__name__}) -- its playoff games will be missing",
               flush=True)
@@ -611,6 +615,11 @@ def load_team_schedule(league: str, team_id: str, season: int,
             "completed": bool(status.get("completed")),
             "home_team": (home.get("team") or {}).get("displayName", ""),
             "away_team": (away.get("team") or {}).get("displayName", ""),
+            # The feed's own ids, so a conference is looked up by the team and
+            # not by a name that changes -- "Appalachian State" in a 2021
+            # schedule is "App State" in today's team list.
+            "home_team_id": str((home.get("team") or {}).get("id") or ""),
+            "away_team_id": str((away.get("team") or {}).get("id") or ""),
             "home_conference": _conference(home),
             "away_conference": _conference(away),
             "home_score": _score_of(home),
@@ -712,6 +721,23 @@ def fill_conferences(
         if column not in games.columns:
             games[column] = ""
         games[column] = games[column].fillna("").astype(str)
+
+    # By the feed's id where the rows carry one: no name to mismatch.
+    by_id: dict[str, str] = {}
+    for side in ("home", "away"):
+        column = f"{side}_team_id"
+        if column not in games.columns:
+            continue
+        blank = games[f"{side}_conference"] == ""
+        for team_id in {str(i) for i in games.loc[blank, column] if str(i) not in ("", "nan")}:
+            if team_id in by_id:
+                continue
+            try:
+                by_id[team_id] = team_conference(league, team_id, season)
+            except Exception:  # noqa: BLE001 -- the name lookup below still tries
+                by_id[team_id] = ""
+        filled = games[column].astype(str).map(by_id).fillna("")
+        games.loc[blank, f"{side}_conference"] = filled[blank]
 
     wanted: set[str] = set()
     for side in ("home", "away"):
@@ -822,6 +848,11 @@ DIVISION_FAILURE_LIMIT = 0.02
 
 STANDINGS = "https://site.api.espn.com/apis/v2/sports"
 
+#: Each season's conferences as its own standings had them, by league and
+#: season: a team record gives today's, and Texas's 2021 games were in the
+#: Big 12, not the SEC.
+DIVISION_CONFERENCES: dict[tuple[str, int], dict[str, str]] = {}
+
 
 class DivisionUnknown(RuntimeError):
     """Neither the standings nor the team list gave a plausible division."""
@@ -842,6 +873,34 @@ def _standings_teams(node) -> dict[str, str]:
         for value in node:
             found.update(_standings_teams(value))
     return found
+
+
+def standings_conferences(payload) -> dict[str, str]:
+    """``{team id: conference}`` as a season's standings group them.
+
+    The conference is the top-level group, not the leaf: a football
+    conference with East and West divisions lists its teams under those, and
+    a division is not a conference -- its teams play the other side's in
+    conference games. A single wrapper around the conferences is looked
+    through.
+    """
+    groups = payload.get("children") or [] if isinstance(payload, dict) else []
+    while len(groups) == 1 and (groups[0] or {}).get("children"):
+        groups = groups[0]["children"]
+    out: dict[str, str] = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        conference = str(group.get("id") or group.get("abbreviation")
+                         or group.get("name") or "")
+        for team_id in _standings_teams(group):
+            out[team_id] = conference
+    return out
+
+
+#: Fewer conferences than this in a division's standings is not a list of
+#: conferences, and grouping by it would make every game a conference game.
+FEWEST_CONFERENCES = 5
 
 
 def division_teams(league: str, season: int) -> tuple[dict[str, str], str]:
@@ -865,9 +924,10 @@ def division_teams(league: str, season: int) -> tuple[dict[str, str], str]:
                        cache_key=f"{league}/standings/{season}" if settled else None)
         teams = _standings_teams(payload)
     except Exception as exc:  # noqa: BLE001 -- the team list is tried next
-        teams = {}
+        teams, payload = {}, {}
         tried.append(f"standings failed ({type(exc).__name__})")
     if low <= len(teams) <= high:
+        DIVISION_CONFERENCES[(league, season)] = standings_conferences(payload)
         return teams, "standings"
     if teams:
         tried.append(f"standings gave {len(teams)}")
@@ -894,6 +954,35 @@ def division_teams(league: str, season: int) -> tuple[dict[str, str], str]:
     raise DivisionUnknown(
         f"{league} {season}: no plausible division ({'; '.join(tried)}); "
         f"one holds {low}-{high} teams. Nothing was walked.")
+
+
+#: Tries at one team's schedule before it is counted as missing.
+DIVISION_ATTEMPTS = 3
+
+
+def _season_conferences(league: str, games: pd.DataFrame, season: int,
+                        division: set[str], verbose: bool) -> pd.DataFrame:
+    """The season's own conferences on its games, from its standings.
+
+    Only the division's teams need one: a conference game is two of them in
+    the same conference, and an opponent from outside the division can never
+    be. Where the standings did not give a usable grouping, each team's record
+    is asked instead -- today's conference, said so, since a program that has
+    moved since will have its old conference games miscounted.
+    """
+    grouping = DIVISION_CONFERENCES.get((league, season)) or {}
+    usable = (len(set(grouping.values())) >= FEWEST_CONFERENCES
+              and sum(1 for t in division if t in grouping) >= 0.9 * len(division))
+    if not usable:
+        if verbose:
+            print(f"  {league} {season}: the standings gave no usable conferences; "
+                  f"each team's current one is used, so a team that has moved "
+                  f"since has its old conference games miscounted", flush=True)
+        return fill_conferences(league, games, season, verbose=verbose)
+    for side in ("home", "away"):
+        games[f"{side}_conference"] = (
+            games[f"{side}_team_id"].astype(str).map(grouping).fillna(""))
+    return games
 
 
 def load_division_schedules(league: str, seasons: list[int],
@@ -923,20 +1012,26 @@ def load_division_schedules(league: str, seasons: list[int],
         season_frames = []
         for index, (team_id, name) in enumerate(sorted(teams.items(), key=lambda t: t[1])):
             attempted += 1
-            try:
-                season_frames.append(load_team_schedule(league, team_id, season,
-                                                        cache=settled))
-            except Exception as exc:  # noqa: BLE001 -- counted, and the rest go on
-                failed += 1
-                if verbose:
-                    print(f"    ! {name}: {type(exc).__name__}", flush=True)
+            for attempt in range(DIVISION_ATTEMPTS):
+                try:
+                    season_frames.append(load_team_schedule(
+                        league, team_id, season, cache=settled, strict=True))
+                    break
+                except Exception as exc:  # noqa: BLE001 -- retried, then counted
+                    if attempt == DIVISION_ATTEMPTS - 1:
+                        failed += 1
+                        if verbose:
+                            print(f"    ! {name}: {type(exc).__name__}", flush=True)
+                    else:
+                        time.sleep(RETRY_PAUSE * (attempt + 1))
             if verbose and index and index % 50 == 0:
                 print(f"    {index}/{len(teams)} teams", flush=True)
         eligible |= set(teams.values())
         if season_frames:
             games = pd.concat(season_frames, ignore_index=True)
             games = games.drop_duplicates(subset=["game_id"]).reset_index(drop=True)
-            frames.append(fill_conferences(league, games, season, verbose=verbose))
+            frames.append(_season_conferences(league, games, season, set(teams),
+                                              verbose))
     if attempted and failed > attempted * DIVISION_FAILURE_LIMIT:
         raise RuntimeError(
             f"{league}: {failed} of {attempted} team schedules could not be read. "

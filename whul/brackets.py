@@ -82,7 +82,27 @@ def bracket_of(league: str, notes: str, season_type: int,
         return None
     if re.search(national, notes, re.IGNORECASE):
         return None
-    return re.split(r"\s+[-–—]\s+", notes)[0].strip()
+    return re.split(r"\s*[-–—]\s+", notes)[0].strip()
+
+
+def bracket_key(league: str, row) -> tuple[str, str] | None:
+    """Which bracket a game row belongs to, as a key and a name to show.
+
+    Keyed by the conference where both sides share one, and by the note's name
+    only where they do not: a tournament's label can change between its own
+    rounds -- "MAC Tournament" one day, "MAC TOURNAMENT PRES. BY VISIT MYRTLE
+    BEACH" the next -- and keyed by name each half was a bracket of its own
+    that nothing could place.
+    """
+    name = bracket_of(league, row.notes, getattr(row, "season_type", 2),
+                      str(getattr(row, "game_date", "") or ""))
+    if name is None:
+        return None
+    home = str(getattr(row, "home_conference", "") or "")
+    away = str(getattr(row, "away_conference", "") or "")
+    if league != "NCAAF" and home and home == away and home.lower() != "nan":
+        return f"conference {home}", name
+    return " ".join(name.casefold().split()), name
 
 
 @dataclass
@@ -108,6 +128,7 @@ class Bracket:
     league: str
     season: int
     name: str
+    key: str = ""
     games: dict[str, Game] = field(default_factory=dict)
     unknown: set[str] = field(default_factory=set)   # opponents ESPN has no id for
 
@@ -138,17 +159,17 @@ def collect(league: str, season: int, start: list[str],
         rows = fetched[team]
         if rows is None:
             for b in brackets.values():
-                if wanted == b.name:
+                if wanted == b.key:
                     b.unknown.add(team)
             continue
         for row in rows.itertuples(index=False):
             if not bool(row.completed):
                 continue
-            name = bracket_of(scorer_league, row.notes, row.season_type,
-                              str(row.game_date))
-            if name is None or (wanted is not None and name != wanted):
+            found = bracket_key(scorer_league, row)
+            if found is None or (wanted is not None and found[0] != wanted):
                 continue
-            bracket = brackets.setdefault(name, Bracket(scorer_league, season, name))
+            key, name = found
+            bracket = brackets.setdefault(key, Bracket(scorer_league, season, name, key))
             if len(bracket.teams) >= MOST_TEAMS:
                 continue
             home_won = float(row.home_score) > float(row.away_score)
@@ -157,8 +178,8 @@ def collect(league: str, season: int, start: list[str],
                 str(row.away_team), str(row.home_team if home_won else row.away_team),
                 str(row.notes))
             for other in (row.home_team, row.away_team):
-                if (str(other), name) not in seen:
-                    queue.append((str(other), name))
+                if (str(other), key) not in seen:
+                    queue.append((str(other), key))
     return list(brackets.values())
 
 
@@ -225,7 +246,7 @@ def single_elimination(bracket: Bracket) -> Shape | None:
 
 def _label(notes: str) -> str:
     """The round's part of a note: what follows the bracket's name."""
-    parts = re.split(r"\s+[-–—]\s+", str(notes), maxsplit=1)
+    parts = re.split(r"\s*[-–—]\s+", str(notes), maxsplit=1)
     return parts[1].strip() if len(parts) > 1 else str(notes).strip()
 
 
@@ -345,6 +366,9 @@ def espn_schedules(league: str, season: int) -> Callable[[str], pd.DataFrame | N
         if team_id:
             try:
                 rows = espn.load_team_schedule(league, team_id, season)
+                # With conferences, so its bracket games key the way the
+                # rostered team's do (``bracket_key``).
+                rows = espn.fill_conferences(league, rows, season, verbose=False)
             except Exception as exc:  # noqa: BLE001 -- one team must not stop the walk
                 print(f"  ! {team}: {type(exc).__name__}: {exc}", flush=True)
         cache[team] = rows
@@ -371,13 +395,14 @@ def place_rounds(league: str, games: pd.DataFrame,
     if "bracket_round" not in out.columns:
         out["bracket_round"] = pd.NA
     need: dict[tuple[int, str], set[str]] = {}
+    names: dict[tuple[int, str], str] = {}
     for row in out.itertuples(index=False):
         if "completed" in out.columns and not bool(row.completed):
             continue
-        name = bracket_of(scorer_league, row.notes, getattr(row, "season_type", 2),
-                          str(getattr(row, "game_date", "") or ""))
-        if name is None:
+        found = bracket_key(scorer_league, row)
+        if found is None:
             continue
+        key, name = found
         season = int(row.season)
         bracket = next((t for t in stated if t.season == season
                         and t.called(row.notes, "")), None)
@@ -385,12 +410,14 @@ def place_rounds(league: str, games: pd.DataFrame,
                 else bracket.round_of(row.notes) if bracket
                 else ncaa.round_number(row.notes, None))
         if read is None:
-            need.setdefault((season, name), set()).update(
+            need.setdefault((season, key), set()).update(
                 {str(row.home_team), str(row.away_team)})
-    for (season, name), teams in need.items():
+            names.setdefault((season, key), name)
+    for (season, key), teams in need.items():
+        name = names[(season, key)]
         try:
             found = [b for b in collect(league, season, sorted(teams), schedules(season))
-                     if b.name == name]
+                     if b.key == key]
         except Exception as exc:  # noqa: BLE001 -- the rows stand without it
             print(f"  {scorer_league}: the {name} bracket could not be walked "
                   f"({type(exc).__name__}); no byes are paid there yet", flush=True)

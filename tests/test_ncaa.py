@@ -789,3 +789,26 @@ def test_a_diamond_conference_tournament_is_found_without_a_conference():
     assert out.loc["LSU", "conf_tourney_byes"] == 1
     assert out.loc["Oklahoma", "conf_tourney_byes"] == 0
     assert out.loc["Oklahoma", "reg_wins"] == 1
+
+
+def test_a_new_years_six_bowl_that_was_not_a_playoff_game_is_not_one():
+    """The four-team years: the Rose Bowl was a playoff semifinal only when
+    ESPN says "College Football Playoff Semifinal at the Rose Bowl"."""
+    out = score_football(pd.DataFrame([
+        game("A", "B", 30, 20, hc="B1G", ac="Pac-12", season_type=3, season=2022,
+             notes="Rose Bowl Game Presented by Prudential", game_date="2023-01-02"),
+        game("C", "D", 30, 20, hc="SEC", ac="B1G", season_type=3, season=2022,
+             notes="College Football Playoff Semifinal at the Chick-fil-A Peach Bowl",
+             game_date="2022-12-31"),
+    ])).set_index("team")
+    assert out.loc["A", "playoff_app"] == 0 and out.loc["A", "playoff_wins"] == 0
+    assert out.loc["C", "playoff_app"] == 1 and out.loc["C", "playoff_wins"] == 1
+
+
+def test_the_womens_basketball_invitational_is_not_a_conference_tournament():
+    out = score_basketball(pd.DataFrame([
+        game("A", "B", 70, 60, hc="MAC", ac="MAC", season_type=3,
+             notes="WBI Tournament - Championship", game_date="2024-03-30"),
+    ]), "NCAAW").set_index("team")
+    assert out.loc["A", "conf_tourney_wins"] == 0 and out.loc["A", "conf_tourney_champ"] == 0
+    assert out.loc["A", "mm_appearance"] == 0
