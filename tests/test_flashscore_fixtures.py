@@ -961,3 +961,23 @@ def test_last_years_opening_date_cannot_apply_to_this_year(monkeypatch):
                          date(2026, 9, 20), "1", 3, 1))
     pull_soccer(store, monkeypatch, raw, ["NHL"])
     assert feed_ledger.load(store, "nhl-games").empty
+
+
+# --- the league's clock, and games in play --------------------------------------
+
+def test_a_late_game_is_on_its_eastern_day_not_the_next_utc_one():
+    """A 10:05 pm Eastern first pitch is 02:05 the next morning in UTC."""
+    late = int(datetime(2026, 9, 30, 2, 5, tzinfo=timezone.utc).timestamp())
+    raw = payload(header("USA: MLB - Play Offs"),
+                  f"AA÷w1¬AD÷{late}¬AC÷1¬AE÷Los Angeles Dodgers¬AF÷San Diego Padres¬")
+    got = list(feed.iter_fixtures(raw))
+    assert got[0]["game_date"] == "2026-09-29"
+
+
+def test_a_game_in_play_stays_on_the_list_until_it_is_over():
+    live = (f"AA÷l1¬AD÷{stamp(SOON)}¬AC÷12¬AB÷2¬"
+            f"AE÷Atlanta Braves¬AF÷Chicago Cubs¬")
+    over = (f"AA÷f1¬AD÷{stamp(SOON)}¬AC÷3¬AB÷3¬"
+            f"AE÷Boston Red Sox¬AF÷New York Yankees¬")
+    got = {m["home_team"] for m in feed.iter_fixtures(payload(header("USA: MLB"), live, over))}
+    assert got == {"Atlanta Braves"}

@@ -35,11 +35,12 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 
 import pandas as pd
 import requests
 
+from whul.clock import eastern_day
 from whul.sources.flashscore import (
     PAGE_HEADERS, REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_HOCKEY,
     SPORT_SOCCER, SPORT_TENNIS, STATUS_COMPLETED, TIMEOUT, _field, _get,
@@ -163,18 +164,30 @@ def strip_womens(name: str) -> str:
 
 
 def _when(segment: str) -> date | None:
-    """The kickoff, as a date in UTC.
+    """The kickoff, as a date in US Eastern time.
 
-    ``AD`` is a Unix timestamp. Read as UTC rather than local: the machine that
-    runs the nightly job and the machine someone reads the page on are in
-    different places, and a fixture that moves a day depending on who is asking
-    is worse than one that is occasionally a few hours out.
+    ``AD`` is a Unix timestamp. Read as Eastern, the league's own clock, and
+    not as UTC: in UTC a 10 pm Eastern first pitch is two in the morning the
+    next day, and every late game in North America was listed a day late.
+    Fixed to one zone rather than the reader's, so a fixture does not move a
+    day depending on who is asking.
     """
     raw = _field(segment, "AD")
     try:
-        return datetime.fromtimestamp(int(raw), tz=timezone.utc).date()
-    except (TypeError, ValueError, OSError):
+        return eastern_day(int(raw))
+    except (TypeError, ValueError):
         return None
+
+
+#: ``AB`` is the match's stage: scheduled, in play, finished. A match in play is
+#: still what a manager is watching, so it stays on the list until it is over.
+STAGE_LIVE = "2"
+
+
+def _still_to_finish(segment: str) -> bool:
+    """Not started, or being played now -- anything but over."""
+    return ((_field(segment, "AC") or "") in STATUS_UPCOMING
+            or (_field(segment, "AB") or "") == STAGE_LIVE)
 
 
 def iter_fixtures(raw: str):
@@ -194,7 +207,7 @@ def iter_fixtures(raw: str):
             continue
         if not segment.startswith("AA÷"):
             continue
-        if (_field(segment, "AC") or "") not in STATUS_UPCOMING:
+        if not _still_to_finish(segment):
             continue
         home = (_field(segment, "AE") or "").strip()
         away = (_field(segment, "AF") or "").strip()
@@ -397,7 +410,7 @@ def iter_page_fixtures(raw: str, competition: str = "", country: str = ""):
         if not segment.startswith("AA÷"):
             continue
         status = _field(segment, "AC")
-        if status and status not in STATUS_UPCOMING:
+        if status and not _still_to_finish(segment):
             continue
         home = (_field(segment, "AE") or "").strip()
         away = (_field(segment, "AF") or "").strip()
@@ -646,7 +659,7 @@ def iter_tennis_fixtures(raw: str):
             continue
         if header.get("is_qualifying"):
             continue
-        if (_field(segment, "AC") or "") not in STATUS_UPCOMING:
+        if not _still_to_finish(segment):
             continue
         home = slug_to_name(_field(segment, "WU"))
         away = slug_to_name(_field(segment, "WV"))

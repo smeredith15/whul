@@ -29,6 +29,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from whul.clock import eastern_day
 from whul.sources import season_window
 
 BASE = "https://site.api.espn.com/apis/site/v2/sports"
@@ -606,7 +607,10 @@ def load_team_schedule(league: str, team_id: str, season: int,
         home, away = _competitor(competition, "home"), _competitor(competition, "away")
         if not home or not away:
             continue
-        day = str(event.get("date", ""))[:10]
+        # The Eastern day, not the UTC one: a late game in North America is
+        # the next day in UTC, and was listed and counted there.
+        eastern = eastern_day(event.get("date"))
+        day = eastern.isoformat() if eastern else str(event.get("date", ""))[:10]
         rows.append({
             "season": season,
             "game_id": str(event.get("id", "")),

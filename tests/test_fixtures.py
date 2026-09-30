@@ -208,3 +208,34 @@ def test_only_a_soccer_asset_is_labelled_with_its_competition():
     store.conn.commit()
     again = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
     assert again["team-alpha"]["badge"] == ""
+
+
+def test_a_game_in_play_is_still_a_fixture():
+    """It carries its score so far, and read by its scores alone it left the
+    list the moment it started."""
+    frame = pd.DataFrame([
+        {"season": 2026, "game_date": "2026-09-20", "home_team": "Alpha FC",
+         "away_team": "Beta FC", "home_score": 3, "away_score": 1, "completed": False},
+        {"season": 2026, "game_date": "2026-09-20", "home_team": "Gamma FC",
+         "away_team": "Delta FC", "home_score": 2, "away_score": 0, "completed": True},
+    ])
+    got = fixtures.harvest("Test", "2026-27", frame, date(2026, 9, 8), "now")
+    assert set(got["team_key"]) == {"alpha", "beta"}
+
+
+def test_tonights_games_are_upcoming_after_eight_pm_eastern(monkeypatch):
+    """A run after 8 pm Eastern is already tomorrow in UTC."""
+    from whul import clock
+
+    monkeypatch.setattr(clock, "today", lambda: date(2026, 9, 29))
+    assert fixtures.cutoff(date(2026, 9, 30)) == date(2026, 9, 29)
+    assert fixtures.cutoff(date(2026, 9, 1)) == date(2026, 9, 1)
+
+
+def test_the_eastern_day_of_a_stamp():
+    from whul.clock import eastern_day
+
+    assert eastern_day("2026-09-30T02:05Z") == date(2026, 9, 29)
+    assert eastern_day("2026-09-30T18:00Z") == date(2026, 9, 30)
+    assert eastern_day("2026-09-30") == date(2026, 9, 30), "a date is a day already"
+    assert eastern_day(None) is None and eastern_day("") is None

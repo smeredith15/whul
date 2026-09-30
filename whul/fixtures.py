@@ -29,6 +29,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
+from whul import clock
 from whul.resolve import normalize_team
 
 #: Column names a schedule frame might use, in the order they are tried. The
@@ -55,14 +56,23 @@ def _first(frame: pd.DataFrame, candidates) -> str | None:
 def _unplayed(frame: pd.DataFrame) -> pd.Series | None:
     """Which rows are fixtures rather than results.
 
-    A pair of score columns where both are null is the only reliable answer.
-    ``completed`` is not: nflverse does not carry it, and a frame without it
-    once made every unplayed fixture read as a finished game -- the bug this
-    project keeps rediscovering. So the scores decide, and a frame whose scores
-    cannot be found yields nothing rather than everything.
+    Where the feed says whether a game is over, that decides: a game in play
+    carries its score so far, and read by its scores alone it left the list
+    the moment it started. A game stays until it is finished.
+
+    Otherwise a pair of score columns where both are null is the only reliable
+    answer. ``completed`` cannot be assumed: nflverse does not carry it, and a
+    frame without it once made every unplayed fixture read as a finished game
+    -- the bug this project keeps rediscovering. So the scores decide there,
+    and a frame whose scores cannot be found yields nothing rather than
+    everything.
     """
     for home, away in SCORE_COLUMNS:
         if home in frame.columns and away in frame.columns:
+            if "completed" in frame.columns:
+                done = frame["completed"].map(
+                    lambda v: str(v).strip().lower() in ("true", "1", "1.0"))
+                return ~done
             return frame[home].isna() & frame[away].isna()
     return None
 
@@ -96,6 +106,7 @@ def harvest(league: str, season: str, frame: pd.DataFrame,
     if work.empty:
         return empty
     work["_when"] = pd.to_datetime(work[when], errors="coerce").dt.date
+    after = cutoff(after)
     work = work[work["_when"].notna() & (work["_when"] >= after)]
     if work.empty:
         return empty
@@ -319,6 +330,21 @@ def short_competition(name: str) -> str:
     return "".join(w[0] for w in words[:4]).upper()
 
 
+def cutoff(as_of: date | str) -> date | str:
+    """The first day still "upcoming": the run's date, or Eastern today if
+    that is earlier.
+
+    The nightly job and a manual publish run on a machine keeping UTC, and
+    after 8 pm Eastern its date is already tomorrow's: tonight's games were
+    being dropped as past while they were still being played.
+    """
+    try:
+        day = as_of if isinstance(as_of, date) else date.fromisoformat(str(as_of))
+    except ValueError:
+        return as_of
+    return min(day, clock.today())
+
+
 def feeds_for(league: str) -> set[str]:
     """The feeds allowed to supply this league's fixtures.
 
@@ -341,7 +367,7 @@ def next_by_team(store, season: str, as_of: date | str) -> dict[str, list[dict]]
         "       round_name, league "
         "FROM fixtures WHERE season = ? AND fixture_date >= ? "
         "ORDER BY fixture_date",
-        (season, str(as_of)),
+        (season, str(cutoff(as_of))),
     )
     out: dict[str, list[dict]] = {}
     for row in rows.itertuples():
@@ -436,6 +462,7 @@ def board(store, season: str, as_of: date | str,
     every fixture held, which is what a caller reporting on the table wants and
     is not what a page wants.
     """
+    as_of = cutoff(as_of)
     where = "season = ? AND fixture_date >= ?"
     params: list = [season, str(as_of)]
     if days is not None:
