@@ -419,6 +419,7 @@ def place_rounds(league: str, games: pd.DataFrame,
             need.setdefault((season, key), set()).update(
                 {str(row.home_team), str(row.away_team)})
             names.setdefault((season, key), name)
+    unplaced: list[str] = []
     for (season, key), teams in need.items():
         name = names[(season, key)]
         try:
@@ -435,12 +436,18 @@ def place_rounds(league: str, games: pd.DataFrame,
                                       or shape.rounds in stated_rounds):
             shape = None
         if shape is None:
-            print(f"  {scorer_league}: the {name} bracket is not finished or not "
-                  f"single elimination, so its rounds are not placed yet", flush=True)
+            unplaced.append(name)
             continue
         ids = out["game_id"].astype(str)
         for game_id, number in shape.round_of.items():
             out.loc[ids == game_id, "bracket_round"] = number
+    if unplaced:
+        # One line, not one a bracket: a benchmark's baseball holds seventy,
+        # nearly all of them double elimination, which pays no bye by design.
+        shown = ", ".join(sorted(set(unplaced))[:8])
+        print(f"  {scorer_league}: {len(unplaced)} bracket(s) not placed -- not "
+              f"finished, or not single elimination, so no byes there: {shown}"
+              f"{' ...' if len(set(unplaced)) > 8 else ''}", flush=True)
     return out
 
 

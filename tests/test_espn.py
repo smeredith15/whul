@@ -1821,3 +1821,20 @@ def test_the_division_is_the_group_the_anchor_programs_are_in(monkeypatch):
     monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (2, 6))
     teams, source = espn.division_teams("ncaabaseball", 2025)
     assert set(teams) == {"1", "2", "3"} and "26" in source
+
+
+def test_a_listed_school_that_did_not_play_a_season_is_not_in_the_pool(monkeypatch):
+    """Baseball's list holds lower-division schools ESPN carries few or no
+    games for; only a team with a season's worth of games is kept."""
+    from whul.sources import espn
+
+    feed = _division_feed()
+    monkeypatch.setattr(espn, "_get", feed)
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (2, 3))
+    monkeypatch.setitem(espn.DIVISION_MIN_GAMES, "ncaabaseball", 2)
+    rows = espn.load_division_schedules("ncaabaseball", [2025], verbose=False)
+    # A Aces played three games, B Bees two: both kept at a minimum of two.
+    assert rows.attrs["eligible"] == {"A Aces", "B Bees"}
+    monkeypatch.setitem(espn.DIVISION_MIN_GAMES, "ncaabaseball", 3)
+    rows = espn.load_division_schedules("ncaabaseball", [2025], verbose=False)
+    assert rows.attrs["eligible"] == {"A Aces"}

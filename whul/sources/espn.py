@@ -844,8 +844,17 @@ def load_rostered_schedules(
 #: walking it would cost hours and score the wrong pool, so it stops instead.
 DIVISION_SIZE = {
     "ncaaf": (120, 145), "ncaam": (340, 380), "ncaaw": (340, 380),
-    "ncaabaseball": (270, 320), "ncaasoftball": (270, 330),
+    # Baseball's and softball's lists are Division I and some lower-division
+    # schools ESPN carries no games for, filed together under groups that are
+    # not divisions (September 2026: LSU and Wake Forest in one, TCU and Oregon
+    # State in the other). So the whole list is taken, and a school is kept
+    # only if it played a season -- ``DIVISION_MIN_GAMES``.
+    "ncaabaseball": (270, 480), "ncaasoftball": (270, 480),
 }
+
+#: Games a team must have in a season for its row to join the pool, where the
+#: list above is more than the division.
+DIVISION_MIN_GAMES = {"ncaabaseball": 20, "ncaasoftball": 20}
 
 #: A share of team schedules that may fail before a season is too thin to use.
 DIVISION_FAILURE_LIMIT = 0.02
@@ -1130,6 +1139,20 @@ def load_division_schedules(league: str, seasons: list[int],
             games = games.drop_duplicates(subset=["game_id"]).reset_index(drop=True)
             frames.append(_season_conferences(league, games, season, set(teams),
                                               verbose))
+    minimum = DIVISION_MIN_GAMES.get(league)
+    if minimum and frames:
+        # Kept to the teams that played a season in at least one of them.
+        both = pd.concat(frames, ignore_index=True)
+        sides = pd.concat([
+            both[["season", side]].rename(columns={side: "team"})
+            for side in ("home_team", "away_team")])
+        busy = {team for (_, team), n in sides.value_counts().items() if n >= minimum}
+        kept = eligible & busy
+        if verbose:
+            print(f"  {league}: {len(kept)} of {len(eligible)} listed teams played "
+                  f"a season of {minimum}+ games; the rest are not in the pool",
+                  flush=True)
+        eligible = kept
     if attempted and failed > attempted * DIVISION_FAILURE_LIMIT:
         raise RuntimeError(
             f"{league}: {failed} of {attempted} team schedules could not be read. "
