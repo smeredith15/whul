@@ -290,9 +290,17 @@ def pool_leaders(
     out: dict = {}
     for group, block in pool.groupby("norm_key"):
         best = block.nlargest(LEADERS, "total_points")
+        # With the games behind the figure, where the scorer counts them: a
+        # leader on sixty games is a season, one on ninety is two stuck together.
+        def season_of(row) -> str:
+            label = str(row[season_col]) if season_col in pool.columns else ""
+            games = row.get("games_played") if "games_played" in pool.columns else None
+            if games is not None and games == games:
+                label = f"{label} ({int(games)} games)".strip()
+            return label
+
         out[str(group)] = [
-            (str(row[named]) if named else "?",
-             str(row[season_col]) if season_col in pool.columns else "",
+            (str(row[named]) if named else "?", season_of(row),
              float(row["total_points"]))
             for _, row in best.iterrows()
         ]

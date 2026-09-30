@@ -1825,16 +1825,39 @@ def test_the_division_is_the_group_the_anchor_programs_are_in(monkeypatch):
 
 def test_a_listed_school_that_did_not_play_a_season_is_not_in_the_pool(monkeypatch):
     """Baseball's list holds lower-division schools ESPN carries few or no
-    games for; only a team with a season's worth of games is kept."""
+    games for; only a team with a season's worth of games is kept. Run on the
+    basketball fixture, whose dates are a basketball season's."""
     from whul.sources import espn
 
     feed = _division_feed()
     monkeypatch.setattr(espn, "_get", feed)
-    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (2, 3))
-    monkeypatch.setitem(espn.DIVISION_MIN_GAMES, "ncaabaseball", 2)
-    rows = espn.load_division_schedules("ncaabaseball", [2025], verbose=False)
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaam", (2, 3))
+    monkeypatch.setitem(espn.DIVISION_MIN_GAMES, "ncaam", 2)
+    rows = espn.load_division_schedules("ncaam", [2025], verbose=False)
     # A Aces played three games, B Bees two: both kept at a minimum of two.
     assert rows.attrs["eligible"] == {"A Aces", "B Bees"}
-    monkeypatch.setitem(espn.DIVISION_MIN_GAMES, "ncaabaseball", 3)
-    rows = espn.load_division_schedules("ncaabaseball", [2025], verbose=False)
+    monkeypatch.setitem(espn.DIVISION_MIN_GAMES, "ncaam", 3)
+    rows = espn.load_division_schedules("ncaam", [2025], verbose=False)
     assert rows.attrs["eligible"] == {"A Aces"}
+
+
+def test_a_division_season_keeps_only_games_inside_its_dates(monkeypatch):
+    """A schedule asked for by season can carry games from outside it."""
+    from whul.sources import espn
+
+    feed = _division_feed()
+
+    def with_stray(url, params, cache_key=None):
+        payload = feed(url, params, cache_key)
+        if url.endswith("/teams/1/schedule") and params.get("seasontype") != 3:
+            stray = json.loads(json.dumps(payload["events"][0]))
+            stray["id"], stray["date"] = "g0", "2023-11-20T23:00Z"
+            payload = {"events": payload["events"] + [stray]}
+        return payload
+
+    import json
+    monkeypatch.setattr(espn, "_get", with_stray)
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaam", (2, 3))
+    rows = espn.load_division_schedules("ncaam", [2025], verbose=False)
+    assert "g0" not in set(rows["game_id"]), "November 2023 is not in the 2025 season"
+    assert {"g1", "g2", "g3"} <= set(rows["game_id"])
