@@ -82,7 +82,10 @@ on:
           with a season to date, and every day before stored nothing, so each
           manager's line leapt on the 5th. Every stored MLB day is restated
           from today's game-log line too, since those were built from totals
-          that ran days behind. Implies backfill.
+          that ran days behind. Safe to tick again: it re-anchors every MLB day
+          on the latest line, which is what repairs a history put back on the
+          lagging lines (a rescore did that on 30 September; rescore now
+          rescales stored scores and no longer can). Implies backfill.
         type: boolean
         default: false
       rescore:

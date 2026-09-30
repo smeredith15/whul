@@ -911,13 +911,26 @@ def cmd_rescore(args: argparse.Namespace) -> int:
     Three club soccer players went down about a point on the day the September
     scale was adopted, with identical raw totals on both days.
 
-    No feed is touched. The raw figures are already in ``raw_stats``; this
-    re-runs the normalization over them, which is the only step the new scale
-    changes. That is also why it can be trusted: rescoring the most recent day
-    must reproduce what is already stored for it, and the command checks that
-    before writing anything.
+    **Rescaled, not recomputed.** Each stored score is moved by the ratio of the
+    divisor it was scored against to the new one, which is the only thing the
+    new scale changes. It used to be recomputed from the stored raw line
+    instead, and the two are not the same where a stored score was deliberately
+    made to differ from its line: the MLB backdate rebuilds each day from the
+    game logs because the lines ran days behind, and on 30 September a rescore
+    after a freeze put every one of those days back on the lagging lines. Eighteen
+    managers' MLB players leapt on 5 September again, a week after that was
+    fixed. A score is rescaled whether or not a raw line exists for its day, so
+    the rebuilt days before a player's first line move with the rest.
+
+    The divisor is the asset's own normalization group, read off its stored
+    line where there is one. A two-way MLB player is the exception: his score is
+    two roles on two divisors folded together, so his ratio is taken from the
+    line rescored both ways.
+
+    The check that this does what the scorer does: the most recent day, which
+    nothing restates, must rescore from its raw line to what is stored for it
+    wherever it was already scored against this version.
     """
-    from whul import pipeline
     from whul.normalize import apply_benchmarks
     from whul.store import benchmarks as store_benchmarks
     from whul.store import open_store
@@ -944,84 +957,152 @@ def cmd_rescore(args: argparse.Namespace) -> int:
         print(f"\nNo scored days for {args.season}.\n", file=sys.stderr)
         return 1
 
-    assets = store.query("SELECT asset_id, asset_type, league FROM assets")
+    assets = store.query("SELECT asset_id, asset_type, league, norm_key FROM assets")
     kinds = (
         dict(zip(assets["asset_id"], assets["asset_type"])),
         dict(zip(assets["asset_id"], assets["league"])),
     )
+    groups = dict(zip(assets["asset_id"], assets["norm_key"]))
+    divisors: dict[str, dict] = {}
+
+    def divisor(ver: str, asset_type, key) -> float | None:
+        if ver not in divisors:
+            frame = store_benchmarks.load(store, ver)
+            divisors[ver] = {(t, k): float(b) for t, k, b in zip(
+                frame["asset_type"], frame["norm_key"], frame["benchmark"])}
+        value = divisors[ver].get((asset_type, key))
+        return value if value else None
+
     print(f"\nRestating {len(days)} day(s) of {args.season} against {version}.\n")
 
-    changed, moved, written, wrong = 0, 0.0, 0, []
-    plan = []
+    # Every day's raw lines scored against the new version, first, because the
+    # group an asset is normalized in is read off them -- and a day rebuilt
+    # before a player's first line has none of its own. The asset table's
+    # group is not the benchmark's for every league: an MLB batter is "MLB"
+    # there and "MLB_Batter" in the benchmarks.
+    rescored = {}
+    for day in days:
+        fresh = _rescore_day(store, args.season, day, bench, kinds, apply_benchmarks)
+        fresh = fresh if fresh is not None else pd.DataFrame(columns=["asset_id"])
+        rescored[day] = (fresh.drop_duplicates("asset_id").set_index("asset_id")
+                         if not fresh.empty else fresh)
+        if "norm_key" in rescored[day].columns:
+            groups.update(rescored[day]["norm_key"].dropna().to_dict())
+
+    changed, moved, wrong, unexplained = 0, 0.0, [], {}
+    plan: list[tuple] = []
+    now = _now_text()
     for day in days:
         rows_for_day = store.query(
-            "SELECT asset_id, scaled_score, benchmark_version FROM daily_scores "
-            "WHERE season = ? AND as_of = ?", (args.season, day),
+            "SELECT asset_id, scaled_score, held_score, benchmark_version "
+            "FROM daily_scores WHERE season = ? AND as_of = ?",
+            (args.season, day),
         )
-        already = set(rows_for_day["benchmark_version"]) == {version}
-        stored = rows_for_day.set_index("asset_id")["scaled_score"].to_dict()
+        by_asset = rescored[day]
+        two_way = set(by_asset.index[by_asset["is_two_way"].fillna(False).astype(bool)]) \
+            if "is_two_way" in by_asset.columns else set()
 
-        rows = _rescore_day(store, args.season, day, bench, kinds, apply_benchmarks)
-        if rows is None or rows.empty:
-            print(f"  {day}: no raw figures stored, so it is left as it is")
-            continue
+        # The check: the most recent day, which nothing restates.
+        if day == days[-1]:
+            mismatched, gap_max = 0, 0.0
+            for row in rows_for_day.itertuples():
+                if row.benchmark_version != version or row.asset_id not in by_asset.index:
+                    continue
+                gap = abs(float(by_asset.loc[row.asset_id, "scaled_score"])
+                          - float(row.scaled_score))
+                if gap > 0.05:
+                    mismatched += 1
+                    gap_max = max(gap_max, gap)
+            if mismatched:
+                wrong.append((day, mismatched, gap_max))
 
-        day_changed, day_moved = 0, 0.0
-        for row in rows.itertuples():
-            was = stored.get(row.asset_id)
-            if was is None:
+        stale_versions = set(rows_for_day["benchmark_version"]) - {version}
+        was_scored = {}
+        # A two-way player's ratio is his line rescored both ways, so the
+        # old version is only asked about on a day that has one.
+        for ver in stale_versions:
+            if two_way:
+                old = _rescore_day(store, args.season, day,
+                                   store_benchmarks.load(store, ver), kinds,
+                                   apply_benchmarks)
+                if old is not None and not old.empty:
+                    was_scored[ver] = old.drop_duplicates("asset_id").set_index(
+                        "asset_id")["scaled_score"].to_dict()
+
+        day_changed, day_moved, updates = 0, 0.0, []
+        for row in rows_for_day.itertuples():
+            if row.benchmark_version == version:
                 continue
-            gap = abs(float(row.scaled_score) - float(was))
+            asset_id = row.asset_id
+            ratio = None
+            if asset_id in two_way:
+                new_s = float(by_asset.loc[asset_id, "scaled_score"])
+                old_s = was_scored.get(row.benchmark_version, {}).get(asset_id)
+                if old_s:
+                    ratio = new_s / float(old_s)
+            if ratio is None:
+                key = (by_asset.loc[asset_id, "norm_key"]
+                       if asset_id in by_asset.index and "norm_key" in by_asset.columns
+                       else groups.get(asset_id))
+                asset_type = kinds[0].get(asset_id)
+                old_d = divisor(row.benchmark_version, asset_type, key)
+                new_d = divisor(version, asset_type, key)
+                if old_d and new_d:
+                    ratio = old_d / new_d
+            if ratio is None:
+                unexplained[asset_id] = unexplained.get(asset_id, 0) + 1
+                continue
+            score = round(float(row.scaled_score) * ratio, 2)
+            held = round(float(row.held_score or 0.0) * ratio, 2)
+            gap = abs(score - float(row.scaled_score))
             if gap > 0.05:
                 day_changed += 1
                 day_moved = max(day_moved, gap)
+            updates.append((score, held, version, now, asset_id, args.season, day))
         changed += day_changed
         moved = max(moved, day_moved)
-        # A day already scored against this version must come back unchanged.
-        # It is the only check available that the restatement reproduces what
-        # the scorer itself does, and it costs nothing to print.
-        if already and day_changed:
-            # This day was already scored against this very scale, so restating
-            # it must reproduce what is there. That it does not means the
-            # restatement is not doing what the scorer does, and every earlier
-            # day it rewrites would be wrong in the same way and silently.
-            wrong.append((day, day_changed, day_moved))
-        note = ("unchanged, as it should be -- already scored against this scale"
-                if already and not day_changed else
-                f"{day_changed} asset(s) move, largest {day_moved:.1f}"
+        note = (f"{day_changed} asset(s) move, largest {day_moved:.1f}"
                 if day_changed else "nothing moves")
-        print(f"  {day}: {len(rows):>3} asset(s) restated; {note}")
-        plan.append((day, rows))
+        print(f"  {day}: {len(updates):>3} asset(s) restated; {note}")
+        plan.extend(updates)
 
     if wrong:
-        print(f"\n  REFUSED. {len(wrong)} day(s) already scored against {version} "
-              f"do not come back the same:", file=sys.stderr)
+        print(f"\n  REFUSED. The most recent day, already scored against "
+              f"{version}, does not come back the same from its raw figures:",
+              file=sys.stderr)
         for day, count, gap in wrong:
             print(f"    {day}: {count} asset(s) differ, largest {gap:.1f}",
                   file=sys.stderr)
-        print("\n  Restating the other days would rewrite them the same wrong "
-              "way, and\n  nothing afterwards would say so. Nothing was "
-              "written.\n", file=sys.stderr)
+        print("\n  The scale the stored scores claim is not the one they were "
+              "scored against,\n  and rescaling them from it would be wrong the "
+              "same way. Nothing was written.\n", file=sys.stderr)
         return 1
 
-    for day, rows in plan:
-        if args.dry_run:
-            continue
-        written += pipeline.write_daily_scores(
-            store, rows.assign(total_points=rows["league_points"]),
-            args.season, day, version,
-        )
+    if unexplained:
+        named = ", ".join(sorted(unexplained)[:10])
+        print(f"\n  {len(unexplained)} asset(s) have no divisor in one of the two "
+              f"versions and are left on their old scale: {named}")
 
     print(f"\n  {changed} asset-day(s) move by more than a tenth; "
           f"largest move {moved:.1f}")
     if args.dry_run:
         print("\n  --dry-run, so nothing was written.\n")
         return 0
-    store.conn.commit()
-    print(f"  {written} row(s) restated.")
+    with store.transaction() as conn:
+        conn.executemany(
+            "UPDATE daily_scores SET scaled_score = ?, held_score = ?, "
+            "benchmark_version = ?, computed_at = ? "
+            "WHERE asset_id = ? AND season = ? AND as_of = ?", plan)
+    print(f"  {len(plan)} row(s) restated.")
     print(f"\n  Now run `rollup --backfill` to rebuild the standings from "
           f"them.\n")
     return 0
+
+
+def _now_text() -> str:
+    from whul.store.db import _now
+
+    return _now()
 
 
 def _rescore_day(store, season: str, day: str, bench, kinds, apply_benchmarks):
