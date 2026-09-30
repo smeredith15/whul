@@ -1861,3 +1861,21 @@ def test_a_division_season_keeps_only_games_inside_its_dates(monkeypatch):
     rows = espn.load_division_schedules("ncaam", [2025], verbose=False)
     assert "g0" not in set(rows["game_id"]), "November 2023 is not in the 2025 season"
     assert {"g1", "g2", "g3"} <= set(rows["game_id"])
+
+
+def test_a_team_schedule_dates_a_late_game_on_its_eastern_day(monkeypatch):
+    from whul.sources import espn
+
+    payload = {"events": [{
+        "id": "9", "date": "2026-11-12T03:30Z", "name": "x",
+        "seasonType": {"id": 2}, "competitions": [{
+            "status": {"type": {"completed": True}},
+            "competitors": [
+                {"homeAway": "home", "score": {"value": 70},
+                 "team": {"displayName": "Gonzaga Bulldogs"}},
+                {"homeAway": "away", "score": {"value": 60},
+                 "team": {"displayName": "UCLA Bruins"}}]}]}]}
+    monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: payload)
+    row = espn.load_team_schedule("ncaam", "2250", 2027).iloc[0]
+    assert row["game_date"] == "2026-11-11"
+    assert row["start"] == "2026-11-12T03:30Z"
