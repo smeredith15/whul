@@ -1137,6 +1137,16 @@ def load_division_schedules(league: str, seasons: list[int],
         if season_frames:
             games = pd.concat(season_frames, ignore_index=True)
             games = games.drop_duplicates(subset=["game_id"]).reset_index(drop=True)
+            # The season's own dates only. A schedule asked for by season can
+            # carry games from outside it -- 2021 softball's leaders came back
+            # fifty points over what their records could score.
+            first, last = season_span(season, league)
+            day = pd.to_datetime(games["game_date"], errors="coerce").dt.date
+            outside = day.notna() & ((day < first) | (day > last))
+            if outside.any() and verbose:
+                print(f"  {league} {season}: {int(outside.sum())} game(s) dated "
+                      f"outside {first} to {last} left out", flush=True)
+            games = games[~outside].reset_index(drop=True)
             frames.append(_season_conferences(league, games, season, set(teams),
                                               verbose))
     minimum = DIVISION_MIN_GAMES.get(league)

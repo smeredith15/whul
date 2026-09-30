@@ -1113,3 +1113,16 @@ def test_a_pool_that_cannot_be_built_costs_the_names_not_the_benchmark():
 
     rows = _pool_rows([("Alpha", 2024, 300.0)]).assign(league="Nowhere League")
     assert benchmarks.pool_leaders(rows, "Team", managers=5) == {}
+
+
+def test_a_pool_leader_carries_the_games_behind_it():
+    """Sixty games is a season; ninety is two stuck together, and the review
+    needs to see which."""
+    from whul.benchmarks import pool_leaders
+
+    scored = pd.DataFrame([
+        {"team": f"T{i}", "season": 2021, "total_points": 100.0 - i,
+         "games_played": 60, "league": "NCAA Softball"} for i in range(30)])
+    leaders = pool_leaders(scored, "Team", 5)
+    assert leaders and all("(60 games)" in season
+                           for rows in leaders.values() for _, season, _ in rows)
