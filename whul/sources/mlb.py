@@ -688,7 +688,14 @@ def load_stats_api_players(
     suffix = "" if game_type == "R" else f"_{game_type}"
     if since is None:
         params = {"stats": "season", **common}
-        cache_key = f"statsapi/{group}_{season}{suffix}"
+        # Only a season that can no longer change. Cached from the first ask,
+        # the 2026 Wild Card round was read on 15 September -- when nobody had
+        # played it -- and that empty answer was served every night after:
+        # Acuna and the White Sox won their openers and scored nothing for it.
+        # Named apart from that key, so the stale file is never read back as
+        # final once the season is over.
+        cache_key = (f"statsapi/{group}_{season}{suffix}_final"
+                     if season_is_over(season) else None)
     else:
         end = until or date.today()
         params = {

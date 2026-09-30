@@ -971,3 +971,23 @@ def test_no_bye_until_the_whole_wild_card_field_is_named():
     status = _between(left=0, wild_card=("Chaser", "Wildcard"))
     assert status["wc_bye"].sum() == 0
     assert status.loc["Leader", "is_division_champ"] == 1
+
+
+def test_a_postseason_still_being_played_is_asked_again_every_night(monkeypatch):
+    """Cached from the first ask, the 2026 Wild Card round was read before it
+    had been played and that empty answer was served every night after."""
+    from whul.sources import mlb as source
+
+    keys = []
+
+    def fake(url, params, cache_key=None):
+        keys.append(cache_key)
+        return {"stats": []}
+
+    monkeypatch.setattr(source, "_get", fake)
+    monkeypatch.setattr(source, "season_is_over", lambda season: season < 2026)
+    source.load_stats_api_players(2026, "hitting", game_type="F")
+    source.load_stats_api_players(2025, "hitting", game_type="F")
+    assert keys[0] is None
+    assert keys[1] == "statsapi/hitting_2025_F_final", \
+        "named apart from the key the stale empty answers were written under"
