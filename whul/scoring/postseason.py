@@ -10,14 +10,24 @@ extra games equal to a fixed share of the regular season -- the same share in
 every competition, so a title run is worth proportionally the same everywhere::
 
     scalar   = bonus_share * regular_games          # 10% of a season by default
-    po_rate  = postseason_points / postseason_games
+    po_rate  = postseason_points / club_postseason_games
     bonus    = po_rate * scalar
     total    = regular_points + bonus
 
-So an NFL player who plays one playoff game has those points multiplied by 1.7;
-two playoff games, their combined points by 1.7/2; and so on. A player who
-performs in the postseason exactly at their regular-season rate earns a bonus
-worth 10% of their regular season, in every league.
+So an NFL player whose club plays one playoff game has his points from it
+multiplied by 1.7; two playoff games, his combined points by 1.7/2; and so on.
+
+**Per club game, not per appearance.** The scalar is counted in the club's
+games -- 10% of a 17-game schedule -- so the rate it multiplies is too. Divided
+by his own appearances instead, a player who does not play every game had one
+appearance stretched over the whole credit: a starting pitcher's one October
+start was paid as twelve, which is 38% of a starter's season where an everyday
+player's run is 7.5% of his. Counted per club game, a starter who takes three of
+twelve starts is paid for the three, and missing a playoff game costs a player
+exactly what missing a regular-season game does. Nothing here reads the
+player's own regular season: the scalar comes from the league's schedule and
+the rate from the playoffs alone. Where a feed cannot say how many games the
+club played, his own appearances stand in, which is what they were before.
 
 Some games count as neither phase and are dropped entirely: the NBA Play-In, and
 European qualifying rounds. Only the playoffs and European competition proper
@@ -238,17 +248,40 @@ def rule_for(tier: str, league: str = "") -> PostseasonRule | None:
     return RULES.get(BONUS_TIERS.get(str(tier), ""))
 
 
-def bonus_for(points: float, games: float, rule: PostseasonRule | None) -> float:
+def rate_games(games: float, team_games: float | None = None) -> float:
+    """The games a postseason rate is taken over: the club's, where known.
+
+    Never fewer than his own. A club count below his appearances is a feed
+    that has not caught up with a game he is already credited with, and
+    dividing by it would pay that game more than once.
+    """
+    games = float(games or 0.0)
+    try:
+        club = float(team_games)
+    except (TypeError, ValueError):
+        return games
+    if club != club or club <= 0:
+        return games
+    return max(club, games)
+
+
+def bonus_for(points: float, games: float, rule: PostseasonRule | None,
+              team_games: float | None = None) -> float:
     """What a run at this rate adds, for one competition.
 
-    Rate, not tally: the points are divided by the games that produced them and
-    credited as though the player had played ``rule.scalar`` more of them. A
-    competition nobody appeared in adds nothing rather than dividing by zero.
+    Rate, not tally: the points are divided by the games his club played in it
+    and credited as though it had played ``rule.scalar`` more of them. A
+    competition he never appeared in adds nothing rather than dividing by zero.
     """
     if rule is None or not games:
         return 0.0
-    return float(points) / float(games) * rule.scalar
+    return float(points) / rate_games(games, team_games) * rule.scalar
 
+
+#: How many postseason games the player's club played, where a scorer knows.
+#: Read by ``apply_bonus`` as the rate's denominator; absent or blank, the
+#: player's own appearances are used.
+TEAM_GAMES_COLUMN = "postseason_team_games"
 
 #: The column carrying the per-competition breakdown, as a list of dicts. A
 #: list survives into ``raw_stats`` as JSON and is skipped by the season-totals
@@ -259,6 +292,7 @@ DETAIL_COLUMN = "bonus_detail"
 def detail_for(
     competition: str, games: float, points: float, rule: PostseasonRule | None,
     season: int | None = None, as_of=None, counts: dict | None = None,
+    team_games: float | None = None,
 ) -> dict:
     """One competition's postseason line, for the profile window.
 
@@ -269,7 +303,7 @@ def detail_for(
     page when they split.
     """
     games, points = float(games or 0.0), float(points or 0.0)
-    adds = bonus_for(points, games, rule)
+    adds = bonus_for(points, games, rule, team_games)
     # Asked of the *rule*, not of the label. "UEFA Champions League" is what a
     # reader is shown and "UCL" is what the calendar is keyed by; looking the
     # first one up finds nothing, and finding nothing means never crediting.
@@ -288,6 +322,9 @@ def detail_for(
         **{k: float(v or 0.0) for k, v in (counts or {}).items()},
         "competition": competition,
         "games": games,
+        # What the rate was taken over: his club's games in the competition,
+        # or his own where the feed could not say.
+        "team_games": rate_games(games, team_games),
         "points": points,
         "share": rule.bonus_share if rule else 0.0,
         "scalar": rule.scalar if rule else 0.0,
@@ -329,7 +366,13 @@ def apply_bonus(
             raise KeyError(f"expected phase column {col!r}; have {sorted(out.columns)}")
 
     appeared = out["postseason_games"] > 0
-    po_rate = out["postseason_points"].divide(out["postseason_games"]).where(appeared, 0.0)
+    # Per club game where the frame says how many his club played -- see the
+    # module docstring -- and per appearance where it cannot.
+    club = (out[TEAM_GAMES_COLUMN] if TEAM_GAMES_COLUMN in out.columns
+            else pd.Series(float("nan"), index=out.index))
+    over = [rate_games(g, t) for g, t in zip(out["postseason_games"], club)]
+    po_rate = out["postseason_points"].divide(
+        pd.Series(over, index=out.index).where(appeared, 1.0)).where(appeared, 0.0)
 
     scalar = rule.scalar if rule else 0.0
     out["postseason_rate"] = po_rate.round(4)
@@ -342,10 +385,10 @@ def apply_bonus(
     out[DETAIL_COLUMN] = [
         [detail_for(label, games, points, rule,
                     season=int(row_season) if row_season is not None else None,
-                    as_of=as_of)]
+                    as_of=as_of, team_games=club_games)]
         if games else []
-        for games, points, row_season in zip(
-            out["postseason_games"], out["postseason_points"], seasons)
+        for games, points, row_season, club_games in zip(
+            out["postseason_games"], out["postseason_points"], seasons, club)
     ]
     # Held until the competition is over: a rate off one playoff game projects
     # a whole share of a season, and a second game without production lowers

@@ -18,6 +18,7 @@ from whul.scoring.postseason import (
     POSTSEASON,
     REGULAR,
     RULES,
+    TEAM_GAMES_COLUMN,
     apply_bonus,
     phase_totals,
     regular_totals,
@@ -173,7 +174,10 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
         work, keys, counted, work["phase"], POSTSEASON, prefix="post_")
     agg = apply_bonus(
         phases.merge(counting, on=keys, how="left")
-        .merge(post_counting, on=keys, how="left"),
+        .merge(post_counting, on=keys, how="left")
+        .merge(_games_his_team_played(work, keys, box, POSTSEASON)
+               .rename(columns={"team_games": TEAM_GAMES_COLUMN}),
+               on=keys, how="left"),
         RULES["NBA"] if postseason else None)
     for column in [f"post_{c}" for c in counted]:
         if column in agg.columns:
@@ -250,7 +254,8 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
 
 
 def _games_his_team_played(work: pd.DataFrame, keys: list[str],
-                           box: pd.DataFrame) -> pd.DataFrame:
+                           box: pd.DataFrame,
+                           phase: str = REGULAR) -> pd.DataFrame:
     """How many games the player's club played, beside how many he did.
 
     Fifty of eighty-two is a season interrupted and fifty of fifty is the
@@ -260,6 +265,9 @@ def _games_his_team_played(work: pd.DataFrame, keys: list[str],
     are the dates it played -- so nothing is fetched. Returns an empty column
     where the feed carries no team, which is the honest answer rather than a
     number that would be the player's own games by another name.
+
+    ``phase=POSTSEASON`` counts the playoffs instead, which is what a playoff
+    rate is taken over (``whul.scoring.postseason``).
     """
     team = resolve_str(box, ["team_abbreviation", "team_abbrev", "team_id",
                              "team_name", "team"])
@@ -270,7 +278,7 @@ def _games_his_team_played(work: pd.DataFrame, keys: list[str],
         _team=team.reindex(work.index).astype(str),
         _day=day.reindex(work.index).astype(str),
     )
-    held = held[held["phase"] == REGULAR]
+    held = held[held["phase"] == phase]
     if held.empty:
         return work[keys].drop_duplicates().assign(team_games=pd.NA)
     days = held.groupby("_team")["_day"].agg(lambda s: frozenset(s)).to_dict()

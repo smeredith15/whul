@@ -222,15 +222,38 @@ def test_real_2024_season_sanity():
     assert champ["team"] == "PHI" and champ["playoff_wins"] == 4
 
 
-def test_postseason_games_counts_player_appearances():
-    """The rate denominator is the player's own games, not his team's."""
+def test_postseason_rate_is_per_game_his_club_played():
+    """He played two of Buffalo's three playoff games; the rate is over three.
+
+    The credit is counted in club games, so the rate is too -- a missed playoff
+    game costs what a missed regular-season game does. His own appearances are
+    still what he is shown as having played.
+    """
     stats = pd.DataFrame(
         [weekly(week=w, passing_yards=1000) for w in range(1, 18)]
         + [weekly(week=19, season_type="POST", passing_yards=500),
            weekly(week=21, season_type="POST", passing_yards=500)]
+        # A teammate who played the week he missed.
+        + [weekly(week=w, season_type="POST", player_id="00-2",
+                  player_display_name="Backup QB", passing_yards=100)
+           for w in (19, 20, 21)]
     )
-    out = score_players(stats).iloc[0]
+    out = score_players(stats).set_index("player").loc["Test QB"]
     assert out["postseason_games"] == 2, "week 20 was missed and must not count"
+    assert out["postseason_rate"] == pytest.approx(40.0 / 3, abs=1e-4)
+    assert out["bonus_detail"][0]["team_games"] == 3.0
+
+
+def test_a_player_traded_away_is_not_charged_with_his_old_club_s_playoffs():
+    """Only the clubs he played for in January count towards his rate."""
+    stats = pd.DataFrame(
+        [weekly(week=1, recent_team="KC", passing_yards=1000),
+         weekly(week=19, season_type="POST", passing_yards=500)]
+        + [weekly(week=w, season_type="POST", player_id="00-2",
+                  player_display_name="KC QB", recent_team="KC",
+                  passing_yards=100) for w in (19, 20, 21, 22)]
+    )
+    out = score_players(stats).set_index("player").loc["Test QB"]
     assert out["postseason_rate"] == pytest.approx(20.0)
 
 

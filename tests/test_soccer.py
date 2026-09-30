@@ -1347,3 +1347,34 @@ def test_a_club_carries_the_matches_a_players_own_count_is_measured_against():
 
     assert out["matches_played"] == 3
     assert out["counted_matches"] == 2, "the Champions League night is a bonus"
+
+
+def test_a_european_rate_is_per_match_his_club_played():
+    """A substitute who came on once in eight Champions League matches is
+    paid for one match's work over eight, read off his squad: the most matches
+    any of his club's players made in it."""
+    frame = pd.DataFrame([
+        player_row("Premier League", matches=30, goals=4, team="Arsenal"),
+        player_row("UEFA Champions League", matches=1, goals=1, team="Arsenal"),
+        player_row("UEFA Champions League", matches=8, goals=0, team="Arsenal",
+                   player="The Keeper", position="GK"),
+        player_row("UEFA Champions League", matches=10, goals=0, team="Inter",
+                   player="Someone Else"),
+    ])
+    out = soccer.score_players(frame).set_index("player")
+    detail = out.loc["A Winger", "bonus_detail"][0]
+    assert detail["games"] == 1.0
+    assert detail["team_games"] == 8.0, "Inter's ten are not Arsenal's"
+    assert detail["adds"] == pytest.approx(detail["points"] / 8 * 1.9)
+
+
+def test_a_european_rate_without_a_club_uses_his_own_matches():
+    frame = pd.DataFrame([
+        player_row("Premier League", matches=30, goals=4),
+        player_row("UEFA Champions League", matches=2, goals=1),
+        player_row("UEFA Champions League", matches=8, goals=0,
+                   player="The Keeper", position="GK"),
+    ])
+    detail = soccer.score_players(frame).set_index("player").loc[
+        "A Winger", "bonus_detail"][0]
+    assert detail["team_games"] == 2.0

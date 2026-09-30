@@ -274,3 +274,25 @@ def test_a_team_carries_what_it_lost_as_well_as_what_it_won():
     out = score_teams(sched).set_index("team")
     assert out.loc["BOS", "reg_wins"] == 1
     assert out.loc["BOS", "reg_losses"] == 11
+
+
+def test_playoff_rate_is_per_game_his_club_played():
+    """One playoff game of his club's four, at 40 points: 10 a club game.
+
+    The credit is counted in club games, so the rate is too, and a bench
+    player's one appearance is not stretched over the whole credit.
+    """
+    regular = season_of([box(points=10, team_abbreviation="BOS", game_id="r")], n=20)
+    regular["game_id"] = [f"r{n}" for n in range(len(regular))]
+    playoff = pd.DataFrame(
+        [box(points=40, season_type=3, team_abbreviation="BOS", game_id="p1")]
+        + [box(athlete_id="2", athlete_display_name="Starter", points=20,
+               season_type=3, team_abbreviation="BOS", game_id=f"p{n}")
+           for n in range(1, 5)]
+    )
+    out = score_players(pd.concat([regular, playoff], ignore_index=True))
+    row = out.set_index("player").loc["Test Player"]
+    assert row["postseason_games"] == 1
+    assert row["bonus_detail"][0]["team_games"] == 4.0
+    assert row["postseason_rate"] == pytest.approx(
+        row["bonus_detail"][0]["points"] / 4)

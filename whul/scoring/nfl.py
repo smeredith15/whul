@@ -14,7 +14,8 @@ import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str, settled_seasons
 from whul.scoring.postseason import (
-    POSTSEASON, REGULAR, RULES, apply_bonus, phase_totals, regular_totals,
+    POSTSEASON, REGULAR, RULES, TEAM_GAMES_COLUMN, apply_bonus, phase_totals,
+    regular_totals,
     split_phases,
 )
 
@@ -129,7 +130,10 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
         phases.merge(teams, on=keys, how="left")
         .merge(counting, on=keys, how="left")
         .merge(post_counting, on=keys, how="left")
-        .merge(_weeks_his_team_played(work, keys), on=keys, how="left"),
+        .merge(_weeks_his_team_played(work, keys), on=keys, how="left")
+        .merge(_weeks_his_team_played(work, keys, POSTSEASON)
+               .rename(columns={"team_games": TEAM_GAMES_COLUMN}),
+               on=keys, how="left"),
         RULES["NFL"] if postseason else None,
     )
     for column in [f"post_{c}" for c in PLAYER_WEIGHTS] + ["team_games"]:
@@ -140,7 +144,8 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     return agg[agg["total_points"] > 0].reset_index(drop=True)
 
 
-def _weeks_his_team_played(work: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+def _weeks_his_team_played(work: pd.DataFrame, keys: list[str],
+                           phase: str = REGULAR) -> pd.DataFrame:
     """How many games the player's club played, beside how many he did.
 
     The pair is the whole point: eleven games out of seventeen is a season
@@ -155,8 +160,13 @@ def _weeks_his_team_played(work: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     A player traded mid-season gets the union of his clubs' weeks, which is the
     number of games he could have appeared in. Counting one club would say he
     missed the half of the season he spent at the other.
+
+    ``phase=POSTSEASON`` counts January instead, which is what a playoff rate
+    is taken over (``whul.scoring.postseason``): only the clubs he played for
+    in it, so a player traded in October is not charged with his old club's
+    playoff games.
     """
-    regular = work[work["phase"] == REGULAR]
+    regular = work[work["phase"] == phase]
     if regular.empty:
         return work[keys].drop_duplicates().assign(team_games=0)
     weeks = (

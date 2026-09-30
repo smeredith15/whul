@@ -246,10 +246,12 @@ total  = regular_points + bonus
 | NHL | 84 | 8.4× |
 | Champions / Europa / Conference League | 38 | 3.8× |
 
-An NFL player with one playoff game has those points multiplied by 1.7; with two, their combined
-points by 1.7/2. A player who performs in the postseason at their regular-season rate earns exactly
-10% of that season — identically in every league. Outperforming that rate earns more, underperforming
-less. Raw postseason stats never enter the total directly; they only set the rate.
+The rate is per game the player's **club** played in the postseason, not per game he played (changed
+September 2026): the credit is counted in club games, so the rate is too, and a playoff game he sits
+out is a zero exactly as a regular-season one is. An NFL player whose club plays one playoff game has
+his points from it multiplied by 1.7; two games, his combined points by 1.7/2. Nothing about his
+regular season enters the bonus. Raw postseason stats never enter the total directly; they only set
+the rate.
 
 `bonus_share` is global and `scalar` is overridable per competition, both tunable from the admin
 dashboard without touching the formula.

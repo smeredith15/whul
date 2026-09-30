@@ -506,3 +506,21 @@ def test_a_season_not_yet_played_reports_no_losses_rather_than_a_negative():
     out = score_teams(pd.DataFrame([team(gamesPlayed=0, wins=3, otLosses=0)]),
                       scale_regular_season=False).iloc[0]
     assert out["reg_losses"] == 0
+
+
+def test_a_club_s_playoff_games_are_the_most_any_of_its_skaters_played():
+    """Somebody on every roster plays every playoff game, so the skater pull
+    already says how many the club played -- no second request."""
+    from whul.scoring.nhl import club_playoff_games, score_skaters
+
+    raw = pd.DataFrame([
+        skater(skaterFullName="Depth", teamAbbrevs="EDM", gamesPlayed=3, goals=1),
+        skater(skaterFullName="Captain", teamAbbrevs="EDM", gamesPlayed=11, goals=5),
+        skater(skaterFullName="Other", teamAbbrevs="FLA", gamesPlayed=7, goals=2),
+    ]).assign(_phase="post")
+    scored = score_skaters(raw)
+    out = club_playoff_games(scored, ["season", "player"]).set_index("player")
+    assert out.loc["Depth", "postseason_team_games"] == 11
+    assert out.loc["Other", "postseason_team_games"] == 7
+    assert club_playoff_games(scored.assign(_phase="reg"),
+                              ["season", "player"]).empty
