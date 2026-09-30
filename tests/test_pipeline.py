@@ -470,6 +470,66 @@ def test_a_dry_run_writes_nothing(tmp_path, capsys):
     assert round(float(after["scaled_score"].iloc[0]), 2) == 14.70
 
 
+def test_a_day_rebuilt_away_from_its_raw_line_keeps_its_rebuild(tmp_path):
+    """The MLB backdate rebuilds each stored day from the game logs, because
+    the lines behind them ran days behind. A rescore that recomputed from the
+    lines put them all back on 30 September; rescaled, the rebuild stands."""
+    from whul.store import open_store
+
+    store = rescore_store(tmp_path, {"2026-09-09": "old", "2026-09-10": "new"},
+                          {"old": 163.26, "new": 175.52})
+    # Rebuilt to 8.00 on the old scale, though its stored line says 24 points.
+    store.conn.execute(
+        "UPDATE daily_scores SET scaled_score = 8.0, held_score = 2.0 "
+        "WHERE as_of = '2026-09-09'")
+    store.conn.commit()
+
+    assert run_rescore(tmp_path) == 0
+    row = open_store(str(tmp_path / "whul.sqlite3")).query(
+        "SELECT scaled_score, held_score, benchmark_version FROM daily_scores "
+        "WHERE as_of = '2026-09-09'").iloc[0]
+    assert row["benchmark_version"] == "new"
+    assert float(row["scaled_score"]) == pytest.approx(8.0 * 163.26 / 175.52, abs=0.01)
+    assert float(row["held_score"]) == pytest.approx(2.0 * 163.26 / 175.52, abs=0.01)
+
+
+def test_a_day_with_no_raw_line_is_still_moved_to_the_new_scale(tmp_path):
+    """The days before a player's first stored line are rebuilt from his games
+    and have no line of their own. Left behind, they sat on the old divisor
+    beside days on the new one."""
+    from whul.store import open_store
+
+    store = rescore_store(tmp_path, {"2026-09-09": "old", "2026-09-10": "new"},
+                          {"old": 163.26, "new": 175.52})
+    store.upsert("daily_scores", [{
+        "asset_id": "a1", "season": "2026-27", "as_of": "2026-09-08",
+        "league_points": 12.0, "scaled_score": 7.35,
+        "benchmark_version": "old", "computed_at": "2026-09-08T09:00:00Z",
+    }], ["asset_id", "season", "as_of"])
+    store.conn.commit()
+
+    assert run_rescore(tmp_path) == 0
+    row = open_store(str(tmp_path / "whul.sqlite3")).query(
+        "SELECT scaled_score, benchmark_version FROM daily_scores "
+        "WHERE as_of = '2026-09-08'").iloc[0]
+    assert row["benchmark_version"] == "new"
+    assert float(row["scaled_score"]) == pytest.approx(7.35 * 163.26 / 175.52, abs=0.01)
+
+
+def test_rescoring_twice_is_rescoring_once(tmp_path):
+    from whul.store import open_store
+
+    rescore_store(tmp_path, {"2026-09-09": "old", "2026-09-10": "new"},
+                  {"old": 163.26, "new": 175.52})
+    assert run_rescore(tmp_path) == 0
+    once = open_store(str(tmp_path / "whul.sqlite3")).query(
+        "SELECT as_of, scaled_score FROM daily_scores ORDER BY as_of")
+    assert run_rescore(tmp_path) == 0
+    twice = open_store(str(tmp_path / "whul.sqlite3")).query(
+        "SELECT as_of, scaled_score FROM daily_scores ORDER BY as_of")
+    assert once.equals(twice)
+
+
 # --- what is not in the total yet -------------------------------------------
 
 def test_held_points_are_what_the_total_would_gain(league):
