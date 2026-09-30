@@ -1819,7 +1819,8 @@ SCRIPT = """\
       detail = detail ? detail + ' \u00b7 ' + lines : lines;
     }
     var change = (held && Math.abs(mover.delta) < 0.05)
-      ? (mover.pending > 0 ? '+' : '') + mover.pending.toFixed(1) + ' held'
+      ? (mover.pending == null ? 'held'
+        : (mover.pending > 0 ? '+' : '') + mover.pending.toFixed(1) + ' held')
       : sign + mover.delta.toFixed(1);
     return '<tr' + (quiet ? ' class="benched"' : '') + '>' +
       '<td><button class="assetlink" data-asset="' + mover.asset + '">' +

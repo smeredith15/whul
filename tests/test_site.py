@@ -2195,6 +2195,10 @@ def held_store(tmp_path):
         {"asset_id": "a1", "asset_type": "Player", "display_name": "Mbappé",
          "league": "La Liga", "norm_key": "La Liga", "created_at": "2026-08-21"},
     ], ["asset_id"])
+    store.upsert("benchmark_versions", [{
+        "version": "v1", "season": "2026-27", "quantile": 0.99, "managers": 15,
+        "computed_at": "2026-09-01T09:00:00Z", "notes": "",
+    }], ["version"])
     # The score does not move: the bonus the match feeds is held.
     store.upsert("slot_scores", [
         {"slot_id": "s1", "season": "2026-27", "as_of": day,
@@ -2215,6 +2219,13 @@ def held_store(tmp_path):
                                  "bonus_detail": detail}),
             "fetched_at": f"{day}T09:00:00Z",
         }], ["asset_id", "season", "as_of", "source", "phase"])
+        # The score the feed's row made, which is where the page learns what a
+        # raw point is worth for this player: 12 normalized for 24 raw.
+        store.upsert("daily_scores", [{
+            "asset_id": "a1", "season": "2026-27", "as_of": day,
+            "league_points": 24.0, "scaled_score": 12.0,
+            "benchmark_version": "v1", "computed_at": f"{day}T09:00:00Z",
+        }], ["asset_id", "season", "as_of"])
     store.conn.commit()
     return store
 
@@ -2228,8 +2239,25 @@ def test_a_european_night_shows_even_though_the_score_did_not_move(tmp_path):
                          ["2026-09-09", "2026-09-10"], ["SM"])["SM|2026-09-10"]
     mover = day["movers"][0]
     assert mover["delta"] == 0.0, "the score really did not move"
-    assert mover["pending"] == 11.4
+    # On the scale of the delta beside it: 11.4 raw points at 12 normalized
+    # for 24 raw is 5.7, not the raw figure.
+    assert mover["pending"] == 5.7
     assert mover["pending_line"] == ["UEFA Champions League 1 game · 6.0"]
+
+
+def test_a_held_bonus_box_says_what_it_is_worth_normalized():
+    """Raw held points beside a normalized score read as a rival to the season:
+    17.3 raw on an MLB bat was 1.2 to the score."""
+    from whul.site.build import _campaign_total, _score_per_point
+
+    row = {"total_points": 1466.8, "scaled_score": 100.0}
+    entry = {"adds": 17.3, "share": 0.075, "scalar": 12.15,
+             "credited": False, "finishes": "2026-11-20"}
+    box = _campaign_total(entry, _score_per_point(row))
+    assert box["aside"].split("\n")[0] == "1.2 normalized"
+    assert "held to 2026-11-20" in box["aside"]
+    # Nothing to price it by, and the box says nothing rather than guess.
+    assert "normalized" not in _campaign_total(entry, _score_per_point({}))["aside"]
 
 
 def test_a_day_with_no_match_at_all_is_still_left_out(tmp_path):

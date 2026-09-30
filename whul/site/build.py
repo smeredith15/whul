@@ -427,6 +427,13 @@ def asset_profiles(
             bonuses[asset_id] = _bonus_list(row)
             notes[asset_id] = _scaling_notes(row)
             lines[asset_id] = _stat_lines(row)
+            # The feed's row has the raw total and not the score it made, and a
+            # held bonus is priced on the page by the ratio of the two. Set
+            # after the stat lines are read, so it is never shown as one.
+            if asset_id in scores.index:
+                row["score_per_point"] = _ratio(
+                    scores.loc[asset_id, "scaled_score"],
+                    scores.loc[asset_id, "league_points"])
             raw_rows[asset_id] = row
             if str(row.get("league")) == "NFL":
                 # On whether the role is a position, not on whether the field
@@ -2390,7 +2397,7 @@ def _mlb_posts(row: dict, role: str, build: dict,
     games = _stat_number(entry, "games")
     made["name"] = "Playoffs"
     made["games"] = "\u2014" if games is None else f"{games:,.0f}"
-    made["total"] = _campaign_total(entry)
+    made["total"] = _campaign_total(entry, _score_per_point(row))
     made["note"] = _campaign_note(entry)
     return [made]
 
@@ -2822,7 +2829,32 @@ def _soccer_campaign_boxes(figures: dict) -> dict:
     }
 
 
-def _campaign_total(entry: dict) -> dict:
+def _score_per_point(row: dict) -> float | None:
+    """What one raw point is worth on the normalized scale, for this asset.
+
+    A score is its points over its group's benchmark, so the ratio of the two
+    stored figures is the benchmark's reciprocal and prices any other raw
+    figure on the same asset -- a held bonus most of all, which reads as a
+    rival to the season when its raw points sit beside a normalized score.
+    """
+    known = _stat_number(row, "score_per_point")
+    if known:
+        return known
+    return _ratio(row.get("scaled_score"), row.get("total_points"))
+
+
+def _ratio(scaled, total) -> float | None:
+    """Score over points, or None where either is missing or the total is 0."""
+    try:
+        scaled, total = float(scaled), float(total)
+    except (TypeError, ValueError):
+        return None
+    if scaled != scaled or total != total or total <= 0:
+        return None
+    return scaled / total
+
+
+def _campaign_total(entry: dict, per_point: float | None = None) -> dict:
     """What a European or playoff run is worth, as its own box.
 
     The boxes above it sum to what the run scored; this is what it *pays*,
@@ -2849,6 +2881,8 @@ def _campaign_total(entry: dict) -> dict:
         "muted": not credited,
     }
     lines = []
+    if adds is not None and per_point:
+        lines.append(f"{adds * per_point:,.1f} normalized")
     if share:
         lines.append(f"{share:.1%} of a season".replace(".0%", "%"))
     if not credited:
@@ -2876,7 +2910,7 @@ def _playoff_post(row: dict, made: dict, name: str = "Playoffs") -> dict | None:
     out = dict(made)
     out["name"] = name
     out["games"] = "\u2014" if games is None else f"{games:,.0f}"
-    out["total"] = _campaign_total(entry)
+    out["total"] = _campaign_total(entry, _score_per_point(row))
     out["note"] = _campaign_note(entry)
     return out
 
@@ -2939,7 +2973,7 @@ def _soccer_player_posts(row: dict) -> list[dict]:
         apps = made.pop("apps", None)
         made["name"] = str(entry.get("competition") or "")
         made["games"] = "—" if apps is None else f"{apps:,.0f}"
-        made["total"] = _campaign_total(entry)
+        made["total"] = _campaign_total(entry, _score_per_point(row))
         made["note"] = _campaign_note(entry, "match")
         out.append(made)
     return out
@@ -4553,6 +4587,14 @@ def _day_breakdown(
         frame = store.read_stats(season, day)
         stats[day] = {r["asset_id"]: r for r in frame.to_dict("records")} \
             if not frame.empty else {}
+        # The feed's rows have raw totals only, and a held bonus is shown on
+        # the scale of the delta beside it -- priced by the day's own score.
+        for asset_id, scaled, points in store.query(
+            "SELECT asset_id, scaled_score, league_points FROM daily_scores "
+            "WHERE season = ? AND as_of = ?", (season, day),
+        ).itertuples(index=False, name=None):
+            if asset_id in stats[day]:
+                stats[day][asset_id]["score_per_point"] = _ratio(scaled, points)
 
     out: dict[str, dict] = {}
     for index, day in enumerate(listed):
@@ -4599,6 +4641,11 @@ def _day_breakdown(
             # the bonus it feeds is held until the competition finishes. The
             # day it was played would otherwise read as a day off.
             pending, bonus_lines = _bonus_moves(row, was) if index else (0.0, [])
+            # On the scale of the delta beside it. Raw, a held MLB bonus read
+            # "+17.3 held" in a column of normalized changes -- about as much as
+            # the player's whole season -- when it was worth 1.2.
+            per_point = _score_per_point(row)
+            pending = round(pending * per_point, 1) if per_point else None
             # The first listed day has nothing before it, so every asset looks
             # like a mover -- and at the season's opening every score is zero,
             # which filled that panel with twelve rows of "+0.0". A zero is a
