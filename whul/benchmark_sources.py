@@ -116,6 +116,23 @@ def _nfl_players():
     )
 
 
+def _nfl_players_live():
+    """The same weekly file, with January paid.
+
+    The benchmark is drawn from regular seasons only, and the live source was
+    built from the benchmark's own builder -- so the playoffs were scored as
+    nothing for every NFL player, although the Scoring page promised them 10%
+    of a season. The file carries the POST weeks already; this only prices them.
+    """
+    from whul.scoring import nfl
+    from whul.sources import nflverse
+
+    return (
+        lambda seasons: nflverse.load_player_stats(seasons),
+        lambda raw: nfl.score_players(raw, postseason=True),
+    )
+
+
 def _nfl_teams():
     from whul.scoring import nfl
     from whul.sources import nflverse
@@ -457,6 +474,22 @@ def _nba_players():
     )
 
 
+def _nba_players_live():
+    """The same box scores, with the playoffs paid.
+
+    The date walk already runs to the end of June and every box carries its
+    season type; built from the benchmark's own builder, the live source threw
+    the playoffs away with the benchmark's regular-season rule.
+    """
+    from whul.scoring import nba
+    from whul.sources import espn
+
+    return (
+        lambda seasons: espn.load_nba_player_box(seasons),
+        lambda raw: nba.score_players(raw, postseason=True),
+    )
+
+
 def _nba_teams():
     """Results from ESPN, not hoopR.
 
@@ -493,6 +526,52 @@ def _nhl_players():
 
     return load, lambda skaters: nhl.score_skaters(
         skaters, held.get("standings"))
+
+
+def _nhl_players_live():
+    """The regular season and the playoffs, each its own request.
+
+    The skater endpoint answers for one game type at a time, and the live
+    source was the benchmark's builder, which asks for the regular season
+    alone -- so no NHL player was ever paid for a playoff run. The playoff
+    pull is asked for from April, when there can be one to find.
+    """
+    from whul.scoring import nhl
+    from whul.sources import nhl as source
+
+    held: dict[str, pd.DataFrame] = {}
+
+    def load(seasons):
+        try:
+            held["standings"] = source.load_divisions(seasons)
+        except Exception:  # noqa: BLE001 -- a heading must not stop the scoring
+            held["standings"] = pd.DataFrame()
+        regular = source.load_skaters(seasons, source.GAME_TYPE_REGULAR)
+        frames = [regular.assign(_phase="reg")] if not regular.empty else []
+        asked = [s for s in seasons if _nhl_playoffs_possible(s)]
+        if asked:
+            playoffs = source.load_skaters(asked, source.GAME_TYPE_PLAYOFFS)
+            if playoffs is not None and not playoffs.empty:
+                frames.append(playoffs.assign(_phase="post"))
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    return load, lambda raw: nhl.score_skater_phases(
+        raw, held.get("standings"), postseason=True)
+
+
+#: The earliest an NHL playoff line can exist: the first round opens in the
+#: second half of April. Asked for from the first, so a feed that catches up a
+#: day late is still caught.
+NHL_PLAYOFFS_FROM = (4, 1)
+
+
+def _nhl_playoffs_possible(season: int) -> bool:
+    """Whether a season labelled ``season`` could have a playoff game by now.
+
+    NHL seasons are named for the year they end in, so 2027's playoffs are in
+    April 2027. Before that the request can only come back empty.
+    """
+    return date.today() >= date(int(season), *NHL_PLAYOFFS_FROM)
 
 
 def _nhl_teams():
@@ -1489,7 +1568,8 @@ def _register(*sources: Source) -> dict[str, Source]:
 
 
 SOURCES: dict[str, Source] = _register(
-    Source("nfl", "NFL", "Player", _nfl_players, reliability="verified",
+    Source("nfl", "NFL", "Player", _nfl_players, live=_nfl_players_live,
+           reliability="verified",
            seasons_for=_feed_seasons("nfl", "NFL"),
            # One player's week. nflverse republishes the whole season file
            # every week, so a week that is served and then is not is a file
@@ -1519,7 +1599,7 @@ SOURCES: dict[str, Source] = _register(
     Source("mlb-teams", "MLB", "Team", _mlb_teams, live=_mlb_teams_live,
            seasons_for=_league_year_seasons, accumulates=GAME_KEYS,
            note="a live contract year is scored on the half already played"),
-    Source("nba", "NBA", "Player", _nba_players,
+    Source("nba", "NBA", "Player", _nba_players, live=_nba_players_live,
            seasons_for=_espn_seasons("nba", "NBA"),
            # One player's game. The walk asks ESPN for a date and then for each
            # game on it, and skips anything that raises on either request -- so
@@ -1530,7 +1610,8 @@ SOURCES: dict[str, Source] = _register(
     Source("nba-teams", "NBA", "Team", _nba_teams, accumulates=GAME_KEYS,
            seasons_for=_espn_seasons("nba", "NBA"),
            note="ESPN scoreboard; hoopR's archive stops at 2023"),
-    Source("nhl", "NHL", "Player", _nhl_players, scale_for="NHL",
+    Source("nhl", "NHL", "Player", _nhl_players, live=_nhl_players_live,
+           scale_for="NHL",
            seasons_for=_feed_seasons("nhl", "NHL"),
            note="82-game history lifted to the 84-game 2026-27 season"),
     Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL",

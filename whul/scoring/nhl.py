@@ -114,6 +114,74 @@ def score_skaters(df: pd.DataFrame,
     return work[work["total_points"] > 0].reset_index(drop=True)
 
 
+#: What a skater is scored on, and so what his playoffs must also show. Games
+#: are deliberately absent: `split_phases` already reports them per phase, and
+#: a second column counting the same thing would be one more figure to keep in
+#: step.
+SKATER_COUNTED = ["goals", "assists", "shots", "plus_minus"]
+
+
+def score_skater_phases(raw: pd.DataFrame, standings: pd.DataFrame | None = None,
+                        postseason: bool = True) -> pd.DataFrame:
+    """Season totals per skater with the playoffs paid as a bonus.
+
+    ``raw`` is the regular-season and playoff skater pulls together, each row
+    labelled ``_phase`` "reg" or "post"; a frame with no label is all regular
+    season. The playoffs are credited as a rate at the NHL's share of a season
+    (``whul.scoring.postseason``), over the games each skater's club played.
+    ``postseason=False`` scores the regular season alone, which is what a
+    benchmark is built from.
+    """
+    from whul.scoring.postseason import (
+        POSTSEASON, REGULAR, RULES, apply_bonus, phase_totals, regular_totals,
+        split_phases,
+    )
+
+    scored = score_skaters(raw, standings)
+    if scored.empty:
+        return scored
+    # From the scored frame, not reindexed off `raw`: the scorer drops skaters
+    # who earned nothing and renumbers, so matching by position afterwards
+    # mislabelled the phase of every row after the first such skater.
+    phase = scored["_phase"] if "_phase" in scored.columns else None
+    scored["phase"] = (
+        phase.map({"reg": REGULAR, "post": POSTSEASON}).fillna(REGULAR)
+        if phase is not None else REGULAR
+    )
+    keys = ["season", "player"]
+    phases = split_phases(
+        scored, keys, "total_points", "games_played", scored["phase"])
+    # April's figures, kept apart and labelled as such. The playoff request is
+    # its own call, and the rows were once reduced to points and games one
+    # line later, leaving the profile's playoff boxes with nothing to hold.
+    counting = regular_totals(scored, keys, SKATER_COUNTED, scored["phase"])
+    post_counting = phase_totals(
+        scored, keys, SKATER_COUNTED, scored["phase"], POSTSEASON, prefix="post_")
+    # Facts about him and his club, identical on all his rows, carried through
+    # the groupby rather than left behind by it: a column the aggregate never
+    # mentions is a column the page reads as unknown. The club's games and his
+    # club are his regular season's, which is what the heading they feed is
+    # about.
+    carried = {c: "max" for c in ("team_games",) if c in scored.columns}
+    regular = scored[scored["phase"] == REGULAR]
+    carried.update({c: "last" for c in ("team", "player_id")
+                    if c in scored.columns})
+    facts = ((regular if not regular.empty else scored)
+             .groupby(keys, as_index=False).agg(carried)) if carried else None
+    out = phases.merge(counting, on=keys, how="left").merge(
+        post_counting, on=keys, how="left")
+    if facts is not None:
+        out = out.merge(facts, on=keys, how="left")
+    out = out.merge(club_playoff_games(scored, keys), on=keys, how="left")
+    out = apply_bonus(out, RULES["NHL"] if postseason else None)
+    for column in SKATER_COUNTED + [f"post_{c}" for c in SKATER_COUNTED]:
+        if column in out.columns:
+            out[column] = out[column].fillna(0)
+    out["league"] = "NHL"
+    out["role"] = SKATER_ROLE
+    return out
+
+
 def club_playoff_games(scored: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     """How many playoff games each skater's club played, per skater.
 
