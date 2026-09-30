@@ -203,6 +203,14 @@ def _mlb_players_live():
                           .assign(_phase="pit"))
             if not _october_is_possible(year):
                 continue
+            # How many games each club has played in it, which is what a
+            # postseason rate is taken over. A schedule that cannot be read
+            # leaves the count blank, and the rate falls back to his own
+            # appearances rather than stopping the run.
+            try:
+                clubs = source.club_postseason_games(source.load_schedule([year]))
+            except Exception:  # noqa: BLE001 -- a denominator must not stop scoring
+                clubs = {}
             # October, asked for separately because the endpoint answers for
             # one game type at a time, and checked before it is used: it
             # ignores a gameType it does not understand and returns the whole
@@ -213,8 +221,11 @@ def _mlb_players_live():
                                (source.load_pitchers, "pit")):
                 october = pull([year], postseason=True)
                 if october is not None and not october.empty:
-                    frames.append(
-                        october.assign(_phase=role, _season_phase="post"))
+                    team = (october["team"] if "team" in october.columns
+                            else pd.Series("", index=october.index))
+                    frames.append(october.assign(
+                        _phase=role, _season_phase="post",
+                        _club_games=team.fillna("").astype(str).map(clubs)))
         frames = [f for f in frames if f is not None and not f.empty]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -246,6 +257,7 @@ def _mlb_players_live():
         if october is not None and not october.empty:
             october = _at_contract_weight(october, mlb)
         scored = mlb.with_october(scored, october)
+        scored = _with_club_october(scored, raw[phase == "post"])
 
         # Held until the World Series is over, not paid through October: a rate
         # off one playoff game projects a whole share of a season, and a second
@@ -259,6 +271,36 @@ def _mlb_players_live():
         return _prorated(scored, "MLB")
 
     return load, score
+
+
+def _with_club_october(scored, october):
+    """Each player's club's postseason games, beside his own.
+
+    Matched on the player and the season -- his batting and pitching are the
+    same club's games. Blank where the October line named no club the schedule
+    knows, and the rate is then taken over his own appearances.
+    """
+    from whul.scoring.base import resolve_num, resolve_str
+    from whul.scoring.postseason import TEAM_GAMES_COLUMN
+
+    out = scored.copy()
+    if october is None or october.empty or "_club_games" not in october.columns:
+        return out
+    # Named as the scorer names him, which is not how the feed does.
+    known = pd.DataFrame({
+        "season": resolve_num(october, ["season", "Season"]).to_numpy(),
+        "player": resolve_str(october, ["playername", "PlayerName", "player_name",
+                                        "Name", "name", "player"]).to_numpy(),
+        "_club_games": pd.to_numeric(october["_club_games"], errors="coerce"
+                                     ).to_numpy(),
+    }).dropna(subset=["_club_games"])
+    if known.empty:
+        return out
+    known["season"] = known["season"].astype(int)
+    clubs = known.groupby(["season", "player"])["_club_games"].max()
+    where = pd.MultiIndex.from_frame(out[["season", "player"]])
+    out[TEAM_GAMES_COLUMN] = clubs.reindex(where).to_numpy()
+    return out
 
 
 def _at_contract_weight(scored, mlb):

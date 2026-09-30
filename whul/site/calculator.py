@@ -152,7 +152,8 @@ def _postseason(league: str) -> Postseason:
         scalar=float(rule.scalar),
         note=(f"A postseason is paid as a rate: {rule.bonus_share:.0%} of a "
               f"{rule.regular_games}-game season at whatever rate the player "
-              f"managed. One game at this line is worth "
+              f"managed per game his club played. One game at this line, in a "
+              f"postseason his club played one game of, is worth "
               f"{rule.scalar:.4g}x itself on top of the regular season."),
     )
 

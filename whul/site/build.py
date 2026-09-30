@@ -664,7 +664,7 @@ STAT_SKIP = {
     # of, which is the question the section exists to answer.
     "bonus_detail", "bonus_matches", "bonus_points", "postseason_bonus",
     "postseason_pending", "postseason_points", "postseason_games",
-    "postseason_rate", "regular_games",
+    "postseason_rate", "postseason_team_games", "regular_games",
     # The club soccer panel's own. `sections` is a list and is skipped anyway;
     # the other two are read as its heading rather than shown as figures.
     "sections", "league_settled", "season_settled", "div_rank", "team_division",
@@ -3004,6 +3004,12 @@ def _campaign_note(entry: dict, unit: str = "game") -> str:
     if not games or not scalar:
         return ""
     over = f"{games:,.0f} {unit if games == 1 else _plural(unit)}"
+    # The rate is over his club's games, and where he missed some that is a
+    # different number from the one in the section's heading.
+    club = _stat_number(entry, "team_games") or 0.0
+    if club > games:
+        over = (f"the {club:,.0f} {_plural(unit)} his club played "
+                f"(he played {games:,.0f})")
     note = (
         f"Credited as a rate, not a tally: {points:,.1f} points over {over} is "
         f"paid as though it had been played over {_trim(scalar)} more of them "

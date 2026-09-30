@@ -906,6 +906,9 @@ def score_players(
         )
 
     work["goal_points"] = work["goals"] * work["position"].map(goal_points_for)
+    # His club, which is only read to count the matches it played in a
+    # European or playoff competition -- see `_club_matches`.
+    work["team"] = resolve_str(players, ["team", "Squad"], default="")
     work["competition"] = resolve_str(
         players, ["competition", "competition_name"], default="")
     # The feed's own key for the competition, where there is one. It decides
@@ -971,6 +974,28 @@ def _domestic_detail(counted: pd.DataFrame) -> pd.DataFrame:
             .agg(**{DOMESTIC_COLUMN: ("_line", list)}))
 
 
+def _club_matches(rows: pd.DataFrame) -> pd.Series:
+    """How many matches each player's club played in the competition.
+
+    A European or playoff rate is taken over his club's matches rather than
+    his own appearances (``whul.scoring.postseason``). The squads are pulled
+    whole, so the count is read off them: the most matches any of his club's
+    players made in that competition and season. Some player -- the
+    goalkeeper, nearly always -- plays every match, so this is the club's
+    count without a fixture list to fetch; where the whole squad rotated it is
+    a match short, and the rate is a little kinder than it should be, never
+    less kind. Blank where the row names no club, and his own appearances
+    stand in.
+    """
+    if rows.empty or "team" not in rows.columns:
+        return pd.Series(float("nan"), index=rows.index)
+    named = rows["team"].fillna("").astype(str).str.strip() != ""
+    most = (rows[named]
+            .groupby(["season", "team", "competition"])["matches"]
+            .transform("max"))
+    return most.reindex(rows.index)
+
+
 def _fold_competitions(
     work: pd.DataFrame, postseason: bool, as_of=None
 ) -> pd.DataFrame:
@@ -1022,10 +1047,12 @@ def _fold_competitions(
         totals["postseason_bonus"] = 0.0
         totals[DETAIL_COLUMN] = [[] for _ in range(len(totals))]
     else:
+        extra = extra.assign(_club=_club_matches(extra))
         extra = extra.assign(_credit=[
-            bonus_for(points, matches, rule)
-            for points, matches, rule in zip(
-                extra["points"], extra["matches"], extra["_rule"])
+            bonus_for(points, matches, rule, club)
+            for points, matches, rule, club in zip(
+                extra["points"], extra["matches"], extra["_rule"],
+                extra["_club"])
         ])
         by_player = extra.groupby(PLAYER_KEYS, as_index=False).agg(
             bonus_matches=("matches", "sum"), bonus_points=("points", "sum"),
@@ -1040,11 +1067,12 @@ def _fold_competitions(
             extra.assign(_detail=[
                 detail_for(str(name), matches, points, rule,
                            season=int(season), as_of=as_of,
-                           counts={c: line.get(c) for c in BONUS_COUNTS})
-                for name, matches, points, rule, season, line in zip(
+                           counts={c: line.get(c) for c in BONUS_COUNTS},
+                           team_games=club)
+                for name, matches, points, rule, season, line, club in zip(
                     extra["competition"], extra["matches"],
                     extra["points"], extra["_rule"], extra["season"],
-                    extra.to_dict("records"))
+                    extra.to_dict("records"), extra["_club"])
             ])
             .groupby(PLAYER_KEYS, as_index=False)
             .agg(**{DETAIL_COLUMN: ("_detail", list)})

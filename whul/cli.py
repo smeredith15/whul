@@ -409,6 +409,8 @@ def _spec(league: str):
                 post_counting, on=keys, how="left")
             if clubs is not None:
                 out = out.merge(clubs, on=keys, how="left")
+            out = out.merge(nhl.club_playoff_games(scored, keys), on=keys,
+                            how="left")
             out = apply_bonus(out, RULES["NHL"] if postseason else None)
             for column in counted + [f"post_{c}" for c in counted]:
                 if column in out.columns:

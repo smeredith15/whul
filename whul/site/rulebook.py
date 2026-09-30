@@ -708,6 +708,12 @@ def _postseason() -> Rules:
             "The bonus is a rate, not a tally, so one brilliant playoff game is "
             "worth as much per game as a long run of them. What it cannot do is "
             "let a short postseason outweigh a whole season.",
+            "The rate is per game the player's club played, not per game he "
+            "played. A playoff game he sits out counts as a zero, just as a "
+            "regular-season game does — so a starting pitcher who makes one "
+            "start in a three-game series is paid for that start spread over "
+            "three games, not as though he had started every one. Nothing about "
+            "his regular season enters it.",
             f"Why the spread. At {top}% the field is genuinely unknown at the "
             "draft. The mid-season leagues are drafted in July, when a manager "
             "can already see who is heading for the playoffs, so a run there is "

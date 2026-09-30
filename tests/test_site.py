@@ -5098,3 +5098,14 @@ def test_the_postseason_section_is_open_and_only_for_a_club_in_october():
     run = {**none, "playoff_game_wins": 2.0, "wc_wins": 2.0, "wc_losses": 1.0,
            "lds_wins": 0.0, "lds_losses": 3.0, "series_wc_or_bye": 1.0}
     assert _mlb_team_panel(run)["posts"][0]["games"] == "6"
+
+
+def test_a_playoff_note_says_the_rate_is_over_his_club_s_games():
+    """He played one of three; the note must not say the points were over one."""
+    from whul.site.build import _campaign_note
+
+    entry = {"points": 14.3, "games": 1.0, "team_games": 3.0, "scalar": 12.15,
+             "share": 0.075, "credited": False, "finishes": "2026-11-20"}
+    note = _campaign_note(entry)
+    assert "over the 3 games his club played (he played 1)" in note
+    assert "over 1 game " in _campaign_note({**entry, "team_games": 1.0})

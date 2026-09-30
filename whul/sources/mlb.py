@@ -712,6 +712,11 @@ def load_stats_api_players(
             stat = split.get("stat") or {}
             rows.append({"player": player.get("fullName", ""),
                          "player_id": player.get("id", ""),
+                         # His club, as the schedule names it. Only October
+                         # reads it: a postseason rate is taken over the games
+                         # his club played, and this is how he is matched to
+                         # them. See `club_postseason_games`.
+                         "team": (split.get("team") or {}).get("name", ""),
                          "season": season, **stat})
     return pd.DataFrame(rows)
 
@@ -781,6 +786,13 @@ def _sum_the_rounds(rounds: pd.DataFrame, group: str) -> pd.DataFrame:
     if not keys:
         return rounds
     work = rounds.copy()
+    # A name, not a count, so it would not survive the sum below. Nobody
+    # changes clubs in October, so any round's answer is his club's.
+    clubs = None
+    if "team" in work.columns:
+        named = work[work["team"].fillna("").astype(str).str.strip() != ""]
+        clubs = named.groupby(keys, as_index=False)["team"].last()
+        work = work.drop(columns=["team"])
     if group == "pitching" and "inningsPitched" in work.columns:
         work["IP"] = work["inningsPitched"].map(innings_to_float)
         work = work.drop(columns=["inningsPitched"])
@@ -793,8 +805,31 @@ def _sum_the_rounds(rounds: pd.DataFrame, group: str) -> pd.DataFrame:
             work[column] = converted.fillna(0.0)
             numeric.append(column)
     if not numeric:
-        return work.drop_duplicates(subset=keys)
-    return work.groupby(keys, as_index=False)[numeric].sum()
+        out = work.drop_duplicates(subset=keys)
+    else:
+        out = work.groupby(keys, as_index=False)[numeric].sum()
+    if clubs is not None:
+        out = out.merge(clubs, on=keys, how="left")
+    return out
+
+
+def club_postseason_games(schedule: pd.DataFrame) -> dict[str, int]:
+    """How many postseason games each club has finished, by name.
+
+    A player's postseason rate is taken over his club's games rather than his
+    own appearances -- see ``whul.scoring.postseason`` -- and this is the
+    count. Off the schedule the team side already reads, finished games only,
+    so a game in progress is not a game he has been credited as missing.
+    """
+    if schedule is None or schedule.empty or "game_type" not in schedule.columns:
+        return {}
+    october = schedule[schedule["game_type"].isin(POSTSEASON_GAME_TYPES)]
+    counts: dict[str, int] = {}
+    for side in ("home_team", "away_team"):
+        for name, games in october[side].astype(str).value_counts().items():
+            if name:
+                counts[name] = counts.get(name, 0) + int(games)
+    return counts
 
 
 def _check_postseason_applied(

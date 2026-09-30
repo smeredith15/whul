@@ -833,7 +833,7 @@ def _line(**over):
     return pd.DataFrame([row])
 
 
-def _pulls(monkeypatch, october=None, today=(2026, 10, 5)):
+def _pulls(monkeypatch, october=None, today=(2026, 10, 5), schedule=None):
     """The live MLB player source, with the feed and the calendar stubbed."""
     import datetime as _dt
 
@@ -859,6 +859,9 @@ def _pulls(monkeypatch, october=None, today=(2026, 10, 5)):
 
     monkeypatch.setattr(source, "load_batters", batters)
     monkeypatch.setattr(source, "load_pitchers", pitchers)
+    monkeypatch.setattr(source, "load_schedule",
+                        lambda seasons: schedule if schedule is not None
+                        else pd.DataFrame())
     monkeypatch.setattr(_dt, "date", _Day)
     load, score = benchmark_sources._mlb_players_live()
     return load, score, asked
@@ -928,4 +931,87 @@ def test_october_is_held_until_the_world_series_is_over(monkeypatch):
     row = score(load([2026])).iloc[0]
 
     assert row["postseason_bonus"] == 0.0
+    assert row["postseason_pending"] > 0.0
+
+
+# --- October, per game his club played -------------------------------------
+
+def _october_schedule(club="Chicago White Sox", games=3, other="Detroit Tigers"):
+    """A finished Wild Card series, plus a regular-season game that must not
+    count."""
+    rows = [{"season": 2026, "game_id": n, "game_date": "2026-09-30",
+             "game_type": "F", "home_team": club, "away_team": other,
+             "home_score": 3, "away_score": 2} for n in range(games)]
+    rows.append({"season": 2026, "game_id": 99, "game_date": "2026-09-27",
+                 "game_type": "R", "home_team": club, "away_team": other,
+                 "home_score": 1, "away_score": 0})
+    return pd.DataFrame(rows)
+
+
+def test_a_club_s_postseason_games_are_counted_off_the_schedule():
+    from whul.sources.mlb import club_postseason_games
+
+    counts = club_postseason_games(_october_schedule())
+    assert counts == {"Chicago White Sox": 3, "Detroit Tigers": 3}
+    assert club_postseason_games(pd.DataFrame()) == {}
+
+
+def test_a_stats_line_names_the_player_s_club(monkeypatch):
+    """The split carries the club, and it is how a player is matched to the
+    games his club played."""
+    from whul.sources import mlb
+
+    split = {**_split("Grant Taylor", 1, {"gamesPlayed": 1}),
+             "team": {"id": 145, "name": "Chicago White Sox"}}
+    monkeypatch.setattr(mlb, "_get", lambda *a, **k: _payload(split))
+    out = mlb.load_stats_api_players(2026, "pitching", game_type="F")
+    assert out.iloc[0]["team"] == "Chicago White Sox"
+
+
+def test_summing_the_rounds_keeps_the_club():
+    from whul.sources.mlb import _sum_the_rounds
+
+    rounds = pd.DataFrame([
+        {"player_id": 1, "player": "A", "season": 2026, "team": "Chicago Cubs",
+         "gamesPlayed": 3, "hits": 2},
+        {"player_id": 1, "player": "A", "season": 2026, "team": "Chicago Cubs",
+         "gamesPlayed": 4, "hits": 5},
+    ])
+    out = _sum_the_rounds(rounds, "hitting")
+    assert len(out) == 1
+    assert out.iloc[0]["team"] == "Chicago Cubs"
+    assert out.iloc[0]["gamesPlayed"] == 7
+
+
+def test_october_is_rated_per_game_his_club_played(monkeypatch):
+    """A reliever who pitched once in a three-game series is paid for one
+    game's work over three, not for one appearance stretched over twelve.
+    Grant Taylor's single outing was held at more than his whole 2026."""
+    from whul.scoring.mlb import MULT_YEAR_N, score_players
+
+    october = _line(H=2, AB=4, HR=1, G=1).assign(team="Chicago White Sox")
+    load, score, _ = _pulls(monkeypatch, october=october,
+                            schedule=_october_schedule(games=3))
+    row = score(load([2026])).iloc[0]
+
+    autumn = float(score_players(october, pd.DataFrame()).iloc[0]["role_points"])
+    assert row["postseason_games"] == 1
+    assert row["postseason_pending"] == pytest.approx(
+        autumn * MULT_YEAR_N / 3 * 12.15, rel=1e-3)
+    assert row["bonus_detail"][0]["team_games"] == 3.0
+
+
+def test_october_without_a_schedule_falls_back_to_his_own_games(monkeypatch):
+    """A schedule that cannot be read must not stop the run or zero the bonus."""
+    from whul.sources import mlb as source
+
+    october = _line(H=2, AB=4, HR=1, G=1).assign(team="Chicago White Sox")
+    load, score, _ = _pulls(monkeypatch, october=october)
+
+    def broken(seasons):
+        raise RuntimeError("schedule down")
+
+    monkeypatch.setattr(source, "load_schedule", broken)
+    row = score(load([2026])).iloc[0]
+    assert row["bonus_detail"][0]["team_games"] == 1.0
     assert row["postseason_pending"] > 0.0

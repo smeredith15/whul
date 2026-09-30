@@ -181,17 +181,54 @@ def test_split_phases_fills_missing_phase_with_zero():
 
 # --- the rate denominator --------------------------------------------------
 
-def test_rate_uses_player_games_not_team_games():
-    """A player who appeared in 2 of his team's 4 playoff games is rated on 2.
+def test_rate_is_taken_over_his_club_s_games_not_his_own():
+    """A player who appeared in 2 of his club's 4 playoff games is rated on 4.
 
-    Using team games would halve the rate of anyone who missed a game, and would
-    reward a player who sat out for being on a team that went deep.
+    The credit is counted in club games -- 10% of a 17-game schedule -- so the
+    rate it multiplies is too. Rated on his own two, each appearance was paid
+    as though he had made it in every game of the credit: a starting pitcher's
+    one October start became twelve. Decided September 2026: a missed playoff
+    game costs what a missed regular-season game does.
     """
-    played_two = apply_bonus(phase_frame(170.0, 17, 60.0, 2), RULES["NFL"]).iloc[0]
-    played_four = apply_bonus(phase_frame(170.0, 17, 60.0, 4), RULES["NFL"]).iloc[0]
-    assert played_two["postseason_rate"] == pytest.approx(30.0)
-    assert played_four["postseason_rate"] == pytest.approx(15.0)
-    assert played_two["postseason_bonus"] > played_four["postseason_bonus"]
+    frame = phase_frame(170.0, 17, 60.0, 2).assign(postseason_team_games=4)
+    out = apply_bonus(frame, RULES["NFL"]).iloc[0]
+    assert out["postseason_rate"] == pytest.approx(15.0)
+    assert out["bonus_detail"][0]["team_games"] == 4.0
+    assert out["bonus_detail"][0]["games"] == 2.0
+    everyday = apply_bonus(
+        phase_frame(170.0, 17, 60.0, 4).assign(postseason_team_games=4),
+        RULES["NFL"]).iloc[0]
+    # Two games' points over four is what a player who played all four at
+    # half the output earns: the same October, however it was spread.
+    assert out["postseason_bonus"] == pytest.approx(everyday["postseason_bonus"])
+
+
+def test_nothing_about_his_regular_season_enters_the_bonus():
+    """Two players with the same October and different seasons earn the same."""
+    rule = RULES["MLB"]
+    star = apply_bonus(phase_frame(900.0, 150, 20.0, 1)
+                       .assign(postseason_team_games=3), rule).iloc[0]
+    bench = apply_bonus(phase_frame(40.0, 20, 20.0, 1)
+                        .assign(postseason_team_games=3), rule).iloc[0]
+    assert star["postseason_bonus"] == pytest.approx(bench["postseason_bonus"])
+    assert star["postseason_bonus"] == pytest.approx(20.0 / 3 * rule.scalar)
+
+
+def test_without_a_club_count_his_own_appearances_stand_in():
+    """A feed that cannot say how many games the club played changes nothing."""
+    for club in (None, float("nan"), 0):
+        frame = phase_frame(170.0, 17, 60.0, 2)
+        if club is not None:
+            frame = frame.assign(postseason_team_games=club)
+        out = apply_bonus(frame, RULES["NFL"]).iloc[0]
+        assert out["postseason_rate"] == pytest.approx(30.0)
+
+
+def test_a_club_count_behind_his_own_is_never_used():
+    """A schedule a game behind the stat line must not pay that game twice."""
+    frame = phase_frame(170.0, 17, 60.0, 3).assign(postseason_team_games=2)
+    out = apply_bonus(frame, RULES["NFL"]).iloc[0]
+    assert out["postseason_rate"] == pytest.approx(20.0)
 
 
 def test_a_player_who_did_not_appear_earns_nothing_from_a_deep_run():

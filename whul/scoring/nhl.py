@@ -114,6 +114,34 @@ def score_skaters(df: pd.DataFrame,
     return work[work["total_points"] > 0].reset_index(drop=True)
 
 
+def club_playoff_games(scored: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """How many playoff games each skater's club played, per skater.
+
+    A playoff rate is taken over his club's games rather than his own
+    appearances (``whul.scoring.postseason``). The playoff skater pull is the
+    whole league's, so the count is read off it: the most games any skater of
+    his club played. Somebody on every roster plays every game, so this is
+    the club's count without a second request; blank where the row names no
+    club, and his own games stand in.
+
+    ``scored`` is ``score_skaters`` output with the caller's ``_phase``.
+    """
+    from whul.scoring.postseason import TEAM_GAMES_COLUMN
+
+    if (scored is None or scored.empty or "_phase" not in scored.columns
+            or "team" not in scored.columns):
+        return pd.DataFrame(columns=keys + [TEAM_GAMES_COLUMN])
+    post = scored[scored["_phase"] == "post"]
+    post = post[post["team"].fillna("").astype(str).str.strip() != ""]
+    if post.empty:
+        return pd.DataFrame(columns=keys + [TEAM_GAMES_COLUMN])
+    most = post.groupby(["season", "team"])["games_played"].max()
+    counted = post.assign(**{TEAM_GAMES_COLUMN: [
+        most.get((season, team)) for season, team in zip(post["season"], post["team"])
+    ]})
+    return counted.groupby(keys, as_index=False)[TEAM_GAMES_COLUMN].max()
+
+
 def _their_clubs_games(work: pd.DataFrame,
                        standings: pd.DataFrame | None) -> pd.Series:
     """How many games each skater's club has played.

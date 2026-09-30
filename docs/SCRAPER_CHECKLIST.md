@@ -20,10 +20,16 @@ Your approach also removes the problem I was working around: there is no
 `MLB_Two-Way` normalization group at all, so position players who pitch an inning
 cannot pollute one.
 
-**Per-player-game rates.** Already correct — the postseason denominator has always
-been the player's own appearances, not his team's games. Now pinned by tests in
-NFL, NBA and the postseason module, including the case of a player who missed a
-playoff game his team played.
+**Per-club-game rates.** Changed September 2026. The postseason denominator was
+the player's own appearances; it is now the games his club played in that
+competition, because the credit it multiplies is counted in club games. Rated on
+his own appearances, a starting pitcher's one October start was paid as twelve
+(38% of a starter's season, against 7.5% for an everyday player). Each adapter
+supplies the club count as `postseason_team_games` where it can: MLB from the
+schedule, NFL and NBA from the club's weeks and games in the same feed, NHL and
+club soccer from the most games any of the club's players made. Without one, the
+player's own appearances stand in. Pinned by tests in each sport and in the
+postseason module, including a player who missed a playoff game his team played.
 
 **Discrete playoff stats.** Understood: cumulative is fine provided **games played
 is included**, since the rate needs its own denominator. That is now an explicit
