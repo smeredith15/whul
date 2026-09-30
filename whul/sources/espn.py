@@ -1009,15 +1009,38 @@ def team_record(league: str, team_id: str) -> dict:
     return payload.get("team") or payload
 
 
+#: Programs that are Division I by any measure, one or two a conference. ESPN
+#: files baseball's and softball's team records under numbered groups that do
+#: not say which division they are, and the largest is not always the one: the
+#: group these programs are in is.
+DIVISION_ANCHORS = {
+    "ncaabaseball": (
+        "LSU Tigers", "Wake Forest Demon Deacons", "TCU Horned Frogs",
+        "Oregon State Beavers", "Coastal Carolina Chanticleers",
+        "East Carolina Pirates", "Dallas Baptist Patriots",
+        "UC Santa Barbara Gauchos", "Stanford Cardinal", "Oklahoma State Cowboys",
+    ),
+    "ncaasoftball": (
+        "Oklahoma Sooners", "UCLA Bruins", "Florida State Seminoles",
+        "Tennessee Lady Volunteers", "Texas Longhorns", "Washington Huskies",
+        "Arizona Wildcats", "James Madison Dukes", "Stanford Cardinal",
+        "Duke Blue Devils",
+    ),
+}
+
+
 def _division_by_record(league: str, teams: dict[str, str]
                         ) -> tuple[dict[str, str], str]:
-    """The teams in the division most of ``teams`` belong to, and its id.
+    """The division's teams out of a list of every division's, and its id.
 
     A conference's record names its division as ``groups.parent`` (80 is the
-    FBS); a team in a conference split into divisions names the conference
-    instead, and takes the division of the conference's other members. The
-    division is today's -- a program that has moved up since is counted in
-    every season -- which is why the standings are asked first.
+    FBS). A record that is not a conference names either the division
+    directly -- most of baseball's and softball's -- or its conference, where
+    the conference is split into halves; that one takes the division of the
+    conference's other members. Which division is the top one is decided by
+    ``DIVISION_ANCHORS``, then by size. The division is today's: a program
+    that has moved up since is counted in every season, which is why the
+    standings are asked first.
     """
     shape: dict[str, tuple[str, bool, str]] = {}
     for team_id in teams:
@@ -1030,30 +1053,34 @@ def _division_by_record(league: str, teams: dict[str, str]
                           parent)
     above = {group: parent for group, is_conference, parent in shape.values()
              if is_conference and parent}
-    divisions = set(above.values())
-
-    def division_of(is_conference: bool, parent: str) -> str:
-        if is_conference:
-            return parent
-        # Not a conference itself: its parent is either its conference (a
-        # football conference split into halves) or the division directly
-        # (baseball and softball file most of theirs that way).
-        return parent if parent in divisions else above.get(parent, "")
-
-    division = {team_id: division_of(is_conference, parent)
+    division = {team_id: (parent if is_conference else above.get(parent) or parent)
                 for team_id, (_, is_conference, parent) in shape.items()}
-    counts = Counter(d for d in division.values() if d)
-    if not counts:
+    members: dict[str, list[str]] = {}
+    for team_id, group in division.items():
+        if group:
+            members.setdefault(group, []).append(team_id)
+    if not members:
         return {}, ""
-    top = counts.most_common(1)[0][0]
-    kept = {t: teams[t] for t, d in division.items() if d == top}
     low, high = DIVISION_SIZE[league]
-    if not low <= len(kept) <= high:
-        # Said with what was seen, so the next attempt is not a guess.
-        seen = Counter((is_conference, parent) for _, is_conference, parent in shape.values())
-        print(f"  {league}: team records by (is a conference, parent): "
-              + ", ".join(f"{k}: {n}" for k, n in seen.most_common(8)), flush=True)
-    return kept, top
+    anchors = set(DIVISION_ANCHORS.get(league, ()))
+    held = Counter(division.get(t) for t, n in teams.items()
+                   if n in anchors and division.get(t))
+    tries = []
+    if held:
+        tries.append(sorted(held))                   # every group they are in
+        tries.append([held.most_common(1)[0][0]])    # the one most of them are in
+    tries.append([max(members, key=lambda g: len(members[g]))])
+    for groups in tries:
+        kept = {t: teams[t] for g in groups for t in members.get(g, [])}
+        if low <= len(kept) <= high:
+            return kept, "+".join(groups)
+    # Said with what was seen, so the next attempt is not a guess.
+    for group, ids in sorted(members.items(), key=lambda kv: -len(kv[1]))[:5]:
+        sample = ", ".join(sorted(teams[t] for t in ids)[:6])
+        print(f"  {league}: group {group}: {len(ids)} teams, "
+              f"{held.get(group, 0)} of the anchors -- {sample}", flush=True)
+    kept = {t: teams[t] for t in members.get(tries[0][0], [])}
+    return kept, tries[0][0]
 
 
 def load_division_schedules(league: str, seasons: list[int],

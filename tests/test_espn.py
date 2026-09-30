@@ -1798,3 +1798,26 @@ def test_a_team_list_of_every_division_is_kept_to_the_one_most_are_in(monkeypatc
     monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (3, 5))
     teams, source = espn.division_teams("ncaabaseball", 2025)
     assert set(teams) == {"1", "2", "3", "4", "6"} and "26" in source
+
+
+def test_the_division_is_the_group_the_anchor_programs_are_in(monkeypatch):
+    """The largest group is not always Division I; LSU's group is."""
+    from whul.sources import espn
+
+    listed = {"1": "LSU Tigers", "2": "Wake Forest Demon Deacons", "3": "Small U",
+              "4": "D2 A", "5": "D2 B", "6": "D2 C", "7": "D2 D", "8": "D2 E"}
+    records = {t: {"id": "x", "isConference": False,
+                   "parent": {"id": "26" if int(t) <= 3 else "25"}} for t in listed}
+
+    def fake(url, params, cache_key=None):
+        if url.endswith("/standings"):
+            return {"children": []}
+        if url.endswith("/teams"):
+            return {"sports": [{"leagues": [{"teams": [
+                {"team": {"id": i, "displayName": n}} for i, n in listed.items()]}]}]}
+        return {"team": {"groups": records[url.rsplit("/", 1)[1]]}}
+
+    monkeypatch.setattr(espn, "_get", fake)
+    monkeypatch.setitem(espn.DIVISION_SIZE, "ncaabaseball", (2, 6))
+    teams, source = espn.division_teams("ncaabaseball", 2025)
+    assert set(teams) == {"1", "2", "3"} and "26" in source
