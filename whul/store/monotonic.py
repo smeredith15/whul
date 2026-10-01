@@ -59,8 +59,15 @@ MEASURE_SUFFIXES: tuple[str, ...] = ("_diff", "_differential", "_pct",
 #: at-bat is priced below zero -- so each bad day held a rostered hitter's
 #: whole line at the day before: Ohtani read seventeen games for eight days
 #: while he played in them, and every stall read as the feed running behind.
+#:
+#: The postseason bonus too, held or credited. It is a rate times a fixed
+#: number of games, and a rate falls on a bad night: Pete Crow-Armstrong's
+#: second Wild Card game was -4.0, his held bonus fell, and his whole row was
+#: held at the day before -- one game where he had played two. Miguel Vargas
+#: and Yordan Alvarez were held the same way.
 DERIVED = re.compile(r"^(pts_|points_)|_points$|^(total_points|role_points|"
-                     r"scaled_score|league_points|folded|gross|counted)$")
+                     r"scaled_score|league_points|folded|gross|counted)$"
+                     r"|_pending$|_bonus$")
 
 #: Fields that identify the row rather than describe it.
 IDENTITY: frozenset[str] = frozenset({

@@ -33,6 +33,8 @@ def test_these_can_only_rise(name):
     "total_points", "role_points", "pts_run_diff", "scaled_score",
     "league_points", "regular_points", "postseason_points", "goal_points",
     "appearance_points", "bonus_points", "bye_points",
+    # A postseason rate times a fixed credit, held or paid.
+    "postseason_pending", "postseason_bonus",
     # Identity.
     "season", "asset_id", "conference", "game_id",
 ])
@@ -109,6 +111,19 @@ def test_the_sport_happening_is_not_a_fault(who, before, after):
     """These all lost points and every one of them is the truth. A pipeline
     that refused them would be refusing the sport."""
     assert monotonic.what_went_backwards(before, after) == [], who
+
+
+def test_a_bad_playoff_game_is_not_a_count_going_backwards():
+    """Pete Crow-Armstrong: +1.9, then -4.0. One more game and a lower rate,
+    so the held bonus falls. Held whole at the day before, he read one game
+    where he had played two."""
+    before = {"postseason_games": 1.0, "postseason_points": 1.425,
+              "postseason_team_games": 1.0, "postseason_pending": 17.3,
+              "postseason_bonus": 0.0, "post_ab": 3.0}
+    after = {"postseason_games": 2.0, "postseason_points": -1.575,
+             "postseason_team_games": 2.0, "postseason_pending": -9.6,
+             "postseason_bonus": 0.0, "post_ab": 7.0}
+    assert monotonic.what_went_backwards(before, after) == []
 
 
 def test_a_batters_bad_day_is_not_a_count_going_backwards():
