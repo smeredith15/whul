@@ -69,13 +69,18 @@ GOALIE_ROLE = "Goalie"
 
 
 def score_skaters(df: pd.DataFrame,
-                  standings: pd.DataFrame | None = None) -> pd.DataFrame:
+                  standings: pd.DataFrame | None = None,
+                  pool: bool = True) -> pd.DataFrame:
     """Season points per skater. All components are counting stats.
 
     ``standings`` is optional and changes no score. It carries how many games
     each club has played, which is what turns a games-played figure into a
     fact: fifty of eighty-two is a season interrupted and fifty of fifty is the
     league in January, and the first number alone cannot tell them apart.
+
+    ``pool`` keeps only positive totals, as the benchmark pool does. Live
+    scoring passes ``False``: Auston Matthews's first two games netted 0.0, he
+    was dropped, and his slot went on counting the 0.1 his first game had made.
     """
     if df is None or df.empty:
         return pd.DataFrame()
@@ -111,6 +116,10 @@ def score_skaters(df: pd.DataFrame,
     # neighbour's phase, counting playoff production as regular season.
     if "_phase" in df.columns:
         work["_phase"] = df["_phase"].to_numpy()
+    if not pool:
+        # A playoff line with no games in it is no line at all.
+        played = work["games_played"].fillna(0) > 0
+        return work[played].reset_index(drop=True)
     return work[work["total_points"] > 0].reset_index(drop=True)
 
 
@@ -122,7 +131,7 @@ SKATER_COUNTED = ["goals", "assists", "shots", "plus_minus"]
 
 
 def score_skater_phases(raw: pd.DataFrame, standings: pd.DataFrame | None = None,
-                        postseason: bool = True) -> pd.DataFrame:
+                        postseason: bool = True, pool: bool = True) -> pd.DataFrame:
     """Season totals per skater with the playoffs paid as a bonus.
 
     ``raw`` is the regular-season and playoff skater pulls together, each row
@@ -137,7 +146,7 @@ def score_skater_phases(raw: pd.DataFrame, standings: pd.DataFrame | None = None
         split_phases,
     )
 
-    scored = score_skaters(raw, standings)
+    scored = score_skaters(raw, standings, pool=pool)
     if scored.empty:
         return scored
     # From the scored frame, not reindexed off `raw`: the scorer drops skaters

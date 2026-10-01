@@ -129,7 +129,7 @@ def _nfl_players_live():
 
     return (
         lambda seasons: nflverse.load_player_stats(seasons),
-        lambda raw: nfl.score_players(raw, postseason=True),
+        lambda raw: nfl.score_players(raw, postseason=True, pool=False),
     )
 
 
@@ -486,7 +486,7 @@ def _nba_players_live():
 
     return (
         lambda seasons: espn.load_nba_player_box(seasons),
-        lambda raw: nba.score_players(raw, postseason=True),
+        lambda raw: nba.score_players(raw, postseason=True, pool=False),
     )
 
 
@@ -556,7 +556,7 @@ def _nhl_players_live():
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     return load, lambda raw: nhl.score_skater_phases(
-        raw, held.get("standings"), postseason=True)
+        raw, held.get("standings"), postseason=True, pool=False)
 
 
 #: The earliest an NHL playoff line can exist: the first round opens in the
