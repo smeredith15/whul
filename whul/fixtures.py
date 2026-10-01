@@ -993,6 +993,16 @@ def match_team(name: str, wanted: dict[str, tuple[str, str]],
     expanded = " ".join(words)
     if expanded in wanted:
         return wanted[expanded][0]
+    # The same words in another order. A tennis slug is surname first for
+    # most players and given name first for some -- Arthur Fils arrives as
+    # "arthur-fils", which reads back as "Fils Arthur" -- and nothing in the
+    # payload says which.
+    shuffled = [
+        value[0] for candidate, value in wanted.items()
+        if sorted(candidate.split()) == sorted(words)
+    ]
+    if len(shuffled) == 1:
+        return shuffled[0]
 
     hits = [
         value[0] for candidate, value in wanted.items()
@@ -1009,6 +1019,27 @@ def match_team(name: str, wanted: dict[str, tuple[str, str]],
         if len(initialled) == 1:
             return initialled[0]
     return None
+
+
+#: The results source whose matched spellings a Flashscore sport's fixtures
+#: may borrow, by sport id. Tennis only: it is the one sport whose results and
+#: fixtures come off the same feed and name the same people the same way.
+FEED_ALIAS_SOURCES: dict[int, str] = {2: "tennis"}  # 2 is SPORT_TENNIS
+
+
+def _learned_spellings(store, source: str | None) -> dict[str, str]:
+    """``{feed spelling, normalized: roster name}`` from a results source's aliases."""
+    if not source:
+        return {}
+    from whul.resolve import load_aliases
+
+    aliases = load_aliases(store, source)
+    if not aliases:
+        return {}
+    names = dict(store.query(
+        "SELECT asset_id, display_name FROM assets").itertuples(index=False, name=None))
+    return {normalize_team(spelling): str(names[asset])
+            for spelling, asset in aliases.items() if asset in names}
 
 
 def from_flashscore(store, season: str, as_of: date, leagues=None,
@@ -1086,6 +1117,12 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
             continue
         upcoming = upcoming.drop_duplicates(
             subset=["match_uid"]).reset_index(drop=True)
+        # The spellings the results side has already matched for this sport's
+        # players, which the fixtures read too. The two halves of the feed
+        # name a player the same way, and the results were matched first:
+        # "Carlos Alcaraz Garfia" is a name no rule here would shorten to the
+        # roster's, and it had already been resolved for every result he won.
+        learned = _learned_spellings(store, FEED_ALIAS_SOURCES.get(sport))
 
         # Matched row by row, not name by name, because the country is what
         # decides. "Athletic Club" is Bilbao under SPAIN and a Serie B side
@@ -1114,9 +1151,11 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
                 continue
             league_key = f"Flashscore/{sport}" + ("W" if womens[0] else "")
             sides = [
-                (home, match_team(feed.strip_womens(home) if womens[0] else home,
+                (home, match_team(learned.get(normalize_team(home), home)
+                                  if not womens[0] else feed.strip_womens(home),
                                   here, country)),
-                (away, match_team(feed.strip_womens(away) if womens[1] else away,
+                (away, match_team(learned.get(normalize_team(away), away)
+                                  if not womens[1] else feed.strip_womens(away),
                                   here, country)),
             ]
             if not any(found for _, found in sides):

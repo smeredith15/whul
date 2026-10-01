@@ -403,6 +403,12 @@ def test_an_upcoming_tennis_match_carries_its_opponent_and_round():
     assert got[0]["round"] == "QF"
 
 
+def test_the_number_that_tells_two_namesakes_apart_is_not_a_name():
+    raw = payload(header("WTA - SINGLES: Beijing"),
+                  tennis_match("t1", "andreeva-mirra", "yuan-yue-1998", SOON))
+    assert list(feed.iter_tennis_fixtures(raw))[0]["away_team"] == "Yue Yuan"
+
+
 def test_a_finished_tennis_match_is_not_a_fixture():
     raw = payload(header("ATP - SINGLES: Rome - Quarterfinal"),
                   tennis_match("t1", "sinner-jannik", "alcaraz-carlos", SOON, "3"))
@@ -446,6 +452,59 @@ def test_a_tennis_fixture_reaches_the_player_and_shows_the_round(monkeypatch):
     assert got["player-sinner"]["opponent"] == "Carlos Alcaraz"
     assert got["player-sinner"]["badge"] == "SF"
     assert got["player-sinner"]["competition"] == "Rome"
+
+
+def test_a_slug_written_given_name_first_still_reaches_the_player(monkeypatch):
+    """Arthur Fils's slug is "arthur-fils", which reads back as "Fils Arthur".
+    His results were matched all along; his fixtures never were."""
+    store = open_store(":memory:")
+    rostered(store, "player-fils", "Player", "Arthur Fils", league="ATP")
+    raw = payload(
+        header("ATP - SINGLES: Tokyo - Round of 16"),
+        tennis_match("t1", "arthur-fils", "shelton-ben", SOON),
+    )
+    monkeypatch.setattr(
+        feed, "load_window",
+        window_of(lambda sport: pd.DataFrame(list(feed.iter_tennis_fixtures(raw)))),
+    )
+    fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                             leagues=["ATP"], verbose=False)
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["player-fils"]["opponent"] == "Ben Shelton"
+
+
+def test_a_spelling_the_results_already_matched_reaches_the_fixture(monkeypatch):
+    """"Carlos Alcaraz Garfia" is a name no rule shortens to the roster's,
+    and the tennis results had already resolved it for every match he won."""
+    store = open_store(":memory:")
+    rostered(store, "player-alcaraz", "Player", "Carlos Alcaraz", league="ATP")
+    store.upsert("asset_aliases", [{
+        "source": "tennis", "source_key": "Carlos Alcaraz Garfia",
+        "asset_id": "player-alcaraz", "match_kind": "name", "needs_review": 0,
+        "created_at": "2026-09-01T00:00:00Z",
+    }], ["source", "source_key"])
+    raw = payload(
+        header("ATP - SINGLES: Beijing - Quarterfinal"),
+        tennis_match("t1", "alcaraz-garfia-carlos", "sinner-jannik", SOON),
+    )
+    monkeypatch.setattr(
+        feed, "load_window",
+        window_of(lambda sport: pd.DataFrame(list(feed.iter_tennis_fixtures(raw)))),
+    )
+    fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                             leagues=["ATP"], verbose=False)
+    got = fixtures.by_asset(store, "2026-27", date(2026, 9, 8))
+    assert got["player-alcaraz"]["opponent"] == "Jannik Sinner"
+    assert got["player-alcaraz"]["badge"] == "QF"
+
+
+def test_reordered_words_must_name_one_player():
+    """Two roster names with the same words is a name this cannot read."""
+    wanted = {"anna maria smith": ("Anna Maria Smith", "WTA"),
+              "maria anna smith": ("Maria Anna Smith", "WTA")}
+    assert fixtures.match_team("Smith Anna Maria", wanted) is None
+    assert fixtures.match_team("Smith Maria Anna", {
+        "anna maria smith": ("Anna Maria Smith", "WTA")}) == "Anna Maria Smith"
 
 
 def test_the_candidate_sports_are_distinct_ids():

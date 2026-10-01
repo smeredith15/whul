@@ -637,6 +637,21 @@ def probe(sport: int = SPORT_SOCCER, days: range = range(-3, 3)) -> dict:
 
 # --- tennis -----------------------------------------------------------------
 
+def _player_name(slug: str | None) -> str | None:
+    """A slug as a name, without the number Flashscore adds to tell two
+    players of the same name apart: "yuan-yue-1998" is Yue Yuan, not
+    "1998 Yuan Yue".
+
+    Here and not in ``slug_to_name``: the results ledger is keyed on the
+    names that function writes, and a result read under a new spelling would
+    be a second result.
+    """
+    if not slug:
+        return slug_to_name(slug)
+    kept = "-".join(p for p in str(slug).split("-") if p and not p.isdigit())
+    return slug_to_name(kept or slug)
+
+
 def iter_tennis_fixtures(raw: str):
     """Upcoming main-draw singles matches, one dict per match.
 
@@ -661,8 +676,8 @@ def iter_tennis_fixtures(raw: str):
             continue
         if not _still_to_finish(segment):
             continue
-        home = slug_to_name(_field(segment, "WU"))
-        away = slug_to_name(_field(segment, "WV"))
+        home = _player_name(_field(segment, "WU"))
+        away = _player_name(_field(segment, "WV"))
         when = _when(segment)
         if not home or not away or when is None:
             continue
