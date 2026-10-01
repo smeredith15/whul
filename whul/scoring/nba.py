@@ -144,13 +144,20 @@ def game_points(box: pd.DataFrame,
     return work[season_type.isin(include)].reset_index(drop=True)
 
 
-def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
+def score_players(box: pd.DataFrame, postseason: bool = True,
+                  pool: bool = True) -> pd.DataFrame:
     """Season totals per player from per-game box scores.
 
     Playoff rows (``season_type`` 3) are credited as a bonus rather than as raw
     counting stats. Play-In games (5) are dropped entirely -- they are neither
     regular season nor playoffs. Pass ``postseason=False`` for benchmark
     computation.
+
+    ``pool`` applies the benchmark pool's thresholds (``MIN_GAMES`` and
+    ``MIN_SCORE``), which decide who the 99th percentile is drawn from. Live
+    scoring passes ``False``: a rostered player is scored from his first game,
+    and the thresholds would have kept every one of them off the standings
+    until mid-November.
     """
     work = per_game(box)
     season_type = resolve_num(box, ["season_type"], default=SEASON_TYPE_REGULAR).reindex(
@@ -185,6 +192,8 @@ def score_players(box: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     agg = agg.merge(_games_his_team_played(work, keys, box), on=keys, how="left")
     agg["league"] = "NBA"
     agg["role"] = agg["position"]
+    if not pool:
+        return agg.reset_index(drop=True)
     keep = (agg["games_played"] >= MIN_GAMES) & (agg["total_points"] > MIN_SCORE)
     return agg[keep].reset_index(drop=True)
 

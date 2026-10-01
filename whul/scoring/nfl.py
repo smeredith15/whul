@@ -71,7 +71,8 @@ TEAM_WEIGHTS["div_ties"] = TEAM_WEIGHTS["div_wins"] * TIE_SHARE
 BIG_WIN_MARGIN = 9  # a "big win" is a two-possession game or better
 
 
-def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
+def score_players(stats: pd.DataFrame, postseason: bool = True,
+                  pool: bool = True) -> pd.DataFrame:
     """Season half-PPR totals per player.
 
     The nflverse release carries both REG and POST rows. Regular-season points
@@ -79,6 +80,10 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
     fixed number of extra games at the player's own rate (see
     ``whul.scoring.postseason``). Pass ``postseason=False`` to score the regular
     season alone -- which is what benchmark computation uses.
+
+    ``pool`` keeps only positive totals, as NFL_Players.R's pool does. Live
+    scoring passes ``False``: a rostered player whose season is at or below
+    zero is scored at that, not left out and credited his last positive day.
     """
     df = stats
     work = pd.DataFrame(
@@ -141,6 +146,8 @@ def score_players(stats: pd.DataFrame, postseason: bool = True) -> pd.DataFrame:
             agg[column] = agg[column].fillna(0)
     agg["league"] = "NFL"
     agg["role"] = agg["position"]
+    if not pool:
+        return agg.reset_index(drop=True)
     return agg[agg["total_points"] > 0].reset_index(drop=True)
 
 

@@ -259,6 +259,7 @@ def score_slots(
 
     # Where a category holds a best-performances slot, the arrangement that
     # scores most replaces the plain top-K.
+    held_open: set[str] = set()
     for (manager, asset_type, category), group in df.groupby(
             ["manager", "asset_type", "category"], sort=False):
         if best_slots.get((asset_type, category), 0) <= 0:
@@ -268,11 +269,28 @@ def score_slots(
              for row in group.itertuples()],
             starters.get((asset_type, category), 0))
         seated = set(found.season)
+        best = found.best
+        if best is None:
+            # The slot is always somebody's. Leaving it empty is the right
+            # total when no best-games figure would add anything, and the wrong
+            # page: before a league has played enough for the slot to pay, the
+            # roster showed no best-performances slot at all, and a 0.1 sat
+            # crossed out on a player in a season slot. It goes to the strongest
+            # best-games figure on the bench, which is never below zero -- a
+            # game below zero is never forced in -- so the total is unchanged.
+            spare = group[~group["slot_id"].isin(seated)]
+            if not spare.empty:
+                best = spare.sort_values(
+                    "best_score", ascending=False, kind="mergesort"
+                )["slot_id"].iloc[0]
+                held_open.add(best)
         df.loc[group.index, "scored_as"] = [
-            "season" if slot in seated else "best" if slot == found.best else ""
+            "season" if slot in seated else "best" if slot == best else ""
             for slot in group["slot_id"]]
 
-    df["counts"] = df["scored_as"] != ""
+    # A slot held open pays nothing yet, so it does not count: its occupant's
+    # season is still something the manager is carrying outside the total.
+    df["counts"] = (df["scored_as"] != "") & ~df["slot_id"].isin(held_open)
     return df.reset_index(drop=True)
 
 

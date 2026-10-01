@@ -135,3 +135,52 @@ def test_nhl_live_does_not_ask_for_playoffs_in_october(monkeypatch):
     assert source.GAME_TYPE_PLAYOFFS not in asked
     assert (out["postseason_pending"] == 0).all()
     assert set(out["player"]) == {"Depth", "Captain"}
+
+
+# --- the benchmark pool's thresholds are not for live scoring ----------------
+
+def test_a_skater_netting_zero_is_still_scored_live():
+    """Auston Matthews: +0.5, then -0.5. Dropped for a season of 0.0, his slot
+    went on counting the 0.1 his first game made and his page went blank."""
+    from whul.scoring import nhl
+
+    raw = pd.DataFrame([
+        _skater("Matthews", "TOR", 2, 0, shots=4, plusMinus=-2),
+        _skater("Minus", "TOR", 2, 0, plusMinus=-3),
+    ]).assign(_phase="reg")
+    live = nhl.score_skater_phases(raw, postseason=True, pool=False)
+    pool = nhl.score_skater_phases(raw, postseason=False)
+
+    assert set(live["player"]) == {"Matthews", "Minus"}
+    assert live.set_index("player").loc["Minus", "total_points"] < 0
+    assert pool.empty, "the benchmark pool still keeps positive seasons only"
+
+
+def test_an_nba_player_is_scored_from_his_first_game_live(monkeypatch):
+    """The pool wants fifteen games and a hundred points; live, those kept
+    every rostered player off the standings until mid-November."""
+    from whul.sources import espn
+
+    box = pd.DataFrame([_nba_game("r1", points=12)])
+    monkeypatch.setattr(espn, "load_nba_player_box", lambda seasons: box)
+
+    load, score = benchmark_sources._nba_players_live()
+    live = score(load([2027]))
+    load, score = benchmark_sources._nba_players()
+    bench = score(load([2027]))
+
+    assert list(live["player"]) == ["Test Player"]
+    assert bench.empty
+
+
+def test_an_nfl_player_below_zero_is_scored_live(monkeypatch):
+    from whul.sources import nflverse
+
+    weekly = pd.DataFrame([{**_nfl_week(1, yards=0), "interceptions": 2}])
+    monkeypatch.setattr(nflverse, "load_player_stats", lambda seasons: weekly)
+
+    load, score = benchmark_sources._nfl_players_live()
+    live = score(load([2026]))
+
+    assert len(live) == 1
+    assert live.iloc[0]["total_points"] < 0

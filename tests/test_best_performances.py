@@ -116,8 +116,32 @@ def test_team_slots_are_untouched():
     assert (out["best_score"] == 0).all()
 
 
-def test_without_game_records_the_best_slot_stays_empty():
+def test_without_game_records_the_best_slot_is_still_somebody_s():
+    """Decided October 2026: the slot is always shown. Before a league had
+    played enough for it to pay, the roster showed no best-performances slot
+    at all. It holds nothing until it does, so the total is unchanged."""
+    from whul.bestball import counted
+
     slots = nfl_slots("one", "two", "three")
     scores = season([("one", 30), ("two", 20), ("three", 10)])
     out = score_slots(slots, scores, D0)
-    assert sorted(out["scored_as"]) == ["", "season", "season"]
+    assert sorted(out["scored_as"]) == ["best", "season", "season"]
+    held = out.set_index("asset_id").loc["three"]
+    assert held["scored_as"] == "best"
+    assert not held["counts"], "it pays nothing yet, so it is not counting"
+    assert counted(out).sum() == pytest.approx(50.0)
+
+
+def test_a_one_game_best_beats_a_level_season_for_the_slot():
+    """Auston Matthews: +0.5 then -0.5, a season of 0.0 and a best game of
+    0.5. The slot is his, and the 0.5 counts."""
+    from whul.bestball import counted
+
+    slots = nfl_slots("matthews", "hutson", "kaprizov", "hughes", category="NHL")
+    scores = season([("matthews", 0.0), ("hutson", 0.0),
+                     ("kaprizov", 0.0), ("hughes", 0.0)])
+    played = games([("matthews", D0, 0.5, ""), ("matthews", D0, -0.5, "")])
+    out = score_slots(slots, scores, D0, played).set_index("asset_id")
+    assert out.loc["matthews", "scored_as"] == "best"
+    assert out.loc["matthews", "best_score"] == pytest.approx(0.5)
+    assert counted(out.reset_index()).sum() == pytest.approx(0.5)
