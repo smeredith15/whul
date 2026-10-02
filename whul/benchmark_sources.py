@@ -1626,8 +1626,11 @@ SOURCES: dict[str, Source] = _register(
            scale_for="NHL",
            seasons_for=_feed_seasons("nhl", "NHL"),
            note="82-game history lifted to the 84-game 2026-27 season"),
+    # No `scale_for`: a club's 82-game history is lifted at source, its
+    # regular-season terms only, by `score_teams`. Lifting the finished bar as
+    # well paid the two extra games twice over.
     Source("nhl-teams", "NHL", "Team", _nhl_teams,
-           live=lambda: _nhl_teams(strict=False), scale_for="NHL",
+           live=lambda: _nhl_teams(strict=False),
            seasons_for=_feed_seasons("nhl", "NHL")),
     Source("pga", "PGA", "Player", _pga_players, windowed=True,
            seasons_for=_tour_season_labels,

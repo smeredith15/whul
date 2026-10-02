@@ -128,6 +128,11 @@ arise here.
   division title do not. So team regular-season components are scaled at source
   and the achievement terms left alone, which is why `score_teams` takes the
   factor rather than having it applied to the finished benchmark.
+  **Corrected October 2026:** "at source" means the 82-game *history* only
+  (`schedule.lift_for`). Until then every season was lifted, so each 2026-27
+  club was inflated by the two games it had actually played, and `nhl-teams`
+  also carried `scale_for`, so the team bar was lifted a second time on top of
+  its already-lifted history. Recompute `nhl-teams` to replace that bar.
 - **COVID seasons are excluded from benchmark pools.** The probe reported
   `games_per_team [82]` for 2025, which prompted checking the rest of the window:
   NHL 2021 was **56 games**. Scaling that to 84 is a 1.5x extrapolation across a

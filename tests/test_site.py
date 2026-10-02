@@ -4404,10 +4404,11 @@ def test_a_basketball_club_reconciles_with_its_own_score():
     assert panel["head"] == [["Record", f"{row['reg_wins']:,.0f}–{row['reg_losses']:,.0f}"]]
 
 
-def test_a_hockey_club_carries_the_lift_its_points_were_given():
-    """An 82-game history scored against an 84-game season: the points are
-    lifted and the counts are not, so a page that multiplied a count by a
-    weight would print a figure the score does not contain."""
+def test_a_hockey_clubs_boxes_add_up_to_its_points_as_played():
+    """The 84-game season is carried by the benchmark, not by the points, so
+    a 2026-27 club's boxes are its counts at their weights and add up to its
+    total. Lifted as well, Florida's win and overtime loss read 2.0 and 1.0
+    under a total of 3.1."""
     from whul.scoring import nhl
 
     regular = pd.DataFrame([{
@@ -4419,9 +4420,9 @@ def test_a_hockey_club_carries_the_lift_its_points_were_given():
                           "games_played": 20, "wins": 12}])
     row = nhl.score_teams(regular, post).set_index("team").loc["A"].to_dict()
     panel = site_build._counted_team_panel("NHL", row)
-    assert _panel_total(panel) == pytest.approx(row["total_points"], abs=0.2)
+    assert _panel_total(panel) == pytest.approx(row["total_points"], abs=0.05)
     wins = next(b for b in panel["top"] if b["label"] == "Wins")
-    assert wins["points"] > 50 * nhl.PTS_WIN, "the lift is missing"
+    assert wins["points"] == pytest.approx(50 * nhl.PTS_WIN)
 
 
 def test_an_outcome_nobody_has_lost_yet_does_not_read_as_lost():
@@ -5146,20 +5147,6 @@ def test_this_month_is_open_and_last_month_until_the_seventh():
     assert opened(date(2026, 10, 2)) == ["October", "September"]
     assert opened(date(2026, 10, 7)) == ["October", "September"]
     assert opened(date(2026, 10, 8)) == ["October"]
-
-
-def test_a_lifted_box_shows_its_points_to_the_hundredth():
-    """Florida: a win and an overtime loss at 84/82 are 2.05 and 1.02, which
-    rounded to tenths read 2.0 and 1.0 under a total of 3.1."""
-    from whul.site.build import TeamBox, _counted_box
-
-    row = {"reg_wins": 1, "reg_otl": 1}
-    win = _counted_box(row, TeamBox("reg_wins", "Wins", 2.0, scaled=True), 84 / 82)
-    otl = _counted_box(row, TeamBox("reg_otl", "OT losses", 1.0, scaled=True), 84 / 82)
-    assert (win["points"], win["decimals"]) == (2.05, 2)
-    assert otl["points"] == 1.02
-    plain = _counted_box(row, TeamBox("reg_wins", "Wins", 2.0, scaled=True), 1.0)
-    assert "decimals" not in plain
 
 
 def test_the_day_breakdowns_are_a_file_the_pages_fetch(site):

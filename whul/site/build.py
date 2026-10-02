@@ -1663,12 +1663,6 @@ def _counted_box(row: dict, spec: TeamBox, scale: float,
         paid = got * spec.weight * (scale if spec.scaled else 1.0)
     box = {"label": spec.label, "value": f"{got:,.0f}",
            "points": round(paid, 1) or 0.0}
-    if spec.scaled and scale != 1.0:
-        # Lifted points to the hundredth. Each box rounded to a tenth rounds
-        # its share of the lift away -- Florida's win and overtime loss read
-        # 2.0 and 1.0 under a total of 3.1 -- and the boxes stop adding up.
-        box["points"] = round(paid, 2) or 0.0
-        box["decimals"] = 2
     skipped = _stat_number(row, spec.bye) if spec.bye else None
     if skipped:
         box["sup"] = f"+{skipped:,.0f}"
@@ -3190,12 +3184,9 @@ def _scaling_notes(row: dict) -> list[str]:
 
     factor = row.get("schedule_factor")
     if isinstance(factor, (int, float)) and factor and factor == factor and factor != 1.0:
-        # A club's row carries the factor because its points were lifted by
-        # it; a player's benchmark is lifted instead and his row never does.
         out.append(
-            f"Regular-season points are lifted by \u00d7{factor:.3f}, because "
-            f"this season is longer than the ones the benchmark was drawn "
-            f"from. The boxes show the lifted points."
+            f"The benchmark for this league is lifted by \u00d7{factor:.3f} to "
+            f"match a longer schedule than its history was played over."
         )
     return out
 

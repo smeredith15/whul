@@ -5,9 +5,12 @@ normalization, matching ``All_Analysis.R``: goalie and skater distributions are
 not comparable and the league abandoned goalie slots.
 
 **84-game season.** The NHL expands from 82 games in 2026-27, so historical
-benchmarks describe a shorter season than the one being scored. Regular-season
-components are scaled at source for teams, and the benchmark is scaled for
-players -- see ``whul.scoring.schedule``.
+benchmarks describe a shorter season than the one being scored. The bar is
+lifted to 84 games and live points are scored as played -- see
+``whul.scoring.schedule``. For skaters the benchmark is lifted whole. For clubs
+only the regular-season terms of the 82-game history are lifted, as they are
+scored for the pool, because a division title or a playoff run does not grow
+with the schedule. A 2026-27 club has played 84 games and is scored on them.
 
 **No byes.** All sixteen qualifiers play a first round, so the rule that a bye
 scores as a swept round does not arise here.
@@ -24,7 +27,7 @@ from __future__ import annotations
 import pandas as pd
 
 from whul.scoring.base import resolve_num, resolve_str
-from whul.scoring.schedule import factor_for, scheduled_games
+from whul.scoring.schedule import factor_for, lift_for, scheduled_games
 
 # --- teams ----------------------------------------------------------------
 PTS_WIN = 2.0
@@ -371,9 +374,13 @@ def score_teams(
     """Season points per team, blending regular-season and playoff summaries.
 
     ``scale_regular_season`` lifts wins, overtime losses and goal differential to
-    the current schedule length, leaving the playoff and division terms alone --
-    those do not scale with games played. Defaults to on whenever the league has
-    a schedule change configured.
+    the current schedule length, leaving the playoff and division terms alone.
+    By default each season is lifted by what its own length needs
+    (``schedule.lift_for``): the 82-game history the benchmark is drawn from
+    reaches 84 games, and a season already played at 84 is scored as played.
+    It used to lift every season, which inflated each 2026-27 club by the two
+    games it had actually played. ``True`` lifts every season and ``False``
+    none, for tests that need one or the other.
 
     ``divisions`` maps a team to its division for a season -- columns
     ``season``, ``team``, ``division``. Without it no division title is awarded,
@@ -383,7 +390,6 @@ def score_teams(
     if regular is None or regular.empty:
         return pd.DataFrame()
 
-    factor = factor_for("NHL") if scale_regular_season in (None, True) else 1.0
 
     work = pd.DataFrame(
         {
@@ -404,6 +410,10 @@ def score_teams(
         }
     )
     work["goal_diff"] = work["goals_for"] - work["goals_against"]
+    if scale_regular_season is None:
+        factor = work["season"].map(lambda season: lift_for("NHL", season))
+    else:
+        factor = factor_for("NHL") if scale_regular_season else 1.0
     # Unscored, and carried anyway: a record is the three numbers the sport
     # prints, and "Wins 45" on its own cannot say whether the other thirty-seven
     # were lost or have not been played. Regulation losses are what is left --

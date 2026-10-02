@@ -1346,11 +1346,8 @@ SCRIPT = """\
     // what it earned. "0.0" under a dash would be a claim rather than a blank.
     var blank = value === null || value === undefined;
     var sign = blank ? '' : (value < 0 ? ' down' : (value > 0 ? ' up' : ''));
-    // Lifted points carry two decimals, so the boxes add up to the total.
-    var places = box.decimals || 1;
-    var unit = Math.pow(10, places);
     var shown = blank ? '\u2014'
-      : (value > 0 ? '+' : '') + (Math.round(value * unit) / unit).toFixed(places);
+      : (value > 0 ? '+' : '') + (Math.round(value * 10) / 10).toFixed(1);
     // A bye rides on the wins box as a superscript: rounds the club never had
     // to play, which are worth win points and carry neither bonus.
     var sup = box.sup ? '<sup class="bye" title="' +
