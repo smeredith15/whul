@@ -12,7 +12,7 @@ from whul.scoring.nhl import (
     score_skaters,
     score_teams,
 )
-from whul.scoring.nhl import PTS_DIV_CHAMP
+from whul.scoring.nhl import PTS_DIV_CHAMP, PTS_OTL, PTS_WIN
 from whul.scoring.schedule import (
     SCHEDULE_CHANGES, factor_for, scale_benchmarks, scheduled_games,
 )
@@ -130,9 +130,17 @@ def test_only_regular_season_components_scale():
     assert scaled["series_wins"] == 4
 
 
-def test_scaling_is_on_by_default_for_nhl():
-    df = pd.DataFrame([team(wins=50, otLosses=10, goalsFor=280, goalsAgainst=220)])
-    assert score_teams(df).iloc[0]["schedule_factor"] == pytest.approx(84 / 82)
+def test_the_history_is_lifted_and_the_84_game_season_is_not():
+    """The 82-game history the benchmark is drawn from reaches 84 games; a
+    season already played at 84 is scored as played."""
+    df = pd.DataFrame([
+        team(season=2026, wins=50, otLosses=10, goalsFor=280, goalsAgainst=220),
+        team(season=2027, teamFullName="Now", wins=50, otLosses=10,
+             goalsFor=280, goalsAgainst=220),
+    ])
+    out = score_teams(df).set_index("season")
+    assert out.loc[2026, "schedule_factor"] == pytest.approx(84 / 82)
+    assert out.loc[2027, "schedule_factor"] == 1.0
 
 
 def test_missing_the_playoffs_earns_no_postseason_points():
@@ -600,3 +608,22 @@ def test_a_cached_season_list_that_predates_the_season_is_asked_again(monkeypatc
     assert ("/standings-season", None) in asked, "the uncached list was asked for"
     assert ("/standings/2025-04-17", "standings/20242025") in asked
 
+
+
+def test_a_clubs_points_are_scored_as_played():
+    """Florida, 2026-27: a win and an overtime loss are 3.0, not 3.1. The
+    season is already 84 games; lifting it paid the two extra games twice."""
+    regular = pd.DataFrame([team(season=2027, wins=1, otLosses=1, goalsFor=4,
+                                 goalsAgainst=4, gamesPlayed=2)])
+    out = score_teams(regular).iloc[0]
+    assert out["total_points"] == pytest.approx(1 * PTS_WIN + 1 * PTS_OTL)
+    assert out["schedule_factor"] == 1.0
+
+
+def test_the_team_benchmark_is_not_lifted_a_second_time():
+    """The clubs' history is lifted at source, its regular-season terms only;
+    a source that also lifted the finished bar paid the change twice."""
+    from whul.benchmark_sources import SOURCES
+
+    assert SOURCES["nhl-teams"].scale_for is None
+    assert SOURCES["nhl"].scale_for == "NHL", "skaters are lifted whole, once"

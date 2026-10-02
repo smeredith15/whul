@@ -206,6 +206,15 @@ details.tableview summary {
   cursor: pointer; color: var(--text-secondary); font-size: 13px; padding: 4px 0;
 }
 details.tableview[open] summary { margin-bottom: 8px; }
+/* The progression table, one folding month at a time. */
+details.tableview details.month { margin: 0 0 6px; }
+details.tableview details.month summary {
+  font-weight: 600; margin-bottom: 0; padding: 4px 0; color: var(--text-primary);
+}
+details.tableview details.month[open] summary { margin-bottom: 4px; }
+details.tableview details.month summary .count {
+  font-weight: 400; color: var(--muted); margin-left: 8px; font-size: 0.85em;
+}
 
 .tooltip {
   position: absolute; pointer-events: none; opacity: 0; transition: opacity .08s;

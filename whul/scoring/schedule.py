@@ -16,6 +16,12 @@ player benchmark scales whole. Team scoring mixes the two, so a team's
 regular-season components are scaled at source and its achievement components
 left alone -- which is why ``score_teams`` takes the factor rather than having it
 applied afterwards.
+
+At source means the **history**: a season played at the old length, which is
+what a benchmark is drawn from. A season played at the new length is already
+the length the bar describes and is scored as played (``lift_for``). Lifting
+every season, and the team benchmark whole on top, paid the change two and
+three times over until October 2026.
 """
 
 from __future__ import annotations
@@ -203,6 +209,18 @@ def factor_for(league: str) -> float:
     """Scaling factor for a league, 1.0 when its schedule is unchanged."""
     change = SCHEDULE_CHANGES.get(league)
     return change.factor if change else 1.0
+
+
+def lift_for(league: str, season: int) -> float:
+    """What one season's counting points are multiplied by to reach the
+    current schedule: the factor for a season played at the old length, and
+    1.0 for one already played at the new. A 2026-27 NHL club has played 84
+    games and needs nothing; lifting it anyway paid it two games twice.
+    """
+    change = SCHEDULE_CHANGES.get(league)
+    if change is None:
+        return 1.0
+    return change.factor if int(season) < change.first_current_season else 1.0
 
 
 def scale_benchmarks(benchmarks, league: str, column: str = "benchmark"):
