@@ -1346,8 +1346,11 @@ SCRIPT = """\
     // what it earned. "0.0" under a dash would be a claim rather than a blank.
     var blank = value === null || value === undefined;
     var sign = blank ? '' : (value < 0 ? ' down' : (value > 0 ? ' up' : ''));
+    // Lifted points carry two decimals, so the boxes add up to the total.
+    var places = box.decimals || 1;
+    var unit = Math.pow(10, places);
     var shown = blank ? '\u2014'
-      : (value > 0 ? '+' : '') + (Math.round(value * 10) / 10).toFixed(1);
+      : (value > 0 ? '+' : '') + (Math.round(value * unit) / unit).toFixed(places);
     // A bye rides on the wins box as a superscript: rounds the club never had
     // to play, which are worth win points and carry neither bonus.
     var sup = box.sup ? '<sup class="bye" title="' +
@@ -1789,7 +1792,27 @@ SCRIPT = """\
   var node = document.getElementById('daydata');
   var dialog = document.getElementById('dayview');
   if (!node || !dialog) return;
-  var days = JSON.parse(node.textContent);
+  var days = JSON.parse(node.textContent || '{}');
+  // Every day of a season is a file of its own, fetched on the first click
+  // rather than written into the page: nobody reading the standings needs it
+  // until they open a day.
+  var loading = null;
+  function ready() {
+    if (!node.dataset.src) return Promise.resolve(days);
+    if (!loading) {
+      loading = fetch(node.dataset.src).then(function (response) {
+        if (!response.ok) throw new Error(response.status);
+        return response.json();
+      }).then(function (got) {
+        days = got;
+        return days;
+      }).catch(function (error) {
+        loading = null;
+        throw error;
+      });
+    }
+    return loading;
+  }
   var assets = document.getElementById('assetdata');
   var profiles = assets ? JSON.parse(assets.textContent) : {};
 
@@ -1880,7 +1903,18 @@ SCRIPT = """\
   }
 
   document.querySelectorAll('button.daycell').forEach(function (button) {
-    button.addEventListener('click', function () { open(button.dataset.day); });
+    button.addEventListener('click', function () {
+      ready().then(function () { open(button.dataset.day); }).catch(function () {
+        dialog.innerHTML =
+          '<button class="close" aria-label="Close">&times;</button>' +
+          '<p class="note">The day could not be loaded. Opened from a file ' +
+          'rather than a server, the page cannot read it.</p>';
+        dialog.querySelector('.close').addEventListener('click', function () {
+          dialog.close();
+        });
+        dialog.showModal();
+      });
+    });
   });
   dialog.addEventListener('click', function (event) {
     if (event.target === dialog) dialog.close();

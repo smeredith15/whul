@@ -5109,3 +5109,65 @@ def test_a_playoff_note_says_the_rate_is_over_his_club_s_games():
     note = _campaign_note(entry)
     assert "over the 3 games his club played (he played 1)" in note
     assert "over 1 game " in _campaign_note({**entry, "team_games": 1.0})
+
+
+# --- the progression table, a month at a time --------------------------------
+
+def _progression_rows(days):
+    return [[d, "1.0"] for d in days]
+
+
+def test_every_day_is_listed_under_its_month_newest_first():
+    from whul.site.build import _month_tables
+
+    days = ["2026-10-02", "2026-10-01", "2026-09-30", "2026-09-29", "2026-08-21"]
+    html = _month_tables("Show as a table", ["Date", "TG"], _progression_rows(days),
+                         columns=["TG"], latest=date(2026, 10, 2))
+    assert html.count("<details class='month'") == 3
+    assert html.index("October 2026") < html.index("September 2026") \
+        < html.index("August 2026")
+    for d in days:
+        assert d in html
+    assert html.count('data-columns="[&quot;TG&quot;]"') == 3, \
+        "each month's table answers to the manager filter"
+
+
+def test_this_month_is_open_and_last_month_until_the_seventh():
+    from whul.site.build import _month_tables
+
+    days = ["2026-10-02", "2026-09-30", "2026-08-31"]
+
+    def opened(latest):
+        html = _month_tables("t", ["Date", "TG"], _progression_rows(days),
+                             latest=latest)
+        return [m for m in ("October", "September", "August")
+                if f"<details class='month' open><summary>{m}" in html]
+
+    assert opened(date(2026, 10, 2)) == ["October", "September"]
+    assert opened(date(2026, 10, 7)) == ["October", "September"]
+    assert opened(date(2026, 10, 8)) == ["October"]
+
+
+def test_a_lifted_box_shows_its_points_to_the_hundredth():
+    """Florida: a win and an overtime loss at 84/82 are 2.05 and 1.02, which
+    rounded to tenths read 2.0 and 1.0 under a total of 3.1."""
+    from whul.site.build import TeamBox, _counted_box
+
+    row = {"reg_wins": 1, "reg_otl": 1}
+    win = _counted_box(row, TeamBox("reg_wins", "Wins", 2.0, scaled=True), 84 / 82)
+    otl = _counted_box(row, TeamBox("reg_otl", "OT losses", 1.0, scaled=True), 84 / 82)
+    assert (win["points"], win["decimals"]) == (2.05, 2)
+    assert otl["points"] == 1.02
+    plain = _counted_box(row, TeamBox("reg_wins", "Wins", 2.0, scaled=True), 1.0)
+    assert "decimals" not in plain
+
+
+def test_the_day_breakdowns_are_a_file_the_pages_fetch(site):
+    """Every day of a season is a couple of megabytes by July; written into
+    both pages, it was weight nobody reading the standings needed."""
+    out, _ = site
+    days = json.loads((out / "days.json").read_text())
+    assert days, "the breakdowns were written"
+    for page in ("index.html", "results.html"):
+        html = (out / page).read_text()
+        assert 'id="daydata" data-src="days.json">{}</script>' in html

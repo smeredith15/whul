@@ -1663,6 +1663,12 @@ def _counted_box(row: dict, spec: TeamBox, scale: float,
         paid = got * spec.weight * (scale if spec.scaled else 1.0)
     box = {"label": spec.label, "value": f"{got:,.0f}",
            "points": round(paid, 1) or 0.0}
+    if spec.scaled and scale != 1.0:
+        # Lifted points to the hundredth. Each box rounded to a tenth rounds
+        # its share of the lift away -- Florida's win and overtime loss read
+        # 2.0 and 1.0 under a total of 3.1 -- and the boxes stop adding up.
+        box["points"] = round(paid, 2) or 0.0
+        box["decimals"] = 2
     skipped = _stat_number(row, spec.bye) if spec.bye else None
     if skipped:
         box["sup"] = f"+{skipped:,.0f}"
@@ -3184,9 +3190,12 @@ def _scaling_notes(row: dict) -> list[str]:
 
     factor = row.get("schedule_factor")
     if isinstance(factor, (int, float)) and factor and factor == factor and factor != 1.0:
+        # A club's row carries the factor because its points were lifted by
+        # it; a player's benchmark is lifted instead and his row never does.
         out.append(
-            f"The benchmark for this league is lifted by \u00d7{factor:.3f} to "
-            f"match a longer schedule than its history was played over."
+            f"Regular-season points are lifted by \u00d7{factor:.3f}, because "
+            f"this season is longer than the ones the benchmark was drawn "
+            f"from. The boxes show the lifted points."
         )
     return out
 
@@ -4302,15 +4311,30 @@ def _profile_payload(profiles: dict[str, dict]) -> str:
     )
 
 
-def _day_payload(breakdown: dict) -> str:
+#: Where the progression table's day breakdowns are written, beside the pages.
+DAY_FILE = "days.json"
+
+
+def _day_payload(breakdown: dict | None = None, src: str = "") -> str:
     """What each cell of the progression table opens.
 
     A second dialog rather than the asset one: this answers "what happened on
     the 12th" and the other answers "who is this", and stacking them in one
     element would mean a reader who opened a day and then a player could not
-    get back."""
+    get back.
+
+    With ``src`` the breakdowns are a file the page fetches on the first
+    click, rather than inline. Every day of a season is a couple of megabytes
+    by July, written into two pages, and nobody reading the standings needs
+    any of it until they open a day."""
+    if src:
+        return (
+            f'<script type="application/json" id="daydata" '
+            f'data-src="{escape(src)}">{{}}</script>'
+            '<dialog class="profile" id="dayview" aria-label="A day\'s scoring"></dialog>'
+        )
     return (
-        f'<script type="application/json" id="daydata">{json.dumps(breakdown)}</script>'
+        f'<script type="application/json" id="daydata">{json.dumps(breakdown or {})}</script>'
         '<dialog class="profile" id="dayview" aria-label="A day\'s scoring"></dialog>'
     )
 
@@ -4730,6 +4754,58 @@ def _table_view(
         f"<table{named}><thead><tr>{head}</tr></thead>"
         f"<tbody>{body}</tbody></table></details>"
     )
+
+
+#: How long the month before stays open once a new one has begun. The first
+#: week of a month is mostly the last week of the one before, as far as what a
+#: reader remembers goes.
+PREVIOUS_MONTH_OPEN_DAYS = 7
+
+
+def _month_tables(
+    summary: str, header: list[str], rows: list[list[str]],
+    columns: list[str] | None = None,
+    breakdown: list[list[str]] | None = None,
+    latest=None,
+) -> str:
+    """``_table_view``, one folding section a month.
+
+    Rows arrive newest first with the date in the first cell, and stay in that
+    order. The month ``latest`` falls in is open, and so is the one before it
+    through the seventh, so the turn of a month does not fold away the week
+    just played. Each month is its own table under the same header, which is
+    what lets the column filter -- it reads every table naming its columns --
+    hide a manager everywhere at once.
+    """
+    keys = breakdown or []
+    current = pd.Timestamp(latest) if latest is not None else None
+    previous = current.to_period("M") - 1 if current is not None else None
+    groups: list[tuple] = []
+    for index, row in enumerate(rows):
+        month = pd.Timestamp(str(row[0])).to_period("M")
+        if not groups or groups[-1][0] != month:
+            groups.append((month, [], []))
+        groups[-1][1].append(row)
+        groups[-1][2].append(keys[index] if index < len(keys) else [])
+
+    sections = []
+    for month, members, member_keys in groups:
+        open_ = current is not None and (
+            month == current.to_period("M")
+            or (month == previous and current.day <= PREVIOUS_MONTH_OPEN_DAYS))
+        inner = _table_view("", header, members, columns=columns,
+                            breakdown=member_keys)
+        # The inner details is _table_view's own wrapper; only its table is
+        # wanted here, under this month's summary.
+        table = inner[inner.index("<table"):inner.rindex("</details>")]
+        sections.append(
+            f"<details class='month'{' open' if open_ else ''}>"
+            f"<summary>{escape(month.strftime('%B %Y'))}"
+            f"<span class='count'>{len(members)} day"
+            f"{'' if len(members) == 1 else 's'}</span></summary>"
+            f"{table}</details>")
+    return (f"<details class='tableview'><summary>{escape(summary)}</summary>"
+            f"{''.join(sections)}</details>")
 
 
 def build(
@@ -5426,15 +5502,16 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
             values=[float(run.loc[d, "total"]) if d in run.index else 0.0 for d in days],
         ))
 
-    sampled = days[:: max(1, len(days) // 14)] or days
-    if days[-1] not in sampled:
-        sampled.append(days[-1])
-    breakdown = _day_breakdown(store, season, sampled, managers)
+    # Every day, not a sample. Fourteen dates spread over the season meant
+    # each row covered more days the longer it ran, and by October a row said
+    # what had changed over a fortnight. The months fold instead -- see
+    # `_month_tables` -- so the table stays short without losing a day.
+    breakdown = _day_breakdown(store, season, days, managers)
     # Newest first. The chart reads left to right because a line has to, but a
     # table is read from the top, and what a reader wants first is what
     # happened last. The deltas are still computed forwards -- reversing the
     # rows must not turn "since the 5th" into "since the 7th".
-    listed = list(reversed(sampled))
+    listed = list(reversed(days))
     progression_rows = [
         [str(d)] + [f"{s.values[days.index(d)]:,.1f}" for s in series] for d in listed
     ]
@@ -5495,9 +5572,9 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
   <p class="sub">Total score by day. Hover for every manager on a given date.</p>
   {charts.legend(slotted, filterable=True)}
   {charts.progression_chart(days, series)}
-  {_table_view("Show as a table", ["Date"] + [s.name for s in series],
-               progression_rows, columns=[s.name for s in series],
-               breakdown=progression_keys)}
+  {_month_tables("Show as a table", ["Date"] + [s.name for s in series],
+                 progression_rows, columns=[s.name for s in series],
+                 breakdown=progression_keys, latest=latest)}
   <p class="sub">Click any figure in the table for the day it came from.</p>
 </div>
 
@@ -5506,8 +5583,9 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
 {_fixture_board(store, season, latest, profiles, managers)}
 
 {_profile_payload(profiles)}
-{_day_payload(breakdown)}
+{_day_payload(src=DAY_FILE)}
 """
+    (out / DAY_FILE).write_text(json.dumps(breakdown))
     (out / "index.html").write_text(
         _page(f"{LEAGUE_ABBR} — Standings", body, "Standings", managers,
               stamp=stamp, simulated=simulated)
@@ -5523,9 +5601,9 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         "Total score by day. Hover for every manager on a given date.",
         f"{charts.legend(slotted, filterable=True)}"
         f"{charts.progression_chart(days, series)}"
-        + _table_view("Show as a table", ["Date"] + [s.name for s in series],
-                      progression_rows, columns=[s.name for s in series],
-                      breakdown=progression_keys),
+        + _month_tables("Show as a table", ["Date"] + [s.name for s in series],
+                        progression_rows, columns=[s.name for s in series],
+                        breakdown=progression_keys, latest=latest),
     )
     slots_figure = _figure(
         "slots", "Full season scores",
@@ -5601,7 +5679,7 @@ def _write_index(out, season, today, progression, bars, managers, slotted,
         + progression_figure + slots_figure + best_figure + table_figure
         + feeds_figure
         + meetings_figure + costs_figure
-        + _profile_payload(profiles) + _day_payload(breakdown)
+        + _profile_payload(profiles) + _day_payload(src=DAY_FILE)
     )
     (out / "results.html").write_text(
         _page(f"{LEAGUE_ABBR} — Results", results_body, "Results", managers,
