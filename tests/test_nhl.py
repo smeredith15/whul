@@ -524,3 +524,79 @@ def test_a_club_s_playoff_games_are_the_most_any_of_its_skaters_played():
     assert out.loc["Other", "postseason_team_games"] == 7
     assert club_playoff_games(scored.assign(_phase="reg"),
                               ["season", "player"]).empty
+
+
+# --- standings: divisions and each club's games ------------------------------
+
+def _standing(abbrev, name, division, games, season_id=None):
+    row = {"teamAbbrev": {"default": abbrev}, "teamName": {"default": name},
+           "divisionName": division, "gamesPlayed": games}
+    if season_id is not None:
+        row["seasonId"] = season_id
+    return row
+
+
+def _web_answering(monkeypatch, answers):
+    from whul.sources import nhl as source
+
+    asked = []
+
+    def web(path, cache_key=None):
+        asked.append((path, cache_key))
+        return answers[path]
+
+    monkeypatch.setattr(source, "_web", web)
+    return asked
+
+
+def test_a_season_being_played_reads_todays_standings(monkeypatch):
+    """Addressed by its last day, months away, the 2026-27 table was never
+    read: every skater's club games went blank and the clubs could not be
+    scored for want of a division."""
+    from whul.sources import nhl as source
+
+    monkeypatch.setattr(source, "season_is_over", lambda season: False)
+    asked = _web_answering(monkeypatch, {"/standings/now": {"standings": [
+        _standing("TOR", "Toronto Maple Leafs", "Atlantic", 3, 20262027),
+        _standing("EDM", "Edmonton Oilers", "Pacific", 2, 20262027),
+    ]}})
+    got = source.load_divisions([2027]).set_index("abbrev")
+    assert got.loc["TOR", "team_games"] == 3
+    assert got.loc["EDM", "division"] == "Pacific"
+    assert asked == [("/standings/now", None)], "today's table, never cached"
+
+
+def test_before_a_season_opens_last_seasons_table_is_not_this_ones(monkeypatch):
+    from whul.sources import nhl as source
+
+    monkeypatch.setattr(source, "season_is_over", lambda season: False)
+    _web_answering(monkeypatch, {"/standings/now": {"standings": [
+        _standing("TOR", "Toronto Maple Leafs", "Atlantic", 82, 20252026),
+    ]}})
+    assert source.load_divisions([2027]).empty
+
+
+def test_a_cached_season_list_that_predates_the_season_is_asked_again(monkeypatch):
+    from whul.sources import nhl as source
+
+    monkeypatch.setattr(source, "season_is_over", lambda season: True)
+    lists = iter([
+        {"seasons": [{"id": 20232024, "standingsEnd": "2024-04-18"}]},
+        {"seasons": [{"id": 20232024, "standingsEnd": "2024-04-18"},
+                     {"id": 20242025, "standingsEnd": "2025-04-17"}]},
+    ])
+    asked = []
+
+    def web(path, cache_key=None):
+        asked.append((path, cache_key))
+        if path == "/standings-season":
+            return next(lists)
+        return {"standings": [_standing("TOR", "Toronto Maple Leafs",
+                                        "Atlantic", 82)]}
+
+    monkeypatch.setattr(source, "_web", web)
+    got = source.load_divisions([2025])
+    assert list(got["team_games"]) == [82]
+    assert ("/standings-season", None) in asked, "the uncached list was asked for"
+    assert ("/standings/2025-04-17", "standings/20242025") in asked
+

@@ -135,7 +135,7 @@ def _web(path: str, cache_key: str | None = None):
     return payload
 
 
-def _standings_dates() -> dict[str, str]:
+def _standings_dates(fresh: bool = False) -> dict[str, str]:
     """The last day of each season's standings, by season id.
 
     Asked for rather than guessed. The standings endpoint is addressed by date,
@@ -144,7 +144,8 @@ def _standings_dates() -> dict[str, str]:
     than loudly: a date outside a season returns the neighbouring season's
     table, so the divisions would look fine and belong to the wrong year.
     """
-    payload = _web("/standings-season", cache_key="standings_season")
+    payload = _web("/standings-season",
+                   cache_key=None if fresh else "standings_season")
     seasons = payload.get("seasons", []) if isinstance(payload, dict) else []
     dates = {}
     for entry in seasons:
@@ -173,27 +174,45 @@ def load_divisions(seasons: list[int]) -> pd.DataFrame:
     UNVERIFIED, like the rest of this module: the host is blocked from the
     environment this was written in. ``python -m whul.cli probe nhl`` checks it.
     """
-    try:
-        ends = _standings_dates()
-    except Exception:
-        # No dates, no addressable standings. An empty frame is the honest
-        # answer; the benchmark path turns it into a loud failure.
-        return pd.DataFrame(columns=["season", "team", "division"])
-
+    ends: dict[str, str] | None = None
     rows: list[dict] = []
     for season in seasons:
         sid = season_id(season)
-        end = ends.get(sid)
-        if not end:
-            # A season the API does not list is a season that has not started.
-            continue
-        try:
-            payload = _web(f"/standings/{end}",
-                           cache_key=(f"standings/{sid}"
-                                      if season_is_over(season) else None))
-        except Exception:
-            continue
-        for row in payload.get("standings", []) if isinstance(payload, dict) else []:
+        if not season_is_over(season):
+            # A season being played is read as it stands today. Addressed by
+            # its last day it was never read at all: that day is months away,
+            # and the season list it comes from was cached under one key for
+            # good, so a list written before 2026-27 was published said the
+            # season had not started -- every skater's club games went blank
+            # and the NHL clubs could not be scored, for want of divisions.
+            try:
+                payload = _web("/standings/now")
+            except Exception:
+                continue
+            listed = _rows_of(payload)
+            # Before a season opens, "now" is the last one's final table.
+            # Its clubs and divisions are mostly the same and its games are
+            # not this season's, so only rows that say they are this season
+            # are kept.
+            if any("seasonId" in row for row in listed):
+                listed = [row for row in listed
+                          if str(row.get("seasonId")) == str(sid)]
+        else:
+            if ends is None:
+                ends = _dates_or_none()
+            if sid not in ends:
+                # Asked again, uncached, where the cached list predates it.
+                ends = {**ends, **_dates_or_none(fresh=True)}
+            end = ends.get(sid)
+            if not end:
+                # A season the API does not list has not been played.
+                continue
+            try:
+                payload = _web(f"/standings/{end}", cache_key=f"standings/{sid}")
+            except Exception:
+                continue
+            listed = _rows_of(payload)
+        for row in listed:
             name = (row.get("teamName") or {}).get("default")
             division = row.get("divisionName")
             if not name or not division:
@@ -216,6 +235,22 @@ def load_divisions(seasons: list[int]) -> pd.DataFrame:
         return pd.DataFrame(
             columns=["season", "team", "division", "abbrev", "team_games"])
     return pd.DataFrame(rows).drop_duplicates(subset=["season", "team"])
+
+
+def _dates_or_none(fresh: bool = False) -> dict[str, str]:
+    """``_standings_dates``, or nothing where it cannot be read. No dates, no
+    addressable standings: an empty frame is the honest answer, and the
+    benchmark path turns it into a loud failure."""
+    try:
+        return _standings_dates(fresh=fresh)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _rows_of(payload) -> list[dict]:
+    """The club rows of a standings payload."""
+    rows = payload.get("standings", []) if isinstance(payload, dict) else []
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _number(value):

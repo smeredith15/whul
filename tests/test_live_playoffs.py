@@ -184,3 +184,26 @@ def test_an_nfl_player_below_zero_is_scored_live(monkeypatch):
 
     assert len(live) == 1
     assert live.iloc[0]["total_points"] < 0
+
+
+def test_nhl_clubs_are_scored_live_when_the_standings_cannot_be_read(monkeypatch):
+    """A title is not awarded until April, so a night without standings costs
+    nothing live -- and refusing cost every rostered NHL club its score. The
+    benchmark still refuses: there a missing title sets the bar low."""
+    from whul.sources import nhl as source
+
+    teams = pd.DataFrame([{"season": 2027, "teamFullName": "Toronto Maple Leafs",
+                           "gamesPlayed": 3, "wins": 2, "otLosses": 0,
+                           "goalsFor": 10, "goalsAgainst": 6}])
+    monkeypatch.setattr(source, "load_teams", lambda seasons, kind=None: (
+        teams if kind != source.GAME_TYPE_PLAYOFFS else pd.DataFrame()))
+    monkeypatch.setattr(source, "load_divisions", lambda seasons: pd.DataFrame())
+
+    load, score = benchmark_sources.SOURCES["nhl-teams"].live()
+    live = score(load([2027]))
+    assert list(live["team"]) == ["Toronto Maple Leafs"]
+    assert live.iloc[0]["total_points"] > 0
+
+    load, score = benchmark_sources._nhl_teams()
+    with pytest.raises(RuntimeError, match="divisions could not be read"):
+        score(load([2027]))

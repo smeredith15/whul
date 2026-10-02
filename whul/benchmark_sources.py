@@ -574,7 +574,7 @@ def _nhl_playoffs_possible(season: int) -> bool:
     return date.today() >= date(int(season), *NHL_PLAYOFFS_FROM)
 
 
-def _nhl_teams():
+def _nhl_teams(strict: bool = True):
     """Season summaries, plus the standings a division title is read from.
 
     The divisions are fetched alongside the summaries for the same reason MLB's
@@ -582,6 +582,12 @@ def _nhl_teams():
     totals. Missing them would not fail -- it would quietly set the bar ten
     points low for every club that won one, and a frozen benchmark then carries
     that all season. So it is checked rather than defaulted.
+
+    ``strict=False`` is the live source, which scores the clubs without them
+    and says so. A title is not awarded until every club in the division has
+    played its schedule, so through a season nothing is lost by a night
+    without standings -- and refusing cost every rostered NHL club its score
+    for as long as the standings could not be read.
     """
     from whul.scoring import nhl
     from whul.sources import nhl as source
@@ -595,6 +601,12 @@ def _nhl_teams():
 
     def score(regular):
         divisions = held.get("divisions")
+        if (divisions is None or getattr(divisions, "empty", True)) and not strict:
+            FINDINGS.append(
+                "NHL standings could not be read, so the clubs are scored "
+                "without divisions tonight: no division title is awarded until "
+                "they are")
+            return nhl.score_teams(regular, held["playoffs"], divisions=None)
         if divisions is None or getattr(divisions, "empty", True):
             raise RuntimeError(
                 "NHL divisions could not be read, and a division title is worth "
@@ -1614,7 +1626,8 @@ SOURCES: dict[str, Source] = _register(
            scale_for="NHL",
            seasons_for=_feed_seasons("nhl", "NHL"),
            note="82-game history lifted to the 84-game 2026-27 season"),
-    Source("nhl-teams", "NHL", "Team", _nhl_teams, scale_for="NHL",
+    Source("nhl-teams", "NHL", "Team", _nhl_teams,
+           live=lambda: _nhl_teams(strict=False), scale_for="NHL",
            seasons_for=_feed_seasons("nhl", "NHL")),
     Source("pga", "PGA", "Player", _pga_players, windowed=True,
            seasons_for=_tour_season_labels,
