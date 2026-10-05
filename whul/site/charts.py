@@ -1634,6 +1634,100 @@ SCRIPT = """\
            '</div></div>';
   }
 
+  // Every result the asset has had this league year: a file of its own,
+  // fetched the first time the tab is opened, since a season of games for
+  // every asset on the page is more than anyone opening one profile needs.
+  var resultsCache = {};
+
+  function resultsRow(kind, r) {
+    var when = '<div class="when">' + (r.date || '') +
+               (r.vs ? '<span class="vs">' + r.vs + '</span>' : '') + '</div>';
+    var figs = '';
+    if (kind === 'tennis') {
+      figs = '<span class="fig ev">' + (r.name || '') + '</span>' +
+        (r.rounds || []).map(function (b) {
+          // A round won shows what the win was multiplied by, a bye says it
+          // was one, and the round they went out in is struck through.
+          var sup = b.bye ? '<sup>Bye</sup>'
+                  : b.mult ? '<sup>\u00d7' + b.mult + '</sup>' : '';
+          var cls = b.bye ? ' bye' : b.won ? '' : ' lost';
+          var name = b.won || b.bye ? b.round : '<s>' + b.round + '</s>';
+          return '<span class="rd' + cls + '">' + name + sup + '</span>';
+        }).join('');
+    } else if (kind === 'events') {
+      figs = '<span class="fig ev">' + (r.name || '') + '</span>' +
+        (r.finish ? '<span class="fig res">' + r.finish + '</span>' : '');
+    } else if (kind === 'sections') {
+      figs = '<span class="fig ev">' + (r.name || '') + '</span>' +
+        (r.res ? '<span class="fig res"><i>W-D-L</i> <b>' + r.res + '</b></span>' : '');
+    } else {
+      var mark = r.res ? r.res.charAt(0) : '';
+      figs = (r.res ? '<span class="fig res r' + mark + '">' + r.res + '</span>' : '') +
+        (r.phase ? '<span class="fig phase">' + r.phase + '</span>' : '') +
+        (r.role ? '<span class="fig role">' + r.role + '</span>' : '') +
+        (r.figs || []).map(function (f) {
+          return '<span class="fig">' + (f[0] ? '<b>' + f[0] + '</b>' : '') +
+                 '<i>' + f[1] + '</i></span>';
+        }).join('');
+    }
+    // A game's normalized score with its raw points beneath, as the best
+    // performances list shows one; a tournament's points are its only figure.
+    var pts = r.score !== undefined
+      ? r.score + '<small>' + r.points + ' raw</small>'
+      : r.points + '<small>pts</small>';
+    return '<div class="perf' + (r.best ? ' best' : '') + '"' +
+           (r.best ? ' title="Counted by the best-performances slot"' : '') + '>' +
+           when + '<div class="figs">' + figs + '</div>' +
+           '<div class="pts">' + pts + '</div></div>';
+  }
+
+  function renderResultsBody(data) {
+    var groups = data.groups || [];
+    if (!groups.length) return '<p class="sub">No results recorded yet.</p>';
+    var list = function (g) {
+      return '<div class="perflist">' + g.rows.map(function (r) {
+        return resultsRow(data.kind, r);
+      }).join('') + '</div>';
+    };
+    var marked = groups.some(function (g) {
+      return g.rows.some(function (r) { return r.best; });
+    });
+    var key = marked ? '<p class="perfhead"><span class="bestkey"></span>' +
+      'Marked: the games the best-performances slot counts.</p>' : '';
+    if (groups.length === 1 && !groups[0].label) return key + list(groups[0]);
+    return key + groups.map(function (g) {
+      return '<details class="rgroup"' + (g.open ? ' open' : '') + '><summary>' +
+             g.label + '<span class="count">' + g.rows.length + '</span></summary>' +
+             list(g) + '</details>';
+    }).join('');
+  }
+
+  function loadResults(pane) {
+    if (!pane || pane.dataset.loaded) return;
+    pane.dataset.loaded = '1';
+    var src = pane.dataset.src;
+    var body = pane.querySelector('.body');
+    var got = resultsCache[src] || fetch(src).then(function (response) {
+      if (!response.ok) throw new Error(response.status);
+      return response.json();
+    });
+    resultsCache[src] = got;
+    got.then(function (data) {
+      body.innerHTML = renderResultsBody(data);
+    }).catch(function () {
+      delete resultsCache[src];
+      delete pane.dataset.loaded;
+      body.innerHTML = '<p class="sub">The results could not be loaded.</p>';
+    });
+  }
+
+  function renderResults(results, shown) {
+    return '<div class="perfpane" data-pane="results" data-src="' + results.src + '"' +
+           (shown ? '' : ' hidden') + '>' +
+           '<div class="body"><p class="sub">Loading ' + results.count +
+           ' result' + (results.count === 1 ? '' : 's') + '\u2026</p></div></div>';
+  }
+
   function open(id) {
     var a = profiles[id];
     if (!a) return;
@@ -1643,7 +1737,9 @@ SCRIPT = """\
     }).join('');
     // Every finish, newest first. A total says how much; this says what
     // happened, which is what a profile is opened for.
-    var finishes = (a.finishes || []).map(function (f) {
+    // Moved to their own tab where there is one.
+    var results = a.results && a.results.count ? a.results : null;
+    var finishes = results ? '' : (a.finishes || []).map(function (f) {
       return '<tr><td>' + f.label + '</td>' +
              '<td class="when">' + (f.date || '') + '</td>' +
              '<td class="num">' + f.points.toLocaleString() + '</td></tr>';
@@ -1667,15 +1763,21 @@ SCRIPT = """\
     // A team-sport player scores one of two ways, so his window has a tab for
     // each: the season, which is everything below as it always was, and his
     // best performances. The tab that is counting today opens first.
+    // Every asset with a result has a third, or a second: the results
+    // themselves, every game or event, behind the summary.
     var best = a.best;
-    var tabs = best
+    var paned = best || results;
+    var tabs = paned
       ? '<div class="perftabs" role="tablist">' +
-          '<button class="pt' + (best.counts ? '' : ' on') + '" data-pane="season">' +
-            'Full season' + (best.season_counts ? '<span class="counts">counts</span>' : '') +
+          '<button class="pt' + (best && best.counts ? '' : ' on') + '" data-pane="season">' +
+            'Full season' + (best && best.season_counts ? '<span class="counts">counts</span>' : '') +
           '</button>' +
-          '<button class="pt' + (best.counts ? ' on' : '') + '" data-pane="best">' +
+          (best ? '<button class="pt' + (best.counts ? ' on' : '') + '" data-pane="best">' +
             'Best performances' + (best.counts ? '<span class="counts">counts</span>' : '') +
-          '</button></div>'
+          '</button>' : '') +
+          (results ? '<button class="pt" data-pane="results">Results' +
+            '<span class="adds">' + results.count + '</span></button>' : '') +
+          '</div>'
       : '';
     dialog.innerHTML =
       '<button class="close" aria-label="Close">&times;</button>' +
@@ -1685,8 +1787,8 @@ SCRIPT = """\
         (a.over ? '<div class="seasonover">' + a.over + '</div>' : '') +
         (a.group ? '<div class="grp">' + a.group + '</div>' : '') +
         '</div></div>' + tabs +
-      (best ? '<div class="perfpane" data-pane="season"' +
-              (best.counts ? ' hidden' : '') + '>' : '') +
+      (paned ? '<div class="perfpane" data-pane="season"' +
+               (best && best.counts ? ' hidden' : '') + '>' : '') +
       // The summary first, then what it is a summary of. A driver's season
       // opened on twenty-eight race results and the three numbers that sum
       // them up were below the fold; every other slot leads with its boxes.
@@ -1710,7 +1812,8 @@ SCRIPT = """\
           '"' + (a.final ? ' title="Final: this score can no longer change"' : '') +
           '>' + a.scaled + '</div></div>' +
       '</div>' +
-      (best ? '</div>' + renderBest(best) : '');
+      (paned ? '</div>' : '') + (best ? renderBest(best) : '') +
+      (results ? renderResults(results, false) : '');
     dialog.querySelectorAll('button.pt').forEach(function (tab) {
       tab.addEventListener('click', function () {
         dialog.querySelectorAll('button.pt').forEach(function (other) {
@@ -1718,6 +1821,7 @@ SCRIPT = """\
         });
         dialog.querySelectorAll('.perfpane').forEach(function (pane) {
           pane.hidden = pane.dataset.pane !== tab.dataset.pane;
+          if (!pane.hidden && pane.dataset.pane === 'results') loadResults(pane);
         });
       });
     });

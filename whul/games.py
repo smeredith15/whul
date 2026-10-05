@@ -662,9 +662,59 @@ def record(store: Store, season: str, as_of: date | str, verbose: bool = True,
             continue
         report.problems += problems + reconcile(sport, mine, rows)
         report.recorded[sport] = write(store, season, rows, divisor, sport)
+    if "NHL" in sports:
+        _record_club_games(store, season, report, loaders.get("nhl_teams"))
     if verbose:
         print(report, flush=True)
     return report
+
+
+#: The ledger NHL club games are written to, for a club's results list. The
+#: team summary the NHL club source scores from is a season total; this is
+#: the same endpoint one game at a time.
+NHL_TEAM_GAMES = "nhl-team-games"
+NHL_TEAM_GAME_KEYS = ("season", "gameId", "teamId")
+
+
+def _record_club_games(store: Store, season_label: str, report: Report,
+                       loader=None) -> None:
+    """Every NHL club game this league year, kept for the results lists.
+
+    Every other team league's games are already kept by its own source's
+    ledger; the NHL's club source reads season totals, so this is the one
+    asked for here. Never fatal: a results list a day behind is not a reason
+    to lose the players' games recorded above.
+    """
+    from whul.benchmark_sources import _nhl_playoffs_possible
+    from whul.store import feed_ledger
+
+    held = store.scalar(
+        "SELECT COUNT(*) FROM slot_occupancy o "
+        "JOIN roster_slots r ON r.slot_id = o.slot_id "
+        "JOIN assets a ON a.asset_id = o.asset_id "
+        "WHERE r.season = ? AND a.league = 'NHL' AND a.asset_type = 'Team'",
+        (season_label,)) or 0
+    if not held:
+        return
+    if loader is None:
+        from whul.sources import nhl as source
+
+        def loader(seasons, kind):
+            return source.load_team_games(seasons, kind)
+
+    season = SEASON.end.year
+    kinds = [2] + ([3] if _nhl_playoffs_possible(season) else [])
+    try:
+        frames = [loader([season], kind) for kind in kinds]
+        frame = pd.concat([f for f in frames if f is not None and not f.empty],
+                          ignore_index=True) if any(
+            f is not None and not f.empty for f in frames) else pd.DataFrame()
+        if frame.empty:
+            return
+        feed_ledger.record(store, NHL_TEAM_GAMES, frame, NHL_TEAM_GAME_KEYS)
+        report.recorded["NHL clubs"] = len(frame)
+    except Exception as exc:  # noqa: BLE001 -- one ledger, not the run
+        report.problems.append(f"NHL club games: {type(exc).__name__}: {exc}")
 
 
 def reconcile(sport: str, players: list[Rostered], rows: list[dict]) -> list[str]:

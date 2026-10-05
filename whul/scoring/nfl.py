@@ -71,6 +71,11 @@ TEAM_WEIGHTS["div_ties"] = TEAM_WEIGHTS["div_wins"] * TIE_SHARE
 BIG_WIN_MARGIN = 9  # a "big win" is a two-possession game or better
 
 
+
+def _flags(games: pd.DataFrame):
+    """A game frame's flags as 0.0 and 1.0, whatever dtype the feed gave."""
+    return lambda column: games[column].fillna(False).astype(bool).astype(float)
+
 def score_players(stats: pd.DataFrame, postseason: bool = True,
                   pool: bool = True) -> pd.DataFrame:
     """Season half-PPR totals per player.
@@ -210,6 +215,11 @@ def _team_games(schedules: pd.DataFrame) -> pd.DataFrame:
                     "points_for": pd.to_numeric(played[f"{side}_score"]),
                     "points_against": pd.to_numeric(played[f"{other}_score"]),
                     "div_game": played["div_game"].fillna(0).astype(int) == 1,
+                    # Carried for a results list, and summed by nothing.
+                    "date": (played["gameday"].astype(str).str[:10]
+                             if "gameday" in played.columns else ""),
+                    "opponent": played[f"{other}_team"].astype(str),
+                    "home": side == "home",
                 }
             )
         )
@@ -225,6 +235,29 @@ def _team_games(schedules: pd.DataFrame) -> pd.DataFrame:
     games["is_reg"] = games["game_type"] == "REG"
     games["is_playoff"] = games["game_type"].isin(["WC", "DIV", "CON", "SB"])
     return games
+
+
+def team_game_points(games: pd.DataFrame) -> pd.Series:
+    """What each game in ``_team_games`` earned on its own.
+
+    The game-level terms of ``score_teams`` at their weights: a regular-season
+    win, tie, big win, shutout, division result and margin, and a playoff win.
+    A division title, a playoff berth and a bye are the season's, not a game's,
+    and are left to the panel -- so these sum to the total less those.
+    """
+    if games is None or games.empty:
+        return pd.Series(dtype=float)
+    w = TEAM_WEIGHTS
+    flag = _flags(games)
+    win, tie, div = flag("is_win"), flag("is_tie"), flag("div_game")
+    regular = (
+        win * w["reg_wins"] + tie * w["reg_ties"]
+        + flag("is_big_win") * w["reg_big_wins"]
+        + flag("is_shutout") * w["reg_shutouts"]
+        + win * div * w["div_wins"] + tie * div * w["div_ties"]
+        + games["margin"].astype(float) * w["point_diff"]
+    )
+    return regular * flag("is_reg") + win * flag("is_playoff") * w["playoff_wins"]
 
 
 class MissingDivisionStanding(ValueError):

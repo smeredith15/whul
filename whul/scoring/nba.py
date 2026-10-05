@@ -75,6 +75,11 @@ EXHIBITION_PATTERN = r"All-Star|Rising Stars|Celebrity"
 MIN_TEAM_GAMES = 10
 
 
+
+def _flags(games: pd.DataFrame):
+    """A game frame's flags as 0.0 and 1.0, whatever dtype the feed gave."""
+    return lambda column: games[column].fillna(False).astype(bool).astype(float)
+
 def _plus_minus(df: pd.DataFrame) -> pd.Series:
     """Plus-minus arrives as a signed string ('+7', '-12', '')."""
     raw = resolve_str(df, ["plus_minus", "pm"])
@@ -211,6 +216,8 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
             "away_team": resolve_str(schedule, ["away_abbreviation", "away_team"], required=True),
             "home_score": resolve_num(schedule, ["home_score"], default=float("nan")),
             "away_score": resolve_num(schedule, ["away_score"], default=float("nan")),
+            # Carried for a results list, and summed by nothing.
+            "date": resolve_str(schedule, ["game_date", "date"], default="").str[:10],
         }
     )
     # Only completed games count. Unplayed games are not NA in this feed -- they
@@ -243,6 +250,9 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
                     "team": base[f"{side}_team"],
                     "points_for": base[f"{side}_score"],
                     "points_against": base[f"{other}_score"],
+                    "date": base["date"],
+                    "opponent": base[f"{other}_team"],
+                    "home": side == "home",
                 }
             )
         )
@@ -260,6 +270,24 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
         IST_FINAL_PATTERN, case=False, regex=True, na=False
     )
     return games
+
+
+def team_game_points(games: pd.DataFrame) -> pd.Series:
+    """What each game in ``_team_games`` earned on its own.
+
+    A regular-season win, big win and margin, a playoff win and an NBA Cup
+    win, at ``score_teams``' weights. A berth, a series, the Play-In
+    consolation and the Cup itself are the season's and left to the panel.
+    """
+    if games is None or games.empty:
+        return pd.Series(dtype=float)
+    w = TEAM_WEIGHTS
+    flag = _flags(games)
+    win = flag("is_win")
+    regular = (win * w["reg_wins"] + flag("is_big_win") * w["reg_big_wins"]
+               + games["margin"].astype(float) * w["point_diff"])
+    return (regular * flag("is_reg") + win * flag("is_playoff") * w["playoff_wins"]
+            + win * flag("is_ist") * w["ist_wins"])
 
 
 def _games_his_team_played(work: pd.DataFrame, keys: list[str],

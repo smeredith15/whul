@@ -365,6 +365,26 @@ def _division_champs(
     return champ
 
 
+def team_game_points(games: pd.DataFrame) -> pd.Series:
+    """What each club game earned on its own, from ``load_team_games`` rows.
+
+    A regular-season win, an overtime loss and the goal margin, and a playoff
+    win, at ``score_teams``' weights. A playoff berth, the series and a
+    division title are the season's and left to the panel. Unlifted: the
+    84-game season is carried by the benchmark (``whul.scoring.schedule``).
+    """
+    if games is None or games.empty:
+        return pd.Series(dtype=float)
+    wins = resolve_num(games, ["wins"])
+    otl = resolve_num(games, ["otLosses", "ot_losses"])
+    margin = (resolve_num(games, ["goalsFor", "goals_for"])
+              - resolve_num(games, ["goalsAgainst", "goals_against"]))
+    kind = resolve_num(games, ["game_type", "gameTypeId"], default=2)
+    regular = wins * PTS_WIN + otl * PTS_OTL + margin * PTS_GOAL_DIFF
+    playoff = wins * PTS_PLAYOFF_WIN
+    return regular.where(kind != 3, playoff).astype(float)
+
+
 def score_teams(
     regular: pd.DataFrame,
     playoffs: pd.DataFrame | None = None,

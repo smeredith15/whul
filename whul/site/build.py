@@ -4849,10 +4849,18 @@ def build(
     profiles = asset_profiles(store, season, latest, rostered)
     deep_profiles = asset_profiles(store, season, latest, rostered, depth=1)
     best = best_payloads(store, season, latest, bars)
+    best_keys = {a: set(payload.pop("keys", [])) for a, payload in best.items()}
     for held in (profiles, deep_profiles):
         for asset_id, payload in best.items():
             if asset_id in held:
                 held[asset_id]["best"] = payload
+    # Every result, a file an asset beside the pages and fetched when the tab
+    # is opened; the profile carries only how many there are.
+    listed = _write_results(out, store, season, latest, best_keys, rostered)
+    for held, up in ((profiles, ""), (deep_profiles, "../")):
+        for asset_id, (count, path) in listed.items():
+            if asset_id in held:
+                held[asset_id]["results"] = {"count": count, "src": up + path}
 
     _write_index(out, season, today, progression, bars, managers, slotted,
                  latest, stamp, simulated, profiles, store)
@@ -4875,6 +4883,34 @@ def build(
         "photos": photos,
         "profiles": len(profiles),
     }
+
+
+def _write_results(out: Path, store, season: str, latest, best_keys: dict[str, set],
+                   rostered: set) -> dict[str, list]:
+    """``results/<asset>.json`` for every rostered asset with a result.
+
+    The folder is emptied first, so an asset traded off every roster does not
+    leave a list behind that nothing links to. Returns each asset's count and
+    its file, relative to the site root.
+    """
+    from whul.site import results
+
+    folder = out / results.RESULTS_DIR
+    if folder.exists():
+        for stale in folder.glob("*.json"):
+            stale.unlink()
+    folder.mkdir(parents=True, exist_ok=True)
+    listed: dict[str, list] = {}
+    for asset_id, payload in results.build(store, season, latest, best_keys).items():
+        if asset_id not in rostered or not payload["count"]:
+            continue
+        name = results.file_name(asset_id)
+        # Escaped here for the reason the profiles are: the window builds
+        # HTML out of it, and a club is called "Brighton & Hove Albion".
+        (folder / name).write_text(json.dumps(results.escaped(payload),
+                                              separators=(",", ":")))
+        listed[asset_id] = [payload["count"], f"{results.RESULTS_DIR}/{name}"]
+    return listed
 
 
 #: A game's figures as the profile lists them, per sport, in reading order.
@@ -5019,6 +5055,9 @@ def best_payloads(store, season: str, latest, bars: pd.DataFrame) -> dict[str, d
             "score": f"{value:,.1f}",
             "raw": f"{raw:,.1f}",
             "games": games,
+            # Which of his games these are, for the results list to mark;
+            # taken off before the profile is written.
+            "keys": [game.game_key for game in chosen],
         }
     return out
 

@@ -342,6 +342,8 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
             "away_team": resolve_str(schedule, ["away_team", "away_name"], required=True),
             "home_score": resolve_num(schedule, ["home_score"], default=float("nan")),
             "away_score": resolve_num(schedule, ["away_score"], default=float("nan")),
+            # Carried for a results list, and summed by nothing.
+            "date": resolve_str(schedule, ["game_date", "date"], default="").str[:10],
         }
     )
     base = base[base["home_score"].notna() & base["away_score"].notna()]
@@ -359,6 +361,8 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
                     "opponent": base[f"{other}_team"],
                     "runs_for": base[f"{side}_score"],
                     "runs_against": base[f"{other}_score"],
+                    "date": base["date"],
+                    "home": side == "home",
                 }
             )
         )
@@ -367,6 +371,31 @@ def _team_games(schedule: pd.DataFrame) -> pd.DataFrame:
     games["is_win"] = games["margin"] > 0
     games["is_reg"] = games["game_type"] == GAME_TYPE_REGULAR
     return games
+
+
+def team_game_points(games: pd.DataFrame, weight: float = 1.0,
+                lift: float = 1.0) -> pd.Series:
+    """What each game in ``_team_games`` earned on its own.
+
+    A regular-season win, big win, shutout and run differential, and a
+    postseason win, at ``score_teams``' weights. ``weight`` is the contract
+    year's multiplier for the season the games belong to; ``lift`` is the
+    proration a live window's regular-season terms carry (``WINDOW_COUNTING``)
+    and a playoff win does not. A division title and the series are the
+    season's and left to the panel.
+    """
+    if games is None or games.empty:
+        return pd.Series(dtype=float)
+    margin = games["margin"].astype(float)
+    win = games["is_win"].astype(bool).astype(float)
+    reg = games["is_reg"].astype(bool).astype(float)
+    big = win * (margin >= BIG_WIN_MARGIN).astype(float)
+    shutout = win * (games["runs_against"].astype(float) == 0).astype(float)
+    regular = (win * BASE_REG_WIN + big * PTS_BIG_WIN + shutout * PTS_SHUTOUT
+               + margin * PTS_RUN_DIFF) * lift
+    october = games["game_type"].isin(
+        (GAME_TYPE_WC, GAME_TYPE_LDS, GAME_TYPE_LCS, GAME_TYPE_WS)).astype(float)
+    return (regular * reg + win * october * BASE_PLAYOFF_WIN) * weight
 
 
 TEAM_SUMMARY_COLUMNS = [
