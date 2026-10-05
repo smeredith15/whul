@@ -169,6 +169,8 @@ def score_team_matches(matches: pd.DataFrame) -> pd.DataFrame:
                 matches, ["shootout_for", "penalties_for", "so_for"]),
             "shootout_against": resolve_num(
                 matches, ["shootout_against", "penalties_against", "so_against"]),
+            # Carried for a results list, and summed by nothing.
+            "opponent": resolve_str(matches, ["opponent", "opp"], default=""),
         }
     )
     # Prefer the feed's own key: we chose it when making the request, so unlike a

@@ -1027,6 +1027,40 @@ dialog.profile .perfhead { font-size: 12.5px; color: var(--text-secondary);
 @media (max-width: 480px) {
   dialog.profile .perf { grid-template-columns: 60px 1fr auto; gap: 8px; }
 }
+/* Results: the same rows as best performances, every one of them, folded by
+   month or competition where a season is too long to read in one list. */
+dialog.profile .perftabs button.pt .adds { font-weight: 500; margin-left: 6px;
+  color: var(--muted); }
+dialog.profile .perftabs button.pt.on .adds { color: inherit; opacity: 0.7; }
+dialog.profile details.rgroup { margin: 0 0 8px; }
+dialog.profile details.rgroup summary { cursor: pointer; font-weight: 600;
+  font-size: 13px; padding: 4px 0; color: var(--text-primary); }
+dialog.profile details.rgroup[open] summary { margin-bottom: 6px; }
+dialog.profile details.rgroup summary .count { font-weight: 400;
+  color: var(--muted); margin-left: 8px; font-size: 0.85em; }
+/* The result itself leads the chips, a win in the ink and a loss quieter:
+   status colours are kept for states, and a result is read, not scanned. */
+dialog.profile .perf .fig.res { font-weight: 650; }
+dialog.profile .perf .fig.res.rL { color: var(--text-secondary); font-weight: 500; }
+dialog.profile .perf .fig.ev { border-color: transparent; background: none;
+  padding-left: 0; font-size: 12px; white-space: normal;
+  color: var(--text-primary); flex-basis: 100%; }
+/* A game the best-performances slot counts: a bar down its left edge, in the
+   colour the slot's "counts" tag wears, with the key above saying what it is. */
+dialog.profile .perf.best { box-shadow: inset 3px 0 0 var(--series-4); }
+dialog.profile .bestkey { display: inline-block; width: 3px; height: 12px;
+  background: var(--series-4); vertical-align: -1px; margin-right: 6px;
+  border-radius: 2px; }
+/* A tennis round: played and won, won in straight sets (the multiplier
+   raised), a bye, or the round they went out in -- grey and struck. */
+dialog.profile .perf .rd { font-size: 11px; font-weight: 600;
+  border: 1px solid var(--grid); border-radius: 6px; padding: 1px 6px;
+  background: var(--page); white-space: nowrap; }
+dialog.profile .perf .rd sup { font-size: 8.5px; font-weight: 700;
+  margin-left: 2px; color: var(--series-4); }
+dialog.profile .perf .rd.bye { border-style: dashed; color: var(--text-secondary); }
+dialog.profile .perf .rd.bye sup { color: var(--muted); text-transform: uppercase; }
+dialog.profile .perf .rd.lost { color: var(--muted); background: none; }
 
 /* The one slot a category scores on its best games, marked where it sits. */
 .slottag {

@@ -487,7 +487,8 @@ def match_events(matches: pd.DataFrame, losses: bool = False) -> pd.DataFrame:
     # beating it quickly.
     straight = scored["match_points"] - scored["win_points"]
 
-    def side(name_col: str, points, result: str, bonus=0.0) -> pd.DataFrame:
+    def side(name_col: str, points, result: str, bonus=0.0,
+             multiplier=1.0) -> pd.DataFrame:
         return pd.DataFrame({
             "player": scored[name_col],
             "date": scored["date"],
@@ -500,13 +501,20 @@ def match_events(matches: pd.DataFrame, losses: bool = False) -> pd.DataFrame:
             "result": result,
             "event_points": points,
             "straight_points": bonus,
+            # The scoring tier and what the straight-sets rule multiplied the
+            # round by, so a results list can draw each round as a badge --
+            # "R16 ×1.25", a bye before the first -- without the score of
+            # every match beside it.
+            "tier": scored["tier"],
+            "multiplier": multiplier,
             "league": scored["tour"].str.upper().str.contains("WTA").map(
                 {True: "WTA", False: "ATP"}
             ),
             "role": "Singles",
         })
 
-    won = side("winner", scored["match_points"], "W", straight)
+    won = side("winner", scored["match_points"], "W", straight,
+               scored["straight_sets_bonus"])
     if not losses:
         return won
 

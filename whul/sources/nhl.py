@@ -101,6 +101,44 @@ def _summary(endpoint: str, seasons: list[int], game_type: int) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def load_team_games(seasons: list[int],
+                    game_type: int = GAME_TYPE_REGULAR) -> pd.DataFrame:
+    """Every club's games one by one: the team summary with ``isGame=true``.
+
+    One request a season and game type, for the whole league. Each row is one
+    club in one game -- ``gameId``, ``gameDate``, ``teamFullName``,
+    ``opponentTeamAbbrev``, ``homeRoad``, ``wins``, ``otLosses``,
+    ``goalsFor``, ``goalsAgainst`` -- which is the only place an overtime loss
+    is a fact about a game rather than a count on a season: a score alone
+    cannot tell a one-goal loss in regulation from one in overtime.
+
+    UNVERIFIED like the rest of this module: the host is blocked from the
+    environment this was written in. ``python -m whul.cli probe nhl`` checks it.
+    """
+    frames = []
+    for season in seasons:
+        sid = season_id(season)
+        payload = _get(
+            "/team/summary",
+            {
+                "isAggregate": "false",
+                "isGame": "true",
+                "limit": PAGE_ALL,
+                "start": 0,
+                "cayenneExp": f"seasonId={sid} and gameTypeId={game_type}",
+            },
+            cache_key=(f"team_games/{sid}_{game_type}"
+                       if season_is_over(season) else None),
+        )
+        rows = payload.get("data", [])
+        if rows:
+            frame = pd.DataFrame(rows)
+            frame["season"] = season
+            frame["game_type"] = game_type
+            frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def load_skaters(seasons: list[int], game_type: int = GAME_TYPE_REGULAR) -> pd.DataFrame:
     return _summary("skater", seasons, game_type)
 
@@ -288,6 +326,7 @@ def probe(season: int = 2025) -> dict:
         ("teams_regular", lambda: load_teams([season], GAME_TYPE_REGULAR)),
         ("teams_playoffs", lambda: load_teams([season], GAME_TYPE_PLAYOFFS)),
         ("divisions", lambda: load_divisions([season])),
+        ("team_games", lambda: load_team_games([season], GAME_TYPE_REGULAR)),
     ]
     frames: dict[str, pd.DataFrame] = {}
     for label, loader in checks:
@@ -298,6 +337,16 @@ def probe(season: int = 2025) -> dict:
         except Exception as exc:
             status = getattr(getattr(exc, "response", None), "status_code", "?")
             result[label] = f"FAILED ({status}): {type(exc).__name__}: {exc}"
+
+    # One row a club a game, which the results list and the club's games
+    # played are read from: these are the columns they read.
+    games = frames.get("team_games")
+    if games is not None and not games.empty:
+        wanted = ["gameId", "gameDate", "teamId", "teamFullName", "opponentTeamAbbrev",
+                  "homeRoad", "wins", "otLosses", "goalsFor", "goalsAgainst"]
+        result["team_game_columns_missing"] = [c for c in wanted if c not in games.columns]
+        result["team_game_sample"] = {c: str(games[c].iloc[0]) for c in wanted
+                                      if c in games.columns}
 
     skaters = frames.get("skaters_regular")
     if skaters is not None and not skaters.empty:

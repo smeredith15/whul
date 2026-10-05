@@ -496,6 +496,16 @@ Presentation changes collected from use are in [`SITE_TODO.md`](SITE_TODO.md).
 - [x] Asset profile window — photo, badge, the stat lines behind the raw score; opens
       from a bar or a name
 - [x] Profile photos — drop files in `assets/img/`, monogram fallback until then
+- [x] Results tab in the profile window — every game, match, tournament or event
+      this league year, each with what it earned (`whul/site/results.py`). One
+      file an asset under `results/`, fetched when the tab opens. Grouped by
+      month with the playoffs apart (MLB, NBA, NHL), by competition (club
+      soccer), by season / conference tournament / NCAA tournament (college
+      basketball, baseball, softball), by tournament (national teams); one list
+      for football, tennis, golf and motorsport. Tennis rounds are badges: a
+      straight-sets win shows its multiplier, a bye says so, the round lost is
+      struck. A club's season items — a title, a series, a berth — stay in the
+      panel and are not shared out across its games.
 - [ ] Asset score history (a sparkline in the profile window)
 - [ ] Read-only manager auth — **not needed on a static site**; the pages are
       public or they are not published. Revisit only if the league wants privacy.

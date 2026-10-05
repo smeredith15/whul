@@ -149,6 +149,11 @@ DIAMOND = {
 }
 
 
+
+def _flags(games: pd.DataFrame):
+    """A game frame's flags as 0.0 and 1.0, whatever dtype the feed gave."""
+    return lambda column: games[column].fillna(False).astype(bool).astype(float)
+
 def _restrict(games: pd.DataFrame, eligible: set[str] | None) -> pd.DataFrame:
     """Keep only the division's own teams, when the caller knows who they are."""
     if not eligible:
@@ -336,10 +341,10 @@ class MissingConference(ValueError):
     """
 
 
-def score_football(
+def football_games(
     schedule: pd.DataFrame, eligible: set[str] | None = None
 ) -> pd.DataFrame:
-    """NCAAF team scoring."""
+    """Every NCAAF game, flagged the way ``score_football`` reads it."""
     games = _restrict(_team_games(schedule), eligible)
     if games.empty:
         return pd.DataFrame()
@@ -369,6 +374,31 @@ def score_football(
     games["is_conf_title"] = ((games["is_post"] | games["is_conf_game"])
                               & ~games["is_playoff"]
                               & _matches(games["notes"], FB_TITLE_PATTERN))
+    return games
+
+
+def football_game_points(games: pd.DataFrame) -> pd.Series:
+    """What each NCAAF game earned on its own: a win, a big win, a conference
+    win, the margin and a playoff win. A conference title, a playoff berth, a
+    bye and the regular-season title are the season's and left to the panel."""
+    if games is None or games.empty:
+        return pd.Series(dtype=float)
+    w = FB_WEIGHTS
+    flag = _flags(games)
+    win = flag("is_win")
+    return (win * w["wins"] + flag("is_big_win") * w["big_wins"]
+            + win * flag("is_conf_game") * w["conf_wins"]
+            + games["margin"].astype(float) * w["point_diff"]
+            + win * flag("is_playoff") * w["playoff_wins"])
+
+
+def score_football(
+    schedule: pd.DataFrame, eligible: set[str] | None = None
+) -> pd.DataFrame:
+    """NCAAF team scoring."""
+    games = football_games(schedule, eligible)
+    if games.empty:
+        return pd.DataFrame()
 
     summary = games.groupby(["season", "team", "conference"], as_index=False).apply(
         lambda g: pd.Series(
@@ -408,10 +438,10 @@ def score_football(
     )
 
 
-def score_basketball(
-    schedule: pd.DataFrame, league: str = "NCAAM", eligible: set[str] | None = None
+def basketball_games(
+    schedule: pd.DataFrame, eligible: set[str] | None = None
 ) -> pd.DataFrame:
-    """NCAAM and NCAAW team scoring -- the two are scored identically."""
+    """Every NCAAM or NCAAW game, flagged the way ``score_basketball`` reads it."""
     games = _restrict(_team_games(schedule), eligible)
     if games.empty:
         return pd.DataFrame()
@@ -438,6 +468,33 @@ def score_basketball(
     games["is_reg"] &= ~games["is_conf_tourney"] & ~games["is_mm"] & ~other
     games["is_ct_title"] = games["is_conf_tourney"] & (
         games["notes"].map(_round_from_end) == 0)
+    return games
+
+
+def basketball_game_points(games: pd.DataFrame) -> pd.Series:
+    """What each NCAA basketball game earned on its own: a regular-season win,
+    a big win, a conference win, the regular-season margin, a conference
+    tournament win and a March Madness win. The tournament titles, the March
+    Madness berth, byes and the regular-season title are left to the panel."""
+    if games is None or games.empty:
+        return pd.Series(dtype=float)
+    w = BB_WEIGHTS
+    flag = _flags(games)
+    win, reg = flag("is_win"), flag("is_reg")
+    return (win * reg * w["reg_wins"] + flag("is_big_win") * w["big_wins"]
+            + win * reg * flag("is_conf_game") * w["conf_wins"]
+            + games["margin"].astype(float) * reg * w["point_diff"]
+            + win * flag("is_conf_tourney") * w["conf_tourney_wins"]
+            + win * flag("is_mm") * w["mm_wins"])
+
+
+def score_basketball(
+    schedule: pd.DataFrame, league: str = "NCAAM", eligible: set[str] | None = None
+) -> pd.DataFrame:
+    """NCAAM and NCAAW team scoring -- the two are scored identically."""
+    games = basketball_games(schedule, eligible)
+    if games.empty:
+        return pd.DataFrame()
 
     summary = games.groupby(["season", "team", "conference"], as_index=False).apply(
         lambda g: pd.Series(
@@ -642,13 +699,11 @@ def _conf_tourney(games: pd.DataFrame, other: pd.Series, sport: str) -> pd.Serie
     )
 
 
-def score_diamond(
-    schedule: pd.DataFrame,
-    league: str = "NCAA Baseball",
-    eligible: set[str] | None = None,
+def diamond_games(
+    schedule: pd.DataFrame, eligible: set[str] | None = None
 ) -> pd.DataFrame:
-    """NCAA Baseball and Softball team scoring."""
-    rules = DIAMOND[league]
+    """Every NCAA baseball or softball game, flagged the way ``score_diamond``
+    reads it."""
     games = _restrict(_team_games(schedule), eligible)
     if games.empty:
         return pd.DataFrame()
@@ -674,6 +729,32 @@ def score_diamond(
     games["is_postseason"] = (
         (games["is_post"] & ~games["is_conf_tourney"])
         | games["is_regional"] | games["is_super"] | games["is_cws"])
+    return games
+
+
+def diamond_game_points(games: pd.DataFrame) -> pd.Series:
+    """What each NCAA baseball or softball game earned on its own: a win and
+    the margin, outside the NCAA tournament. Its rounds pay as series, which
+    are the season's and left to the panel, as are conference tournament
+    byes."""
+    if games is None or games.empty:
+        return pd.Series(dtype=float)
+    flag = _flags(games)
+    season = 1.0 - flag("is_postseason")
+    return (flag("is_win") * season * DIAMOND_REG_WIN
+            + games["margin"].astype(float) * season * DIAMOND_RUN_DIFF)
+
+
+def score_diamond(
+    schedule: pd.DataFrame,
+    league: str = "NCAA Baseball",
+    eligible: set[str] | None = None,
+) -> pd.DataFrame:
+    """NCAA Baseball and Softball team scoring."""
+    rules = DIAMOND[league]
+    games = diamond_games(schedule, eligible)
+    if games.empty:
+        return pd.DataFrame()
 
     summary = games.groupby(["season", "team"], as_index=False).apply(
         lambda g: pd.Series(

@@ -274,3 +274,51 @@ def test_a_record_counts_both_sides_of_a_tie():
 
     assert box["note"] == "1-1"
     assert box["points"] == INTERNATIONAL_WIN_POINTS
+
+
+# --- the rounds, as badges ----------------------------------------------------
+
+def _shanghai(*rows):
+    from whul.scoring import tennis
+
+    return tennis.match_events(pd.DataFrame([
+        {"tournament": "Shanghai", "tour": "ATP", "category": "Masters 1000",
+         "season": 2026, "draw_size": 96, "round": r, "date": d, "winner": w,
+         "loser": lo, "score": sc}
+        for r, d, w, lo, sc in rows
+    ]), losses=True)
+
+
+def test_each_round_played_is_a_badge_with_its_bye_and_its_multiplier():
+    """A seed at a 96-draw Masters: a bye in the R128, a straight-sets R64
+    (×1.25 at best-of-three), a three-set R32, out in the R16."""
+    events = _shanghai(
+        ("R64", "2026-10-04", "A B", "C", "6-3 6-4"),
+        ("R32", "2026-10-05", "A B", "D", "6-3 3-6 6-4"),
+        ("R16", "2026-10-06", "E", "A B", "6-3 6-4"),
+    )
+    row = finishes.as_records(finishes.tennis_finishes(events))["A B"][0]
+    assert row["name"] == "ATP Shanghai Masters 1000"
+    assert row["rounds"] == [
+        {"round": "R128", "bye": True},
+        {"round": "R64", "won": True, "mult": 1.25},
+        {"round": "R32", "won": True},
+        {"round": "R16", "won": False},
+    ]
+    assert row["points"] == pytest.approx((20 + 30) * 1.25 + 50)
+
+
+def test_no_bye_where_the_first_round_was_the_draws_first():
+    events = _shanghai(("R128", "2026-10-02", "A B", "C", "7-6 7-6"))
+    row = finishes.as_records(finishes.tennis_finishes(events))["A B"][0]
+    assert row["rounds"] == [{"round": "R128", "won": True, "mult": 1.25}]
+
+
+def test_a_team_event_keeps_its_record_and_draws_no_badges():
+    events = pd.DataFrame([
+        {**match("", INTERNATIONAL_WIN_POINTS, tournament="Davis Cup",
+                 category="International"), "result": "W"},
+    ])
+    row = finishes.as_records(finishes.tennis_finishes(events))["A. Fils"][0]
+    assert row["rounds"] == []
+    assert row["label"] == "ATP Davis Cup 1-0"

@@ -96,7 +96,72 @@ def tennis_finishes(events: pd.DataFrame) -> pd.DataFrame:
         lambda r: ROUND_ORDER[r] if 0 <= r < len(ROUND_ORDER) else ""
     )
     grouped["label"] = [_label_for(row) for row in grouped.itertuples()]
+    # The tournament without the round, which the results list heads a row
+    # with and then draws the rounds beneath as badges.
+    grouped["name"] = [_name_for(row) for row in grouped.itertuples()]
+    rounds = _rounds_played(work)
+    grouped["rounds"] = [
+        rounds.get((row.player, row.tournament, row.category, row.league), [])
+        for row in grouped.itertuples()
+    ]
     return grouped.drop(columns=["_rank", "wins"])
+
+
+#: Byes worth a badge. A bye before a later round is a seeding quirk of a
+#: round-robin or a team event, not a round anybody would look for.
+BYE_ROUNDS = ("R128", "R64", "R32")
+
+
+def _rounds_played(work: pd.DataFrame) -> dict[tuple, list[dict]]:
+    """Each player's rounds at each tournament, earliest first, as badges.
+
+    ``{"round": "R16", "won": True, "mult": 1.25}`` for a round won in
+    straight sets, ``"won": False`` for the round they went out in, and a
+    ``"bye": True`` round before the first where the draw had one there: per
+    the scorer, no result in the round before a player's first is a bye
+    (``whul.scoring.tennis.bye_bonus``), whether awarded or structural.
+    """
+    from whul.scoring.tennis import previous_round
+
+    if work.empty or "round" not in work.columns:
+        return {}
+    out: dict[tuple, list[dict]] = {}
+    keys = ["player", "tournament", "category", "league"]
+    ordered = work.assign(
+        _order=work["round"].map(_round_rank),
+        _date=work["date"].astype(str) if "date" in work.columns else "",
+    ).sort_values(["_order", "_date"], kind="mergesort")
+    for key, block in ordered.groupby(keys, sort=False):
+        badges = []
+        first = block.iloc[0]
+        tier = str(first.get("tier", "") or "")
+        before = previous_round(tier, str(first["round"])) if tier else ""
+        if before in BYE_ROUNDS:
+            badges.append({"round": before, "bye": True})
+        for row in block.itertuples():
+            # A team event's rubbers have no round, and its line is a record.
+            if not str(row.round or "").strip():
+                continue
+            won = str(getattr(row, "result", "")).upper() == "W"
+            badge = {"round": str(row.round), "won": won}
+            mult = getattr(row, "multiplier", 1.0)
+            try:
+                mult = float(mult)
+            except (TypeError, ValueError):
+                mult = 1.0
+            if won and mult > 1.0:
+                badge["mult"] = round(mult, 2)
+            badges.append(badge)
+        out[tuple(str(v) for v in key)] = badges
+    return out
+
+
+def _name_for(row) -> str:
+    """The tournament as a results row heads it: tour, event and tier."""
+    tier = _tier(row.category)
+    parts = (str(row.league or ""), str(row.tournament or ""),
+             "" if tier in NO_DRAW else tier)
+    return " ".join(part for part in parts if part).strip()
 
 
 #: Tiers with no draw at all. A Davis Cup rubber is a tie between two nations,
@@ -157,7 +222,12 @@ def event_finishes(events: pd.DataFrame, position_col: str) -> pd.DataFrame:
         ) if part).strip()
         for row in work.itertuples()
     ]
-    return work[["player", "label", "points", "date"]]
+    # The event and the finish apart, for a results row that shows them in
+    # two places rather than run together.
+    work["name"] = [str(row.tournament or "").strip() or str(row.league or "")
+                    for row in work.itertuples()]
+    work["finish"] = work["round"]
+    return work[["player", "label", "points", "date", "name", "finish"]]
 
 
 def as_records(finishes: pd.DataFrame, id_col: str = "player") -> dict[str, list[dict]]:
@@ -171,12 +241,18 @@ def as_records(finishes: pd.DataFrame, id_col: str = "player") -> dict[str, list
 
     out: dict[str, list[dict]] = {}
     ordered = finishes.sort_values("date", ascending=False, kind="mergesort")
+    extra = [c for c in ("name", "rounds", "finish") if c in ordered.columns]
     for athlete, block in ordered.groupby(id_col, sort=False):
         out[str(athlete)] = [
             {
                 "label": str(row.label),
                 "points": round(float(row.points), 1),
                 "date": str(row.date)[:10],
+                # What a results row is drawn from: a tennis tournament's name
+                # and the rounds as badges, an event's finish on its own.
+                **{c: getattr(row, c) for c in extra
+                   if isinstance(getattr(row, c), list)
+                   or str(getattr(row, c) or "")},
             }
             for row in block.head(MAX_FINISHES).itertuples()
         ]
