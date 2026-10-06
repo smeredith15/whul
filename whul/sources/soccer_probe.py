@@ -719,6 +719,62 @@ def probe_fotmob_coverage() -> dict[str, dict]:
     return report
 
 
+#: Whole matches to keep, as FotMob serves them, for building the reader
+#: against: a league match; a cup tie with extra time, a red card and a
+#: shootout; a shootout in France; MLS; NWSL, which has no shot map; and a
+#: Champions League night. (competition, day, a club in the match)
+FOTMOB_SAMPLES = (
+    ("epl", date(2024, 9, 21), "west ham"),
+    ("facup", date(2025, 1, 12), "arsenal"),
+    ("coupedefrance", date(2025, 1, 14), "guingamp"),
+    ("mls", date(2024, 9, 21), "inter miami"),
+    ("nwsl", date(2024, 9, 21), "kansas city"),
+    ("ucl", date(2024, 10, 1), "arsenal"),
+)
+SAMPLE_DIR = "probe-samples"
+
+
+def probe_fotmob_samples(out_dir: str = SAMPLE_DIR) -> dict[str, dict]:
+    """Save each sample match's full details to ``out_dir`` and say what is in
+    them: the sections, the match facts, the lineup's shape and the events."""
+    from pathlib import Path
+
+    folder = Path(out_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    session = requests.Session()
+    session.headers.update(BROWSER)
+    report: dict[str, dict] = {}
+    for key, day, club in FOTMOB_SAMPLES:
+        label = f"{key} {day} {club}"
+        try:
+            matches = _fotmob_matches(session, key, day)
+            match = next((m for m in matches if club in (
+                f"{(m.get('home') or {}).get('name')} {(m.get('away') or {}).get('name')}"
+            ).lower()), None)
+            if match is None:
+                report[label] = {"status": f"not among {len(matches)} finished matches"}
+                continue
+            details = _fotmob_details(session, match["id"])
+            path = folder / f"{key}-{day}-{match['id']}.json"
+            path.write_text(json.dumps(details))
+            content = details.get("content") or {}
+            facts = content.get("matchFacts") or {}
+            events = (facts.get("events") or {}).get("events") or []
+            lineup = content.get("lineup") or {}
+            report[label] = {
+                "saved": f"{path} ({path.stat().st_size:,} bytes)",
+                "top_keys": sorted(details),
+                "content_keys": sorted(content),
+                "match_facts_keys": sorted(facts),
+                "player_of_the_match": facts.get("playerOfTheMatch"),
+                "event_types": sorted({str(e.get("type")) for e in events}),
+                "lineup_keys": sorted(lineup),
+            }
+        except Exception as exc:  # noqa: BLE001
+            report[label] = {"status": _failed(exc)}
+    return report
+
+
 def probe(season: int | None = None) -> dict[str, dict]:
     """Every source, each on its own."""
     current = season or clock.today().year

@@ -311,9 +311,21 @@ player's listed position.
 | Successful dribble | 0.5 | 0.5 | 0.5 |
 | Dispossessed | −0.2 | −0.2 | −0.2 |
 
-Recoveries, aerials won and fouls committed or won are not scored. FotMob's match rating
-(0-10, its own model of the same figures) is available on every line; whether it counts,
-and how, is open.
+| FotMob rating of 8.0 or higher | +1 | +1 | +1 |
+| Player of the match | +1 | +1 | +1 |
+
+Recoveries, aerials won and fouls committed or won are not scored. The rating is FotMob's
+own model of the same figures, so it pays only for a standout match rather than as a
+term of its own; a rating FotMob later revises is taken as first stored.
+
+**Second FotMob probe (6 October 2026).** Shots on target and the rating arrive under
+their own keys (`ShotsOnTarget`, `rating_title`); tackles as an integer under
+`matchstats.headers.tackles`. A shootout's kicks are in the shot map as
+`Penalty / PenaltyShootout`, so leaving every penalty out of the highlight bonus leaves
+them out too; extra time is its own period and counts. **NWSL** has full player lines
+(minutes, goals, assists, chances created, the defensive figures, rating) but no shot
+map and so no xG, in 2022 and 2024 alike: NWSL players are scored without the highlight
+bonus, which is uniform across the league and its benchmark.
 
 To be checked on prior seasons before a benchmark is frozen.
 
