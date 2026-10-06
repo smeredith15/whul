@@ -131,12 +131,24 @@ jobs:
         # overlap -- that one fetches today and this one fetches five years of
         # history -- and sharing a prefix would have each evicting the other
         # under the repository cache limit.
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/cache
           key: bench-cache-${{ github.run_id }}
           restore-keys: |
             bench-cache-
+
+      - name: Restore the FotMob matches the soccer study read
+        # The Soccer study keeps its own cache of finished FotMob matches, and
+        # the club soccer benchmark reads the same ones. Every file in either
+        # is a finished match or a settled day and never changes, so laying
+        # one over the other loses nothing.
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cache/fotmob
+          key: fotmob-${{ github.run_id }}
+          restore-keys: |
+            fotmob-
 
       - name: Take the database from the data branch
         run: |
@@ -249,6 +261,18 @@ jobs:
           python -m whul.cli benchmarks compute $LEAGUES \
             ${SEASONS:+--seasons "$SEASONS"} --save --into "$DRAFT" \
             | tee -a benchmarks.txt
+
+      - name: Keep what the compute fetched
+        # Saved here, and whatever happened above, rather than by the restore
+        # step's own post-run save: that one runs only when the whole job
+        # succeeds, so a run that timed out or failed a later step threw away
+        # every date and match it had fetched, and the rerun fetched them all
+        # again.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache
+          key: bench-cache-${{ github.run_id }}
 
       # Both of these are the review, and both are worth reading before the
       # box gets ticked. `coverage` exits non-zero while anything is uncovered,
