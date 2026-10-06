@@ -74,11 +74,16 @@ def _get(path: str, params: dict, cache_key: str | None = None) -> dict:
 
 
 def _summary(endpoint: str, seasons: list[int], game_type: int) -> pd.DataFrame:
+    return _report(endpoint, "summary", seasons, game_type)
+
+
+def _report(endpoint: str, report: str, seasons: list[int],
+            game_type: int) -> pd.DataFrame:
     frames = []
     for season in seasons:
         sid = season_id(season)
         payload = _get(
-            f"/{endpoint}/summary",
+            f"/{endpoint}/{report}",
             {
                 "isAggregate": "false",
                 "isGame": "false",
@@ -90,7 +95,8 @@ def _summary(endpoint: str, seasons: list[int], game_type: int) -> pd.DataFrame:
             # being played, cached without an expiry, stops on the day it was
             # first read -- which is how MLB's clubs sat on an eleven-day-old
             # record while their players went on accumulating.
-            cache_key=(f"{endpoint}/{sid}_{game_type}"
+            cache_key=((f"{endpoint}/{sid}_{game_type}" if report == "summary"
+                        else f"{endpoint}/{report}/{sid}_{game_type}")
                        if season_is_over(season) else None),
         )
         rows = payload.get("data", [])
@@ -139,8 +145,34 @@ def load_team_games(seasons: list[int],
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+#: What the realtime report adds to the summary: the figures a box score
+#: counts that a scoring line does not.
+REALTIME_COLUMNS = ("hits", "blockedShots")
+
+
 def load_skaters(seasons: list[int], game_type: int = GAME_TYPE_REGULAR) -> pd.DataFrame:
-    return _summary("skater", seasons, game_type)
+    """The summary report, with hits and blocked shots from the realtime one.
+
+    Two requests a season, joined on the player and the season, which both
+    reports carry a row of apiece. A realtime report that will not answer
+    fails the pull rather than scoring every skater's hits as none: a day the
+    pull fails is carried forward, and a day scored without them is a fall
+    the size of every defenceman's season.
+    """
+    summary = _summary("skater", seasons, game_type)
+    if summary.empty:
+        return summary
+    realtime = _report("skater", "realtime", seasons, game_type)
+    missing = [c for c in ("playerId", *REALTIME_COLUMNS)
+               if c not in realtime.columns]
+    if realtime.empty or missing:
+        raise RuntimeError(
+            f"NHL realtime report returned {len(realtime)} rows"
+            + (f", without {missing}" if missing else "")
+            + f", for {len(summary)} summary rows")
+    extra = realtime[["playerId", "season", *REALTIME_COLUMNS]].drop_duplicates(
+        ["playerId", "season"])
+    return summary.merge(extra, on=["playerId", "season"], how="left")
 
 
 def load_goalies(seasons: list[int], game_type: int = GAME_TYPE_REGULAR) -> pd.DataFrame:
@@ -149,6 +181,29 @@ def load_goalies(seasons: list[int], game_type: int = GAME_TYPE_REGULAR) -> pd.D
 
 def load_teams(seasons: list[int], game_type: int = GAME_TYPE_REGULAR) -> pd.DataFrame:
     return _summary("team", seasons, game_type)
+
+
+def load_skater_game_realtime(player_id: str, season: int,
+                              game_type: int = GAME_TYPE_REGULAR) -> dict[str, dict]:
+    """One skater's hits and blocked shots game by game, by game id.
+
+    The club-facing game log, which the game records read, carries the scoring
+    line and not these; the stats API's realtime report carries them one game
+    a row when asked with ``isGame=true``. One request a skater and phase,
+    like the log beside it.
+    """
+    payload = _get(
+        "/skater/realtime",
+        {
+            "isAggregate": "false",
+            "isGame": "true",
+            "limit": PAGE_ALL,
+            "start": 0,
+            "cayenneExp": (f"playerId={int(player_id)} and seasonId={season_id(season)}"
+                           f" and gameTypeId={game_type}"),
+        },
+    )
+    return {str(row.get("gameId")): row for row in payload.get("data", [])}
 
 
 def _web(path: str, cache_key: str | None = None):
@@ -477,6 +532,22 @@ def probe(season: int = 2025) -> dict:
         if len(scored):
             top = scored.nlargest(1, "total_points").iloc[0]
             result["top_skater"] = f"{top['player']} {top['total_points']:.1f}"
+            # The new figures, on the season's leaders in each: a column the
+            # join lost reads as a row of zeroes here rather than as a quiet
+            # fall in every defenceman's score.
+            for column in ("pp_points", "sh_points", "game_winners", "hits", "blocks"):
+                lead = scored.nlargest(1, column).iloc[0]
+                result[f"most_{column}"] = f"{lead['player']} {lead[column]:.0f}"
+            # One game of his, from the report the game records read.
+            pid = str(top.get("player_id") or "")
+            if pid:
+                games = load_skater_game_realtime(pid, season)
+                sample = next(iter(games.values()), {})
+                result["game_realtime"] = (
+                    f"{len(games)} game(s); first: "
+                    + ", ".join(f"{k}={sample.get(k)}" for k in
+                                ("gameId", "gameDate", "hits", "blockedShots"))
+                    if games else "EMPTY")
     except Exception as exc:
         result["scoring"] = f"FAILED: {type(exc).__name__}: {exc}"
     return result

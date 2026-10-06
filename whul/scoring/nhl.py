@@ -60,6 +60,40 @@ PTS_GOAL = 3.0
 PTS_ASSIST = 2.0
 PTS_SHOT = 0.5
 PTS_PLUS_MINUS = 1.0
+# On top of the goal or assist itself. A power-play point is already a goal or
+# an assist; these pay for when it came, not for the point a second time.
+PTS_PP_POINT = 0.5
+PTS_SH_POINT = 1.0
+PTS_GAME_WINNER = 1.0
+# The work a box score counts that the scoring line does not, and the reason a
+# defenceman who is not a power-play quarterback scored like a fourth-liner.
+PTS_HIT = 0.25
+PTS_BLOCK = 0.5
+
+#: Each counted figure, as the scorer names it, with what one is worth. The
+#: order is the panel's and the game row's.
+SKATER_WEIGHTS = {
+    "goals": PTS_GOAL, "assists": PTS_ASSIST, "shots": PTS_SHOT,
+    "plus_minus": PTS_PLUS_MINUS, "pp_points": PTS_PP_POINT,
+    "sh_points": PTS_SH_POINT, "game_winners": PTS_GAME_WINNER,
+    "hits": PTS_HIT, "blocks": PTS_BLOCK,
+}
+
+#: Where each figure is found in the stats API's skater reports (summary and
+#: realtime) and in the club-facing API's game log, which names some apart.
+SKATER_FEED_NAMES = {
+    "goals": ["goals"], "assists": ["assists"], "shots": ["shots"],
+    "plus_minus": ["plus_minus", "plusMinus"],
+    "pp_points": ["pp_points", "ppPoints", "powerPlayPoints"],
+    "sh_points": ["sh_points", "shPoints", "shorthandedPoints"],
+    "game_winners": ["game_winners", "gameWinningGoals"],
+    "hits": ["hits"], "blocks": ["blocks", "blockedShots"],
+}
+
+
+def skater_points(figures) -> float:
+    """What a line of skater figures is worth: a season's or one game's."""
+    return sum(float(figures.get(c, 0) or 0) * w for c, w in SKATER_WEIGHTS.items())
 
 # --- goalies (scored, but not normalized) ---------------------------------
 PTS_GOALIE_WIN = 4.0
@@ -97,18 +131,10 @@ def score_skaters(df: pd.DataFrame,
             ),
             "player_id": resolve_str(df, ["player_id", "playerId"]),
             "games_played": resolve_num(df, ["games_played", "gamesPlayed"]),
-            "goals": resolve_num(df, ["goals"]),
-            "assists": resolve_num(df, ["assists"]),
-            "shots": resolve_num(df, ["shots"]),
-            "plus_minus": resolve_num(df, ["plus_minus", "plusMinus"]),
+            **{c: resolve_num(df, names) for c, names in SKATER_FEED_NAMES.items()},
         }
     )
-    work["total_points"] = (
-        work["goals"] * PTS_GOAL
-        + work["assists"] * PTS_ASSIST
-        + work["shots"] * PTS_SHOT
-        + work["plus_minus"] * PTS_PLUS_MINUS
-    )
+    work["total_points"] = sum(work[c] * w for c, w in SKATER_WEIGHTS.items())
     work["league"] = "NHL"
     work["role"] = SKATER_ROLE
     work["team_games"] = _their_clubs_games(work, standings)
@@ -130,7 +156,7 @@ def score_skaters(df: pd.DataFrame,
 #: are deliberately absent: `split_phases` already reports them per phase, and
 #: a second column counting the same thing would be one more figure to keep in
 #: step.
-SKATER_COUNTED = ["goals", "assists", "shots", "plus_minus"]
+SKATER_COUNTED = list(SKATER_WEIGHTS)
 
 
 def score_skater_phases(raw: pd.DataFrame, standings: pd.DataFrame | None = None,

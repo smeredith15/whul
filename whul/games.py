@@ -267,20 +267,31 @@ def nba_games(store: Store, players: list[Rostered], as_of) -> tuple[list[dict],
 
 # --- NHL ----------------------------------------------------------------------
 
+#: A game's figures, read from the game log; hits and blocked shots are not
+#: in it and come from the realtime report (``realtime_loader``).
 NHL_FIELDS = {"goals": "goals", "assists": "assists", "shots": "shots",
-              "plus_minus": "plusMinus"}
+              "plus_minus": "plusMinus", "pp_points": "powerPlayPoints",
+              "sh_points": "shorthandedPoints", "game_winners": "gameWinningGoals"}
+NHL_REALTIME_FIELDS = {"hits": "hits", "blocks": "blockedShots"}
 
 #: (month, day) from which the NHL playoffs can have started.
 NHL_PLAYOFFS_FROM = (4, 1)
 
 
 def nhl_games(store: Store, players: list[Rostered], as_of,
-              log_loader=None) -> tuple[list[dict], list[str]]:
+              log_loader=None, realtime_loader=None) -> tuple[list[dict], list[str]]:
+    """Each rostered skater's games, from his game log and the realtime report.
+
+    Both or neither, per skater and phase: a game written without its hits and
+    blocks would be a game worth less than it was, and the row it replaced
+    stays as it was when this one is skipped.
+    """
     from whul.scoring import nhl as scoring
     from whul.sources import nhl as source
 
     log_loader = log_loader or (lambda pid, season_id, game_type=source.GAME_TYPE_REGULAR:
                                 source._web(f"/player/{pid}/game-log/{season_id}/{game_type}"))
+    realtime_loader = realtime_loader or source.load_skater_game_realtime
     start, end = _window("NHL", as_of)
     # The season the league year's hockey is, by the API's own numbering.
     ends = date.fromisoformat(start).year + 1
@@ -304,19 +315,28 @@ def nhl_games(store: Store, players: list[Rostered], as_of,
             try:
                 payload = (log_loader(pid, season_id) if game_type == source.GAME_TYPE_REGULAR
                            else log_loader(pid, season_id, game_type))
+                games = (payload or {}).get("gameLog") or []
+                extra = realtime_loader(pid, ends, game_type) if games else {}
             except Exception as exc:  # noqa: BLE001 -- one player, not the run
                 problems.append(f"NHL: {p.name} ({phase}): {type(exc).__name__}: {exc}")
                 continue
-            logged += [(game, phase) for game in (payload or {}).get("gameLog") or []]
-        for game, phase in logged:
+            unmatched = [g for g in games if str(g.get("gameId")) not in extra]
+            if unmatched:
+                # The two reports disagree about which games he played -- one
+                # a night behind the other. Skipped whole rather than written
+                # short; tomorrow they agree.
+                problems.append(f"NHL: {p.name} ({phase}): {len(unmatched)} game(s) "
+                                f"not yet in the realtime report; kept as they were")
+                continue
+            logged += [(game, phase, extra[str(game.get("gameId"))]) for game in games]
+        for game, phase, more in logged:
             day = str(game.get("gameDate") or "")[:10]
             if not (start <= day <= end):
                 continue
             stat = {ours: _number(game.get(theirs)) for ours, theirs in NHL_FIELDS.items()}
-            points = (stat["goals"] * scoring.PTS_GOAL
-                      + stat["assists"] * scoring.PTS_ASSIST
-                      + stat["shots"] * scoring.PTS_SHOT
-                      + stat["plus_minus"] * scoring.PTS_PLUS_MINUS)
+            stat.update({ours: _number(more.get(theirs))
+                         for ours, theirs in NHL_REALTIME_FIELDS.items()})
+            points = scoring.skater_points(stat)
             rows.append({
                 "asset_id": p.asset_id, "game_key": str(game.get("gameId")),
                 "date": day, "role": "", "phase": phase, "points": points,
@@ -649,7 +669,8 @@ def record(store: Store, season: str, as_of: date | str, verbose: bool = True,
                 rows, problems = nba_games(store, mine, as_of)
             elif sport == "NHL":
                 rows, problems = nhl_games(store, mine, as_of,
-                                           log_loader=loaders.get("nhl"))
+                                           log_loader=loaders.get("nhl"),
+                                           realtime_loader=loaders.get("nhl_realtime"))
             elif sport == "MLB":
                 rows, problems = mlb_games(store, mine, as_of, divisor,
                                            line_loader=loaders.get("mlb_lines"),

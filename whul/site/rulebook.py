@@ -378,6 +378,11 @@ def _nhl_players() -> Rules:
             item("Assist", nhl.PTS_ASSIST),
             item("Shot on goal", nhl.PTS_SHOT),
             item("Each point of plus-minus", nhl.PTS_PLUS_MINUS),
+            item("Power-play point, on top of the goal or assist", nhl.PTS_PP_POINT),
+            item("Shorthanded point, on top of the goal or assist", nhl.PTS_SH_POINT),
+            item("Game-winning goal, on top of the goal", nhl.PTS_GAME_WINNER),
+            item("Hit", nhl.PTS_HIT),
+            item("Blocked shot", nhl.PTS_BLOCK),
         ],
     )
 
