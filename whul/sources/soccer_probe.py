@@ -582,6 +582,127 @@ def probe_commentary() -> dict[str, dict]:
     return report
 
 
+# --- FotMob across every competition and season --------------------------------
+
+#: FotMob's own competition ids, with a (country, name) to fall back on if an
+#: id is wrong: the day list names both.
+FOTMOB_COMPETITIONS = {
+    "epl": (47, "ENG", "premier league"), "laliga": (87, "ESP", "laliga"),
+    "seriea": (55, "ITA", "serie a"), "bundesliga": (54, "GER", "bundesliga"),
+    "ligue1": (53, "FRA", "ligue 1"), "mls": (130, "USA", "major league soccer"),
+    "ucl": (42, "INT", "champions league"), "uel": (73, "INT", "europa league"),
+    "efl_cup": (133, "ENG", "efl cup"), "facup": (132, "ENG", "fa cup"),
+    "dfbpokal": (209, "GER", "dfb pokal"), "coppaitalia": (141, "ITA", "coppa italia"),
+    "copadelrey": (138, "ESP", "copa del rey"),
+    "coupedefrance": (134, "FRA", "coupe de france"),
+}
+#: A day each played on, this season's opponents' history included: the
+#: benchmark reaches back to 2021-22, so the oldest is asked about too.
+FOTMOB_CHECKS = (
+    ("epl", date(2021, 9, 18)), ("laliga", date(2021, 9, 19)),
+    ("bundesliga", date(2021, 9, 18)), ("seriea", date(2022, 9, 18)),
+    ("ligue1", date(2023, 9, 17)), ("epl", date(2024, 9, 21)),
+    ("mls", date(2022, 7, 9)), ("mls", date(2024, 9, 21)),
+    ("ucl", date(2021, 9, 14)), ("ucl", date(2024, 10, 1)),
+    ("uel", date(2024, 10, 3)), ("efl_cup", date(2024, 10, 29)),
+    ("dfbpokal", date(2024, 10, 29)), ("coppaitalia", date(2024, 12, 17)),
+    ("facup", date(2025, 1, 11)), ("facup", date(2025, 1, 12)),
+    ("copadelrey", date(2025, 1, 14)), ("coupedefrance", date(2025, 1, 14)),
+)
+#: The figures a richer scoring would read, by FotMob's own stat keys where
+#: they are known and its titles otherwise; reported present or absent.
+FOTMOB_WANTED = ("minutes_played", "expected_goals", "expected_assists", "chances_created",
+                 "shots_on_target", "tackles", "tackles_won", "interceptions", "clearances",
+                 "blocks", "shot_blocks", "recoveries", "duel_won", "aerials_won",
+                 "accurate_passes", "dribbles_succeeded", "fouls", "was_fouled",
+                 "touches", "dispossessed", "rating")
+
+
+def _fotmob_matches(session, key: str, day: date) -> list[dict]:
+    wanted_id, country, name = FOTMOB_COMPETITIONS[key]
+    response = session.get("https://www.fotmob.com/api/data/matches",
+                           params={"date": day.strftime("%Y%m%d")}, timeout=TIMEOUT)
+    response.raise_for_status()
+    for league in response.json().get("leagues") or []:
+        ids = {league.get("id"), league.get("primaryId")}
+        named = (str(league.get("ccode", "")).upper() == country
+                 and name in str(league.get("name", "")).lower())
+        if wanted_id in ids or named:
+            return [m for m in league.get("matches") or []
+                    if (m.get("status") or {}).get("finished")]
+    return []
+
+
+def _fotmob_details(session, match_id) -> dict:
+    """The match's details from the API, or from the page's embedded data."""
+    api = session.get("https://www.fotmob.com/api/data/matchDetails",
+                      params={"matchId": match_id}, timeout=TIMEOUT)
+    if api.ok:
+        try:
+            return {"via": "api", **api.json()}
+        except ValueError:
+            pass
+    page = session.get(f"https://www.fotmob.com/match/{match_id}", timeout=TIMEOUT)
+    page.raise_for_status()
+    found = _find_key(_next_data(page.text), "content")
+    return {"via": "page", "content": found or {}}
+
+
+def _stat_keys(player: dict) -> dict[str, object]:
+    """Every stat on a FotMob player line, keyed as FotMob keys it."""
+    out: dict[str, object] = {}
+    for group in player.get("stats") or []:
+        for title, entry in (group.get("stats") or {}).items():
+            if isinstance(entry, dict):
+                out[str(entry.get("key") or title)] = (entry.get("stat") or {}).get("value")
+    return out
+
+
+def probe_fotmob_coverage() -> dict[str, dict]:
+    """FotMob, competition by competition and back to 2021-22: shots with
+    their xG, and the figures on each player's line."""
+    session = requests.Session()
+    session.headers.update(BROWSER)
+    report: dict[str, dict] = {}
+    for key, day in FOTMOB_CHECKS:
+        label = f"{key} {day}"
+        try:
+            matches = _fotmob_matches(session, key, day)
+            if not matches:
+                report[label] = {"status": "no finished match listed that day"}
+                continue
+            found: dict[str, object] = {"finished_matches": len(matches)}
+            for match in matches[:3]:
+                details = _fotmob_details(session, match["id"])
+                content = details.get("content") or {}
+                shots = ((content.get("shotmap") or {}).get("shots")) or []
+                with_xg = [s for s in shots if s.get("expectedGoals") is not None]
+                goals = [s for s in shots if s.get("eventType") == "Goal"
+                         and not s.get("isOwnGoal")]
+                players = content.get("playerStats") or {}
+                name = (f"{(match.get('home') or {}).get('name')} v "
+                        f"{(match.get('away') or {}).get('name')}")
+                found[name] = (f"via {details.get('via')}: {len(shots)} shots, "
+                               f"{len(with_xg)} with xG, {len(goals)} goals "
+                               f"({sum(g.get('expectedGoals') is not None for g in goals)} "
+                               f"with xG), {len(players)} player lines")
+                if players and "stat_keys" not in found:
+                    outfield = [p for p in players.values()
+                                if isinstance(p, dict) and not p.get("isGoalkeeper")]
+                    sample = max(outfield or players.values(),
+                                 key=lambda p: len(_stat_keys(p)))
+                    keys = _stat_keys(sample)
+                    found["stat_keys"] = sorted(keys)
+                    found["wanted_missing"] = [w for w in FOTMOB_WANTED if w not in keys]
+                    found["sample_player"] = {
+                        "name": sample.get("name"),
+                        **{w: keys.get(w) for w in FOTMOB_WANTED if w in keys}}
+            report[label] = found
+        except Exception as exc:  # noqa: BLE001
+            report[label] = {"status": _failed(exc)}
+    return report
+
+
 def probe(season: int | None = None) -> dict[str, dict]:
     """Every source, each on its own."""
     current = season or clock.today().year

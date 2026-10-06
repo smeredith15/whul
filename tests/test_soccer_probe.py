@@ -55,3 +55,26 @@ def test_the_shot_xg_hosts_report_a_refusal_rather_than_raise(monkeypatch):
     monkeypatch.setattr(soccer_probe.requests.Session, "get", refuse)
     assert soccer_probe.probe_sofascore()["status"].startswith("FAILED")
     assert soccer_probe.probe_fotmob()["status"].startswith("no Champions League")
+
+
+def test_a_fotmob_player_line_is_read_by_its_stat_keys():
+    player = {"name": "A Defender", "stats": [
+        {"title": "Top stats", "stats": {
+            "Minutes played": {"key": "minutes_played", "stat": {"value": 90}},
+            "Chances created": {"key": "chances_created", "stat": {"value": 2}}}},
+        {"title": "Defence", "stats": {
+            "Tackles won": {"key": "tackles_won", "stat": {"value": 3, "total": 4}},
+            "Interceptions": {"stat": {"value": 1}}}},
+    ]}
+    assert soccer_probe._stat_keys(player) == {
+        "minutes_played": 90, "chances_created": 2, "tackles_won": 3, "Interceptions": 1}
+
+
+def test_fotmob_coverage_reports_each_check_on_its_own(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr(soccer_probe.requests.Session, "get", refuse)
+    report = soccer_probe.probe_fotmob_coverage()
+    assert len(report) == len(soccer_probe.FOTMOB_CHECKS)
+    assert all(v["status"].startswith("FAILED") for v in report.values())

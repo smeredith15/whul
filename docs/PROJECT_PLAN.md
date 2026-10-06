@@ -325,6 +325,15 @@ matches only.
 Premier League match set beside Understat's shots, and FotMob's and Sofascore's shot
 maps for a Champions League match.
 
+**What it found (6 October 2026).** ESPN carries the commentary in every competition we
+read; on West Ham v Chelsea its 27 shot lines and 21 named set-ups matched Understat's
+27 shots and 21 key passes exactly. One FA Cup tie between lower-division sides named
+only 2 set-ups in 16 shots, so coverage thins below the top flights. Sofascore refuses
+the runner (403). FotMob answers its own match API and its match pages from the runner,
+with a shot map giving each shot's xG (Salzburg v Brest: 28 shots, the goal at 0.20) and
+a full stat line per player. `probe soccer-fotmob` checks FotMob across every
+competition and back to 2021-22, and which stats each player line carries.
+
 ---
 
 ## 3. Architecture
