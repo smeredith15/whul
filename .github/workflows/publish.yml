@@ -142,7 +142,7 @@ jobs:
       # scratch -- thousands of requests for results already known. Restored
       # from the most recent run and saved under today's key.
       - name: Restore the feed cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/cache
           key: feed-cache-${{ github.run_id }}
@@ -250,6 +250,18 @@ jobs:
         # It exits non-zero on one so the step shows amber rather than hiding.
         continue-on-error: true
         run: python -m whul.cli games --season "$SEASON"
+
+      - name: Keep what the pulls fetched
+        # Saved here, and whatever happened above, rather than by the restore
+        # step's own post-run save: that one runs only when the whole job
+        # succeeds, so a run that timed out or failed a later step threw away
+        # every date and match it had fetched, and the rerun fetched them all
+        # again.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache
+          key: feed-cache-${{ github.run_id }}
 
       - name: Rebuild the days before MLB and soccer arrived
         # And every stored MLB day, from today's line: those were built from

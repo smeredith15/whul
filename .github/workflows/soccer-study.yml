@@ -34,7 +34,6 @@ permissions:
 jobs:
   study:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +45,7 @@ jobs:
       - run: pip install -e .
 
       - name: Restore the FotMob cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/cache/fotmob
           key: fotmob-${{ github.run_id }}
@@ -54,12 +53,29 @@ jobs:
             fotmob-
 
       - name: Pull the seasons
+        # Stopped before the runner's six-hour limit, which would cancel the
+        # job outright and save nothing; stopping first keeps every match read
+        # so far for the rerun.
+        timeout-minutes: 330
+        continue-on-error: true
         run: |
           set -o pipefail
           FLAGS=""
           if [ -n "${{ inputs.limit }}" ]; then FLAGS="--limit ${{ inputs.limit }}"; fi
           python -m whul.cli soccer-study --competitions ${{ inputs.competitions }} \
             --season "${{ inputs.season }}" --out study $FLAGS
+
+      - name: Keep what was read
+        # Saved here, and whatever happened above, rather than by the restore
+        # step's own post-run save: that one runs only when the whole job
+        # succeeds, so a run that timed out or failed a later step threw away
+        # every date and match it had fetched, and the rerun fetched them all
+        # again.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/cache/fotmob
+          key: fotmob-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         if: always()
