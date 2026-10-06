@@ -334,6 +334,17 @@ with a shot map giving each shot's xG (Salzburg v Brest: 28 shots, the goal at 0
 a full stat line per player. `probe soccer-fotmob` checks FotMob across every
 competition and back to 2021-22, and which stats each player line carries.
 
+**FotMob coverage (6 October 2026).** Every league, MLS, the Champions and Europa League
+and all six domestic cups, back to 2021-22: every shot with its xG (a handful of
+matches have one shot without), every goal with its xG, and a player line carrying
+minutes, goals, assists, xG and xA, chances created, shots on and off target, tackles,
+interceptions, clearances, shot blocks, recoveries, duels and aerials won, dribbles,
+fouls committed and suffered, dispossessions, passes and touches. The only matches
+with nothing are FA Cup ties between two lower-division sides, which no rostered player
+plays in. FotMob is therefore the candidate single source for club soccer players,
+MLS included and NWSL to be confirmed; the scoring's defensive terms are still to be
+chosen.
+
 ---
 
 ## 3. Architecture
