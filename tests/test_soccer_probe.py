@@ -78,3 +78,13 @@ def test_fotmob_coverage_reports_each_check_on_its_own(monkeypatch):
     report = soccer_probe.probe_fotmob_coverage()
     assert len(report) == len(soccer_probe.FOTMOB_CHECKS)
     assert all(v["status"].startswith("FAILED") for v in report.values())
+
+
+def test_fotmob_samples_report_each_match_on_its_own(monkeypatch, tmp_path):
+    def refuse(*args, **kwargs):
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr(soccer_probe.requests.Session, "get", refuse)
+    report = soccer_probe.probe_fotmob_samples(str(tmp_path / "samples"))
+    assert len(report) == len(soccer_probe.FOTMOB_SAMPLES)
+    assert all(v["status"].startswith("FAILED") for v in report.values())

@@ -59,5 +59,9 @@ jobs:
         if: always()
         with:
           name: probe
-          path: probe.txt
+          # A probe that keeps whole responses to build against writes them
+          # to probe-samples/ (`soccer-fotmob-samples` does).
+          path: |
+            probe.txt
+            probe-samples/
           if-no-files-found: ignore
