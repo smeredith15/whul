@@ -33,7 +33,7 @@ FLAT = {
     "shot_block": 0.5,
     "clearance": 0.25,
     "dribble": 0.5,
-    "dispossessed": -0.2,
+    "dispossessed": -0.4,
     "own_goal": -2.0,
     "yellow": -1.0,
     "red": -3.0,

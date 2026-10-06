@@ -7,6 +7,7 @@ down to the sections the reader uses (``tests/data/fotmob``).
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from whul.scoring import soccer_match as sm
@@ -177,3 +178,117 @@ def test_a_client_stops_after_failures_in_a_row():
     for _ in range(5):
         assert client.get("/matches", date="20240921") is None
     assert client.stopped and client.sent == 3
+
+
+def test_a_match_still_being_played_is_neither_read_nor_kept(tmp_path):
+    """Kept only once it is over: a lineup read at half time would be stored
+    as the match and never asked about again."""
+    path = next(DATA.glob("epl-*.json"))
+    live = json.loads(path.read_text())
+    live["header"]["status"]["finished"] = False
+    live["general"]["finished"] = False
+
+    class Live(fotmob.Client):
+        def get(self, path, **params):
+            return live
+
+    assert fotmob.cached_lines("4506312", Live(pause=0, waits=()), cache=tmp_path) is None
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_a_walk_reads_each_finished_match_once_and_tags_its_competition(tmp_path):
+    details = json.loads(next(DATA.glob("epl-*.json")).read_text())
+
+    class Day(fotmob.Client):
+        def get(self, path, **params):
+            self.sent += 1
+            if path == "/matches":
+                return {"leagues": [{"id": 47, "ccode": "ENG", "name": "Premier League",
+                                     "matches": [{"id": "4506312",
+                                                  "status": {"finished": True}},
+                                                 {"id": "999", "status": {"finished": False}}]}]}
+            return details
+
+    from datetime import date
+
+    client = Day(pause=0, waits=())
+    found = fotmob.walk(client, date(2024, 9, 21), date(2024, 9, 22), ("epl",),
+                        today=date(2024, 10, 1), cache=tmp_path)
+    assert found.matches == 1 and len(found.lines) == 32
+    assert {line["competition_key"] for line in found.lines} == {"epl"}
+    sent = client.sent
+    again = fotmob.walk(client, date(2024, 9, 21), date(2024, 9, 22), ("epl",),
+                        today=date(2024, 10, 1), cache=tmp_path)
+    # Both days settled and kept, the match kept: nothing asked twice.
+    assert client.sent == sent and again.matches == 1
+
+
+# --- the soccer-players source ---------------------------------------------------
+
+def _fake_days(monkeypatch, tmp_path, days, fail=False):
+    """FotMob as a day list and match details from the fixtures."""
+    details = {p.stem.rsplit("-", 1)[1]: json.loads(p.read_text()) for p in DATA.glob("*.json")}
+
+    class Fake(fotmob.Client):
+        def get(self, path, **params):
+            self.sent += 1
+            if fail:
+                self.failed_in_a_row = self.give_up_after
+                return None
+            if path == "/matches":
+                leagues = []
+                for key, mid in days.get(params["date"], []):
+                    wanted, country, name = fotmob.COMPETITIONS[key]
+                    leagues.append({"id": wanted, "ccode": country, "name": name,
+                                    "matches": [{"id": mid, "status": {"finished": True}}]})
+                return {"leagues": leagues}
+            return details.get(str(params.get("matchId")))
+
+    monkeypatch.setattr(fotmob, "CACHE", tmp_path / "cache")
+    monkeypatch.setattr(fotmob, "Client", lambda: Fake(pause=0, waits=()))
+
+
+def test_the_benchmark_pull_files_clubs_under_their_league_and_season(monkeypatch, tmp_path):
+    from whul import benchmark_sources as bs
+
+    _fake_days(monkeypatch, tmp_path, {"20240921": [("epl", "4506312"), ("mls", "4386994")]})
+    load, score = bs._fotmob_players()
+    raw = load([2025])
+    # The MLS match is 2024's, not the 2024-25 season asked for.
+    assert set(raw["league"]) == {"Premier League"} and set(raw["season"]) == {2025}
+    scored = score(raw)
+    best = scored.sort_values("total_points", ascending=False).iloc[0]
+    assert best["player"] == "Nicolas Jackson"
+    # Domestic football only: the benchmark is drawn from it.
+    assert scored["postseason_bonus"].eq(0).all()
+
+
+def test_a_walk_fotmob_stops_answering_raises_rather_than_scoring_short(monkeypatch, tmp_path):
+    from whul import benchmark_sources as bs
+
+    _fake_days(monkeypatch, tmp_path, {}, fail=True)
+    load, _ = bs._fotmob_players()
+    with pytest.raises(RuntimeError, match="stopped answering"):
+        load([2025])
+
+
+def test_a_rostered_player_is_scored_at_the_position_his_line_holds(monkeypatch, tmp_path):
+    """FotMob files Jackson a forward; were the league to hold him a
+    defender, his two goals would be worth six each."""
+    from whul import benchmark_sources as bs
+    from whul.store import open_store
+
+    store = open_store(":memory:")
+    store.upsert("assets", [{"asset_id": "nj", "asset_type": "Player",
+                             "display_name": "Nicolas Jackson", "league": "Premier League",
+                             "role": "", "norm_key": "Premier League", "active": 1,
+                             "created_at": "2024-08-01"}], keys=("asset_id",))
+    store.upsert("raw_stats", [{"asset_id": "nj", "league": "Premier League",
+                                "season": "2024-25", "as_of": "2024-09-20",
+                                "source": "soccer-players", "phase": "regular",
+                                "stats": json.dumps({"position": "D"}),
+                                "fetched_at": "x"}],
+                 keys=("asset_id", "season", "as_of", "source", "phase"))
+    frame = pd.DataFrame([{"league": "Premier League", "player": "Nicolas Jackson"},
+                          {"league": "Premier League", "player": "Cole Palmer"}])
+    assert bs._roster_positions(store, frame) == ["D", ""]

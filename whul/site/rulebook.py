@@ -149,29 +149,59 @@ def _club_soccer_teams() -> Rules:
 
 
 def _club_soccer_players() -> Rules:
-    goals = [
-        item(f"Goal by a {position}", points)
-        for position, points in soccer.GOAL_POINTS_BY_POSITION.items()
-    ]
+    from whul.scoring import soccer_match as sm
+
+    names = {"D": "defender", "M": "midfielder", "F": "forward"}
+    by = sm.BY_POSITION
+    flat = sm.FLAT
+    per_position = []
+    for code, name in names.items():
+        per_position += [item(f"Goal by a {name}", by["goal"][code]),
+                         item(f"Assist by a {name}", by["assist"][code])]
     return Rules(
         "club-soccer-players",
         "Club soccer — players",
-        "Players are paid per match for showing up and for what they did in it. "
+        "Players are paid match by match for playing, for what they did with the "
+        "ball and without it, and for a standout game. FotMob's figures. "
         "Goalkeepers are not rostered.",
         [
-            item(f"Playing {soccer.FULL_APPEARANCE_MINUTES} minutes or more",
-                 soccer.PTS_FULL_APPEARANCE),
-            item("A shorter appearance off the bench", soccer.PTS_SHORT_APPEARANCE),
+            item(f"Playing {sm.FULL_APPEARANCE_MINUTES} minutes or more",
+                 sm.PTS_FULL_APPEARANCE),
+            item("A shorter appearance off the bench", sm.PTS_SHORT_APPEARANCE),
         ]
-        + goals
+        + per_position
         + [
-            item("Assist", soccer.PTS_ASSIST),
-            item("Yellow card", soccer.PTS_YELLOW),
-            item("Red card", soccer.PTS_RED),
+            *[item(f"Highlight bonus on a {name}'s goal other than a penalty",
+                   by["highlight"][code], suffix=" × (1 − that shot's xG)")
+              for code, name in names.items()],
+            item("Chance created (a pass leading to a shot, not the assist)",
+                 flat["chance_created"]),
+            item("Shot on target", flat["shot_on_target"]),
+            item("Tackle", flat["tackle"]),
+            item("Interception", flat["interception"]),
+            item("Shot blocked", flat["shot_block"]),
+            item("Clearance", flat["clearance"]),
+            item("Successful dribble", flat["dribble"]),
+            item("Dispossessed", flat["dispossessed"]),
+            item(f"Clean sheet, {sm.CLEAN_SHEET_MINUTES} minutes or more: a defender",
+                 by["clean_sheet"]["D"]),
+            item("Clean sheet: a midfielder", by["clean_sheet"]["M"]),
+            item("Each goal conceded while on the pitch after the first: a defender",
+                 by["conceded_after_one"]["D"]),
+            item("… a midfielder", by["conceded_after_one"]["M"]),
+            item("Own goal", flat["own_goal"]),
+            item("Yellow card", flat["yellow"]),
+            item("Red card, a second yellow included", flat["red"]),
+            item(f"A FotMob rating of {sm.RATING_BONUS_FROM:g} or higher", flat["rating_8"]),
+            item("Player of the match", flat["player_of_match"]),
         ],
         [
-            "Goals are worth more the further back the scorer plays, so a "
-            "defender's goal beats a striker's.",
+            "Goals and assists are worth more the further back the player lines "
+            "up. A rostered player is scored at the position the league holds for "
+            "him.",
+            "The highlight bonus pays for how unlikely the goal was: a 0.05 xG "
+            "strike is worth nearly the full bonus on top of the goal, a tap-in "
+            "little. NWSL matches carry no xG, so NWSL players do without it.",
             "European competition is credited as a bonus rather than as extra "
             "matches — see “What a cup run is worth” below.",
         ],

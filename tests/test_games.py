@@ -13,7 +13,6 @@ import pandas as pd
 import pytest
 
 from whul import games, pipeline
-from whul.scoring import soccer as soccer_scoring
 from whul.store import benchmarks as bm
 from whul.store import open_store, rosters
 
@@ -238,82 +237,122 @@ def test_an_nhl_game_the_realtime_report_lacks_is_not_written_short(store):
 
 # --- club soccer ----------------------------------------------------------------
 
-def match(event, day, competition="epl", goals=2.0):
-    return {"team": "Arsenal", "opponent": "Chelsea", "event_id": event, "date": day,
-            "competition_key": competition, "goals_for": goals, "goals_against": 0.0}
+def match(event, day, competition="epl", goals=2.0, player="Striker", minutes=90,
+          started=True, player_id="9", team="Arsenal"):
+    """One FotMob line, as ``whul.sources.fotmob.match_lines`` writes it."""
+    return {"match_id": event, "date": day, "competition_key": competition,
+            "player": player, "player_id": player_id, "team": team,
+            "opponent": "Chelsea", "position": "F", "started": started,
+            "minutes": minutes, "goals": goals, "assists": 0, "yellow": 1, "red": 0,
+            "conceded_on": 0, "goal_xg": [], "rating": 7.0, "potm": False}
 
 
-def summary(started=True, came_on=False, goals=1, name="Striker"):
-    entry = {"athlete": {"id": "1", "displayName": name}, "starter": started,
-             "subbedIn": came_on, "active": True,
-             "stats": [{"name": "totalGoals", "value": goals},
-                       {"name": "goalAssists", "value": 0},
-                       {"name": "yellowCards", "value": 1},
-                       {"name": "redCards", "value": 0}]}
-    bench = {"athlete": {"id": "2", "displayName": "Unused"}, "starter": False,
-             "subbedIn": False, "active": True, "stats": []}
-    return {"rosters": [{"team": {"displayName": "Arsenal"}, "roster": [entry, bench]}]}
+def walker_of(lines):
+    def walk(start, end, keys):
+        return [line for line in lines if line["competition_key"] in keys]
+
+    return walk
 
 
-def soccer_player(store, matches=2):
+def soccer_player(store, matches=2, line=None):
     hold(store, "st", "Club Soccer Top 3", "Premier League", "F",
-          {"player": "Striker", "league": "Premier League", "team": "Arsenal",
-           "position": "F", "matches": matches})
+         {"player": "Striker", "league": "Premier League", "team": "Arsenal",
+          "position": "F", "matches": matches, **(line or {})})
 
 
-def test_a_match_is_scored_from_its_own_summary(store):
+def test_a_match_is_priced_from_its_fotmob_line(store):
+    from whul.scoring import soccer_match
+
     soccer_player(store)
-    ledger(store, "epl", [match("e1", "2026-09-13"), match("e2", "2026-09-20", "efl_cup"),
-                          match("e3", "2026-09-17", "ucl")],
-           key=lambda r: r["event_id"])
-    summaries = {"e1": summary(goals=2), "e2": summary(started=False, came_on=True, goals=0),
-                 "e3": summary(goals=1)}
-
+    lines = [match("e1", "2026-09-13"), match("e2", "2026-09-20", "efl_cup", goals=0,
+                                              minutes=20, started=False),
+             match("e3", "2026-09-17", "ucl", goals=1)]
     report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
-                          loaders={"soccer": lambda comp, event: summaries[event]})
+                          loaders={"soccer_lines": walker_of(lines)})
     rows = recorded(store, "st")
-    per_goal = soccer_scoring.goal_points_for("F")
 
     # The Champions League tie counts too, labelled as the European game it
     # is; the season line's two domestic matches still add up.
     assert report.problems == []
-    assert list(rows["game_key"]) == ["e1", "e3", "e2"]
-    assert rows["points"].iloc[0] == pytest.approx(2 + 2 * per_goal - 1)
-    assert rows["points"].iloc[2] == pytest.approx(1 - 1)
+    assert list(rows["game_key"]) == ["fotmob-e1", "fotmob-e3", "fotmob-e2"]
+    assert rows["points"].iloc[0] == pytest.approx(soccer_match.match_points(lines[0]))
+    assert rows["points"].iloc[0] == pytest.approx(2 + 2 * 4 - 1)
     assert list(rows["phase"]) == ["regular", "europe", "regular"]
     assert json.loads(rows["detail"].iloc[1])["competition"] == "Champions League"
     assert json.loads(rows["detail"].iloc[2])["competition"] == "EFL Cup"
 
 
-def test_a_match_is_asked_about_once(store):
-    soccer_player(store, matches=1)
-    ledger(store, "epl", [match("e1", "2026-09-13")], key=lambda r: r["event_id"])
-    asked = []
-
-    def loader(comp, event):
-        asked.append(event)
-        return summary()
-
-    for _ in range(2):
-        games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
-                     loaders={"soccer": loader})
-    assert asked == ["e1"]
+def test_a_match_is_priced_at_the_position_the_league_holds_for_him(store):
+    """FotMob files him a forward; the league has him as a defender, and a
+    defender's goal is worth six."""
+    soccer_player(store, matches=1, line={"position": "D"})
+    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                 loaders={"soccer_lines": walker_of([match("e1", "2026-09-13", goals=1)])})
+    # 2 for the appearance, 6 for the goal, 2 for the clean sheet, -1 the card.
+    assert recorded(store, "st")["points"].iloc[0] == pytest.approx(9.0)
 
 
 def test_a_match_he_sat_out_is_not_his(store):
     soccer_player(store, matches=0)
-    ledger(store, "epl", [match("e1", "2026-09-13")], key=lambda r: r["event_id"])
     games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
-                 loaders={"soccer": lambda c, e: summary(name="Someone Else")})
+                 loaders={"soccer_lines": walker_of(
+                     [match("e1", "2026-09-13", player="Someone Else")])})
     assert recorded(store, "st").empty
+
+
+def test_two_players_of_one_name_are_told_apart_by_club(store):
+    soccer_player(store, matches=1)
+    lines = [match("e1", "2026-09-13"),
+             match("e9", "2026-09-13", player_id="77", team="Elsewhere FC", goals=3)]
+    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                 loaders={"soccer_lines": walker_of(lines)})
+    assert list(recorded(store, "st")["game_key"]) == ["fotmob-e1"]
 
 
 def test_matches_that_do_not_add_up_to_his_season_are_named(store):
     soccer_player(store, matches=3)
-    ledger(store, "epl", [match("e1", "2026-09-13")], key=lambda r: r["event_id"])
     report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
-                          loaders={"soccer": lambda c, e: summary()})
+                          loaders={"soccer_lines": walker_of([match("e1", "2026-09-13")])})
     assert any("Striker" in p and "1 domestic match" in p for p in report.problems)
+
+
+def test_fotmob_unreadable_leaves_the_record_as_it_was(store):
+    soccer_player(store, matches=1)
+    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                 loaders={"soccer_lines": walker_of([match("e1", "2026-09-13")])})
+
+    def refuse(start, end, keys):
+        raise RuntimeError("FotMob stopped answering")
+
+    report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                          loaders={"soccer_lines": refuse})
+    assert list(recorded(store, "st")["game_key"]) == ["fotmob-e1"]
+    assert any("could not be read" in p for p in report.problems)
+
+
+def test_the_espn_record_of_a_match_goes_when_fotmobs_arrives(store):
+    """The same match under ESPN's id would count twice in a best-performances
+    slot; it is dropped once FotMob has recorded the player's matches."""
+    soccer_player(store, matches=1)
+    store.upsert("game_scores", [{
+        "season": SEASON, "asset_id": "st", "game_key": "704328", "date": "2026-09-13",
+        "role": "", "phase": "regular", "points": 5.0, "score": 2.0, "opponent": "",
+        "detail": "{}", "source": "Club Soccer", "recorded_at": "x"}],
+        keys=("season", "asset_id", "game_key"))
+    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                 loaders={"soccer_lines": walker_of([match("e1", "2026-09-13")])})
+    assert list(recorded(store, "st")["game_key"]) == ["fotmob-e1"]
+
+
+def test_a_season_line_priced_the_same_way_must_add_up(store):
+    from whul.scoring import soccer_match
+
+    line = match("e1", "2026-09-13")
+    soccer_player(store, matches=1, line={
+        "pts_appearance": 2.0, "regular_points": soccer_match.match_points(line) + 3})
+    report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                          loaders={"soccer_lines": walker_of([line])})
+    assert any("come to" in p for p in report.problems)
 
 
 # --- into the rollup ------------------------------------------------------------
@@ -354,31 +393,6 @@ def test_nba_games_come_from_the_box_scores_the_pull_keeps(store):
     assert list(rows["game_key"]) == ["401"]
     expected = 30 + 5 * 1.2 + 10 * 1.5 + 3 - 3 + 4 * 0.5 + 1.5 + 0.7
     assert rows["points"].iloc[0] == pytest.approx(expected)
-
-
-def test_a_match_still_being_played_is_not_kept(store):
-    soccer_player(store, matches=1)
-    ledger(store, "epl", [match("e1", "2026-09-13")], key=lambda r: r["event_id"])
-    live = {**summary(), "header": {"competitions": [{"status": {"type": {"completed": False}}}]}}
-    report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
-                          loaders={"soccer": lambda c, e: live})
-    assert recorded(store, "st").empty
-    assert any("could not read match e1" in p for p in report.problems)
-    assert store.scalar("SELECT COUNT(*) FROM match_lineups") == 0
-
-
-def test_a_stored_lineup_is_not_read_as_a_fixture(store):
-    """The head-to-head table reads every ledger row as one fixture; a lineup
-    kept among them took the site down."""
-    from whul import headtohead
-
-    soccer_player(store, matches=1)
-    ledger(store, "epl", [match("e1", "2026-09-13")], key=lambda r: r["event_id"])
-    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
-                 loaders={"soccer": lambda c, e: summary()})
-    assert store.scalar("SELECT COUNT(*) FROM match_lineups") == 1
-    headtohead.meetings(store, SEASON)
-
 
 
 # --- the postseason -----------------------------------------------------------
@@ -482,14 +496,11 @@ def test_a_cup_tie_before_the_league_opens_is_his(store):
     hold(store, "yo", "Club Soccer Other", "Bundesliga", "F",
          {"player": "Striker", "league": "Bundesliga", "team": "Arsenal",
           "position": "F", "matches": 2})
-    ledger(store, "bundesliga",
-           [{**match("p1", "2026-08-21", "dfbpokal")},
-            {**match("b1", "2026-08-29", "bundesliga")},
-            {**match("x0", "2026-08-15", "dfbpokal")}],
-           key=lambda r: r["event_id"])
+    lines = [match("p1", "2026-08-21", "dfbpokal"), match("b1", "2026-08-29", "bundesliga"),
+             match("x0", "2026-08-15", "dfbpokal")]
     report = games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
-                          loaders={"soccer": lambda c, e: summary()})
-    assert list(recorded(store, "yo")["game_key"]) == ["p1", "b1"]
+                          loaders={"soccer_lines": walker_of(lines)})
+    assert list(recorded(store, "yo")["game_key"]) == ["fotmob-p1", "fotmob-b1"]
     assert report.problems == []
 
 

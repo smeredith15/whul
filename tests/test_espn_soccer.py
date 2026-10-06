@@ -17,6 +17,14 @@ import requests
 from whul.sources import espn_soccer
 
 
+def _espn_players():
+    """The ESPN roster pull, kept beside FotMob's as a source a benchmark can
+    still be computed from, and tested as one."""
+    from whul.benchmark_sources import _soccer_players
+
+    return _soccer_players()
+
+
 def stat(name, value):
     return {"name": name, "displayName": name, "value": float(value),
             "displayValue": str(value)}
@@ -250,7 +258,6 @@ def squad_row(league, seasons, club=None):
 
 def test_a_league_that_returns_nothing_costs_that_league_only(monkeypatch, capsys):
     """Nothing from the Premier League or anything its clubs also play."""
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     silent = {"epl", "facup", "efl_cup", "ucl", "uel", "uecl"}
@@ -259,7 +266,7 @@ def test_a_league_that_returns_nothing_costs_that_league_only(monkeypatch, capsy
         return pd.DataFrame() if league in silent else squad_row(league, seasons)
 
     monkeypatch.setattr(source, "load_players", some)
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     out = load([2025])
 
     assert "Premier League" not in set(out["league"])
@@ -272,14 +279,13 @@ def test_a_cup_that_returns_nothing_does_not_cost_the_league(monkeypatch, capsys
     the league nothing. It is still said out loud: a cup that returns nothing
     all season because its path is wrong looks exactly like one that is merely
     out of season, and the CONCACAF Champions Cup was quietly the former."""
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     def some(league, seasons, verbose=True, session=None, clubs=None):
         return pd.DataFrame() if league != "epl" else squad_row(league, seasons)
 
     monkeypatch.setattr(source, "load_players", some)
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     out = load([2025])
 
     assert "Premier League" in set(out["league"])
@@ -291,7 +297,6 @@ def test_every_competition_a_clubs_players_appear_in_is_asked_for(monkeypatch):
     """The gap this closes: the team side gathered European matches from the
     first day and the player side never did, so a Champions League night moved
     the standings and left every player's line untouched."""
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     asked = []
@@ -301,7 +306,7 @@ def test_every_competition_a_clubs_players_appear_in_is_asked_for(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(source, "load_players", note)
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     load([2025])
 
     assert {"ucl", "uel", "uecl"} <= set(asked)
@@ -311,13 +316,12 @@ def test_every_competition_a_clubs_players_appear_in_is_asked_for(monkeypatch):
 def test_each_row_says_which_competition_it_came_from(monkeypatch):
     """Without it the scorer cannot tell a league goal from a European one,
     and the whole benchmark distinction collapses."""
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     monkeypatch.setattr(source, "load_players",
                         lambda league, seasons, verbose=True, session=None,
                         clubs=None: squad_row(league, seasons))
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     out = load([2025])
 
     labels = set(out["competition"])
@@ -540,7 +544,6 @@ def test_no_custom_user_agent_is_sent():
 
 def attribution_fixture(monkeypatch, squads):
     """Run the loader over ``{competition: [(player, club), ...]}``."""
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     def some(league, seasons, verbose=True, session=None, clubs=None):
@@ -549,7 +552,7 @@ def attribution_fixture(monkeypatch, squads):
         return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
     monkeypatch.setattr(source, "load_players", some)
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     return load([2025])
 
 
@@ -609,7 +612,6 @@ def test_a_shared_competition_is_pulled_once_however_many_leagues_play_it(
     """Six leagues asking for the Champions League separately is six times the
     requests, and it was the deduplication of those six answers that decided a
     row's league."""
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     asked = []
@@ -619,7 +621,7 @@ def test_a_shared_competition_is_pulled_once_however_many_leagues_play_it(
         return pd.DataFrame()
 
     monkeypatch.setattr(source, "load_players", note)
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     load([2025])
 
     assert asked.count("ucl") == 1
@@ -631,8 +633,12 @@ def test_every_competition_we_pull_can_have_its_dates_walked():
     LEAGUE_PATHS without a season window crashes it -- which it did, twenty-two
     minutes into a benchmark run, on a bare KeyError naming only 'usopencup'."""
     from whul.sources.espn import (
-        CONTINENTAL_CUPS, DOMESTIC_CUPS, EUROPEAN_COMPETITIONS, SEASON_WINDOWS,
-        SOCCER_LEAGUES, season_dates,
+        CONTINENTAL_CUPS,
+        DOMESTIC_CUPS,
+        EUROPEAN_COMPETITIONS,
+        SEASON_WINDOWS,
+        SOCCER_LEAGUES,
+        season_dates,
     )
 
     wanted = set(SOCCER_LEAGUES) | set(EUROPEAN_COMPETITIONS)
@@ -757,7 +763,6 @@ def test_a_competition_that_returns_squads_without_statistics_says_so(
     nothing and creating nobody new. Arriving and counting for nothing look
     identical in a row count, which is why the appearance count is printed
     beside it."""
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     def some(league, seasons, verbose=True, session=None, clubs=None):
@@ -769,7 +774,7 @@ def test_a_competition_that_returns_squads_without_statistics_says_so(
         return pd.DataFrame()
 
     monkeypatch.setattr(source, "load_players", some)
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     load([2025])
 
     printed = capsys.readouterr().out
@@ -788,7 +793,6 @@ def test_the_champions_cup_is_not_pulled_and_the_reason_is_kept(monkeypatch):
     What is kept is everything needed to restore it in one line -- the path,
     the tier and the rule -- so this is a feed being switched off rather than
     a scoring decision being unmade."""
-    from whul.benchmark_sources import SOURCES
     from whul.scoring.competition import Tier, classify_key
     from whul.scoring.postseason import rule_for
     from whul.sources import espn, espn_soccer
@@ -800,7 +804,7 @@ def test_the_champions_cup_is_not_pulled_and_the_reason_is_kept(monkeypatch):
         return pd.DataFrame()
 
     monkeypatch.setattr(espn_soccer, "load_players", note)
-    SOURCES["soccer-players"].build()[0]([2025])
+    _espn_players()[0]([2025])
     assert "concacafchampions" not in asked
     assert espn.continental_for("mls") == ()
 
@@ -1054,7 +1058,6 @@ def test_a_failed_squad_carries_its_status_where_there_is_one(monkeypatch):
 # --- the gamelog, and which season it answered about ------------------------
 
 def _gamelog_server(monkeypatch, bare, seasoned):
-    from unittest import mock
     from whul.sources import espn_soccer
 
     def get(url, params, session=None):
@@ -1363,7 +1366,6 @@ def test_a_league_pull_still_asks_for_every_club(monkeypatch):
 
 
 def test_the_cups_are_given_our_clubs_and_the_leagues_are_given_none(monkeypatch):
-    from whul.benchmark_sources import SOURCES
     from whul.sources import espn_soccer as source
 
     given = {}
@@ -1373,7 +1375,7 @@ def test_the_cups_are_given_our_clubs_and_the_leagues_are_given_none(monkeypatch
         return squad_row(league, seasons)
 
     monkeypatch.setattr(source, "load_players", note)
-    load, _ = SOURCES["soccer-players"].build()
+    load, _ = _espn_players()
     load([2025])
 
     for league in ("epl", "laliga", "seriea", "bundesliga", "ligue1", "mls"):
@@ -1393,7 +1395,7 @@ def test_asking_only_for_our_clubs_changes_nothing_that_is_kept(monkeypatch):
     one of ours, by the same id the narrowing uses -- so a roster for anyone
     else was always fetched to be thrown away, and not fetching it must leave
     every kept row exactly where it was."""
-    from whul.benchmark_sources import SOURCES, _players_in
+    from whul.benchmark_sources import _players_in
     from whul.sources import espn_soccer as source
 
     squads = {
@@ -1418,7 +1420,7 @@ def test_asking_only_for_our_clubs_changes_nothing_that_is_kept(monkeypatch):
             source, "load_players",
             lambda league, seasons, verbose=True, session=None, clubs=None:
             rows(league, seasons, clubs if honour else None))
-        load, _ = SOURCES["soccer-players"].build()
+        load, _ = _espn_players()
         out = load([2025])
         return out.sort_values(["competition_key", "player"]).reset_index(drop=True)
 

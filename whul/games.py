@@ -44,7 +44,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -561,86 +561,118 @@ def _lineup(store: Store, competition: str, event_id: str, loader) -> list[dict]
     return lineup
 
 
+#: A match's figures a game row keeps, beside the competition and whether he
+#: started: the ones a profile lists, and the rating behind the bonus.
+SOCCER_DETAIL = ("goals", "assists", "shots_on_target", "chances_created", "tackles",
+                 "interceptions", "shot_blocks", "clearances", "dribbles",
+                 "dispossessed", "yellow", "red", "own_goals", "rating")
+
+
+def _fotmob_walker(start: date, end: date, keys: tuple[str, ...]) -> list[dict]:
+    """Every finished match in ``keys`` between two days, from FotMob -- read
+    from what tonight's pull already kept, so this costs nothing it did not."""
+    from whul import clock
+    from whul.sources import fotmob
+
+    found = fotmob.walk(fotmob.Client(), start, end, keys, clock.today())
+    if found.stopped:
+        raise RuntimeError(f"FotMob stopped answering ({found.matches} match(es) read)")
+    return found.lines
+
+
 def soccer_games(store: Store, players: list[Rostered], as_of,
-                 loader=None) -> tuple[list[dict], list[str]]:
-    from whul.scoring import soccer as scoring
+                 walker=None) -> tuple[list[dict], list[str]]:
+    """Each rostered player's matches, priced one by one at the values in
+    ``whul.scoring.soccer_match`` -- the same lines his season is summed from.
+
+    A player is found by the name his stored line carries, which is FotMob's
+    own spelling once the pull has run; where two of FotMob's players share
+    it, the one at his club. He is priced at the position the league holds
+    for him, as his season is.
+    """
+    from whul.config.league import SEASON
+    from whul.resolve import normalize_name, normalize_team
+    from whul.scoring import soccer_match
     from whul.sources import espn
 
-    loader = loader or espn.summary
+    walker = walker or _fotmob_walker
     rows, problems = [], []
-    missing_stats = 0
     by_league: dict[str, list[Rostered]] = {}
     for p in players:
         if p.line:
             by_league.setdefault(str(p.line.get("league") or p.league), []).append(p)
-    for league, mine in sorted(by_league.items()):
-        ledger = SOCCER_LEDGERS.get(league)
-        if ledger is None:
+    plan = {}
+    for league, mine in by_league.items():
+        key = SOCCER_LEDGERS.get(league)
+        if key is None:
             continue
-        domestic = {ledger, *espn.DOMESTIC_CUPS.get(ledger, ())}
-        # Every European tie as well, qualifying rounds included: the team
-        # pull keeps them under the competition's own key.
-        everything = domestic | set(espn.continental_for(ledger))
+        domestic = {key, *espn.DOMESTIC_CUPS.get(key, ())}
         start, end = _window(league, as_of)
         # From the league year's opening if the league itself opens later: a
         # club's cup tie can come first -- Frankfurt played the DFB-Pokal on
         # the 21st, a week before the Bundesliga began -- and the season line
         # counts it, so its match record has to.
         start = min(start, SEASON.start.isoformat())
-        # Before the day, not on it: a match dated today may still be on.
-        matches = [m for m in _ledger(store, ledger)
-                   if str(m.get("competition_key")) in everything
-                   and start <= str(m.get("date") or "")[:10] < end
-                   and m.get("goals_for") is not None]
+        plan[league] = (key, domestic, domestic | set(espn.continental_for(key)),
+                        start, end, mine)
+    if not plan:
+        return rows, problems
+    keys = tuple(dict.fromkeys(k for v in plan.values() for k in sorted(v[2])))
+    first = min(date.fromisoformat(v[3]) for v in plan.values())
+    # Before the day, not on it: a match dated today may still be on.
+    last = max(date.fromisoformat(v[4]) for v in plan.values()) - timedelta(days=1)
+    try:
+        lines = walker(first, last, keys)
+    except Exception as exc:  # noqa: BLE001 -- the records stay as they were
+        said = (f"Soccer: FotMob could not be read, so no match was recorded: "
+                f"{type(exc).__name__}: {exc}")
+        return rows, [said]
+    named: dict[str, list[dict]] = {}
+    for line in lines:
+        named.setdefault(normalize_name(str(line.get("player") or "")), []).append(line)
+
+    for league, (key, domestic, everything, start, end, mine) in sorted(plan.items()):
         for p in mine:
-            club = _plain(p.line.get("team") or "")
-            theirs = [m for m in matches if _plain(m.get("team")) == club]
-            if club and not theirs:
-                problems.append(f"Soccer: no {league} matches found for "
-                                f"{p.name}'s club, {p.line.get('team')}")
-            position = str(p.line.get("position") or "")
-            per_goal = scoring.goal_points_for(position)
+            his = [line for line in named.get(normalize_name(
+                       str(p.line.get("player") or p.name)), [])
+                   if line.get("competition_key") in everything
+                   and start <= str(line.get("date") or "")[:10] < end]
+            ids = {str(line.get("player_id")) for line in his}
+            if len(ids) > 1:
+                club = normalize_team(str(p.line.get("team") or ""))
+                at_club = {str(line.get("player_id")) for line in his
+                           if normalize_team(str(line.get("team") or "")) == club}
+                if len(at_club) == 1:
+                    his = [line for line in his if str(line.get("player_id")) in at_club]
+                else:
+                    problems.append(f"Soccer: {len(ids)} players called {p.name} "
+                                    f"in FotMob, and none of them only at his club")
+                    continue
+            held = str(p.line.get("position") or "").upper()[:1]
             played = 0
-            for match in theirs:
-                lineup = _lineup(store, str(match["competition_key"]),
-                                 str(match["event_id"]), loader)
-                if lineup is None:
-                    problems.append(f"Soccer: could not read match {match['event_id']} "
-                                    f"({match.get('team')} v {match.get('opponent')})")
-                    continue
-                entry = next((e for e in lineup if _plain(e["name"]) == _plain(p.name)), None)
-                if entry is None:
-                    continue
-                if any(entry[k] is None for k in SOCCER_STATS):
-                    missing_stats += 1
-                figures = {k: (entry[k] or 0.0) for k in SOCCER_STATS}
-                appearance = (scoring.PTS_FULL_APPEARANCE if entry["started"]
-                              else scoring.PTS_SHORT_APPEARANCE)
-                points = (appearance + figures["goals"] * per_goal
-                          + figures["assists"] * scoring.PTS_ASSIST
-                          + figures["yellow"] * scoring.PTS_YELLOW
-                          + figures["red"] * scoring.PTS_RED)
-                key = str(match["competition_key"])
-                phase = "regular" if key in domestic else "europe"
+            for line in his:
+                priced = {**line, "position": held if held in soccer_match.SCORED_POSITIONS
+                          else line.get("position")}
+                competition = str(line["competition_key"])
+                phase = "regular" if competition in domestic else "europe"
                 played += phase == "regular"
-                label = _competition_label(key, str(match.get("competition") or ""))
+                label = _competition_label(competition, "")
                 rows.append({
-                    "asset_id": p.asset_id, "game_key": str(match["event_id"]),
-                    "date": str(match["date"])[:10], "role": "", "phase": phase,
-                    "points": points, "norm_key": league,
-                    "opponent": str(match.get("opponent") or ""),
-                    "detail": {"started": entry["started"],
-                               **({"competition": label} if key != ledger else {}),
-                               **{k: v for k, v in figures.items() if v}},
+                    "asset_id": p.asset_id, "game_key": f"fotmob-{line['match_id']}",
+                    "date": str(line["date"])[:10], "role": "", "phase": phase,
+                    "points": soccer_match.match_points(priced), "norm_key": league,
+                    "opponent": str(line.get("opponent") or ""),
+                    "detail": {"started": bool(line.get("started")),
+                               "minutes": line.get("minutes"),
+                               **({"competition": label} if competition != key else {}),
+                               **({"potm": True} if line.get("potm") else {}),
+                               **{k: line[k] for k in SOCCER_DETAIL if line.get(k)}},
                 })
             # Domestic matches only: they are what the season line counts.
             expected = _number(p.line.get("matches"))
             if expected and played != expected:
                 problems.append(f"Soccer: {p.name} has {played} domestic match(es) "
                                 f"on record against {expected:g} in his season line")
-    if missing_stats:
-        problems.append(f"Soccer: {missing_stats} appearance(s) whose summary "
-                        f"carried no goals/assists/cards; scored as appearances")
     return rows, problems
 
 
@@ -677,7 +709,8 @@ def record(store: Store, season: str, as_of: date | str, verbose: bool = True,
                                            log_loader=loaders.get("mlb_log"))
             else:
                 rows, problems = soccer_games(store, mine, as_of,
-                                              loader=loaders.get("soccer"))
+                                              walker=loaders.get("soccer_lines"))
+                _drop_espn_matches(store, season, rows)
         except Exception as exc:  # noqa: BLE001 -- one sport, not the run
             report.problems.append(f"{sport}: {type(exc).__name__}: {exc}")
             continue
@@ -738,6 +771,20 @@ def _record_club_games(store: Store, season_label: str, report: Report,
         report.problems.append(f"NHL club games: {type(exc).__name__}: {exc}")
 
 
+def _drop_espn_matches(store: Store, season: str, rows: list[dict]) -> None:
+    """The matches recorded from ESPN, for every player FotMob has just
+    recorded: the same matches under ESPN's ids, which kept would count twice
+    in a best-performances slot and on a results list."""
+    assets = sorted({row["asset_id"] for row in rows})
+    if not assets:
+        return
+    with store.transaction() as conn:
+        conn.execute(
+            f"DELETE FROM game_scores WHERE season = ? AND source = 'Club Soccer' "
+            f"AND game_key NOT LIKE 'fotmob-%' AND asset_id IN "
+            f"({','.join('?' * len(assets))})", (season, *assets))
+
+
 def reconcile(sport: str, players: list[Rostered], rows: list[dict]) -> list[str]:
     """Each player's games against the season line he is scored on.
 
@@ -745,10 +792,9 @@ def reconcile(sport: str, players: list[Rostered], rows: list[dict]) -> list[str
     the season, a best game is being read out of an incomplete record, or the
     season is. Either way it is named. MLB's season carries run values no game
     has, so there the games are counted rather than summed; soccer's matches
-    are counted where the lineups are read (see ``soccer_games``).
+    are counted where they are read (see ``soccer_games``) and summed here,
+    being priced from the same FotMob lines as the season.
     """
-    if sport == "Club Soccer":
-        return []
     mine: dict[str, list[dict]] = {}
     for row in rows:
         # The season line is the regular season's; playoff and European games
@@ -759,6 +805,10 @@ def reconcile(sport: str, players: list[Rostered], rows: list[dict]) -> list[str
     out = []
     for p in players:
         if not p.line:
+            continue
+        if sport == "Club Soccer" and "pts_appearance" not in p.line:
+            # A line scored before the match-by-match scoring has no terms
+            # its matches could add up to; tonight's pull replaces it.
             continue
         games = mine.get(p.asset_id, [])
         if sport == "MLB":

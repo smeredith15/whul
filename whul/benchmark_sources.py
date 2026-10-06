@@ -20,6 +20,7 @@ those groups where they differ from ``league``.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
@@ -993,6 +994,149 @@ def _report_competition_coverage(rows: pd.DataFrame) -> None:
         )
 
 
+def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
+    """Club soccer players, match by match, from FotMob.
+
+    The second version of the scoring (``docs/PROJECT_PLAN.md`` section 2.8)
+    prices every match a player plays -- tackles, chances created, the xG of
+    each goal, a rating -- and ESPN keeps none of that. FotMob keeps all of it
+    for every league, cup and European competition here, back to 2021-22.
+
+    One walk through the days covers every competition at once: each day's
+    list of matches is one request (none, once the day is settled and kept),
+    and each finished match one more (none, once read). A club's cup and
+    European lines are kept only for clubs that played in one of our leagues
+    that season, and are filed under that league -- the rule the ESPN pull
+    learned the hard way (see ``_soccer_players``).
+
+    ``live`` scores the league year so far with European football as a bonus,
+    and each rostered player at the position the league holds for him (the
+    position on his stored line); otherwise whole seasons, domestic only, for a
+    benchmark. A walk FotMob stops answering raises, so the night's soccer is
+    carried forward rather than scored short.
+    """
+    from whul.scoring import soccer
+    from whul.sources import espn, fotmob
+
+    wanted = ({c: k for c, k in PLAYER_LEAGUES.items() if c in only}
+              if only else dict(PLAYER_LEAGUES))
+
+    def competitions() -> tuple[str, ...]:
+        # A benchmark is domestic football alone, so its walk does not read
+        # the European nights it would only throw away -- about 400 matches a
+        # season.
+        keys: list[str] = []
+        for key in wanted.values():
+            keys += [key, *espn.DOMESTIC_CUPS.get(key, ()),
+                     *(espn.continental_for(key) if live else ())]
+        return tuple(k for k in dict.fromkeys(keys) if k in fotmob.COMPETITIONS)
+
+    def spans(seasons) -> list[tuple[date, date]]:
+        """The days each season asked for lies across, ours (labelled by the
+        year a European season ends in, MLS by its own year)."""
+        from whul.soccer_study import span
+
+        out = set()
+        for label in seasons:
+            for key in wanted.values():
+                start_year = label if key in fotmob.CALENDAR_YEAR else label - 1
+                out.add(span(key, int(start_year)))
+        return sorted(out)
+
+    def load(seasons, store=None):
+        from whul import clock
+        from whul.config.league import SEASON, season_start
+
+        client = fotmob.Client()
+        today = clock.today()
+        keys = competitions()
+        windows = ([(min(season_start(c) for c in wanted), min(today, SEASON.end))]
+                   if live else spans(seasons))
+        lines, problems = [], []
+        for start, end in windows:
+            found = fotmob.walk(client, start, end, keys, today)
+            lines += found.lines
+            if found.unread_days or found.unread_matches:
+                problems.append(
+                    f"{len(found.unread_days)} day(s) and {len(found.unread_matches)} "
+                    f"match(es) between {start} and {end} could not be read")
+            if found.stopped:
+                raise RuntimeError(
+                    f"FotMob stopped answering after {client.sent} request(s), "
+                    f"{found.matches} match(es) read between {start} and {end}; "
+                    f"nothing is scored from a partial walk")
+        for said in problems:
+            FINDINGS.append(f"FotMob: {said}; they are read on the next run")
+        if not lines:
+            return pd.DataFrame()
+        frame = pd.DataFrame(lines)
+        frame["goal_xg"] = [json.dumps(v or []) for v in frame["goal_xg"]]
+        # Which of our leagues each club played in, season by season, from the
+        # leagues' own matches -- the only thing that may decide a row's league.
+        category = {key: name for name, key in wanted.items()}
+        own = frame[frame["competition_key"].isin(category)]
+        # MLS and its cups run inside a calendar year; everything else is
+        # named for the year it ends in.
+        calendar = {k for league in fotmob.CALENDAR_YEAR
+                    for k in (league, *espn.DOMESTIC_CUPS.get(league, ()),
+                              *espn.continental_for(league))}
+        season_of = soccer.season_for(frame["date"], frame["competition_key"].map(
+            lambda k: "MLS" if k in calendar else ""))
+        frame["season"] = season_of
+        club_league = {
+            (int(s), str(t)): category[k]
+            for s, t, k in zip(season_of[own.index], own["team_id"], own["competition_key"])
+        }
+        frame["league"] = [club_league.get((int(s), str(t)))
+                           for s, t in zip(frame["season"], frame["team_id"])]
+        frame = frame[frame["league"].notna()].copy()
+        frame["competition"] = [
+            competition_label(k) if k not in category else category[k]
+            for k in frame["competition_key"]]
+        if live:
+            # Each league counts from its own opening, as every other source
+            # does: MLS's league year begins in 2027.
+            opens = {name: season_start(name) for name in wanted}
+            days = pd.to_datetime(frame["date"], errors="coerce")
+            frame = frame[[pd.isna(d) or d.date() >= opens[lg]
+                           for d, lg in zip(days, frame["league"])]].copy()
+            if store is not None:
+                frame["roster_position"] = _roster_positions(store, frame)
+        else:
+            frame = frame[frame["season"].isin([int(s) for s in seasons])].copy()
+        return frame.reset_index(drop=True)
+
+    return load, (lambda raw, as_of=None: soccer.score_match_lines(
+        raw, postseason=live, as_of=as_of))
+
+
+def _roster_positions(store, frame: pd.DataFrame) -> list[str]:
+    """The position the league holds for each rostered player a line names.
+
+    It is the one on his stored line -- where the league has scored him all
+    season -- matched by name within his league. A line naming nobody rostered
+    gets nothing, and FotMob's own position stands.
+    """
+    from whul.resolve import normalize_name
+
+    held = store.query(
+        "SELECT a.display_name, a.league, r.stats FROM assets a "
+        "JOIN raw_stats r ON r.asset_id = a.asset_id "
+        "WHERE a.asset_type = 'Player' AND r.as_of = ("
+        "SELECT MAX(as_of) FROM raw_stats r2 WHERE r2.asset_id = a.asset_id)")
+    positions: dict[tuple[str, str], str] = {}
+    for row in held.itertuples():
+        try:
+            line = json.loads(row.stats)
+        except (TypeError, ValueError):
+            continue
+        position = str(line.get("position") or "").upper()[:1]
+        if position in ("D", "M", "F"):
+            positions[(str(row.league), normalize_name(row.display_name))] = position
+    return [positions.get((str(lg), normalize_name(name)), "")
+            for lg, name in zip(frame["league"], frame["player"])]
+
+
 def _soccer_players_live(only: tuple[str, ...] = ()):
     """The same pull, with European competition credited on top.
 
@@ -1697,13 +1841,14 @@ SOURCES: dict[str, Source] = _register(
            benchmark_seasons=8,
            note="martj42 ledgers; one pull, two benchmarks -- the men's game "
                 "and the women's are normalized against themselves"),
-    Source("soccer-players", "Club Soccer", "Player", _soccer_players,
-           live=_soccer_players_live,
+    Source("soccer-players", "Club Soccer", "Player", _fotmob_players,
+           live=lambda: _fotmob_players(live=True),
            produces=("Premier League", "La Liga", "Serie A", "Bundesliga",
                      "Ligue 1", "MLS"),
            seasons_for=_espn_seasons("epl", "Premier League"),
-           note="ESPN team rosters, 21 requests a league-season; "
-                "six benchmarks, each league against itself"),
+           note="FotMob, match by match: one request a day and one a match, "
+                "each kept once settled; six benchmarks, each league "
+                "against itself"),
     *(
         # One league's players without walking the other five. Correcting MLS
         # alone used to mean re-pulling every European league and its cups --
@@ -1716,8 +1861,8 @@ SOURCES: dict[str, Source] = _register(
         # same one over fewer leagues. Shared competitions are cached, so
         # naming several of these costs no more than soccer-players does.
         Source(f"{key}-players", category, "Player",
-               (lambda c=category: _soccer_players(only=(c,))),
-               live=(lambda c=category: _soccer_players_live(only=(c,))),
+               (lambda c=category: _fotmob_players(only=(c,))),
+               live=(lambda c=category: _fotmob_players(only=(c,), live=True)),
                produces=(category,),
                seasons_for=_espn_seasons(key, category),
                note=f"{category} players alone, for recomputing one group")

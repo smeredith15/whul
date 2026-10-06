@@ -408,35 +408,58 @@ def _soccer_teams() -> Calc:
 
 
 def _soccer_players() -> Calc:
-    goals = soccer.GOAL_POINTS_BY_POSITION
+    from whul.scoring import soccer_match as sm
+
+    by, flat = sm.BY_POSITION, sm.FLAT
+    names = {"D": "defender", "M": "midfielder", "F": "forward"}
+    per_position = []
+    for code, name in names.items():
+        per_position += [
+            Field(f"goals_{code}", f"Goals as a {name}", float(by["goal"][code])),
+            Field(f"assists_{code}", f"Assists as a {name}", float(by["assist"][code])),
+            Field(f"highlight_{code}", f"Highlight: the sum of (1 − xG) over a "
+                                       f"{name}'s non-penalty goals",
+                  float(by["highlight"][code])),
+        ]
     return Calc(
         "calc-soccer-players", "Club soccer — player", "linear",
         "A player's points do not change with the competition -- only a "
-        "club's do. Goals are worth more the further back the scorer plays, "
-        "so start with the position.",
+        "club's do. Goals, assists and the highlight bonus are worth more the "
+        "further back the player lines up, so enter them on his position's rows.",
         groups=SOCCER_GROUPS,
-        scale_label="Position",
-        scales=[Choice(position[:1].upper() + position[1:], 1.0)
-                for position in goals],
         fields=[
-            Field("full", f"Appearances of {soccer.FULL_APPEARANCE_MINUTES} "
-                          f"minutes or more", float(soccer.PTS_FULL_APPEARANCE)),
+            Field("full", f"Appearances of {sm.FULL_APPEARANCE_MINUTES} "
+                          f"minutes or more", float(sm.PTS_FULL_APPEARANCE)),
             Field("sub", "Shorter appearances off the bench",
-                  float(soccer.PTS_SHORT_APPEARANCE)),
-            Field("goals_defender", "Goals as a defender",
-                  float(goals["defender"])),
-            Field("goals_midfielder", "Goals as a midfielder",
-                  float(goals["midfielder"])),
-            Field("goals_forward", "Goals as a forward", float(goals["forward"])),
-            Field("assists", "Assists", float(soccer.PTS_ASSIST)),
-            Field("yellow", "Yellow cards", float(soccer.PTS_YELLOW)),
-            Field("red", "Red cards", float(soccer.PTS_RED)),
+                  float(sm.PTS_SHORT_APPEARANCE)),
+            *per_position,
+            Field("chances", "Chances created, not counting assists",
+                  float(flat["chance_created"])),
+            Field("sot", "Shots on target", float(flat["shot_on_target"])),
+            Field("tackles", "Tackles", float(flat["tackle"])),
+            Field("interceptions", "Interceptions", float(flat["interception"])),
+            Field("blocks", "Shots blocked", float(flat["shot_block"])),
+            Field("clearances", "Clearances", float(flat["clearance"])),
+            Field("dribbles", "Successful dribbles", float(flat["dribble"])),
+            Field("dispossessed", "Times dispossessed", float(flat["dispossessed"])),
+            Field("cs_D", "Clean sheets as a defender", float(by["clean_sheet"]["D"])),
+            Field("cs_M", "Clean sheets as a midfielder", float(by["clean_sheet"]["M"])),
+            Field("conceded_D", "Goals conceded after the first, as a defender",
+                  float(by["conceded_after_one"]["D"])),
+            Field("conceded_M", "Goals conceded after the first, as a midfielder",
+                  float(by["conceded_after_one"]["M"])),
+            Field("own_goals", "Own goals", float(flat["own_goal"])),
+            Field("yellow", "Yellow cards", float(flat["yellow"])),
+            Field("red", "Red cards", float(flat["red"])),
+            Field("rated", f"Matches rated {sm.RATING_BONUS_FROM:g} or higher",
+                  float(flat["rating_8"])),
+            Field("potm", "Player of the match", float(flat["player_of_match"])),
         ],
         modes=["game", "season"],
         postseason=_postseason("UCL"),
         notes=[
-            "Enter goals on the row matching where the player lines up; the "
-            "other two stay at zero.",
+            "Goals conceded count per match: in a match he conceded three, "
+            "enter two.",
         ],
     )
 

@@ -309,10 +309,32 @@ player's listed position.
 | Shot blocked | 0.5 | 0.5 | 0.5 |
 | Clearance | 0.25 | 0.25 | 0.25 |
 | Successful dribble | 0.5 | 0.5 | 0.5 |
-| Dispossessed | −0.2 | −0.2 | −0.2 |
+| Dispossessed | −0.4 | −0.4 | −0.4 |
 
 | FotMob rating of 8.0 or higher | +1 | +1 | +1 |
 | Player of the match | +1 | +1 | +1 |
+
+Decided after the 2024-25 study (six leagues, 2,240 matches): counting stats plus the two
+rating bonuses -- not the rating alone. Blocks stay at 0.5; dispossessed was made costlier
+(FotMob's own rating weighs it about as heavily as a dribble); the goals-conceded terms stay.
+A rostered player is scored at the position the league holds for him -- the one his line
+already carries -- and only a player the league does not roster at FotMob's usual position.
+
+**Built (October 2026).** `soccer-players` (and each `<league>-players`) now reads FotMob
+match by match (`whul.sources.fotmob`, `whul.scoring.soccer_match`,
+`whul.scoring.soccer.score_match_lines`): one request a day for the day's matches, one a
+match, each kept once settled, so a night costs only what was played since the last.
+Lines carry their dates, so a restatement (`since`) can cut them back to any day. Game
+records come from the same lines, priced the same way, and must add up to the season line.
+A FotMob walk that stops answering raises: the night's soccer is carried forward rather
+than scored short. The ESPN roster pull is kept in the code (`_soccer_players`) but no
+longer registered.
+
+To adopt it: compute the six players' benchmarks into a draft (`epl-players` and the rest,
+split across Benchmarks runs -- about five seasons of league and domestic cup matches,
+roughly 2,500 requests a league-season cold), freeze it, then Publish with `leagues` set to
+`soccer-players` and `since` the league year's first day, which re-scores every stored
+soccer day from the dated lines.
 
 Recoveries, aerials won and fouls committed or won are not scored. The rating is FotMob's
 own model of the same figures, so it pays only for a standout match rather than as a

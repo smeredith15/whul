@@ -65,6 +65,7 @@ COMPETITIONS = {
     "dfbpokal": (209, "GER", "dfb pokal"), "coppaitalia": (141, "ITA", "coppa italia"),
     "copadelrey": (138, "ESP", "copa del rey"),
     "coupedefrance": (134, "FRA", "coupe de france"),
+    "usopencup": (None, "USA", "open cup"),
 }
 #: Competitions named for one calendar year rather than two.
 CALENDAR_YEAR = {"mls", "nwsl"}
@@ -156,8 +157,9 @@ def season_label(key: str, season: int) -> str:
 def _is(league: dict, key: str) -> bool:
     wanted, country, name = COMPETITIONS[key]
     ids = {league.get("id"), league.get("primaryId"), league.get("parentLeagueId")}
-    return wanted in ids or (str(league.get("ccode", "")).upper() == country
-                             and name in str(league.get("name", "")).lower())
+    return (wanted is not None and wanted in ids) or (
+        str(league.get("ccode", "")).upper() == country
+        and name in str(league.get("name", "")).lower())
 
 
 def _finished(match: dict) -> bool:
@@ -174,9 +176,27 @@ def _listed(match: dict, key: str) -> dict:
             "finished": _finished(match)}
 
 
-def day_matches(client: Client, day: date, keys: tuple[str, ...]) -> list[dict]:
-    """Every match on ``day`` in the competitions named."""
-    body = client.get("/matches", date=day.strftime("%Y%m%d"))
+#: A day's list is kept once every match on it is old enough to have been
+#: finished and corrected: a list read on the evening of a match day would
+#: otherwise be kept with the late kick-offs still to play.
+SETTLED_AFTER_DAYS = 3
+
+
+def day_matches(client: Client, day: date, keys: tuple[str, ...],
+                cache: Path | None = None, today: date | None = None) -> list[dict] | None:
+    """Every match on ``day`` in the competitions named; None if the day could
+    not be read, which is not the same as a day with nothing on."""
+    path = (cache / "days" / f"{day:%Y%m%d}.json") if cache else None
+    if path is not None and path.exists():
+        body = json.loads(path.read_text())
+    else:
+        body = client.get("/matches", date=day.strftime("%Y%m%d"))
+        if body is None:
+            return None
+        settled = today is not None and (today - day).days >= SETTLED_AFTER_DAYS
+        if path is not None and settled:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(body))
     out = []
     for league in (body or {}).get("leagues") or []:
         for key in keys:
@@ -201,9 +221,56 @@ def season_matches(client: Client, key: str, season: int,
         return []
     out, day = [], start
     while day <= end and not client.stopped:
-        out += day_matches(client, day, (key,))
+        out += day_matches(client, day, (key,)) or []
         day += timedelta(days=1)
     return out
+
+
+@dataclass
+class Walk:
+    """What a walk through a span of days found: every finished match's
+    player lines, and what could not be read."""
+
+    lines: list[dict] = field(default_factory=list)
+    matches: int = 0
+    unread_days: list[str] = field(default_factory=list)
+    unread_matches: list[str] = field(default_factory=list)
+    stopped: bool = False
+
+
+def walk(client: Client, start: date, end: date, keys: tuple[str, ...],
+         today: date, cache: Path | None = None) -> Walk:
+    """Every finished match in ``keys`` between two days, player by player.
+
+    One request a day for the day's list -- none for a day already settled and
+    kept -- and one a match for its details, none for a match already read.
+    Each line carries the competition key it was found under.
+    """
+    cache = CACHE if cache is None else cache
+    found = Walk()
+    day = start
+    seen: set[str] = set()
+    while day <= end:
+        if client.stopped:
+            found.stopped = True
+            break
+        listed = day_matches(client, day, keys, cache=cache, today=today)
+        if listed is None:
+            found.unread_days.append(day.isoformat())
+        for match in listed or []:
+            if not match["finished"] or match["match_id"] in seen:
+                continue
+            seen.add(match["match_id"])
+            lines = cached_lines(match["match_id"], client, cache=cache)
+            if lines is None:
+                found.unread_matches.append(match["match_id"])
+                continue
+            found.matches += 1
+            found.lines += [{**line, "competition_key": match["competition"]}
+                            for line in lines]
+        day += timedelta(days=1)
+    found.stopped = found.stopped or client.stopped
+    return found
 
 
 def _all_matches(body) -> list[dict]:
@@ -222,12 +289,15 @@ def match_details(client: Client, match_id: str) -> dict | None:
 
 
 def cached_lines(match_id: str, client: Client | None = None,
-                 cache: Path | None = CACHE) -> list[dict] | None:
+                 cache: Path | None = None) -> list[dict] | None:
     """A finished match's player lines: from the cache, or read and kept.
 
     None for a match that could not be read or is not over -- a caller holds
-    on that rather than scoring the match as nobody having played.
+    on that rather than scoring the match as nobody having played. ``cache``
+    defaults to ``CACHE`` as it stands when called, so a test that points it
+    elsewhere is obeyed.
     """
+    cache = CACHE if cache is None else cache
     path = (cache / "lines" / f"{match_id}.json") if cache else None
     if path is not None and path.exists():
         return json.loads(path.read_text())
