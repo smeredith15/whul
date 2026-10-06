@@ -3882,12 +3882,13 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 print(f"  {season}      {count:,} wins")
         print()
         return 0
-    if args.league == "soccer-sources":
+    if args.league in ("soccer-sources", "soccer-commentary"):
         import json
 
         from whul.sources import soccer_probe
 
-        report = soccer_probe.probe(int(args.season) if args.season else None)
+        report = (soccer_probe.probe_commentary() if args.league == "soccer-commentary"
+                  else soccer_probe.probe(int(args.season) if args.season else None))
         for source, found in report.items():
             print(f"\n{source}")
             for key, value in found.items():
@@ -4797,7 +4798,8 @@ def main(argv: list[str] | None = None) -> int:
         "league",
         choices=sorted(
             set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)
-            | {"tennis2026", "fbref", "mlb-gamelog", "soccer-sources"}
+            | {"tennis2026", "fbref", "mlb-gamelog", "soccer-sources",
+               "soccer-commentary"}
         ),
         metavar="league",
     )

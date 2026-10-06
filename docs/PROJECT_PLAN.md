@@ -287,6 +287,36 @@ This is the concrete form of the "3.5 / 4.5 courtesy slot": the manager ends up 
 on each side rather than losing the player's pre-transfer production. No extra weighting is applied
 beyond normal normalization.
 
+### 2.8 Club soccer player scoring, second version (agreed October 2026, not yet built)
+
+Goalkeepers are not rostered and are not scored. Values per match; D / M / F is the
+player's listed position.
+
+| Term | D | M | F |
+|---|---|---|---|
+| Appearance, 60+ minutes / fewer | 2 / 1 | 2 / 1 | 2 / 1 |
+| Goal | 6 | 5 | 4 |
+| Highlight bonus, per non-penalty goal: k × (1 − that shot's xG) | k = 4 | k = 3 | k = 2 |
+| Assist | 5 | 3 | 3 |
+| Chance created (a pass leading to a shot, other than an assist) | 0.5 | 0.5 | 0.5 |
+| Shot on target | 0.5 | 0.5 | 0.5 |
+| Clean sheet (60+ minutes, nothing conceded while on) | 2 | 1 | — |
+| Goals conceded while on, after the first | −0.5 each | −0.25 each | — |
+| Own goal | −2 | −2 | −2 |
+| Yellow / red card | −1 / −3 | −1 / −3 | −1 / −3 |
+
+To be checked on prior seasons before a benchmark is frozen.
+
+**Every competition on one scale.** Cups and European ties count, and can fill the
+best-performances slot, so a term that exists only for league matches is not acceptable.
+Understat has the shot-level xG and chances created but covers the five leagues' league
+matches only. The candidate that covers everything is ESPN's match commentary, which
+names the player setting up every shot and describes each shot (area, foot or head,
+situation): chances created would be counted from it everywhere, and a goal's xG read
+from a table of Understat's average xG for each kind of shot. `probe soccer-commentary`
+checks that every competition carries the commentary and that its shots line up with
+Understat's.
+
 ---
 
 ## 3. Architecture

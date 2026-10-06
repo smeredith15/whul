@@ -18,3 +18,23 @@ def test_a_refusing_host_is_reported_not_raised(monkeypatch):
     assert soccer_probe.probe_espn(soccer_probe.OLD_DAY)["status"].startswith("FAILED")
     assert soccer_probe.probe_understat(2026)["league_page"].startswith("FAILED")
     assert soccer_probe.probe_mls(2026)["matches"].startswith("FAILED")
+
+
+def test_commentary_is_read_for_shots_and_who_set_them_up():
+    payload = {"commentary": [
+        {"time": {"displayValue": "12'"},
+         "text": "Goal! Arsenal 1, Chelsea 0. Bukayo Saka (Arsenal) left footed shot "
+                 "from outside the box to the top left corner. Assisted by Martin Odegaard."},
+        {"time": {"displayValue": "30'"},
+         "text": "Attempt saved. Cole Palmer (Chelsea) right footed shot from the "
+                 "centre of the box is saved in the centre of the goal."},
+        {"time": {"displayValue": "45'+2'"},
+         "text": "Attempt missed. Declan Rice (Arsenal) header from the centre of the "
+                 "box misses to the left. Assisted by Bukayo Saka with a cross."},
+        {"time": {"displayValue": "50'"}, "text": "Corner,  Chelsea. Conceded by William Saliba."},
+    ]}
+    report = soccer_probe.commentary_report(payload)
+    assert report["goals_and_attempts"] == 3
+    assert report["of_which_assisted"] == 2
+    assert report["corners"] == 1
+    assert [m for m, _ in soccer_probe._lines(payload)] == [12, 30, 45, 50]
