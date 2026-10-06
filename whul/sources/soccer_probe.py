@@ -590,6 +590,7 @@ FOTMOB_COMPETITIONS = {
     "epl": (47, "ENG", "premier league"), "laliga": (87, "ESP", "laliga"),
     "seriea": (55, "ITA", "serie a"), "bundesliga": (54, "GER", "bundesliga"),
     "ligue1": (53, "FRA", "ligue 1"), "mls": (130, "USA", "major league soccer"),
+    "nwsl": (9134, "USA", "nwsl"),
     "ucl": (42, "INT", "champions league"), "uel": (73, "INT", "europa league"),
     "efl_cup": (133, "ENG", "efl cup"), "facup": (132, "ENG", "fa cup"),
     "dfbpokal": (209, "GER", "dfb pokal"), "coppaitalia": (141, "ITA", "coppa italia"),
@@ -603,6 +604,7 @@ FOTMOB_CHECKS = (
     ("bundesliga", date(2021, 9, 18)), ("seriea", date(2022, 9, 18)),
     ("ligue1", date(2023, 9, 17)), ("epl", date(2024, 9, 21)),
     ("mls", date(2022, 7, 9)), ("mls", date(2024, 9, 21)),
+    ("nwsl", date(2022, 7, 9)), ("nwsl", date(2024, 9, 21)),
     ("ucl", date(2021, 9, 14)), ("ucl", date(2024, 10, 1)),
     ("uel", date(2024, 10, 3)), ("efl_cup", date(2024, 10, 29)),
     ("dfbpokal", date(2024, 10, 29)), ("coppaitalia", date(2024, 12, 17)),
@@ -682,6 +684,13 @@ def probe_fotmob_coverage() -> dict[str, dict]:
                 players = content.get("playerStats") or {}
                 name = (f"{(match.get('home') or {}).get('name')} v "
                         f"{(match.get('away') or {}).get('name')}")
+                # Which shots a highlight bonus must leave out: penalties,
+                # and a shootout's kicks if the map carries them.
+                kinds = {}
+                for shot in shots:
+                    tag = f"{shot.get('situation')}/{shot.get('period')}"
+                    kinds[tag] = kinds.get(tag, 0) + 1
+                found[f"{name} situation/period"] = kinds
                 found[name] = (f"via {details.get('via')}: {len(shots)} shots, "
                                f"{len(with_xg)} with xG, {len(goals)} goals "
                                f"({sum(g.get('expectedGoals') is not None for g in goals)} "
@@ -697,6 +706,13 @@ def probe_fotmob_coverage() -> dict[str, dict]:
                     found["sample_player"] = {
                         "name": sample.get("name"),
                         **{w: keys.get(w) for w in FOTMOB_WANTED if w in keys}}
+                    # The entries whose key is a title rather than a name, as
+                    # they arrive: a tackle line may be "won of attempted".
+                    found["raw_entries"] = {
+                        title: entry for group in sample.get("stats") or []
+                        for title, entry in (group.get("stats") or {}).items()
+                        if isinstance(entry, dict) and str(entry.get("key", "")).startswith(
+                            ("matchstats", "Shots", "rating", "ground", "aerials"))}
             report[label] = found
         except Exception as exc:  # noqa: BLE001
             report[label] = {"status": _failed(exc)}

@@ -304,6 +304,16 @@ player's listed position.
 | Goals conceded while on, after the first | −0.5 each | −0.25 each | — |
 | Own goal | −2 | −2 | −2 |
 | Yellow / red card | −1 / −3 | −1 / −3 | −1 / −3 |
+| Tackle won | 0.5 | 0.5 | 0.5 |
+| Interception | 0.5 | 0.5 | 0.5 |
+| Shot blocked | 0.5 | 0.5 | 0.5 |
+| Clearance | 0.25 | 0.25 | 0.25 |
+| Successful dribble | 0.5 | 0.5 | 0.5 |
+| Dispossessed | −0.2 | −0.2 | −0.2 |
+
+Recoveries, aerials won and fouls committed or won are not scored. FotMob's match rating
+(0-10, its own model of the same figures) is available on every line; whether it counts,
+and how, is open.
 
 To be checked on prior seasons before a benchmark is frozen.
 
@@ -333,6 +343,17 @@ the runner (403). FotMob answers its own match API and its match pages from the 
 with a shot map giving each shot's xG (Salzburg v Brest: 28 shots, the goal at 0.20) and
 a full stat line per player. `probe soccer-fotmob` checks FotMob across every
 competition and back to 2021-22, and which stats each player line carries.
+
+**FotMob coverage (6 October 2026).** Every league, MLS, the Champions and Europa League
+and all six domestic cups, back to 2021-22: every shot with its xG (a handful of
+matches have one shot without), every goal with its xG, and a player line carrying
+minutes, goals, assists, xG and xA, chances created, shots on and off target, tackles,
+interceptions, clearances, shot blocks, recoveries, duels and aerials won, dribbles,
+fouls committed and suffered, dispossessions, passes and touches. The only matches
+with nothing are FA Cup ties between two lower-division sides, which no rostered player
+plays in. FotMob is therefore the candidate single source for club soccer players,
+MLS included and NWSL to be confirmed; the scoring's defensive terms are still to be
+chosen.
 
 ---
 
