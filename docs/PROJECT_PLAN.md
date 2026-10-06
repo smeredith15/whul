@@ -287,6 +287,44 @@ This is the concrete form of the "3.5 / 4.5 courtesy slot": the manager ends up 
 on each side rather than losing the player's pre-transfer production. No extra weighting is applied
 beyond normal normalization.
 
+### 2.8 Club soccer player scoring, second version (agreed October 2026, not yet built)
+
+Goalkeepers are not rostered and are not scored. Values per match; D / M / F is the
+player's listed position.
+
+| Term | D | M | F |
+|---|---|---|---|
+| Appearance, 60+ minutes / fewer | 2 / 1 | 2 / 1 | 2 / 1 |
+| Goal | 6 | 5 | 4 |
+| Highlight bonus, per non-penalty goal: k × (1 − that shot's xG) | k = 4 | k = 3 | k = 2 |
+| Assist | 5 | 3 | 3 |
+| Chance created (a pass leading to a shot, other than an assist) | 0.5 | 0.5 | 0.5 |
+| Shot on target | 0.5 | 0.5 | 0.5 |
+| Clean sheet (60+ minutes, nothing conceded while on) | 2 | 1 | — |
+| Goals conceded while on, after the first | −0.5 each | −0.25 each | — |
+| Own goal | −2 | −2 | −2 |
+| Yellow / red card | −1 / −3 | −1 / −3 | −1 / −3 |
+
+To be checked on prior seasons before a benchmark is frozen.
+
+**Every competition on one scale.** Cups and European ties count, and can fill the
+best-performances slot, so a term that exists only for league matches is not acceptable.
+Understat has the shot-level xG and chances created but covers the five leagues' league
+matches only.
+
+- **Chances created** can come from ESPN's match commentary in every competition: each
+  shot line names who set it up ("... Assisted by Bukayo Saka with a cross"), so the
+  count is exact rather than estimated.
+- **The highlight bonus needs a real xG for the shot that scored**, in every competition.
+  An xG estimated from the commentary's description of a shot was considered and
+  rejected. FotMob and Sofascore both publish per-shot xG for cups and European ties;
+  if neither can be read from the nightly runner, the bonus is dropped rather than paid
+  in league matches alone.
+
+`probe soccer-commentary` checks all three: the commentary in every competition, one
+Premier League match set beside Understat's shots, and FotMob's and Sofascore's shot
+maps for a Champions League match.
+
 ---
 
 ## 3. Architecture
