@@ -123,3 +123,22 @@ def test_an_unrestated_league_keeps_its_stored_days(store):
     stored(store, "2026-09-10", 40.0)
     backdate.rebuild(store, SEASON, write=True)
     assert day_scores(store)["2026-09-06"] == 5.0
+
+
+def test_a_restated_day_is_on_the_anchors_version_so_a_rescore_leaves_it(store):
+    """A restated day is built from the latest one, on the latest one's scale.
+    Left naming its old version, a rescore in the same run would move it a
+    second time by the ratio of two benchmarks it is no longer on."""
+    games(store, [("2026-09-05", 10), ("2026-09-07", 10)])
+    stored(store, "2026-09-06", 5.0)
+    stored(store, "2026-09-10", 40.0)
+    history = pd.DataFrame([{"league": "MLB", "role": "Batter", "season": 2025,
+                             "total_points": 1000}])
+    bm.save(store, bm.compute(history, "Player", SEASON), SEASON, version="v0")
+    store.conn.execute("UPDATE daily_scores SET benchmark_version = 'v0' "
+                       "WHERE as_of = '2026-09-06'")
+    store.conn.commit()
+    backdate.rebuild(store, SEASON, write=True, restate=("MLB",))
+    version = store.scalar("SELECT benchmark_version FROM daily_scores "
+                           "WHERE as_of = '2026-09-06'")
+    assert version == "v1"

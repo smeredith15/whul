@@ -90,8 +90,11 @@ def rebuild(store: Store, season: str, write: bool = False,
     ``restate`` names leagues whose stored days are rebuilt too, from the
     latest one, rather than only the days before the first. MLB is the case:
     its stored days came from date-range totals that ran days behind the games,
-    and its latest day is summed from the game logs themselves. Only the score
-    and the points are rewritten on a stored day; a held bonus stays as it was.
+    and its latest day is summed from the game logs themselves. The NHL is the
+    other: a change to what a skater is scored on reaches the latest day and
+    the game records, and the days before it are restated from them. Only the
+    score and the points are rewritten on a stored day, and the version it is
+    now on; a held bonus stays as it was.
     """
     report = Report()
     restating: list[tuple] = []
@@ -152,7 +155,8 @@ def rebuild(store: Store, season: str, write: bool = False,
                     score = round(float(anchor["scaled_score"]) * share, 6)
                     points = round(float(anchor["league_points"]) * share, 6)
                     if day in stored_days:
-                        restating.append((score, points, asset_id, season, day.isoformat()))
+                        restating.append((score, points, anchor["benchmark_version"],
+                                          asset_id, season, day.isoformat()))
                     else:
                         rows.append({
                             "asset_id": asset_id, "season": season,
@@ -200,8 +204,13 @@ def rebuild(store: Store, season: str, write: bool = False,
         store.upsert("daily_scores", rows, keys=("asset_id", "season", "as_of"))
     if write and restating:
         with store.transaction() as conn:
+            # On the anchor's scale, and saying so. A restated day left naming
+            # the version it was first scored against is restated a second
+            # time by a rescore in the same run -- moved by the ratio of two
+            # benchmarks it is no longer on.
             conn.executemany(
-                "UPDATE daily_scores SET scaled_score = ?, league_points = ? "
+                "UPDATE daily_scores SET scaled_score = ?, league_points = ?, "
+                "benchmark_version = ? "
                 "WHERE asset_id = ? AND season = ? AND as_of = ?", restating)
     report.written = len(rows) + len(restating)
     return report

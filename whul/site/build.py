@@ -1153,6 +1153,11 @@ NBA_TALLY_REST = (("double_doubles", "Double-doubles"),
 
 NHL_BOXES = (("goals", "Goals"), ("assists", "Assists"), ("shots", "Shots"),
              ("plus_minus", "+/-"))
+#: The second row: the bonuses on a point for when it came, and the work a
+#: scoring line leaves out.
+NHL_SECONDARY = (("pp_points", "PP points"), ("sh_points", "SH points"),
+                 ("game_winners", "Game-winners"), ("hits", "Hits"),
+                 ("blocks", "Blocks"))
 
 
 def _stat_number(row: dict, column: str):
@@ -1261,17 +1266,13 @@ def _nhl_panel(row: dict) -> dict | None:
     resolved the heading simply omits it rather than repeating his own games
     under another name.
     """
-    from whul.scoring.nhl import (
-        PTS_ASSIST, PTS_GOAL, PTS_PLUS_MINUS, PTS_SHOT,
-    )
-
-    weights = {"goals": PTS_GOAL, "assists": PTS_ASSIST, "shots": PTS_SHOT,
-               "plus_minus": PTS_PLUS_MINUS}
+    from whul.scoring.nhl import SKATER_WEIGHTS as weights
 
     def boxes(prefix=""):
         return {"top": [_tally_box(row, f"{prefix}{c}", label, weights[c])
                         for c, label in NHL_BOXES],
-                "secondary": []}
+                "secondary": [_tally_box(row, f"{prefix}{c}", label, weights[c])
+                              for c, label in NHL_SECONDARY]}
 
     panel = {"kind": "boxes", "head": _games_head(row), **boxes()}
     if _stat_number(row, "postseason_games"):
@@ -4926,7 +4927,8 @@ GAME_FIGURES = {
             ("three_pt_made", "3PM"), ("plus_minus", "+/-"),
             ("double_doubles", "dbl-dbl"), ("triple_doubles", "trpl-dbl")),
     "NHL": (("goals", "G"), ("assists", "A"), ("shots", "SOG"),
-            ("plus_minus", "+/-")),
+            ("plus_minus", "+/-"), ("pp_points", "PPP"), ("sh_points", "SHP"),
+            ("game_winners", "GWG"), ("hits", "HIT"), ("blocks", "BLK")),
     "Club Soccer": (("goals", "goals"), ("assists", "ast"), ("yellow", "yellow"),
                     ("red", "red")),
     "batting": (("homeRuns", "HR"), ("doubles", "2B"), ("triples", "3B"),

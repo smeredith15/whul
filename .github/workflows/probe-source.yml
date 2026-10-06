@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       league:
-        description: "Source key, e.g. nhl, nba, mlb, mlb-gamelog, ncaaf, tennis2026"
+        description: "Source key, e.g. nhl, nba, mlb, mlb-gamelog, ncaaf, tennis2026, soccer-sources"
         default: "nhl"
       season:
         description: "Season to ask for. Leave empty for the source's default."
@@ -45,6 +45,9 @@ jobs:
         # however the command exited, and a dead feed would go green.
         env:
           SEASON: ${{ inputs.season }}
+          # Read only by `probe soccer-sources`, and never printed. Empty when
+          # the repository has no such secret, which that probe reports.
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
         run: |
           set -o pipefail
           FLAGS=""

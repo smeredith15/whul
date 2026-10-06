@@ -88,6 +88,15 @@ on:
           rescales stored scores and no longer can). Implies backfill.
         type: boolean
         default: false
+      restate:
+        description: >-
+          With backdate: the leagues whose stored days are rebuilt from the
+          latest one and the dated games, space separated. MLB is the
+          standing case. Add NHL once, on the first run after the skater
+          scoring gained hits, blocks and the point bonuses: the days already
+          stored were scored without them, and the latest day and the game
+          records have them.
+        default: "MLB"
       rescore:
         description: >-
           Restate every stored day against the frozen benchmark, before the
@@ -247,7 +256,7 @@ jobs:
         # date-range totals that ran days behind the games, and today's is
         # summed from the game logs.
         if: ${{ inputs.backdate }}
-        run: python -m whul.cli backdate --season "$SEASON" --write --restate MLB
+        run: python -m whul.cli backdate --season "$SEASON" --write --restate ${{ inputs.restate || 'MLB' }}
 
       - name: Put the stored MLB days on the contract-year weights
         if: ${{ inputs.reweight_mlb }}

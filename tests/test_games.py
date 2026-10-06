@@ -185,25 +185,55 @@ def test_an_mlb_player_the_stats_api_cannot_find_is_named(store):
 
 # --- NHL ------------------------------------------------------------------------
 
+#: One game: a goal on the power play that won it, two assists, four shots,
+#: plus one, three hits and two blocked shots.
+NHL_GAME_POINTS = 3 + 2 * 2 + 0.5 * 4 + 1 + 0.5 + 1.0 + 0.25 * 3 + 0.5 * 2
+
+
 def test_nhl_games_come_from_the_skaters_log_and_goalies_are_skipped(store):
     hold(store, "sk", "NHL", "NHL", "Skater",
          {"player": "Skater", "player_id": "84", "role": "Skater",
-          "total_points": 3 + 2 * 2 + 0.5 * 4 + 1})
+          "total_points": NHL_GAME_POINTS})
     hold(store, "gk", "NHL", "NHL", "Goalie",
          {"player": "Keeper", "player_id": "30", "role": "Goalie"})
-    asked = []
+    asked, realtime = [], []
 
     def logs(pid, season_id):
         asked.append((pid, season_id))
         return {"gameLog": [{"gameId": 1, "gameDate": "2026-10-08", "goals": 1,
                              "assists": 2, "shots": 4, "plusMinus": 1,
+                             "powerPlayPoints": 1, "gameWinningGoals": 1,
                              "opponentAbbrev": "BOS"}]}
 
+    def hits(pid, season, game_type):
+        realtime.append((pid, season, game_type))
+        return {"1": {"gameId": 1, "hits": 3, "blockedShots": 2}}
+
     report = games.record(store, SEASON, "2026-10-10", verbose=False, sports=("NHL",),
-                          loaders={"nhl": logs})
+                          loaders={"nhl": logs, "nhl_realtime": hits})
     assert asked == [("84", "20262027")]
+    assert realtime == [("84", 2027, 2)]
     assert report.problems == []
-    assert recorded(store, "sk")["points"].iloc[0] == pytest.approx(10.0)
+    row = recorded(store, "sk")
+    assert row["points"].iloc[0] == pytest.approx(NHL_GAME_POINTS)
+    detail = json.loads(row["detail"].iloc[0])
+    assert detail["hits"] == 3 and detail["blocks"] == 2 and detail["pp_points"] == 1
+
+
+def test_an_nhl_game_the_realtime_report_lacks_is_not_written_short(store):
+    """A game the box score has not reached yet would be a game worth less
+    than it was; it waits a night instead."""
+    hold(store, "sk", "NHL", "NHL", "Skater",
+         {"player": "Skater", "player_id": "84", "role": "Skater", "total_points": 5})
+
+    def logs(pid, season_id):
+        return {"gameLog": [{"gameId": 1, "gameDate": "2026-10-08", "goals": 1,
+                             "assists": 1, "opponentAbbrev": "BOS"}]}
+
+    report = games.record(store, SEASON, "2026-10-10", verbose=False, sports=("NHL",),
+                          loaders={"nhl": logs, "nhl_realtime": lambda *a: {}})
+    assert recorded(store, "sk").empty
+    assert any("realtime" in p for p in report.problems)
 
 
 # --- club soccer ----------------------------------------------------------------
@@ -401,12 +431,16 @@ def test_nhl_playoff_logs_are_asked_for_only_once_they_can_have_started(store):
         return {"gameLog": [{"gameId": game_type, "gameDate": day, "goals": 1,
                              "assists": 0, "shots": 2, "plusMinus": 0}]}
 
+    def realtime(pid, season, game_type):
+        return {str(game_type): {"hits": 1, "blockedShots": 0}}
+
+    loaders = {"nhl": logs, "nhl_realtime": realtime}
     games.record(store, SEASON, "2026-10-10", verbose=False, sports=("NHL",),
-                 loaders={"nhl": logs})
+                 loaders=loaders)
     assert asked == [2]
     asked.clear()
     games.record(store, SEASON, "2027-04-30", verbose=False, sports=("NHL",),
-                 loaders={"nhl": logs})
+                 loaders=loaders)
     assert asked == [2, 3]
     assert set(recorded(store, "sk")["phase"]) == {"regular", "playoffs"}
 

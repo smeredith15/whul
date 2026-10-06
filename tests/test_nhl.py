@@ -60,6 +60,51 @@ def test_skater_column_names_resolve_from_either_convention():
     assert score_skaters(snake).iloc[0]["total_points"] == pytest.approx(30.0)
 
 
+def test_the_bonuses_and_the_box_score_work_are_counted():
+    """A power-play quarterback's and a shot-blocker's lines.
+
+    10 PPP * 0.5 + 2 SHP * 1 + 4 GWG * 1 + 150 hits * 0.25 + 120 blocks * 0.5
+    = 5 + 2 + 4 + 37.5 + 60 = 108.5, on top of 5 G, 20 A, 100 SOG, +10:
+    15 + 40 + 50 + 10 = 115.
+    """
+    df = pd.DataFrame([skater(goals=5, assists=20, shots=100, plusMinus=10,
+                              ppPoints=10, shPoints=2, gameWinningGoals=4,
+                              hits=150, blockedShots=120)])
+    assert score_skaters(df).iloc[0]["total_points"] == pytest.approx(223.5)
+
+
+def test_the_skaters_line_is_the_summary_joined_to_the_realtime_report(monkeypatch):
+    from whul.sources import nhl as source
+
+    def report(endpoint, name, seasons, game_type):
+        if name == "summary":
+            return pd.DataFrame([{"playerId": 1, "season": 2026, "goals": 3},
+                                 {"playerId": 2, "season": 2026, "goals": 1}])
+        return pd.DataFrame([{"playerId": 2, "season": 2026, "hits": 40,
+                              "blockedShots": 9, "goals": 99}])
+
+    monkeypatch.setattr(source, "_report", report)
+    rows = source.load_skaters([2026]).set_index("playerId")
+    assert rows.loc[2, "hits"] == 40 and rows.loc[2, "blockedShots"] == 9
+    # The summary's own figures are the ones kept.
+    assert rows.loc[2, "goals"] == 1
+    assert pd.isna(rows.loc[1, "hits"])
+
+
+def test_a_realtime_report_that_will_not_answer_fails_the_pull(monkeypatch):
+    """Rather than scoring every skater's hits and blocks as none."""
+    from whul.sources import nhl as source
+
+    def report(endpoint, name, seasons, game_type):
+        if name == "summary":
+            return pd.DataFrame([{"playerId": 1, "season": 2026, "goals": 3}])
+        return pd.DataFrame()
+
+    monkeypatch.setattr(source, "_report", report)
+    with pytest.raises(RuntimeError, match="realtime"):
+        source.load_skaters([2026])
+
+
 # --- goalies ---------------------------------------------------------------
 
 def test_goalies_are_scored_but_not_rostered():

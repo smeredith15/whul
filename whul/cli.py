@@ -3882,6 +3882,22 @@ def cmd_probe(args: argparse.Namespace) -> int:
                 print(f"  {season}      {count:,} wins")
         print()
         return 0
+    if args.league == "soccer-sources":
+        import json
+
+        from whul.sources import soccer_probe
+
+        report = soccer_probe.probe(int(args.season) if args.season else None)
+        for source, found in report.items():
+            print(f"\n{source}")
+            for key, value in found.items():
+                text = (json.dumps(value, default=str) if isinstance(value, (dict, list))
+                        else str(value))
+                print(f"  {key:<30} {text}")
+        print("\nRead and wrote nothing. A FAILED line is that host refusing this "
+              "runner, which is the answer being asked for.")
+        return 0
+
     if args.league in ("fbref", "soccer-players"):
         from whul.sources import fbref
 
@@ -4781,7 +4797,7 @@ def main(argv: list[str] | None = None) -> int:
         "league",
         choices=sorted(
             set(LEAGUES) | set(PROBE_ONLY_COMPETITIONS) | set(INDIVIDUAL_LEAGUES)
-            | {"tennis2026", "fbref", "mlb-gamelog"}
+            | {"tennis2026", "fbref", "mlb-gamelog", "soccer-sources"}
         ),
         metavar="league",
     )
