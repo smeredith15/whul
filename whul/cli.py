@@ -3838,6 +3838,22 @@ def _print_range_probe(found: dict, out: str | None) -> int:
     return 1
 
 
+def cmd_soccer_study(args: argparse.Namespace) -> int:
+    """Whole seasons from FotMob, for choosing how club soccer players are scored."""
+    from pathlib import Path
+
+    from whul import soccer_study
+    from whul.sources import fotmob
+
+    unknown = [k for k in args.competitions if k not in fotmob.COMPETITIONS]
+    if unknown:
+        print(f"\nUnknown competition(s): {unknown}. Known: "
+              f"{sorted(fotmob.COMPETITIONS)}\n", file=sys.stderr)
+        return 2
+    return soccer_study.run(args.competitions, int(args.season), Path(args.out),
+                            limit=args.limit)
+
+
 def cmd_probe(args: argparse.Namespace) -> int:
     """Cheap reachability + schema check, before committing to a full pull."""
     if args.events:
@@ -4794,6 +4810,18 @@ def main(argv: list[str] | None = None) -> int:
     brackets.add_argument("--teams", default="",
                           help="comma-separated team names instead of the roster")
     brackets.set_defaults(func=cmd_probe_brackets)
+
+    study = sub.add_parser(
+        "soccer-study", help="pull whole seasons from FotMob to decide soccer scoring")
+    study.add_argument("--competitions", nargs="+",
+                       default=["epl", "laliga", "seriea", "bundesliga", "ligue1", "mls"],
+                       help="competition keys, e.g. epl ucl facup")
+    study.add_argument("--season", default="2024",
+                       help="the year the season starts (2024 = 2024-25; MLS 2024)")
+    study.add_argument("--out", default="study", help="folder for the lines and report")
+    study.add_argument("--limit", type=int, default=None,
+                       help="read at most this many matches a competition")
+    study.set_defaults(func=cmd_soccer_study)
 
     probe = sub.add_parser("probe", help="check a source is reachable and its schema intact")
     # Cups and European competitions are probeable even though they are not
