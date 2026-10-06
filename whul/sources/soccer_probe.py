@@ -415,6 +415,146 @@ def understat_against_espn(event: dict, espn_payload: dict, season: int) -> dict
     return out
 
 
+# --- per-shot xG in every competition: FotMob and Sofascore ----------------------
+
+#: A Champions League night: the point is a competition Understat does not cover.
+EUROPE_DAY = date(2024, 10, 1)
+BROWSER = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
+    "Accept-Language": "en-GB,en;q=0.9",
+}
+
+
+def _next_data(html: str) -> dict:
+    found = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+    return json.loads(found.group(1)) if found else {}
+
+
+def _find_key(node, key: str, depth: int = 0):
+    """The first value under ``key`` anywhere in a nested payload."""
+    if depth > 12:
+        return None
+    if isinstance(node, dict):
+        if key in node:
+            return node[key]
+        for value in node.values():
+            hit = _find_key(value, key, depth + 1)
+            if hit is not None:
+                return hit
+    elif isinstance(node, list):
+        for value in node:
+            hit = _find_key(value, key, depth + 1)
+            if hit is not None:
+                return hit
+    return None
+
+
+def probe_fotmob(day: date = EUROPE_DAY) -> dict:
+    """FotMob's shot map for one Champions League match: its API, which wants
+    a token its own script makes, and failing that the match page, which
+    carries the same data in the HTML it serves."""
+    out: dict[str, object] = {}
+    session = requests.Session()
+    session.headers.update(BROWSER)
+    match_id = None
+    for url in ("https://www.fotmob.com/api/data/matches",
+                "https://www.fotmob.com/api/matches"):
+        try:
+            response = session.get(url, params={"date": day.strftime("%Y%m%d")},
+                                   timeout=TIMEOUT)
+            out[f"day_list {url.rsplit('/api/', 1)[1]}"] = (
+                f"{response.status_code}, {len(response.content):,} bytes")
+            if response.ok and not match_id:
+                for league in response.json().get("leagues") or []:
+                    if "champions league" in str(league.get("name", "")).lower():
+                        done = [m for m in league.get("matches") or []
+                                if (m.get("status") or {}).get("finished")]
+                        if done:
+                            match_id = done[0].get("id")
+                            out["match"] = (f"{done[0].get('home', {}).get('name')} v "
+                                            f"{done[0].get('away', {}).get('name')} ({match_id})")
+                            break
+        except Exception as exc:  # noqa: BLE001
+            out[f"day_list {url}"] = _failed(exc)
+    if not match_id:
+        try:
+            page = session.get("https://www.fotmob.com/leagues/42/matches/champions-league"
+                               "?season=2024-2025", timeout=TIMEOUT)
+            out["league_page"] = f"{page.status_code}, {len(page.text):,} bytes"
+            found = re.search(r'/matches/[^"]+?#(\d+)', page.text)
+            match_id = found.group(1) if found else None
+            if match_id:
+                out["match"] = f"from the league page ({match_id})"
+        except Exception as exc:  # noqa: BLE001
+            out["league_page"] = _failed(exc)
+    if not match_id:
+        out["status"] = "no Champions League match id found"
+        return out
+    try:
+        api = session.get("https://www.fotmob.com/api/data/matchDetails",
+                          params={"matchId": match_id}, timeout=TIMEOUT)
+        out["match_api"] = f"{api.status_code}, {len(api.content):,} bytes"
+    except Exception as exc:  # noqa: BLE001
+        out["match_api"] = _failed(exc)
+    try:
+        page = session.get(f"https://www.fotmob.com/match/{match_id}", timeout=TIMEOUT)
+        out["match_page"] = f"{page.status_code}, {len(page.text):,} bytes"
+        shots = _find_key(_next_data(page.text), "shots") or []
+        out["match_page_shots"] = len(shots)
+        goals = [s for s in shots if str(s.get("eventType")) == "Goal"]
+        if goals:
+            g = goals[0]
+            out["a_goal_with_its_xg"] = {k: g.get(k) for k in (
+                "playerName", "min", "expectedGoals", "situation", "shotType",
+                "isOwnGoal")}
+        stats = _find_key(_next_data(page.text), "playerStats")
+        out["has_player_stats"] = bool(stats)
+    except Exception as exc:  # noqa: BLE001
+        out["match_page"] = _failed(exc)
+    return out
+
+
+def probe_sofascore(day: date = EUROPE_DAY) -> dict:
+    """Sofascore's shot map for one Champions League match. Known to refuse
+    datacenter addresses; this says whether it refuses these ones."""
+    out: dict[str, object] = {}
+    session = requests.Session()
+    session.headers.update({**BROWSER, "Referer": "https://www.sofascore.com/"})
+    base = "https://api.sofascore.com/api/v1"
+    try:
+        day_list = session.get(f"{base}/sport/football/scheduled-events/{day.isoformat()}",
+                               timeout=TIMEOUT)
+        out["day_list"] = f"{day_list.status_code}, {len(day_list.content):,} bytes"
+        if not day_list.ok:
+            return out
+        events = [e for e in day_list.json().get("events") or []
+                  if "champions league" in str((e.get("tournament") or {})
+                                               .get("name", "")).lower()
+                  and (e.get("status") or {}).get("type") == "finished"]
+        if not events:
+            out["status"] = "no finished Champions League match listed"
+            return out
+        event = events[0]
+        out["match"] = (f"{event['homeTeam']['name']} v {event['awayTeam']['name']} "
+                        f"({event['id']})")
+        shots = session.get(f"{base}/event/{event['id']}/shotmap", timeout=TIMEOUT)
+        out["shotmap"] = f"{shots.status_code}"
+        if shots.ok:
+            listed = shots.json().get("shotmap") or []
+            goals = [s for s in listed if s.get("shotType") == "goal"]
+            out["shots"] = f"{len(listed)}, {len(goals)} goals"
+            if goals:
+                g = goals[0]
+                out["a_goal_with_its_xg"] = {
+                    "player": (g.get("player") or {}).get("name"),
+                    "minute": g.get("time"), "xg": g.get("xg"),
+                    "situation": g.get("situation"), "bodyPart": g.get("bodyPart")}
+    except Exception as exc:  # noqa: BLE001
+        out["status"] = _failed(exc)
+    return out
+
+
 def probe_commentary() -> dict[str, dict]:
     """Whether every competition's ESPN summary carries the commentary, and
     whether its shots line up with Understat's where both exist."""
@@ -437,6 +577,8 @@ def probe_commentary() -> dict[str, dict]:
             report[key] = found
         except Exception as exc:  # noqa: BLE001
             report[key] = {"status": _failed(exc)}
+    report["fotmob (Champions League shot xG)"] = probe_fotmob()
+    report["sofascore (Champions League shot xG)"] = probe_sofascore()
     return report
 
 

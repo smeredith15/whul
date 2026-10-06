@@ -38,3 +38,20 @@ def test_commentary_is_read_for_shots_and_who_set_them_up():
     assert report["of_which_assisted"] == 2
     assert report["corners"] == 1
     assert [m for m, _ in soccer_probe._lines(payload)] == [12, 30, 45, 50]
+
+
+def test_a_page_s_embedded_data_is_searched_for_the_shot_map():
+    html = ('<html><script id="__NEXT_DATA__" type="application/json">'
+            '{"props": {"pageProps": {"content": {"shotmap": {"shots": '
+            '[{"eventType": "Goal", "expectedGoals": 0.07}]}}}}}</script></html>')
+    shots = soccer_probe._find_key(soccer_probe._next_data(html), "shots")
+    assert shots[0]["expectedGoals"] == 0.07
+
+
+def test_the_shot_xg_hosts_report_a_refusal_rather_than_raise(monkeypatch):
+    def refuse(*args, **kwargs):
+        raise ConnectionError("refused")
+
+    monkeypatch.setattr(soccer_probe.requests.Session, "get", refuse)
+    assert soccer_probe.probe_sofascore()["status"].startswith("FAILED")
+    assert soccer_probe.probe_fotmob()["status"].startswith("no Champions League")

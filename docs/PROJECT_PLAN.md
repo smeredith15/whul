@@ -310,12 +310,20 @@ To be checked on prior seasons before a benchmark is frozen.
 **Every competition on one scale.** Cups and European ties count, and can fill the
 best-performances slot, so a term that exists only for league matches is not acceptable.
 Understat has the shot-level xG and chances created but covers the five leagues' league
-matches only. The candidate that covers everything is ESPN's match commentary, which
-names the player setting up every shot and describes each shot (area, foot or head,
-situation): chances created would be counted from it everywhere, and a goal's xG read
-from a table of Understat's average xG for each kind of shot. `probe soccer-commentary`
-checks that every competition carries the commentary and that its shots line up with
-Understat's.
+matches only.
+
+- **Chances created** can come from ESPN's match commentary in every competition: each
+  shot line names who set it up ("... Assisted by Bukayo Saka with a cross"), so the
+  count is exact rather than estimated.
+- **The highlight bonus needs a real xG for the shot that scored**, in every competition.
+  An xG estimated from the commentary's description of a shot was considered and
+  rejected. FotMob and Sofascore both publish per-shot xG for cups and European ties;
+  if neither can be read from the nightly runner, the bonus is dropped rather than paid
+  in league matches alone.
+
+`probe soccer-commentary` checks all three: the commentary in every competition, one
+Premier League match set beside Understat's shots, and FotMob's and Sofascore's shot
+maps for a Champions League match.
 
 ---
 
