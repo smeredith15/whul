@@ -304,6 +304,16 @@ player's listed position.
 | Goals conceded while on, after the first | −0.5 each | −0.25 each | — |
 | Own goal | −2 | −2 | −2 |
 | Yellow / red card | −1 / −3 | −1 / −3 | −1 / −3 |
+| Tackle won | 0.5 | 0.5 | 0.5 |
+| Interception | 0.5 | 0.5 | 0.5 |
+| Shot blocked | 0.5 | 0.5 | 0.5 |
+| Clearance | 0.25 | 0.25 | 0.25 |
+| Successful dribble | 0.5 | 0.5 | 0.5 |
+| Dispossessed | −0.2 | −0.2 | −0.2 |
+
+Recoveries, aerials won and fouls committed or won are not scored. FotMob's match rating
+(0-10, its own model of the same figures) is available on every line; whether it counts,
+and how, is open.
 
 To be checked on prior seasons before a benchmark is frozen.
 
