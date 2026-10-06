@@ -2778,6 +2778,8 @@ def _soccer_campaign_boxes(figures: dict) -> dict:
     """
     from whul.scoring.soccer import PTS_ASSIST, PTS_RED, PTS_YELLOW
 
+    if _stat_number(figures, "pts_appearance") is not None:
+        return _soccer_match_boxes(figures)
     apps = _stat_number(figures, "matches")
     if apps is None:
         apps = _stat_number(figures, "games")
@@ -2827,6 +2829,78 @@ def _soccer_campaign_boxes(figures: dict) -> dict:
             {"label": "Yellow / Red", "value": pair(yellow, red),
              "points": worth((yellow, PTS_YELLOW), (red, PTS_RED))},
         ],
+    }
+
+
+#: The second row of a footballer's boxes under the match-by-match scoring:
+#: (label, count column, points column). The counts are summed from his
+#: matches, and so are the points, term by term, which is what the boxes add
+#: up to.
+SOCCER_SECONDARY = (
+    ("Chances created", "chances_created", "pts_chances_created"),
+    ("Shots on target", "shots_on_target", "pts_shots_on_target"),
+    ("Tackles", "tackles", "pts_tackles"),
+    ("Interceptions", "interceptions", "pts_interceptions"),
+    ("Blocks", "shot_blocks", "pts_shot_blocks"),
+    ("Clearances", "clearances", "pts_clearances"),
+    ("Dribbles", "dribbles", "pts_dribbles"),
+    ("Dispossessed", "dispossessed", "pts_dispossessed"),
+    ("Clean sheets", "clean_sheets", "pts_clean_sheet"),
+    ("Conceded while on", "conceded_on", "pts_conceded"),
+    ("Rated 8.0+", "rated_8", "pts_rating"),
+    ("Player of the match", "player_of_match", "pts_player_of_match"),
+    ("Own goals", "own_goals", "pts_own_goals"),
+)
+
+
+def _soccer_match_boxes(figures: dict) -> dict:
+    """The boxes for a season summed match by match (``score_match_lines``):
+    each figure with the points its own term earned, so the boxes add up to
+    the section."""
+    def n(column):
+        return _stat_number(figures, column)
+
+    def side(value) -> str:
+        return "—" if value is None else f"{value:,.0f}"
+
+    def pts(*columns):
+        values = [n(c) for c in columns]
+        if all(v is None for v in values):
+            return None
+        return round(sum(v or 0.0 for v in values), 1) or 0.0
+
+    apps = n("matches")
+    if apps is None:
+        apps = n("games")
+    starts, yellow, red = n("starts"), n("yellow"), n("red")
+    rated, rating = n("rated_matches"), n("rating_sum")
+    secondary = [
+        {"label": label, "value": side(n(count)), "points": pts(term)}
+        for label, count, term in SOCCER_SECONDARY
+        # A box that has only ever read nought for everybody is noise: own
+        # goals, mostly. Shown once there is one.
+        if not (count == "own_goals" and not n(count))
+    ]
+    secondary.append({"label": "Yellow / Red",
+                      "value": "—" if yellow is None and red is None
+                      else f"{side(yellow)} / {side(red)}",
+                      "points": pts("pts_cards")})
+    if rated:
+        secondary.append({"label": "Average rating", "value": f"{rating / rated:.2f}",
+                          "points": None})
+    return {
+        "apps": apps,
+        "top": [
+            {"label": "Apps / Starts",
+             "value": "—" if apps is None else f"{side(apps)} / {side(starts)}",
+             "points": pts("pts_appearance")},
+            # The goal and the bonus for how unlikely it was, together: the
+            # bonus is the goal's, not a figure of its own.
+            {"label": "Goals", "value": side(n("goals")),
+             "points": pts("pts_goals", "pts_highlight")},
+            {"label": "Assists", "value": side(n("assists")), "points": pts("pts_assists")},
+        ],
+        "secondary": secondary,
     }
 
 
@@ -4929,8 +5003,12 @@ GAME_FIGURES = {
     "NHL": (("goals", "G"), ("assists", "A"), ("shots", "SOG"),
             ("plus_minus", "+/-"), ("pp_points", "PPP"), ("sh_points", "SHP"),
             ("game_winners", "GWG"), ("hits", "HIT"), ("blocks", "BLK")),
-    "Club Soccer": (("goals", "goals"), ("assists", "ast"), ("yellow", "yellow"),
-                    ("red", "red")),
+    "Club Soccer": (("goals", "goals"), ("assists", "ast"),
+                    ("chances_created", "chances"), ("shots_on_target", "on target"),
+                    ("tackles", "tkl"), ("interceptions", "int"), ("shot_blocks", "blk"),
+                    ("clearances", "clr"), ("dribbles", "drb"),
+                    ("dispossessed", "disp"), ("own_goals", "OG"),
+                    ("yellow", "yellow"), ("red", "red"), ("rating", "rating")),
     "batting": (("homeRuns", "HR"), ("doubles", "2B"), ("triples", "3B"),
                 ("baseOnBalls", "BB"), ("hitByPitch", "HBP"),
                 ("stolenBases", "SB"), ("caughtStealing", "CS")),
@@ -4973,6 +5051,8 @@ def _game_figures(sport: str, detail: dict) -> list[list[str]]:
         return out
     if sport == "Club Soccer":
         out.append(["", "started" if detail.get("started") else "off the bench"])
+        if detail.get("potm"):
+            out.append(["", "player of the match"])
     for column, label in GAME_FIGURES.get(sport, ()):
         value = detail.get(column)
         if value:

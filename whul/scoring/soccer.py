@@ -931,6 +931,106 @@ def score_players(
     return _fold_competitions(work, postseason, as_of).reset_index(drop=True)
 
 
+# --- match by match: the second version (docs/PROJECT_PLAN.md section 2.8) ---
+
+#: What a match line counts that a season row sums, beside the scoring's own
+#: terms: FotMob's figures, and the two the events decide -- a clean sheet and
+#: a rating bonus earned.
+MATCH_COUNTS = ("shots_on_target", "chances_created", "tackles", "interceptions",
+                "shot_blocks", "clearances", "dribbles", "dispossessed",
+                "own_goals", "conceded_on", "clean_sheets", "rated_8",
+                "player_of_match", "rating_sum", "rated_matches", "penalty_goals")
+
+
+def _match_terms() -> tuple[str, ...]:
+    from whul.scoring import soccer_match
+
+    probe = soccer_match.components({"position": "M", "minutes": 90})
+    return tuple(f"pts_{k}" for k in probe)
+
+
+#: Every column a season row sums from match lines.
+MATCH_SUMS = MATCH_COUNTS + _match_terms()
+
+
+def score_match_lines(lines: pd.DataFrame, postseason: bool = True,
+                      as_of=None) -> pd.DataFrame:
+    """Season rows from one line per player per match, as FotMob reads them.
+
+    Each match is priced by ``whul.scoring.soccer_match``; a competition's
+    matches are summed into the per-competition row ``score_players`` builds
+    from season totals, and the two then fold the same way: domestic football
+    counted, European and playoff football paid as a bonus on top
+    (``_fold_competitions``).
+
+    ``lines`` carries ``league`` (ours) and ``competition_key``, and may carry
+    ``roster_position``: the position the league holds for a rostered player,
+    which wins over FotMob's usual one.
+    """
+    from whul.scoring import soccer_match
+
+    if lines is None or lines.empty:
+        return pd.DataFrame()
+    work = lines.copy()
+    position = work["position"].astype(str)
+    if "roster_position" in work.columns:
+        held = work["roster_position"].fillna("").astype(str).str.upper().str[:1]
+        position = held.where(held.isin(soccer_match.SCORED_POSITIONS), position)
+    # One position a player, however FotMob filed him from match to match.
+    work["position"] = position
+    work["position"] = work.groupby(["player_id"])["position"].transform(
+        lambda p: p.mode().iat[0] if not p.mode().empty else "")
+    work = work[work["position"].isin(soccer_match.SCORED_POSITIONS)].copy()
+    if work.empty:
+        return pd.DataFrame()
+    if "goal_xg" in work.columns:
+        work["goal_xg"] = [_as_list(v) for v in work["goal_xg"]]
+    parts = [soccer_match.components(row) for row in work.to_dict("records")]
+    terms = _match_terms()
+    for term in terms:
+        work[term] = [part.get(term[4:], 0.0) for part in parts]
+    work["points"] = work[list(terms)].sum(axis=1)
+    minutes = pd.to_numeric(work["minutes"], errors="coerce").fillna(0)
+    rating = pd.to_numeric(work.get("rating"), errors="coerce")
+    work["clean_sheets"] = (work["pts_clean_sheet"] > 0).astype(float)
+    work["rated_8"] = (work["pts_rating"] > 0).astype(float)
+    work["player_of_match"] = (work["pts_player_of_match"] > 0).astype(float)
+    work["rating_sum"] = rating.fillna(0.0)
+    work["rated_matches"] = rating.notna().astype(float)
+    work["matches"] = (minutes > 0).astype(float)
+    started = work["started"] if "started" in work.columns else pd.Series(False, index=work.index)
+    work["starts"] = started.fillna(False).astype(bool).astype(float)
+    work["appearance_points"] = work["pts_appearance"]
+    work["goal_points"] = work["pts_goals"]
+    for column in ("goals", "assists", "yellow", "red", *MATCH_COUNTS):
+        work[column] = pd.to_numeric(work.get(column, 0.0), errors="coerce").fillna(0.0)
+    work["minutes"] = minutes
+    if "season" not in work.columns:
+        work["season"] = season_for(work["date"], work["league"])
+    work["season"] = pd.to_numeric(work["season"], errors="coerce").astype(int)
+    if "team" not in work.columns:
+        work["team"] = ""
+    keys = PLAYER_KEYS + ["competition_key", "competition", "team"]
+    summed = ("matches", "starts", "minutes", "goals", "assists", "yellow", "red",
+              "appearance_points", "goal_points", "points", *MATCH_SUMS)
+    rows = work.groupby(keys, as_index=False).agg(
+        **{c: (c, "sum") for c in summed if c in work.columns})
+    return _fold_competitions(rows, postseason, as_of).reset_index(drop=True)
+
+
+def _as_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.startswith("["):
+        import json
+
+        try:
+            return list(json.loads(value))
+        except ValueError:
+            return []
+    return []
+
+
 #: What a player's row keeps its identity by. The competition is deliberately
 #: absent: a player is one asset however many competitions they appeared in.
 PLAYER_KEYS = ["player", "league", "season", "position"]
@@ -968,7 +1068,8 @@ def _domestic_detail(counted: pd.DataFrame) -> pd.DataFrame:
         {"competition": str(row.get("competition") or ""),
          "games": float(row.get("matches") or 0.0),
          "points": float(row.get("points") or 0.0),
-         **{c: float(row.get(c) or 0.0) for c in BONUS_COUNTS}}
+         **{c: float(row.get(c) or 0.0) for c in BONUS_COUNTS},
+         **{c: float(row.get(c) or 0.0) for c in MATCH_SUMS if c in row}}
         for row in counted.to_dict("records")
     ]
     return (counted.assign(_line=lines)
@@ -1034,6 +1135,9 @@ def _fold_competitions(
         assists=("assists", "sum"), yellow=("yellow", "sum"),
         red=("red", "sum"), appearance_points=("appearance_points", "sum"),
         goal_points=("goal_points", "sum"), regular_points=("points", "sum"),
+        # The match-by-match scoring's own figures and terms, where the rows
+        # carry them (``score_match_lines``); the season-total path has none.
+        **{c: (c, "sum") for c in MATCH_SUMS if c in counted.columns},
     )
     totals = totals.merge(_domestic_detail(counted), on=PLAYER_KEYS, how="left")
     totals[DOMESTIC_COLUMN] = [
@@ -1069,7 +1173,8 @@ def _fold_competitions(
             extra.assign(_detail=[
                 detail_for(str(name), matches, points, rule,
                            season=int(season), as_of=as_of,
-                           counts={c: line.get(c) for c in BONUS_COUNTS},
+                           counts={c: line.get(c) for c in
+                                   (*BONUS_COUNTS, *(m for m in MATCH_SUMS if m in line))},
                            team_games=club)
                 for name, matches, points, rule, season, line, club in zip(
                     extra["competition"], extra["matches"],
