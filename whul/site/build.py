@@ -335,7 +335,7 @@ def badge_names(store: Store, season: str, as_of=None) -> dict[str, str]:
     )
     from_feed: dict[str, dict] = {}
     if day:
-        stats = store.read_stats(season, day)
+        stats = store.read_latest_stats(season, day)
         if not stats.empty:
             from_feed = {row["asset_id"]: row for row in stats.to_dict("records")}
 
@@ -378,16 +378,13 @@ def asset_profiles(
     fetch from, so a profile has to already be there when it is clicked -- and
     for a few hundred assets that is a smaller payload than one photograph.
     """
-    scores = store.query(
-        "SELECT asset_id, league_points, scaled_score FROM daily_scores "
-        "WHERE season = ? AND as_of = ?",
-        (season, str(as_of)),
-    ).set_index("asset_id")
+    scores = (store.latest_scores(season, as_of)
+              [["asset_id", "league_points", "scaled_score"]].set_index("asset_id"))
     meta = store.query(
         "SELECT asset_id, display_name, league, role, norm_key, affiliation, "
         "asset_type FROM assets"
     ).set_index("asset_id")
-    stats = store.read_stats(season, as_of)
+    stats = store.read_latest_stats(season, as_of)
     # The roster category, which is what decides whether a corner badge is a
     # club, a flag or a shield. It lives on the slot rather than the asset,
     # since the same country can be a men's and a women's side.
@@ -4680,15 +4677,16 @@ def _day_breakdown(
             )
             for row in rows.itertuples()
         }
-        frame = store.read_stats(season, day)
+        frame = store.read_latest_stats(season, day)
         stats[day] = {r["asset_id"]: r for r in frame.to_dict("records")} \
             if not frame.empty else {}
         # The feed's rows have raw totals only, and a held bonus is shown on
         # the scale of the delta beside it -- priced by the day's own score.
-        for asset_id, scaled, points in store.query(
-            "SELECT asset_id, scaled_score, league_points FROM daily_scores "
-            "WHERE season = ? AND as_of = ?", (season, day),
-        ).itertuples(index=False, name=None):
+        day_scores = store.latest_scores(season, day)
+        for asset_id, scaled, points in (
+            day_scores[["asset_id", "scaled_score", "league_points"]]
+            .itertuples(index=False, name=None) if not day_scores.empty else ()
+        ):
             if asset_id in stats[day]:
                 stats[day][asset_id]["score_per_point"] = _ratio(scaled, points)
 
@@ -5858,11 +5856,8 @@ def _write_team(out, manager, managers, bars, store, season, latest, stamp,
     numbers on a scale that differs per league compares nothing to anything.
     """
     mine = bars[bars["manager_id"] == manager] if not bars.empty else bars
-    raw = store.query(
-        "SELECT asset_id, league_points, scaled_score FROM daily_scores "
-        "WHERE season = ? AND as_of = ?",
-        (season, str(latest)),
-    ).set_index("asset_id")
+    raw = (store.latest_scores(season, latest)
+           [["asset_id", "league_points", "scaled_score"]].set_index("asset_id"))
     upcoming = fixtures.by_asset(store, season, latest)
 
     sections = []
