@@ -3243,6 +3243,14 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
         print(f"\n{exc.args[0]}\n", file=sys.stderr)
         return 2
 
+    refused = _cannot_add_to(args)
+    if refused:
+        # Before the pull, not after it: a compute into a frozen version used
+        # to run in full -- twelve minutes for two leagues, hours for six --
+        # and then be refused at the save, with a failure that blamed a league.
+        print(f"\n{refused}\n", file=sys.stderr)
+        return 1
+
     if args.seasons != DEFAULT_SEASONS:
         print(f"\nComputing benchmarks from {args.seasons} seasons per league.\n")
     else:
@@ -3346,6 +3354,26 @@ def cmd_benchmarks_compute(args: argparse.Namespace) -> int:
               "before freezing.\n", file=sys.stderr)
         return 1
     return 0
+
+
+def _cannot_add_to(args: argparse.Namespace) -> str | None:
+    """Why ``--save --into`` cannot write to the version it names, or None."""
+    from whul.store import benchmarks as store_benchmarks
+
+    if not (args.save and args.into and args.into != LATEST_DRAFT):
+        return None
+    store = _benchmark_store(args)
+    existing = store_benchmarks.get_version(store, args.into)
+    draft = store_benchmarks.latest_draft(store, args.season)
+    open_one = (f" The draft still being built is {draft.version}; put that in "
+                f"Version, or leave Version empty to start a new one."
+                if draft else " No draft is open; leave Version empty to start one.")
+    if existing is None:
+        return f"There is no benchmark version {args.into}, so nothing was computed.{open_one}"
+    if existing.is_frozen:
+        return (f"{args.into} was frozen at {existing.frozen_at} and a frozen scale is "
+                f"never edited, so nothing was computed.{open_one}")
+    return None
 
 
 def _print_benchmark_diff(diff) -> None:

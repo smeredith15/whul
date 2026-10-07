@@ -1126,3 +1126,30 @@ def test_a_pool_leader_carries_the_games_behind_it():
     leaders = pool_leaders(scored, "Team", 5)
     assert leaders and all("(60 games)" in season
                            for rows in leaders.values() for _, season, _ in rows)
+
+
+def test_computing_into_a_frozen_version_is_refused_before_anything_is_pulled(tmp_path, capsys):
+    """It used to pull every season, then be refused at the save, and blame a
+    league for it."""
+    import pandas as pd
+
+    from whul import cli
+    from whul.store import benchmarks as bm
+    from whul.store import open_store
+
+    db = tmp_path / "w.sqlite3"
+    store = open_store(db)
+    history = pd.DataFrame([{"league": "NFL", "role": "QB", "season": s,
+                             "total_points": 300} for s in (2023, 2024, 2025)])
+    frozen = bm.save(store, bm.compute(history, "Player", "2026-27"), "2026-27",
+                     version="2026-27-old")
+    bm.freeze(store, frozen)
+    draft = bm.derive(store, frozen)
+    store.conn.close()
+
+    code = cli.main(["benchmarks", "compute", "nfl", "--db", str(db), "--save",
+                     "--into", "2026-27-old", "--season", "2026-27"])
+    said = capsys.readouterr()
+    assert code == 1
+    assert "frozen" in said.err and draft in said.err
+    assert "pulling" not in said.out
