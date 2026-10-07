@@ -183,3 +183,29 @@ def test_the_results_tab_is_drawn_and_fetched_lazily():
 
     assert "data-pane=\"results\"" in charts.SCRIPT
     assert "loadResults(pane)" in charts.SCRIPT
+
+
+def test_a_day_pulled_for_one_league_leaves_every_other_asset_its_results():
+    """A soccer-only publish wrote Oct 7 for soccer alone, and the site read
+    every asset at the newest day: each club, golfer and driver lost its
+    results, and every MLB profile its statline."""
+    from datetime import timedelta
+
+    store = open_store(":memory:")
+    simulate.generate(store, seed=2026, end=END, verbose=False)
+    season = simulate.SIM_SEASON
+    last = date.fromisoformat(store.scalar(
+        "SELECT MAX(as_of) FROM raw_stats WHERE season = ?", (season,)))
+    before = set(results._lines(store, season, last))
+    every = set(store.read_stats(season, last)["asset_id"])
+
+    one = store.query("SELECT * FROM raw_stats WHERE season = ? AND as_of = ? LIMIT 1",
+                      (season, str(last)))
+    row = one.iloc[0].to_dict()
+    row["as_of"] = str(last + timedelta(days=1))
+    store.upsert("raw_stats", [row], keys=("asset_id", "season", "as_of", "source", "phase"))
+    after = last + timedelta(days=1)
+
+    assert len(before) > 1 and set(results._lines(store, season, after)) == before
+    assert set(store.read_latest_stats(season, after)["asset_id"]) == every
+    assert len(store.read_stats(season, after)) == 1

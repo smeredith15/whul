@@ -381,7 +381,40 @@ class Store:
         if league:
             sql += " AND league = ?"
             params.append(league)
-        rows = self.query(sql, params)
+        return self._expanded(self.query(sql, params))
+
+    def read_latest_stats(self, season: str, as_of: date | str) -> pd.DataFrame:
+        """Each asset's own latest stats on or before ``as_of``, expanded as
+        ``read_stats`` expands them.
+
+        Not one day for everybody. A run that pulls only some leagues -- a
+        manual soccer-only publish, or a night one feed failed -- writes the
+        day for those leagues alone, and reading every asset at the newest
+        day then finds nothing for the rest: an MLB club's results vanished
+        from the site the day a soccer-only run was published.
+        """
+        rows = self.query(
+            "SELECT r.* FROM raw_stats r JOIN ("
+            "  SELECT asset_id, MAX(as_of) AS last FROM raw_stats "
+            "  WHERE season = ? AND as_of <= ? GROUP BY asset_id"
+            ") l ON l.asset_id = r.asset_id AND l.last = r.as_of "
+            "WHERE r.season = ?",
+            (season, _as_text(as_of), season))
+        return self._expanded(rows)
+
+    def latest_scores(self, season: str, as_of: date | str) -> pd.DataFrame:
+        """Each asset's own latest ``daily_scores`` row on or before ``as_of``,
+        for the reason ``read_latest_stats`` gives."""
+        return self.query(
+            "SELECT d.* FROM daily_scores d JOIN ("
+            "  SELECT asset_id, MAX(as_of) AS last FROM daily_scores "
+            "  WHERE season = ? AND as_of <= ? GROUP BY asset_id"
+            ") l ON l.asset_id = d.asset_id AND l.last = d.as_of "
+            "WHERE d.season = ?",
+            (season, _as_text(as_of), season))
+
+    @staticmethod
+    def _expanded(rows: pd.DataFrame) -> pd.DataFrame:
         if rows.empty:
             return rows
         expanded = pd.json_normalize(rows["stats"].map(json.loads))

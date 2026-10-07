@@ -416,10 +416,7 @@ def team_results(store, season: str, latest: date, assets: dict[str, dict],
     the day's own ratio of the two, so a list and the total beside it can never
     be on different benchmarks; the benchmark where the club has no score yet.
     """
-    scores = store.query(
-        "SELECT asset_id, league_points, scaled_score FROM daily_scores "
-        "WHERE season = ? AND as_of = (SELECT MAX(as_of) FROM daily_scores "
-        "WHERE season = ? AND as_of <= ?)", (season, season, str(latest)))
+    scores = store.latest_scores(season, latest)
     scales = {str(r.asset_id): float(r.scaled_score) / float(r.league_points)
               for r in scores.itertuples()
               if r.league_points and abs(float(r.league_points)) > 1e-9}
@@ -551,11 +548,18 @@ def _assets(store, season: str) -> dict[str, dict]:
 
 
 def _lines(store, season: str, latest: date) -> dict[str, dict]:
-    """Each asset's latest stored row, as the feed wrote it."""
+    """Each asset's latest stored row, as the feed wrote it.
+
+    Each asset's own latest, not everybody's at the newest day: a run that
+    pulled one league wrote that day for it alone, and every club, golfer and
+    driver lost its results on the site.
+    """
     frame = store.query(
-        "SELECT asset_id, phase, stats FROM raw_stats WHERE season = ? AND as_of = ("
-        "SELECT MAX(as_of) FROM raw_stats WHERE season = ? AND as_of <= ?)",
-        (season, season, str(latest)))
+        "SELECT r.asset_id, r.phase, r.stats FROM raw_stats r JOIN ("
+        "  SELECT asset_id, MAX(as_of) AS last FROM raw_stats "
+        "  WHERE season = ? AND as_of <= ? GROUP BY asset_id"
+        ") l ON l.asset_id = r.asset_id AND l.last = r.as_of WHERE r.season = ?",
+        (season, str(latest), season))
     out: dict[str, dict] = {}
     # The regular-season row where there are two: it is the one naming the
     # club and carrying the finishes.

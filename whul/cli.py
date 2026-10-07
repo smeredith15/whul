@@ -2327,8 +2327,10 @@ def _rostered_player_figures(store, season: str, rostered) -> dict:
     if not names:
         return {}
     latest = store.query(
-        "SELECT asset_id, stats FROM raw_stats WHERE season = ? AND as_of = "
-        "(SELECT MAX(as_of) FROM raw_stats WHERE season = ?)", (season, season))
+        "SELECT r.asset_id, r.stats FROM raw_stats r JOIN ("
+        "  SELECT asset_id, MAX(as_of) AS last FROM raw_stats WHERE season = ? "
+        "  GROUP BY asset_id) l ON l.asset_id = r.asset_id AND l.last = r.as_of "
+        "WHERE r.season = ?", (season, season))
     out: dict = {}
     for row in latest.itertuples():
         who = names.get(str(row.asset_id))
