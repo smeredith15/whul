@@ -272,6 +272,65 @@ def test_a_walk_fotmob_stops_answering_raises_rather_than_scoring_short(monkeypa
         load([2025])
 
 
+def test_nwsl_players_are_benchmarked_though_not_pulled_nightly(monkeypatch, tmp_path):
+    from whul import benchmark_sources as bs
+
+    _fake_days(monkeypatch, tmp_path, {"20240921": [("nwsl", "4414325"), ("mls", "4386994")]})
+    source = bs.resolve(["nwsl-players"])[0]
+    load, _ = source.build()
+    raw = load([2024])
+    assert set(raw["league"]) == {"NWSL"} and set(raw["season"]) == {2024}
+    # Not part of the nightly pull until a roster category holds one.
+    assert "NWSL" not in bs.PLAYER_LEAGUES
+
+
+def _season(clubs: int, regular: int, playoffs: list[tuple[str, str]]) -> pd.DataFrame:
+    """A calendar-year season: every club meets the next ``regular`` times,
+    then the playoff pairs play once each."""
+    rows, mid = [], 0
+    names = [f"c{i}" for i in range(clubs)]
+    day = pd.Timestamp("2024-03-01")
+    for round_ in range(regular):
+        for i in range(0, clubs, 2):
+            a, b = names[(i + round_) % clubs], names[(i + round_ + 1) % clubs]
+            mid += 1
+            for team in (a, b):
+                rows.append({"match_id": mid, "date": str(day.date()), "team_id": team})
+        day += pd.Timedelta(days=7)
+    for a, b in playoffs:
+        mid += 1
+        for team in (a, b):
+            rows.append({"match_id": mid, "date": str(day.date()), "team_id": team})
+        day += pd.Timedelta(days=3)
+    frame = pd.DataFrame(rows)
+    frame["competition_key"], frame["competition"], frame["season"] = "mls", "MLS", 2024
+    return frame
+
+
+def test_a_calendar_year_leagues_playoffs_are_filed_apart():
+    """FotMob files MLS playoff matches under MLS; the benchmark must not see
+    them as regular-season football."""
+    from whul import benchmark_sources as bs
+    from whul.scoring.competition import Tier, classify_key
+
+    frame = _season(6, 10, [("c0", "c1"), ("c2", "c3"), ("c0", "c2")])
+    out = bs._apart_from_the_playoffs(frame, {"mls": "MLS"})
+    playoff = out[out["competition_key"] == "mls_playoffs"]
+    assert playoff["match_id"].nunique() == 3
+    assert set(playoff["competition"]) == {"MLS playoffs"}
+    assert out[out["competition_key"] == "mls"].groupby("team_id")["match_id"].nunique().eq(10).all()
+    assert classify_key("mls_playoffs", "MLS playoffs").tier == Tier.DOMESTIC_POSTSEASON
+
+
+def test_a_european_league_is_never_split():
+    from whul import benchmark_sources as bs
+
+    frame = _season(6, 10, [("c0", "c1")])
+    frame["competition_key"] = "epl"
+    out = bs._apart_from_the_playoffs(frame, {"epl": "Premier League"})
+    assert out["competition_key"].eq("epl").all()
+
+
 def test_a_rostered_player_is_scored_at_the_position_his_line_holds(monkeypatch, tmp_path):
     """FotMob files Jackson a forward; were the league to hold him a
     defender, his two goals would be worth six each."""

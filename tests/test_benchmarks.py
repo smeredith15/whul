@@ -258,10 +258,16 @@ def test_every_registered_source_is_in_the_run_order_or_covered_by_one():
     per-league subsets are out of ORDER on purpose -- they exist to recompute
     one group without walking the others -- so what must hold is that every
     group they produce is still computed by something a full run does reach."""
+    from whul.benchmark_sources import BENCHMARK_ONLY_PLAYER_LEAGUES
+
     covered = {group for key in ORDER
                for group in (SOURCES[key].produces or ()) if key in SOURCES}
     for key, source in SOURCES.items():
         if key in ORDER:
+            continue
+        # Players no roster category holds: benchmarked when asked for, and
+        # not worth hours of every full recompute until they are rostered.
+        if source.asset_type == "Player" and source.league in BENCHMARK_ONLY_PLAYER_LEAGUES:
             continue
         assert source.produces, f"{key} is outside ORDER and declares no groups"
         missing = sorted(set(source.produces) - covered)
