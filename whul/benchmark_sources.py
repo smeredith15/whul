@@ -1097,7 +1097,9 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
                            for s, t in zip(frame["season"], frame["team_id"])]
         frame = frame[frame["league"].notna()].copy()
         frame["competition"] = [
-            competition_label(k) if k not in category else category[k]
+            category[k] if k in category
+            else f"{category[k[:-9]]} playoffs" if k.endswith("_playoffs") and k[:-9] in category
+            else competition_label(k)
             for k in frame["competition_key"]]
         if live:
             # Each league counts from its own opening, as every other source

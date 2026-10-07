@@ -360,8 +360,11 @@ def test_a_rostered_player_is_scored_at_the_position_his_line_holds(monkeypatch,
     ({"id": 9999, "ccode": "ITA", "name": "Serie A Femminile"}, "seriea", False),
     ({"id": 9998, "ccode": "ENG", "name": "Premier League 2"}, "epl", False),
     ({"id": 9997, "ccode": "ITA", "name": "Coppa Italia Serie C"}, "coppaitalia", False),
-    ({"id": 9996, "ccode": "GER", "name": "DFB-Pokal"}, "dfbpokal", True),
-    ({"id": 9995, "ccode": "ENG", "name": "Carabao Cup"}, "efl_cup", True),
+    ({"id": 209, "ccode": "GER", "name": "DFB-Pokal"}, "dfbpokal", True),
+    ({"id": 133, "ccode": "ENG", "name": "Carabao Cup"}, "efl_cup", True),
+    # The women's leagues, listed under the men's bare names.
+    ({"id": 9676, "ccode": "GER", "name": "Bundesliga"}, "bundesliga", False),
+    ({"id": 10178, "ccode": "ITA", "name": "Serie A"}, "seriea", False),
     ({"id": 9994, "ccode": "USA", "name": "U.S. Open Cup"}, "usopencup", True),
     ({"primaryId": 47, "id": 12345, "ccode": "ENG", "name": "Premier League"}, "epl", True),
 ])
@@ -369,3 +372,41 @@ def test_a_competition_is_its_own_name_and_not_a_longer_one(league, key, expecte
     """LaLiga2 was filed as La Liga by a match on "contains", putting every
     Segunda Division club in La Liga's benchmark."""
     assert fotmob._is(league, key) is expected
+
+
+def test_a_play_off_listed_under_a_league_is_filed_as_its_postseason():
+    from datetime import date
+
+    class Fake(fotmob.Client):
+        def get(self, path, **params):
+            return {"leagues": [
+                {"id": 55, "ccode": "ITA", "name": "Serie A",
+                 "matches": [{"id": 1, "status": {"finished": True}}]},
+                {"id": 55, "ccode": "ITA", "name": "Serie A Relegation Playoff",
+                 "matches": [{"id": 2, "status": {"finished": True}}]},
+                {"id": 141, "ccode": "ITA", "name": "Coppa Italia",
+                 "matches": [{"id": 3, "status": {"finished": True}}]}]}
+
+    found = fotmob.day_matches(Fake(pause=0, waits=()), date(2023, 6, 11),
+                               ("seriea", "coppaitalia"))
+    assert {m["match_id"]: m["competition"] for m in found} == {
+        "1": "seriea", "2": "seriea_playoffs", "3": "coppaitalia"}
+
+
+def test_two_players_who_share_a_name_are_two_rows():
+    """Two "Danilo"s in one Serie A season were one row with both seasons in
+    it, at the top of the benchmark."""
+    from whul.scoring import soccer
+
+    def line(pid, team, mid):
+        return {**dict.fromkeys(("goals", "assists", "yellow", "red", *soccer.MATCH_COUNTS), 0),
+                "player_id": pid, "player": "Danilo", "team": team, "position": "D",
+                "minutes": 90, "match_id": mid, "date": "2021-01-10", "league": "Serie A",
+                "competition_key": "seriea", "competition": "Serie A", "season": 2021,
+                "conceded_on": 0, "rating": 7.0}
+
+    lines = pd.DataFrame([line("1", "Juventus", "a"), line("1", "Juventus", "b"),
+                          line("2", "Bologna", "c")])
+    rows = soccer.score_match_lines(lines, postseason=False)
+    assert sorted(rows["player"]) == ["Danilo", "Danilo (Bologna)"]
+    assert rows.set_index("player").loc["Danilo", "matches"] == 2

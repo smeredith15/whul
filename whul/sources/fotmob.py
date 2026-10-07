@@ -179,6 +179,11 @@ def _is(league: dict, key: str) -> bool:
     ids = {league.get("id"), league.get("primaryId"), league.get("parentLeagueId")}
     if wanted is not None and wanted in ids:
         return True
+    if wanted is not None:
+        # A known id is the whole test. FotMob lists the women's leagues
+        # under the men's bare names -- "Bundesliga" [GER, 9676], "Serie A"
+        # [ITA, 10178] -- so a name match put both in the men's benchmarks.
+        return False
     names = {_plain(name), *(_plain(n) for n in ALSO_CALLED.get(key, ()))}
     return (str(league.get("ccode", "")).upper() == country
             and _plain(league.get("name")) in names)
@@ -226,8 +231,21 @@ def day_matches(client: Client, day: date, keys: tuple[str, ...],
                 MATCHED.setdefault(key, set()).add(
                     f"{league.get('name')} [{league.get('ccode')}, "
                     f"{league.get('primaryId') or league.get('id')}]")
-                out += [_listed(m, key) for m in league.get("matches") or []]
+                filed = (f"{key}_playoffs" if key in LEAGUES and _is_playoff(league)
+                         else key)
+                out += [_listed(m, filed) for m in league.get("matches") or []]
     return out
+
+
+#: The keys that are leagues rather than cups.
+LEAGUES = {"epl", "laliga", "seriea", "bundesliga", "ligue1", "mls", "nwsl"}
+
+
+def _is_playoff(league: dict) -> bool:
+    """A play-off FotMob lists under a league's own id -- "Serie A Relegation
+    Playoff" -- which is postseason football, not one more league match."""
+    return any(word in _plain(league.get("name")).split()
+               for word in ("playoff", "playoffs", "relegation"))
 
 
 #: Every competition in FotMob's day lists that a key has been taken to mean,
