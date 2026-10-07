@@ -1067,6 +1067,11 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
                     f"nothing is scored from a partial walk")
         for said in problems:
             FINDINGS.append(f"FotMob: {said}; they are read on the next run")
+        # What each competition was taken to be, so one filed wrongly is seen
+        # in the log rather than found in a benchmark.
+        for key in keys:
+            print(f"  FotMob {key}: {', '.join(sorted(fotmob.MATCHED.get(key, ()))) or 'none'}",
+                  flush=True)
         if not lines:
             return pd.DataFrame()
         frame = pd.DataFrame(lines)
