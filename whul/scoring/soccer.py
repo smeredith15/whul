@@ -1010,12 +1010,49 @@ def score_match_lines(lines: pd.DataFrame, postseason: bool = True,
     work["season"] = pd.to_numeric(work["season"], errors="coerce").astype(int)
     if "team" not in work.columns:
         work["team"] = ""
+    work["player"] = _apart_by_id(work)
     keys = PLAYER_KEYS + ["competition_key", "competition", "team"]
     summed = ("matches", "starts", "minutes", "goals", "assists", "yellow", "red",
               "appearance_points", "goal_points", "points", *MATCH_SUMS)
     rows = work.groupby(keys, as_index=False).agg(
         **{c: (c, "sum") for c in summed if c in work.columns})
     return _fold_competitions(rows, postseason, as_of).reset_index(drop=True)
+
+
+def _apart_by_id(work: pd.DataFrame) -> pd.Series:
+    """Each player's name, with two players who share one told apart.
+
+    A row is keyed by name, and FotMob's names are not unique: two "Danilo"s
+    in one Serie A season were one row with both their seasons in it, at the
+    top of the benchmark. Of the players sharing a name in a league and
+    season, the one who played the most minutes keeps it; each other is named
+    for the club he played most for, "Danilo (Bologna)".
+    """
+    names = work["player"].astype(str)
+    if "player_id" not in work.columns:
+        return names
+    ids = work["player_id"].astype(str)
+    minutes = pd.to_numeric(work["minutes"], errors="coerce").fillna(0)
+    team = (work["team"].astype(str) if "team" in work.columns
+            else pd.Series("", index=work.index))
+    played = (pd.DataFrame({"league": work["league"], "season": work["season"],
+                            "player": names, "id": ids, "team": team, "minutes": minutes})
+              .groupby(["league", "season", "player", "id", "team"], as_index=False)
+              ["minutes"].sum())
+    per_id = played.groupby(["league", "season", "player", "id"], as_index=False).agg(
+        minutes=("minutes", "sum"),
+        team=("team", lambda t: t.loc[played.loc[t.index, "minutes"].idxmax()]))
+    per_id["_n"] = per_id.groupby(["league", "season", "player"])["id"].transform("count")
+    shared = per_id[per_id["_n"] > 1].sort_values("minutes", ascending=False)
+    if shared.empty:
+        return names
+    renamed = {}
+    for _, group in shared.groupby(["league", "season", "player"], sort=False):
+        for _, row in group.iloc[1:].iterrows():
+            renamed[(row["league"], row["season"], row["id"])] = (
+                f"{row['player']} ({row['team']})" if row["team"] else f"{row['player']} ({row['id']})")
+    return pd.Series([renamed.get((lg, se, i), n) for lg, se, i, n
+                      in zip(work["league"], work["season"], ids, names)], index=work.index)
 
 
 def _as_list(value) -> list:
