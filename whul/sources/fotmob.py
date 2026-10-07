@@ -71,7 +71,7 @@ COMPETITIONS = {
     "dfbpokal": (209, "GER", "dfb pokal"), "coppaitalia": (141, "ITA", "coppa italia"),
     "copadelrey": (138, "ESP", "copa del rey"),
     "coupedefrance": (134, "FRA", "coupe de france"),
-    "usopencup": (None, "USA", "us open cup"),
+    "usopencup": (9441, "USA", "us open cup"),
 }
 #: Other whole names the same competition goes by.
 ALSO_CALLED = {

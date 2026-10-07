@@ -365,7 +365,8 @@ def test_a_rostered_player_is_scored_at_the_position_his_line_holds(monkeypatch,
     # The women's leagues, listed under the men's bare names.
     ({"id": 9676, "ccode": "GER", "name": "Bundesliga"}, "bundesliga", False),
     ({"id": 10178, "ccode": "ITA", "name": "Serie A"}, "seriea", False),
-    ({"id": 9994, "ccode": "USA", "name": "U.S. Open Cup"}, "usopencup", True),
+    ({"id": 9441, "ccode": "USA", "name": "U.S. Open Cup"}, "usopencup", True),
+    ({"id": 9994, "ccode": "USA", "name": "U.S. Open Cup"}, "usopencup", False),
     ({"primaryId": 47, "id": 12345, "ccode": "ENG", "name": "Premier League"}, "epl", True),
 ])
 def test_a_competition_is_its_own_name_and_not_a_longer_one(league, key, expected):
