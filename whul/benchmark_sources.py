@@ -1018,7 +1018,8 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
     from whul.scoring import soccer
     from whul.sources import espn, fotmob
 
-    wanted = ({c: k for c, k in PLAYER_LEAGUES.items() if c in only}
+    known = {**PLAYER_LEAGUES, **BENCHMARK_ONLY_PLAYER_LEAGUES}
+    wanted = ({c: k for c, k in known.items() if c in only}
               if only else dict(PLAYER_LEAGUES))
 
     def competitions() -> tuple[str, ...]:
@@ -1109,10 +1110,48 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
                 frame["roster_position"] = _roster_positions(store, frame)
         else:
             frame = frame[frame["season"].isin([int(s) for s in seasons])].copy()
+            frame = _apart_from_the_playoffs(frame, category)
         return frame.reset_index(drop=True)
 
     return load, (lambda raw, as_of=None: soccer.score_match_lines(
         raw, postseason=live, as_of=as_of))
+
+
+def _apart_from_the_playoffs(frame: pd.DataFrame, category: dict) -> pd.DataFrame:
+    """MLS and NWSL playoff matches, filed apart from the league they are in.
+
+    FotMob keeps a calendar-year league's playoffs under the league itself, and
+    a playoff run is not in a benchmark: it is paid as a bonus on top
+    (``whul.scoring.soccer._fold_competitions``). Nothing on a line says which
+    round a match was, so the clubs say: every club plays the same number of
+    league matches, and the clubs that miss the playoffs play no more, so the
+    count most clubs share is the regular season's. A club's matches beyond
+    it, in date order, are its playoffs.
+
+    Only for a finished season, which is all a benchmark reads: in a season
+    still being played the clubs have not all played the same number yet.
+    """
+    from whul.sources import fotmob
+
+    out = frame.copy()
+    for key in fotmob.CALENDAR_YEAR:
+        mine = out["competition_key"] == key
+        for season in sorted(set(out.loc[mine, "season"])):
+            matches = (out[mine & (out["season"] == season)]
+                       [["match_id", "date", "team_id"]].drop_duplicates())
+            if matches.empty:
+                continue
+            matches = matches.sort_values(["team_id", "date", "match_id"])
+            matches["_nth"] = matches.groupby("team_id").cumcount() + 1
+            played = matches.groupby("team_id")["match_id"].count()
+            counts = played.value_counts()
+            # The count most clubs share; on a tie, the smaller.
+            regular = int(min(c for c, n in counts.items() if n == counts.max()))
+            playoff_ids = set(matches.loc[matches["_nth"] > regular, "match_id"])
+            after = mine & (out["season"] == season) & out["match_id"].isin(playoff_ids)
+            out.loc[after, "competition_key"] = f"{key}_playoffs"
+            out.loc[after, "competition"] = f"{category.get(key, key.upper())} playoffs"
+    return out
 
 
 def _roster_positions(store, frame: pd.DataFrame) -> list[str]:
@@ -1185,6 +1224,9 @@ PLAYER_LEAGUES = {
     "Premier League": "epl", "La Liga": "laliga", "Serie A": "seriea",
     "Bundesliga": "bundesliga", "Ligue 1": "ligue1", "MLS": "mls",
 }
+#: Leagues whose players can be benchmarked but are not rostered, and so are
+#: not in the nightly soccer-players pull.
+BENCHMARK_ONLY_PLAYER_LEAGUES = {"NWSL": "nwsl"}
 
 
 def _check_season_convention(key: str, frame) -> None:
@@ -1873,6 +1915,18 @@ SOURCES: dict[str, Source] = _register(
                note=f"{category} players alone, for recomputing one group")
         for category, key in PLAYER_LEAGUES.items()
     ),
+    # NWSL players: no roster category holds one yet, so not part of
+    # soccer-players and not pulled nightly, but the benchmark is ready for
+    # the day one does. FotMob carries full NWSL player lines and no shot map,
+    # so the highlight bonus is absent from the pool as it will be from the
+    # scores.
+    Source("nwsl-players", "NWSL", "Player",
+           (lambda: _fotmob_players(only=("NWSL",))),
+           live=(lambda: _fotmob_players(only=("NWSL",), live=True)),
+           produces=("NWSL",),
+           seasons_for=_espn_seasons("nwsl", "NWSL"),
+           note="NWSL players, FotMob match by match; benchmark only until "
+                "NWSL players are rostered"),
 )
 
 #: Run in this order. Cheap, verified sources first, so a failure late in the
