@@ -292,3 +292,21 @@ def test_a_rostered_player_is_scored_at_the_position_his_line_holds(monkeypatch,
     frame = pd.DataFrame([{"league": "Premier League", "player": "Nicolas Jackson"},
                           {"league": "Premier League", "player": "Cole Palmer"}])
     assert bs._roster_positions(store, frame) == ["D", ""]
+
+
+@pytest.mark.parametrize("league, key, expected", [
+    ({"id": 87, "ccode": "ESP", "name": "LaLiga"}, "laliga", True),
+    ({"id": 140, "ccode": "ESP", "name": "LaLiga2"}, "laliga", False),
+    ({"id": 146, "ccode": "GER", "name": "2. Bundesliga"}, "bundesliga", False),
+    ({"id": 9999, "ccode": "ITA", "name": "Serie A Femminile"}, "seriea", False),
+    ({"id": 9998, "ccode": "ENG", "name": "Premier League 2"}, "epl", False),
+    ({"id": 9997, "ccode": "ITA", "name": "Coppa Italia Serie C"}, "coppaitalia", False),
+    ({"id": 9996, "ccode": "GER", "name": "DFB-Pokal"}, "dfbpokal", True),
+    ({"id": 9995, "ccode": "ENG", "name": "Carabao Cup"}, "efl_cup", True),
+    ({"id": 9994, "ccode": "USA", "name": "U.S. Open Cup"}, "usopencup", True),
+    ({"primaryId": 47, "id": 12345, "ccode": "ENG", "name": "Premier League"}, "epl", True),
+])
+def test_a_competition_is_its_own_name_and_not_a_longer_one(league, key, expected):
+    """LaLiga2 was filed as La Liga by a match on "contains", putting every
+    Segunda Division club in La Liga's benchmark."""
+    assert fotmob._is(league, key) is expected

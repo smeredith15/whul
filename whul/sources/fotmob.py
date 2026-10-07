@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -54,6 +55,11 @@ HEADERS = {
 #: FotMob's competition ids, by the keys the rest of the project uses, with a
 #: (country, name) to recognise the competition by in a day's list where the id
 #: there is a season's rather than the competition's.
+#:
+#: The name is matched whole, never as a part of a longer one. Matching on
+#: "contains" filed LaLiga2 as La Liga -- every Segunda Division club, and a
+#: Segunda captain third in La Liga's benchmark -- and would have done the same
+#: with 2. Bundesliga, Serie A Femminile, Premier League 2 and the women's cups.
 COMPETITIONS = {
     "epl": (47, "ENG", "premier league"), "laliga": (87, "ESP", "laliga"),
     "seriea": (55, "ITA", "serie a"), "bundesliga": (54, "GER", "bundesliga"),
@@ -65,8 +71,22 @@ COMPETITIONS = {
     "dfbpokal": (209, "GER", "dfb pokal"), "coppaitalia": (141, "ITA", "coppa italia"),
     "copadelrey": (138, "ESP", "copa del rey"),
     "coupedefrance": (134, "FRA", "coupe de france"),
-    "usopencup": (None, "USA", "open cup"),
+    "usopencup": (None, "USA", "us open cup"),
 }
+#: Other whole names the same competition goes by.
+ALSO_CALLED = {
+    "laliga": ("la liga", "laliga ea sports"), "mls": ("mls",),
+    "ucl": ("uefa champions league",), "uel": ("uefa europa league",),
+    "uecl": ("uefa conference league", "uefa europa conference league"),
+    "efl_cup": ("carabao cup", "league cup"), "usopencup": ("u s open cup",
+                                                           "lamar hunt us open cup"),
+}
+
+
+def _plain(name) -> str:
+    """A competition's name with case and punctuation gone: "DFB-Pokal" and
+    "DFB Pokal" are one name; "LaLiga2" and "LaLiga" are not."""
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).split())
 #: Competitions named for one calendar year rather than two.
 CALENDAR_YEAR = {"mls", "nwsl"}
 
@@ -157,9 +177,11 @@ def season_label(key: str, season: int) -> str:
 def _is(league: dict, key: str) -> bool:
     wanted, country, name = COMPETITIONS[key]
     ids = {league.get("id"), league.get("primaryId"), league.get("parentLeagueId")}
-    return (wanted is not None and wanted in ids) or (
-        str(league.get("ccode", "")).upper() == country
-        and name in str(league.get("name", "")).lower())
+    if wanted is not None and wanted in ids:
+        return True
+    names = {_plain(name), *(_plain(n) for n in ALSO_CALLED.get(key, ()))}
+    return (str(league.get("ccode", "")).upper() == country
+            and _plain(league.get("name")) in names)
 
 
 def _finished(match: dict) -> bool:
@@ -201,8 +223,17 @@ def day_matches(client: Client, day: date, keys: tuple[str, ...],
     for league in (body or {}).get("leagues") or []:
         for key in keys:
             if _is(league, key):
+                MATCHED.setdefault(key, set()).add(
+                    f"{league.get('name')} [{league.get('ccode')}, "
+                    f"{league.get('primaryId') or league.get('id')}]")
                 out += [_listed(m, key) for m in league.get("matches") or []]
     return out
+
+
+#: Every competition in FotMob's day lists that a key has been taken to mean,
+#: as "name [country, id]". A run prints it, so a competition filed under the
+#: wrong key is seen in the log rather than found in a benchmark.
+MATCHED: dict[str, set[str]] = {}
 
 
 def season_matches(client: Client, key: str, season: int,
