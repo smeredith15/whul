@@ -126,6 +126,20 @@ def test_every_way_espn_says_finished_is_read():
         assert espn_ind._is_final({"status": status, "date": "2026-09-03"}, today)
 
 
+def test_a_round_that_is_play_complete_is_not_a_finished_tournament():
+    """Golf says "play complete" after every round. Morikawa's Thursday 14th
+    at the Baycurrent Classic was paid as a finish, and taken back on Friday."""
+    event = {"date": "2026-10-08T00:00Z", "endDate": "2026-10-11T00:00Z",
+             "status": {"type": {"name": "STATUS_PLAY_COMPLETE", "state": "in",
+                                 "completed": False}}}
+    for day in (8, 9, 10, 11):
+        assert not espn_ind._is_final(event, _date(2026, 10, day))
+    assert espn_ind._is_final(event, _date(2026, 10, 12))
+    # A whole event marked finished on its last day is final that day.
+    done = dict(event, status={"type": {"name": "STATUS_FINAL", "completed": True}})
+    assert espn_ind._is_final(done, _date(2026, 10, 11))
+
+
 def test_a_status_nested_under_the_competition_still_counts():
     today = _date(2026, 9, 4)
     event = {"date": "2026-09-03", "competitions": [{"status": {"type": {"state": "post"}}}]}
