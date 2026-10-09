@@ -200,6 +200,12 @@ FINAL_STATUS_NAMES = (
     "STATUS_FINAL", "STATUS_COMPLETE", "STATUS_PLAY_COMPLETE", "STATUS_FINAL_OT",
 )
 
+#: Final only once the event's last day is behind it. Golf says "play
+#: complete" at the end of every round, not only the last: Collin Morikawa's
+#: Thursday 14th at the 2026 Baycurrent Classic was scored as a finish worth 57
+#: points, and his Friday 44th took them away again.
+FINAL_ONLY_AFTER_THE_LAST_DAY = ("STATUS_PLAY_COMPLETE",)
+
 #: How long after an event ESPN is given to mark it finished before its date is
 #: taken as the answer. A tournament runs four days and a race meeting three, so
 #: a week clears the event itself with room to spare.
@@ -225,13 +231,18 @@ def _is_final(event: dict, today: date | None = None) -> bool:
     are simply smaller. A cancelled event survives this only to be dropped by
     the scorer, which finds no finishing positions in it.
     """
+    today = today or date.today()
     for status in _statuses(event):
         kind = status.get("type") or {}
         if kind.get("completed"):
             return True
         if str(kind.get("state", "")).lower() == "post":
             return True
-        if str(kind.get("name", "")).upper() in FINAL_STATUS_NAMES:
+        name = str(kind.get("name", "")).upper()
+        if name in FINAL_ONLY_AFTER_THE_LAST_DAY:
+            if _past_its_last_day(event, today):
+                return True
+        elif name in FINAL_STATUS_NAMES:
             return True
 
     stamp = _event_date(event)
@@ -241,7 +252,14 @@ def _is_final(event: dict, today: date | None = None) -> bool:
         played = date.fromisoformat(stamp)
     except ValueError:
         return False
-    return (today or date.today()) - played > timedelta(days=SETTLED_AFTER_DAYS)
+    return today - played > timedelta(days=SETTLED_AFTER_DAYS)
+
+
+def _past_its_last_day(event: dict, today: date) -> bool:
+    try:
+        return date.fromisoformat(_event_end(event)) < today
+    except ValueError:
+        return False
 
 
 def _competitors(payload: dict) -> list[dict]:
