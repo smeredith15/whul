@@ -215,6 +215,9 @@ jobs:
         # Never fatal. A feed that is down, or a league with nothing on today,
         # must not take the site down with it -- yesterday's standings beat
         # none, and every problem is printed in this step's log.
+        # Capped well inside the job's six hours, so a feed that stops
+        # answering mid-pull still leaves time to roll up and publish.
+        timeout-minutes: 240
         continue-on-error: true
         run: |
           if [ -n "${{ inputs.since }}" ]; then
@@ -235,6 +238,11 @@ jobs:
         #
         # Never fatal, for the same reason the pull above is not: the next
         # fixture is a convenience on a page and the standings are the record.
+        #
+        # Capped, because never fatal was not enough: on Oct 12 this step,
+        # which takes about a minute, hung for 46 and the run failed without
+        # rolling up, building the site or saving the database.
+        timeout-minutes: 10
         continue-on-error: true
         run: python -m whul.cli fixtures --season "$SEASON" --fetch --date "$RUN_DATE"
 
@@ -244,6 +252,7 @@ jobs:
         # above, so they survive the log -- and the question worth asking is
         # not what last night cost but whether a feed that took forty seconds
         # in September takes four minutes in March.
+        timeout-minutes: 5
         continue-on-error: true
         run: python -m whul.cli pull-costs --season "$SEASON"
 
@@ -257,6 +266,7 @@ jobs:
         # Never fatal: a game record that cannot be read leaves that player's
         # best performances as they were, and a problem is named in the log.
         # It exits non-zero on one so the step shows amber rather than hiding.
+        timeout-minutes: 30
         continue-on-error: true
         run: python -m whul.cli games --season "$SEASON" --date "$RUN_DATE"
 

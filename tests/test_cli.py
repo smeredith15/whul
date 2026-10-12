@@ -956,3 +956,18 @@ def test_every_dated_step_of_the_publish_takes_the_runs_date():
                     "whul.cli rollup"):
         lines = [ln for ln in text.splitlines() if command in ln]
         assert lines and all('--date "$RUN_DATE"' in ln for ln in lines), command
+
+
+def test_no_optional_publish_step_can_hold_the_run_forever():
+    """A step that may fail must also be unable to hang: on Oct 12 the
+    fixtures pull, about a minute on a normal night, ran 46 minutes and the
+    run failed before rolling up, building the site or saving the database."""
+    from pathlib import Path
+
+    import yaml
+
+    workflow = yaml.safe_load(
+        (Path(__file__).parent.parent / ".github/workflows/publish.yml").read_text())
+    for step in workflow["jobs"]["build"]["steps"]:
+        if step.get("continue-on-error"):
+            assert step.get("timeout-minutes"), step.get("name")
