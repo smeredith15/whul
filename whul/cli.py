@@ -2382,7 +2382,12 @@ def cmd_rollup(args: argparse.Namespace) -> int:
 
     store = open_store(args.db)
     if args.backfill:
-        reports = pipeline.backfill(store, args.season, verbose=False)
+        # Through the run's own day where it names one, not the machine's: a
+        # run that has crossed midnight would otherwise roll up a day it did
+        # not ingest.
+        reports = pipeline.backfill(
+            store, args.season, verbose=False,
+            today=_date.fromisoformat(args.date) if args.date else None)
         if not reports:
             print("\nNothing to roll up: the season has not started.\n")
             return 0

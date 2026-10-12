@@ -128,6 +128,15 @@ jobs:
       # every night and the one there is is the one that matters.
       LEAGUES: ${{ inputs.leagues || 'nfl nfl-teams tennis pga motorsports mlb mlb-teams ncaaf nhl nhl-teams nba nba-teams ncaam ncaaw ncaabaseball ncaasoftball epl laliga seriea bundesliga ligue1 mls nwsl soccer-players intl-soccer' }}
     steps:
+      - name: Fix the run's date
+        # Once, here, for every step that dates anything. Each command used to
+        # take today's date for itself, and a run that crossed midnight UTC
+        # ingested one day and rolled up the next: on Oct 11 the results were
+        # rewritten after the NASCAR race and the late NFL games, the
+        # standings for that day were never rebuilt from them, and the next
+        # day showed the difference as drivers losing points.
+        run: echo "RUN_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -209,10 +218,10 @@ jobs:
         continue-on-error: true
         run: |
           if [ -n "${{ inputs.since }}" ]; then
-            python -m whul.cli ingest $LEAGUES --season "$SEASON" \
+            python -m whul.cli ingest $LEAGUES --season "$SEASON" --date "$RUN_DATE" \
               --since "${{ inputs.since }}"
           else
-            python -m whul.cli ingest $LEAGUES --season "$SEASON"
+            python -m whul.cli ingest $LEAGUES --season "$SEASON" --date "$RUN_DATE"
           fi
 
       - name: Pull upcoming fixtures
@@ -227,7 +236,7 @@ jobs:
         # Never fatal, for the same reason the pull above is not: the next
         # fixture is a convenience on a page and the standings are the record.
         continue-on-error: true
-        run: python -m whul.cli fixtures --season "$SEASON" --fetch
+        run: python -m whul.cli fixtures --season "$SEASON" --fetch --date "$RUN_DATE"
 
       - name: Say what the pull cost, and which way it is heading
         # Never fatal, and never acted on here: this is a reading, not a gate.
@@ -249,7 +258,7 @@ jobs:
         # best performances as they were, and a problem is named in the log.
         # It exits non-zero on one so the step shows amber rather than hiding.
         continue-on-error: true
-        run: python -m whul.cli games --season "$SEASON"
+        run: python -m whul.cli games --season "$SEASON" --date "$RUN_DATE"
 
       - name: Keep what the pulls fetched
         # Saved here, and whatever happened above, rather than by the restore
@@ -299,9 +308,9 @@ jobs:
              || [ "${{ inputs.reweight_mlb }}" = "true" ] \
              || [ "${{ inputs.backdate }}" = "true" ] \
              || [ -n "${{ inputs.since }}" ]; then
-            python -m whul.cli rollup --season "$SEASON" --backfill
+            python -m whul.cli rollup --season "$SEASON" --backfill --date "$RUN_DATE"
           else
-            python -m whul.cli rollup --season "$SEASON"
+            python -m whul.cli rollup --season "$SEASON" --date "$RUN_DATE"
           fi
 
       - name: Build the site
