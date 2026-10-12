@@ -1091,7 +1091,7 @@ def test_a_benchmark_names_the_rows_it_rests_on():
                        ("Gamma", 2024, 260.0), ("Delta", 2024, 100.0)])
     leaders = benchmarks.pool_leaders(rows, "Team", managers=5)
     assert [name for name, _, _ in leaders["Premier League"]] == [
-        "Alpha", "Beta", "Gamma"], "best first, and only the best"
+        "Alpha", "Beta", "Gamma", "Delta"], "best first"
     assert leaders["Premier League"][0] == ("Alpha", "2024", 300.0)
 
 
@@ -1159,3 +1159,28 @@ def test_computing_into_a_frozen_version_is_refused_before_anything_is_pulled(tm
     assert code == 1
     assert "frozen" in said.err and draft in said.err
     assert "pulling" not in said.out
+
+
+def test_the_ladder_runs_to_the_benchmark_and_a_few_past_it():
+    """The 99th percentile of 675 rows is interpolated between the 7th and
+    8th best; the ladder names those and five more."""
+    from whul import benchmarks
+    from whul.benchmarks import BenchmarkRun
+
+    assert benchmarks.benchmark_between(675) == (7, 8)
+    assert benchmarks.benchmark_between(101) == (2, 2)
+    rows = _pool_rows([(f"Club {i}", 2024, 1000.0 - i) for i in range(30)])
+    from whul import normalize
+
+    pool = len(normalize.buffer_pool(rows, "Team", 5, season_col="season"))
+    ladder = benchmarks.pool_leaders(rows, "Team", managers=5)["Premier League"]
+    assert len(ladder) == min(pool, benchmarks.benchmark_between(pool)[1] + 5)
+
+    run = BenchmarkRun(league="Premier League", asset_type="Player")
+    run.rows, run.used = 675, [2024]
+    run.benchmarks = pd.DataFrame([
+        {"norm_key": "Premier League", "benchmark": 364.3, "pool_size": 675}])
+    run.leaders = {"Premier League": [(f"P{i}", "2024", 500.0 - i) for i in range(13)]}
+    printed = str(run)
+    assert "between #7 and #8" in printed
+    assert printed.index("P7 2024") < printed.index("between #7") < printed.index("P8 2024")

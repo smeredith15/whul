@@ -78,8 +78,9 @@ class BenchmarkRun:
     #: ``(group, season, rows, median)`` for each season left out of the pool
     #: because the feed barely answered it.
     undelivered: list = field(default_factory=list)
-    #: ``{group: [(asset, season, points), ...]}`` -- the best rows of the
-    #: truncated pool, which is where the benchmark actually comes from.
+    #: ``{group: [(asset, season, points), ...]}`` -- the truncated pool's
+    #: best rows, down to the benchmark and a few past it: where the number
+    #: actually comes from.
     leaders: dict = field(default_factory=dict)
     problems: list[str] = field(default_factory=list)
 
@@ -103,9 +104,16 @@ class BenchmarkRun:
                     f"  {row.norm_key:<22}{row.benchmark:>12,.1f}"
                     f"{row.pool_size:>8}{flag}"
                 )
-                for asset, season, points in self.leaders.get(row.norm_key, []):
+                upper, lower = benchmark_between(int(row.pool_size))
+                for rank, (asset, season, points) in enumerate(
+                        self.leaders.get(row.norm_key, []), start=1):
                     label = f"{asset} {season}".strip()
-                    lines.append(f"      {label:<26}{points:>10,.1f}")
+                    lines.append(f"   {rank:>3}. {label:<34}{points:>10,.1f}")
+                    if rank == lower:
+                        where = (f"#{upper}" if upper == lower
+                                 else f"between #{upper} and #{lower}")
+                        lines.append(f"        {'-- benchmark ' + where + ' --':<34}"
+                                     f"{row.benchmark:>10,.1f}")
         if self.rows_by_season:
             counts = "  ".join(f"{season} {n:,}"
                                for season, n in sorted(self.rows_by_season.items()))
@@ -251,10 +259,24 @@ def _window_years(windows) -> list[int]:
     return sorted({y for w in windows for y in (w.start.year, w.end.year)})
 
 
-#: How many of the pool's best rows to name under each benchmark. The 99th
-#: percentile of a hundred-row pool is interpolated between its top two, so
-#: three names the number's whole support and the first row it does not rest on.
-LEADERS = 3
+#: How many rows to name below the two the benchmark is interpolated between.
+#: The ladder runs from the pool's best season down to the benchmark and these
+#: few past it, so a reader sees what 100 is measured against and how quickly
+#: the pool falls away beneath it.
+LADDER_BEYOND = 5
+
+
+def benchmark_between(pool_size: int) -> tuple[int, int]:
+    """The two ranks, best first, the 99th percentile of a pool of this size is
+    interpolated between -- the same one if it lands exactly on a row."""
+    import math
+
+    from whul.config.league import BENCHMARK_QUANTILE
+
+    if pool_size < 1:
+        return (0, 0)
+    h = BENCHMARK_QUANTILE * (pool_size - 1)
+    return (pool_size - math.ceil(h), pool_size - math.floor(h))
 
 #: Where an asset's name lives, whichever scorer produced the rows.
 NAME_COLUMNS = ("team", "player", "athlete", "name", "asset")
@@ -289,7 +311,8 @@ def pool_leaders(
     named = next((c for c in NAME_COLUMNS if c in pool.columns), None)
     out: dict = {}
     for group, block in pool.groupby("norm_key"):
-        best = block.nlargest(LEADERS, "total_points")
+        best = block.nlargest(benchmark_between(len(block))[1] + LADDER_BEYOND,
+                              "total_points")
         # With the games behind the figure, where the scorer counts them: a
         # leader on sixty games is a season, one on ninety is two stuck together.
         def season_of(row) -> str:

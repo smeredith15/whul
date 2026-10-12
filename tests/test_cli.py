@@ -921,3 +921,38 @@ def test_a_day_that_does_not_rescore_to_what_is_stored_refuses_the_run(
     assert _reweight(tmp_path) == 1
     assert "not reproducing what the scorer does" in capsys.readouterr().err
     assert _figures(tmp_path, "player-mlb", "2026-09-10")["total_points"] == 100.0
+
+
+def test_a_backfill_stops_at_the_runs_own_day(tmp_path):
+    """A run that crossed midnight UTC ingested one day and rolled up the
+    next, and the day it ingested was never rebuilt from what it wrote."""
+    import argparse
+    from datetime import date
+
+    from whul import simulate
+    from whul.cli import cmd_rollup
+    from whul.store import open_store
+
+    db = tmp_path / "whul.sqlite3"
+    store = open_store(db)
+    simulate.generate(store, seed=1, end=date(2026, 9, 30), verbose=False)
+    store.conn.execute("DELETE FROM standings_snapshots")
+    store.conn.commit()
+
+    assert cmd_rollup(argparse.Namespace(
+        db=str(db), season=simulate.SIM_SEASON, date="2026-09-10", backfill=True)) == 0
+    last = open_store(db).scalar("SELECT MAX(as_of) FROM standings_snapshots")
+    assert last == "2026-09-10"
+
+
+def test_every_dated_step_of_the_publish_takes_the_runs_date():
+    """Each step taking today for itself is how one run came to ingest Oct 11
+    and roll up Oct 12."""
+    from pathlib import Path
+
+    text = (Path(__file__).parent.parent / ".github/workflows/publish.yml").read_text()
+    assert 'RUN_DATE=$(date -u +%F)' in text
+    for command in ("whul.cli ingest", "whul.cli fixtures", "whul.cli games",
+                    "whul.cli rollup"):
+        lines = [ln for ln in text.splitlines() if command in ln]
+        assert lines and all('--date "$RUN_DATE"' in ln for ln in lines), command
