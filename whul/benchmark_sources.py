@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from functools import lru_cache
 from typing import Callable
 
@@ -1042,7 +1042,7 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
             for key in wanted.values():
                 start_year = label if key in fotmob.CALENDAR_YEAR else label - 1
                 out.add(span(key, int(start_year)))
-        return sorted(out)
+        return _merged(sorted(out))
 
     def load(seasons, store=None):
         from whul import clock
@@ -1076,6 +1076,8 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
         if not lines:
             return pd.DataFrame()
         frame = pd.DataFrame(lines)
+        # One line per player per match, however many windows reached it.
+        frame = frame.drop_duplicates(subset=["match_id", "player_id"])
         frame["goal_xg"] = [json.dumps(v or []) for v in frame["goal_xg"]]
         # Which of our leagues each club played in, season by season, from the
         # leagues' own matches -- the only thing that may decide a row's league.
@@ -1117,6 +1119,24 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
 
     return load, (lambda raw, as_of=None: soccer.score_match_lines(
         raw, postseason=live, as_of=as_of))
+
+
+def _merged(windows: list[tuple[date, date]]) -> list[tuple[date, date]]:
+    """Date windows with every overlap folded into one.
+
+    A European season runs mid-July to mid-June and an MLS one February to
+    mid-December, so a pull of both walked most of every year twice -- and
+    read every match in it twice. The benchmark from that run had each club
+    soccer player's season close to doubled: Cole Palmer's 2024 at 764.4
+    against 432.5.
+    """
+    out: list[tuple[date, date]] = []
+    for start, end in sorted(windows):
+        if out and start <= out[-1][1] + timedelta(days=1):
+            out[-1] = (out[-1][0], max(out[-1][1], end))
+        else:
+            out.append((start, end))
+    return out
 
 
 def _apart_from_the_playoffs(frame: pd.DataFrame, category: dict) -> pd.DataFrame:
