@@ -78,7 +78,7 @@ class BenchmarkRun:
     #: ``(group, season, rows, median)`` for each season left out of the pool
     #: because the feed barely answered it.
     undelivered: list = field(default_factory=list)
-    #: ``{group: [(asset, season, points), ...]}`` -- the truncated pool's
+    #: ``{group: [(asset, season, points, box score), ...]}`` -- the truncated pool's
     #: best rows, down to the benchmark and a few past it: where the number
     #: actually comes from.
     leaders: dict = field(default_factory=dict)
@@ -105,10 +105,13 @@ class BenchmarkRun:
                     f"{row.pool_size:>8}{flag}"
                 )
                 upper, lower = benchmark_between(int(row.pool_size))
-                for rank, (asset, season, points) in enumerate(
+                for rank, (asset, season, points, *box) in enumerate(
                         self.leaders.get(row.norm_key, []), start=1):
                     label = f"{asset} {season}".strip()
-                    lines.append(f"   {rank:>3}. {label:<34}{points:>10,.1f}")
+                    line = f"   {rank:>3}. {label:<34}{points:>10,.1f}"
+                    if box and box[0]:
+                        line += f"   {box[0]}"
+                    lines.append(line)
                     if rank == lower:
                         where = (f"#{upper}" if upper == lower
                                  else f"between #{upper} and #{lower}")
@@ -278,6 +281,65 @@ def benchmark_between(pool_size: int) -> tuple[int, int]:
     h = BENCHMARK_QUANTILE * (pool_size - 1)
     return (pool_size - math.ceil(h), pool_size - math.floor(h))
 
+#: The box score printed beside each row of a ladder, per sport: the basic
+#: line a reader checks a score against, not every figure that priced it. A
+#: sport is told by a column only its scorer writes; each entry is a label and
+#: the columns it may be read from, the first present winning.
+BOX_SCORES: tuple = (
+    ("chances_created", (("GP", ("matches",)), ("G", ("goals",)), ("A", ("assists",)),
+                         ("CS", ("clean_sheets",)))),
+    ("passing_yards", (("GP", ("games_played", "regular_games")),
+                       ("pass yds", ("passing_yards",)), ("pass TD", ("passing_tds",)),
+                       ("INT", ("interceptions",)), ("rush yds", ("rushing_yards",)),
+                       ("rush TD", ("rushing_tds",)), ("rec", ("receptions",)),
+                       ("rec yds", ("receiving_yards",)), ("rec TD", ("receiving_tds",)))),
+    ("pp_points", (("GP", ("games_played", "regular_games")), ("G", ("goals",)),
+                   ("A", ("assists",)), ("+/-", ("plus_minus",)), ("PPP", ("pp_points",)),
+                   ("HIT", ("hits",)), ("BLK", ("blocks",)))),
+    ("rebounds", (("GP", ("games_played",)), ("PTS", ("points",)), ("REB", ("rebounds",)),
+                  ("AST", ("assists",)), ("STL", ("steals",)), ("BLK", ("blocks",)))),
+    ("ab", (("GP", ("games", "games_played")), ("AB", ("ab",)), ("H", ("h",)),
+            ("HR", ("hr",)), ("SB", ("sb",)), ("IP", ("ip",)), ("K", ("so",)),
+            ("SV", ("sv",)), ("WAR", ("war",)))),
+    ("reg_otl", (("W", ("reg_wins",)), ("L", ("reg_losses",)), ("OTL", ("reg_otl",)),
+                 ("GD", ("goal_diff",)))),
+    ("run_diff", (("W", ("reg_wins",)), ("L", ("reg_losses",)), ("RD", ("run_diff",)))),
+    ("reg_ties", (("W", ("reg_wins",)), ("L", ("reg_losses",)), ("T", ("reg_ties",)),
+                  ("diff", ("point_diff",)))),
+    ("draws", (("W", ("wins",)), ("D", ("draws",)), ("L", ("losses",)),
+               ("CS", ("clean_sheets",)))),
+    ("events", (("events", ("events", "starts")), ("wins", ("wins", "titles")),
+                ("podiums", ("podiums",)), ("top 5", ("top_fives",)),
+                ("top 10", ("top_tens",)))),
+    ("", (("W", ("wins", "reg_wins")), ("L", ("losses", "reg_losses")),
+          ("diff", ("point_diff",)))),
+)
+
+#: Figures shown even at zero: a record reads wrong with its losses left off.
+BOX_ZEROS = {"W", "L", "D", "T", "OTL"}
+
+
+def box_score(row) -> str:
+    """One row's basic line, such as ``38 GP · 22 G · 11 A · 9 CS``."""
+    get = row.get if hasattr(row, "get") else (lambda k, d=None: d)
+    for signature, items in BOX_SCORES:
+        if signature and get(signature) is None:
+            continue
+        parts = []
+        for label, columns in items:
+            value = next((get(c) for c in columns if get(c) is not None), None)
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                continue
+            if number != number or (number == 0 and label not in BOX_ZEROS):
+                continue
+            text = f"{number:,.0f}" if number.is_integer() else f"{number:,.1f}"
+            parts.append(f"{text} {label}")
+        return " \u00b7 ".join(parts)
+    return ""
+
+
 #: Where an asset's name lives, whichever scorer produced the rows.
 NAME_COLUMNS = ("team", "player", "athlete", "name", "asset")
 
@@ -324,7 +386,8 @@ def pool_leaders(
 
         out[str(group)] = [
             (str(row[named]) if named else "?", season_of(row),
-             float(row["total_points"]))
+             float(row["total_points"]),
+             box_score({k: v for k, v in row.items() if v == v}))
             for _, row in best.iterrows()
         ]
     return out
