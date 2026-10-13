@@ -263,6 +263,32 @@ def test_the_benchmark_pull_files_clubs_under_their_league_and_season(monkeypatc
     assert scored["postseason_bonus"].eq(0).all()
 
 
+def test_a_match_in_two_leagues_windows_is_read_once(monkeypatch, tmp_path):
+    """A European season (mid-July to mid-June) and an MLS one (February to
+    mid-December) overlap, and a pull of both read every match in the overlap
+    twice: each club soccer benchmark came back close to doubled."""
+    from whul import benchmark_sources as bs
+
+    # 1 March 2025 is in Premier League 2024-25's window and MLS 2025's.
+    _fake_days(monkeypatch, tmp_path, {"20250301": [("epl", "4506312")]})
+    load, score = bs._fotmob_players()
+    raw = load([2025])
+    assert not raw.duplicated(subset=["match_id", "player_id"]).any()
+    scored = score(raw)
+    assert scored.set_index("player").loc["Nicolas Jackson", "matches"] == 1
+
+
+def test_overlapping_windows_are_walked_as_one():
+    from datetime import date
+
+    from whul import benchmark_sources as bs
+
+    assert bs._merged([(date(2024, 7, 15), date(2025, 6, 15)),
+                       (date(2025, 2, 1), date(2025, 12, 15)),
+                       (date(2026, 2, 1), date(2026, 3, 1))]) == [
+        (date(2024, 7, 15), date(2025, 12, 15)), (date(2026, 2, 1), date(2026, 3, 1))]
+
+
 def test_a_walk_fotmob_stops_answering_raises_rather_than_scoring_short(monkeypatch, tmp_path):
     from whul import benchmark_sources as bs
 
