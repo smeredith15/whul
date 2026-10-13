@@ -90,6 +90,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out the tennis history
+        # The tennis benchmark is drawn from model_data_snapshot.rds in
+        # smeredith15/tennis2026, the only surviving copy of the Sackmann
+        # archive. Without it every run naming `tennis` failed on a missing
+        # file. Never fatal: only tennis needs it, and it says so if absent.
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: smeredith15/tennis2026
+          path: tennis2026
+          sparse-checkout: backend/data/betting
+          lfs: true
+
+      - name: Point the tennis benchmark at it
+        run: echo "WHUL_TENNIS2026=$GITHUB_WORKSPACE/tennis2026" >> "$GITHUB_ENV"
+
       - name: Say which leagues
         # A compute run with no leagues named would silently mean "all of
         # them" -- twenty leagues, some of which walk dates for an hour. The
