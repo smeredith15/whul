@@ -321,7 +321,12 @@ BOX_ZEROS = {"W", "L", "D", "T", "OTL"}
 
 def box_score(row) -> str:
     """One row's basic line, such as ``38 GP · 22 G · 11 A · 9 CS``."""
-    get = row.get if hasattr(row, "get") else (lambda k, d=None: d)
+    def get(column):
+        value = row.get(column) if hasattr(row, "get") else None
+        try:
+            return None if pd.isna(value) else value
+        except (TypeError, ValueError):  # a list or an array: not a figure
+            return None
     for signature, items in BOX_SCORES:
         if signature and get(signature) is None:
             continue
@@ -384,10 +389,18 @@ def pool_leaders(
                 label = f"{label} ({int(games)} games)".strip()
             return label
 
+        def box_of(row) -> str:
+            # A diagnostic, and the least of one: a line it cannot read is
+            # left blank. Its first version failed every league of a run on
+            # the NFL's nullable figures.
+            try:
+                return box_score(row)
+            except Exception:  # noqa: BLE001
+                return ""
+
         out[str(group)] = [
             (str(row[named]) if named else "?", season_of(row),
-             float(row["total_points"]),
-             box_score({k: v for k, v in row.items() if v == v}))
+             float(row["total_points"]), box_of(row))
             for _, row in best.iterrows()
         ]
     return out
