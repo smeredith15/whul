@@ -1215,3 +1215,23 @@ def test_the_box_score_is_printed_beside_its_row():
         {"norm_key": "Premier League", "benchmark": 364.3, "pool_size": 675}])
     run.leaders = {"Premier League": [("Cole Palmer", "2024", 432.5, "34 GP \u00b7 22 G")]}
     assert "Cole Palmer 2024" in str(run) and "34 GP \u00b7 22 G" in str(run)
+
+
+def test_a_missing_figure_in_any_form_is_left_out_of_the_box_score():
+    """pandas' own missing value is not equal to itself in the way NaN is --
+    comparing it raises -- and the first version of this failed every league
+    of a run on the NFL's nullable columns."""
+    from whul.benchmarks import box_score
+
+    row = pd.Series({"games_played": pd.NA, "passing_yards": 4500, "passing_tds": None,
+                     "interceptions": float("nan"), "finishes": [1, 2]})
+    assert box_score(row) == "4,500 pass yds"
+
+
+def test_a_pool_with_nullable_columns_still_names_its_leaders():
+    from whul import benchmarks
+
+    rows = _pool_rows([("Alpha", 2024, 300.0), ("Beta", 2024, 280.0)])
+    rows["reg_wins"] = pd.array([12, None], dtype="Int64")
+    leaders = benchmarks.pool_leaders(rows, "Team", managers=5)
+    assert [name for name, *_ in leaders["Premier League"]] == ["Alpha", "Beta"]
