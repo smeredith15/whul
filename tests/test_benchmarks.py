@@ -1090,9 +1090,9 @@ def test_a_benchmark_names_the_rows_it_rests_on():
     rows = _pool_rows([("Alpha", 2024, 300.0), ("Beta", 2024, 280.0),
                        ("Gamma", 2024, 260.0), ("Delta", 2024, 100.0)])
     leaders = benchmarks.pool_leaders(rows, "Team", managers=5)
-    assert [name for name, _, _ in leaders["Premier League"]] == [
+    assert [name for name, *_ in leaders["Premier League"]] == [
         "Alpha", "Beta", "Gamma", "Delta"], "best first"
-    assert leaders["Premier League"][0] == ("Alpha", "2024", 300.0)
+    assert leaders["Premier League"][0][:3] == ("Alpha", "2024", 300.0)
 
 
 def test_the_leaders_are_printed_under_their_own_group(capsys):
@@ -1131,7 +1131,7 @@ def test_a_pool_leader_carries_the_games_behind_it():
          "games_played": 60, "league": "NCAA Softball"} for i in range(30)])
     leaders = pool_leaders(scored, "Team", 5)
     assert leaders and all("(60 games)" in season
-                           for rows in leaders.values() for _, season, _ in rows)
+                           for rows in leaders.values() for _, season, *_ in rows)
 
 
 def test_computing_into_a_frozen_version_is_refused_before_anything_is_pulled(tmp_path, capsys):
@@ -1184,3 +1184,34 @@ def test_the_ladder_runs_to_the_benchmark_and_a_few_past_it():
     printed = str(run)
     assert "between #7 and #8" in printed
     assert printed.index("P7 2024") < printed.index("between #7") < printed.index("P8 2024")
+
+
+@pytest.mark.parametrize("row, line", [
+    ({"matches": 38, "goals": 22, "assists": 11, "clean_sheets": 0,
+      "chances_created": 80, "tackles": 30}, "38 GP \u00b7 22 G \u00b7 11 A"),
+    ({"games_played": 17, "passing_yards": 4500, "passing_tds": 38, "interceptions": 9,
+      "rushing_yards": 300, "rushing_tds": 0}, "17 GP \u00b7 4,500 pass yds \u00b7 38 pass TD"
+     " \u00b7 9 INT \u00b7 300 rush yds"),
+    ({"games": 33, "ab": 0, "h": 0, "ip": 200.1, "so": 240, "sv": 0, "war": 5.1},
+     "33 GP \u00b7 200.1 IP \u00b7 240 K \u00b7 5.1 WAR"),
+    ({"wins": 28, "draws": 6, "losses": 4, "clean_sheets": 17}, "28 W \u00b7 6 D \u00b7 4 L \u00b7 17 CS"),
+    ({"reg_wins": 14, "reg_losses": 3, "reg_ties": 0, "point_diff": 180},
+     "14 W \u00b7 3 L \u00b7 0 T \u00b7 180 diff"),
+    ({"events": 20, "wins": 3, "top_fives": 8, "top_tens": 12}, "20 events \u00b7 3 wins"
+     " \u00b7 8 top 5 \u00b7 12 top 10"),
+])
+def test_a_ladder_row_carries_its_box_score(row, line):
+    from whul.benchmarks import box_score
+
+    assert box_score(row) == line
+
+
+def test_the_box_score_is_printed_beside_its_row():
+    from whul.benchmarks import BenchmarkRun
+
+    run = BenchmarkRun(league="Premier League", asset_type="Player")
+    run.rows, run.used = 675, [2024]
+    run.benchmarks = pd.DataFrame([
+        {"norm_key": "Premier League", "benchmark": 364.3, "pool_size": 675}])
+    run.leaders = {"Premier League": [("Cole Palmer", "2024", 432.5, "34 GP \u00b7 22 G")]}
+    assert "Cole Palmer 2024" in str(run) and "34 GP \u00b7 22 G" in str(run)
