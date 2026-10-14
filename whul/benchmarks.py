@@ -284,7 +284,9 @@ def benchmark_between(pool_size: int) -> tuple[int, int]:
 #: The box score printed beside each row of a ladder, per sport: the basic
 #: line a reader checks a score against, not every figure that priced it. A
 #: sport is told by a column only its scorer writes; each entry is a label and
-#: the columns it may be read from, the first present winning.
+#: the columns it may be read from, the first present winning. A signature may
+#: be several columns, any one of which tells the sport: an MLB pitcher's row
+#: has no at-bats.
 BOX_SCORES: tuple = (
     ("chances_created", (("GP", ("matches",)), ("G", ("goals",)), ("A", ("assists",)),
                          ("CS", ("clean_sheets",)))),
@@ -298,7 +300,7 @@ BOX_SCORES: tuple = (
                    ("HIT", ("hits",)), ("BLK", ("blocks",)))),
     ("rebounds", (("GP", ("games_played",)), ("PTS", ("points",)), ("REB", ("rebounds",)),
                   ("AST", ("assists",)), ("STL", ("steals",)), ("BLK", ("blocks",)))),
-    ("ab", (("GP", ("games", "games_played")), ("AB", ("ab",)), ("H", ("h",)),
+    (("ab", "ip"), (("GP", ("games", "games_played")), ("AB", ("ab",)), ("H", ("h",)),
             ("HR", ("hr",)), ("SB", ("sb",)), ("IP", ("ip",)), ("K", ("so",)),
             ("SV", ("sv",)), ("WAR", ("war",)))),
     ("reg_otl", (("W", ("reg_wins",)), ("L", ("reg_losses",)), ("OTL", ("reg_otl",)),
@@ -328,7 +330,8 @@ def box_score(row) -> str:
         except (TypeError, ValueError):  # a list or an array: not a figure
             return None
     for signature, items in BOX_SCORES:
-        if signature and get(signature) is None:
+        signatures = (signature,) if isinstance(signature, str) else signature
+        if signature and all(get(c) is None for c in signatures):
             continue
         parts = []
         for label, columns in items:
@@ -375,7 +378,11 @@ def pool_leaders(
         return {}
     if pool.empty or "norm_key" not in pool.columns:
         return {}
-    named = next((c for c in NAME_COLUMNS if c in pool.columns), None)
+    # A player before his club: NFL and NHL rows carry both, and the club was
+    # what the ladder named -- "BAL 2024" for Lamar Jackson's season.
+    order = NAME_COLUMNS if asset_type == "Team" else (
+        tuple(c for c in NAME_COLUMNS if c != "team") + ("team",))
+    named = next((c for c in order if c in pool.columns and pool[c].notna().any()), None)
     out: dict = {}
     for group, block in pool.groupby("norm_key"):
         best = block.nlargest(benchmark_between(len(block))[1] + LADDER_BEYOND,
