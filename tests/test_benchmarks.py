@@ -1183,7 +1183,8 @@ def test_the_ladder_runs_to_the_benchmark_and_a_few_past_it():
     run.leaders = {"Premier League": [(f"P{i}", "2024", 500.0 - i) for i in range(13)]}
     printed = str(run)
     assert "between #7 and #8" in printed
-    assert printed.index("P7 2024") < printed.index("between #7") < printed.index("P8 2024")
+    # P6 is the 7th best and P7 the 8th: the line falls between them.
+    assert printed.index("P6 2024") < printed.index("between #7") < printed.index("P7 2024")
 
 
 @pytest.mark.parametrize("row, line", [
