@@ -112,7 +112,7 @@ class BenchmarkRun:
                     if box and box[0]:
                         line += f"   {box[0]}"
                     lines.append(line)
-                    if rank == lower:
+                    if rank == upper:
                         where = (f"#{upper}" if upper == lower
                                  else f"between #{upper} and #{lower}")
                         lines.append(f"        {'-- benchmark ' + where + ' --':<34}"
