@@ -1235,3 +1235,25 @@ def test_a_pool_with_nullable_columns_still_names_its_leaders():
     rows["reg_wins"] = pd.array([12, None], dtype="Int64")
     leaders = benchmarks.pool_leaders(rows, "Team", managers=5)
     assert [name for name, *_ in leaders["Premier League"]] == ["Alpha", "Beta"]
+
+
+def test_a_pitchers_box_score_is_his_pitching_line():
+    from whul.benchmarks import box_score
+
+    row = pd.Series({"games": 32, "ab": float("nan"), "ip": 200.0, "so": 225, "sv": 0,
+                     "war": 6.3})
+    assert box_score(row) == "32 GP \u00b7 200 IP \u00b7 225 K \u00b7 6.3 WAR"
+
+
+def test_a_player_ladder_names_the_player_not_his_club():
+    """The NFL and NHL rows carry both, and the club was printed: "BAL 2024"
+    for Lamar Jackson's season."""
+    from whul import benchmarks
+
+    rows = _pool_rows([("BAL", 2024, 428.4), ("KC", 2024, 410.0)])
+    rows["player"] = ["Lamar Jackson", "Patrick Mahomes"]
+    rows["role"] = "QB"
+    rows["league"] = "NFL"
+    leaders = benchmarks.pool_leaders(rows, "Player", managers=5)
+    assert [name for name, *_ in next(iter(leaders.values()))] == [
+        "Lamar Jackson", "Patrick Mahomes"]

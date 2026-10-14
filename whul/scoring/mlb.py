@@ -1093,6 +1093,11 @@ def score_teams(
     year_n = pd.DataFrame({
         "contract_year": summary["season"],
         "team": summary["team"],
+        # The season's own record, carried for the benchmark ladder's box
+        # score. Not priced from here: the points below are.
+        "reg_wins": summary["reg_wins"],
+        "reg_losses": summary["reg_losses"],
+        "run_diff": summary["run_diff"],
         "year_n_points": (
             summary["reg_wins"] * SHARE_POST_ASB * BASE_REG_WIN * MULT_YEAR_N
             + summary["reg_big_wins"] * SHARE_POST_ASB * PTS_BIG_WIN * MULT_YEAR_N
