@@ -1106,7 +1106,9 @@ def _fotmob_players(only: tuple[str, ...] = (), live: bool = False):
         if live:
             # Each league counts from its own opening, as every other source
             # does: MLS's league year begins in 2027.
-            opens = {name: season_start(name) for name in wanted}
+            # A cup tie before a league's own opening counts when it is
+            # inside the league year and the same club season (counts_from).
+            opens = {name: soccer.counts_from(name) for name in wanted}
             days = pd.to_datetime(frame["date"], errors="coerce")
             frame = frame[[pd.isna(d) or d.date() >= opens[lg]
                            for d, lg in zip(days, frame["league"])]].copy()

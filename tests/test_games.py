@@ -517,3 +517,34 @@ def test_the_rollup_keeps_a_cup_tie_before_the_league_opened(store):
         keys=("season", "asset_id", "game_key"))
     kept = pipeline.game_records(store, SEASON, DAY)
     assert sorted(kept["game_key"]) == ["b1", "p1"]
+
+
+def test_a_match_finished_on_the_day_is_recorded_that_day(store):
+    """The season line counts a match finished today, and the record stopped
+    the day before: Ebnoutalib's Friday goal was scored and listed nowhere."""
+    soccer_player(store, matches=1)
+    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                 loaders={"soccer_lines": walker_of([match("e1", DAY)])})
+    assert list(recorded(store, "st")["game_key"]) == ["fotmob-e1"]
+
+
+def test_a_2026_match_is_not_recorded_for_a_league_drafted_for_2027(store):
+    hold(store, "mls", "Club Soccer Other", "MLS", "F",
+         {"player": "Striker", "league": "MLS", "team": "Arsenal",
+          "position": "F", "matches": 0})
+    games.record(store, SEASON, DAY, verbose=False, sports=("Club Soccer",),
+                 loaders={"soccer_lines": walker_of([match("m1", "2026-09-13", "mls")])})
+    assert recorded(store, "mls").empty
+
+
+def test_a_club_counts_from_the_league_year_inside_its_own_season():
+    """One rule for the season line and the record: Frankfurt's cup tie on the
+    21st counts, a week before the Bundesliga; MLS keeps 2027."""
+    from datetime import date
+
+    from whul.scoring.soccer import counts_from
+
+    assert counts_from("Bundesliga") == date(2026, 8, 21)
+    assert counts_from("La Liga") == date(2026, 8, 15)
+    assert counts_from("MLS") == date(2027, 1, 1)
+    assert counts_from("NWSL") == date(2027, 1, 1)
