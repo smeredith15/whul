@@ -78,6 +78,26 @@ def season_for(match_date: pd.Series, league: pd.Series) -> pd.Series:
     return rolled.where(~calendar, dates.dt.year)
 
 
+def counts_from(league: str) -> date:
+    """The first day a club's matches count for a player in this league.
+
+    The league's own opening, or the league year's if that is earlier and in
+    the same club season. Frankfurt's DFB-Pokal tie on 21 August came a week
+    before the Bundesliga opened, inside the league year and Eintracht's
+    2026-27 season, and it counts. MLS and the NWSL keep their own date: they
+    were drafted for 2027, and a 2026 cup tie in the autumn belongs to a
+    season nobody picked.
+    """
+    from whul.config.league import SEASON, season_start
+
+    own = season_start(league)
+    if SEASON.start >= own:
+        return own
+    leagues = pd.Series([league, league])
+    same = season_for(pd.Series([SEASON.start, own]), leagues)
+    return SEASON.start if same.iloc[0] == same.iloc[1] else own
+
+
 def goal_points_for(position: str | None) -> int:
     """Goal value by position, defaulting to forward for unknown codes."""
     code = (position or "FW").strip().upper()[:2]

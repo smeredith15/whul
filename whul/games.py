@@ -44,7 +44,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 
 import pandas as pd
 
@@ -590,7 +590,6 @@ def soccer_games(store: Store, players: list[Rostered], as_of,
     it, the one at his club. He is priced at the position the league holds
     for him, as his season is.
     """
-    from whul.config.league import SEASON
     from whul.resolve import normalize_name, normalize_team
     from whul.scoring import soccer_match
     from whul.sources import espn
@@ -607,20 +606,22 @@ def soccer_games(store: Store, players: list[Rostered], as_of,
         if key is None:
             continue
         domestic = {key, *espn.DOMESTIC_CUPS.get(key, ())}
-        start, end = _window(league, as_of)
-        # From the league year's opening if the league itself opens later: a
-        # club's cup tie can come first -- Frankfurt played the DFB-Pokal on
-        # the 21st, a week before the Bundesliga began -- and the season line
-        # counts it, so its match record has to.
-        start = min(start, SEASON.start.isoformat())
+        _, end = _window(league, as_of)
+        # From the same day the season line counts from: a club's cup tie can
+        # come first -- Frankfurt played the DFB-Pokal on the 21st, a week
+        # before the Bundesliga began -- and both count it, by the one rule.
+        from whul.scoring.soccer import counts_from
+        start = counts_from(league).isoformat()
         plan[league] = (key, domestic, domestic | set(espn.continental_for(key)),
                         start, end, mine)
     if not plan:
         return rows, problems
     keys = tuple(dict.fromkeys(k for v in plan.values() for k in sorted(v[2])))
     first = min(date.fromisoformat(v[3]) for v in plan.values())
-    # Before the day, not on it: a match dated today may still be on.
-    last = max(date.fromisoformat(v[4]) for v in plan.values()) - timedelta(days=1)
+    # Through the day itself. The walk reads only finished matches, and the
+    # season line counts a match finished today: a record stopping the day
+    # before left Ebnoutalib's Friday goal scored and listed nowhere.
+    last = max(date.fromisoformat(v[4]) for v in plan.values())
     try:
         lines = walker(first, last, keys)
     except Exception as exc:  # noqa: BLE001 -- the records stay as they were
@@ -636,7 +637,7 @@ def soccer_games(store: Store, players: list[Rostered], as_of,
             his = [line for line in named.get(normalize_name(
                        str(p.line.get("player") or p.name)), [])
                    if line.get("competition_key") in everything
-                   and start <= str(line.get("date") or "")[:10] < end]
+                   and start <= str(line.get("date") or "")[:10] <= end]
             ids = {str(line.get("player_id")) for line in his}
             if len(ids) > 1:
                 club = normalize_team(str(p.line.get("team") or ""))
