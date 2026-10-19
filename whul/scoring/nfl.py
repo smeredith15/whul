@@ -391,7 +391,20 @@ def score_teams(schedules: pd.DataFrame, teams_meta: pd.DataFrame) -> pd.DataFra
         on=on, how="left",
     )
     summary["div_champ"] = _division_champions(summary, schedules)
-    summary["bye_wins"] = _byes(summary, games)
+    # Only once the regular season is over. The seed is published all season,
+    # and a mid-season 1 seed is not a team with a bye: it would be paid a
+    # swept playoff round in October and lose it the week it slipped.
+    # A playoff game on the schedule says so as well: its matchup cannot
+    # exist until the regular season has ended.
+    if "game_type" in schedules.columns:
+        is_reg = schedules["game_type"].astype(str) == "REG"
+        finished = settled_seasons(schedules[is_reg]) | {
+            int(x) for x in pd.to_numeric(schedules.loc[~is_reg, "season"],
+                                          errors="coerce").dropna().unique()}
+    else:
+        finished = settled_seasons(schedules)
+    summary["bye_wins"] = _byes(summary, games).where(
+        summary["season"].astype(int).isin(finished), 0)
     # A bye is a place in the playoffs before it is a game in them.
     summary["playoff_appearance"] = summary[
         ["playoff_appearance", "bye_wins"]].max(axis=1).clip(upper=1)

@@ -43,12 +43,21 @@ MEASURES: frozenset[str] = frozenset({
     "proration_factor", "schedule_factor", "lift", "top_rung", "year_rung",
     # A rate is a ratio of two counts and falls whenever the denominator wins.
     "era", "whip", "avg", "obp", "slg", "ops", "save_pct", "gaa",
+    # A standing is a place, and a team that wins climbs it: its number goes
+    # down. Read as a count, Buffalo's seed going from 4 to 2 was a fall, and
+    # held the whole row -- the win that moved it included. New England sat
+    # two wins short for a week, and Baltimore and Denver one each.
+    "seed", "rank",
 })
 
 #: Suffixes that make a figure a measure whatever it is called. A scorer that
 #: adds `xg_diff` tomorrow is covered without anybody remembering to come here.
+#: Yards are net: a reception for minus eight takes eight off a season, which
+#: is the sport, and Bijan Robinson's 152 receiving yards becoming 144 held his
+#: whole line at the day before.
 MEASURE_SUFFIXES: tuple[str, ...] = ("_diff", "_differential", "_pct",
-                                     "_rate", "_average", "_share", "_factor")
+                                     "_rate", "_average", "_share", "_factor",
+                                     "_rank", "_seed", "_yards")
 
 #: Figures derived from the rest rather than counted themselves. They fall
 #: exactly when their inputs say they should, so checking them would flag every
