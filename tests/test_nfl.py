@@ -664,3 +664,14 @@ def test_reaching_the_divisional_round_without_a_wild_card_game_is_a_bye():
          "div_rank": 1}])])
     out = score_teams(sched, unseeded).set_index("team")
     assert out.loc["KC", "bye_wins"] == 1 and out.loc["BUF", "bye_wins"] == 0
+
+
+def test_a_mid_season_top_seed_has_no_bye():
+    """The standings file carries a seed all season. A 1 seed in October is
+    not a team with a bye, and paying it a swept round would take the points
+    back the week it slipped."""
+    sched = pd.DataFrame([game("KC", "BUF", 24, 17, gameday="2026-10-18"),
+                          game("MIA", "KC", None, None, gameday="2099-12-27")])
+    out = score_teams(sched, _seeded(FIELD)).set_index("team")
+    assert out.loc["KC", "bye_wins"] == 0
+    assert out.loc["KC", "playoff_appearance"] == 0

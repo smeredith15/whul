@@ -132,3 +132,22 @@ def test_a_batters_bad_day_is_not_a_count_going_backwards():
     before = {"games": 17, "ab": 70.0, "h": 15, "regular_points": 60.0}
     after = {"games": 18, "ab": 74.0, "h": 15, "regular_points": 56.0}
     assert monotonic.what_went_backwards(before, after) == []
+
+
+@pytest.mark.parametrize("name", ["seed", "conf_rank", "rushing_yards",
+                                  "receiving_yards", "post_passing_yards"])
+def test_a_place_or_a_net_figure_may_fall(name):
+    """Buffalo's seed going from 4 to 2 is a win, and a reception for minus
+    eight takes eight yards off a season; read as counts, each held a whole
+    row at the day before."""
+    from whul.store.monotonic import is_a_count
+
+    assert not is_a_count(name)
+
+
+def test_a_climb_in_the_standings_is_not_held():
+    from whul.store.monotonic import what_went_backwards
+
+    before = {"reg_wins": 3, "seed": 4, "rushing_yards": 0}
+    after = {"reg_wins": 4, "seed": 2, "rushing_yards": -11}
+    assert what_went_backwards(before, after) == []
