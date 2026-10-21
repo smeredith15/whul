@@ -91,6 +91,7 @@ ADDED_COLUMNS = (
     ("slot_occupancy", "cost", "REAL"),
     ("assets", "affiliation", "TEXT NOT NULL DEFAULT ''"),
     ("fixtures", "round_name", "TEXT NOT NULL DEFAULT ''"),
+    ("fixtures", "start_time", "TEXT NOT NULL DEFAULT ''"),
     ("daily_scores", "held_score", "REAL NOT NULL DEFAULT 0"),
     ("ingest_timings", "pausing", "REAL NOT NULL DEFAULT 0.0"),
     # The best-performances slot: its k best games, and which way the slot is

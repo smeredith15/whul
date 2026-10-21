@@ -47,6 +47,34 @@ def eastern_day(stamp) -> date | None:
     return moment.astimezone(EASTERN).date()
 
 
+def eastern_clock(stamp) -> str:
+    """The Eastern wall-clock time of a moment, as ``HH:MM``, or "" if unknown.
+
+    Takes what ``eastern_day`` takes. Midnight is read as unknown: ESPN files a
+    game whose time is still to be set at midnight Eastern, and a fixture board
+    saying "12:00 AM" for every TBD game would be inventing a kickoff.
+    """
+    if stamp is None:
+        return ""
+    if isinstance(stamp, (int, float)):
+        try:
+            moment = datetime.fromtimestamp(float(stamp), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return ""
+    else:
+        text = str(stamp).strip()
+        if len(text) <= 10 or "T" not in text and " " not in text:
+            return ""
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+    clock = moment.astimezone(EASTERN).strftime("%H:%M")
+    return "" if clock == "00:00" else clock
+
+
 def today() -> date:
     """Today's date in Eastern time."""
     return datetime.now(EASTERN).date()

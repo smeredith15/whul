@@ -520,10 +520,12 @@ details.boardday > summary .count { color: var(--muted); font-weight: 400;
    "v" rather than both hugging the left and leaving a gap in the middle. Not
    an event, which has one side and would otherwise push its own heading off
    the right edge. */
-.tie:not(.event) > .side:last-of-type { text-align: right; }
-.tie:not(.event) > .side:last-of-type .holders { justify-content: flex-end; }
+.tie > .v + .side { text-align: right; }
+.tie > .v + .side .holders { justify-content: flex-end; }
 .tie .comp { grid-column: 1 / -1; font-size: 10.5px; color: var(--muted);
   letter-spacing: .02em; }
+.tie .comp .kick { color: var(--text-secondary); font-weight: 600;
+  font-variant-numeric: tabular-nums; }
 .tie .holders { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 
 /* One drafted asset: a face and its owner's initials in an oval tinted to that
@@ -539,13 +541,14 @@ details.boardday > summary .count { color: var(--muted); font-weight: 400;
   color: var(--text-primary); }
 .holder .avatar, .holder .badged { flex: 0 0 auto; }
 
-/* A phone gets one column, which is the only honest way to fit two sides and
-   six faces into 390px. The "v" becomes a rule between them. */
+/* A phone keeps the two sides either side of the "v", as a fixture is read,
+   just tighter: each side takes half the row and its faces wrap inside it,
+   rather than the second side dropping under the first. */
 @media (max-width: 620px) {
-  .tie, .tie.event { grid-template-columns: 1fr; gap: 4px; padding-left: 8px; }
-  .tie > .side:last-of-type { text-align: left; }
-  .tie > .side:last-of-type .holders { justify-content: flex-start; }
-  .tie .v { padding: 0; }
+  .tie { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 6px; padding-left: 8px; }
+  .tie.event { grid-template-columns: 1fr; }
+  .tie .sidename { font-size: 12px; }
 }
 
 /* The calculator. A form, not a chart: the numbers it produces are the point,

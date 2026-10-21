@@ -5335,6 +5335,15 @@ def _board_side(side: dict, profiles: dict, owners: dict, slots: dict) -> str:
     )
 
 
+def _kickoff_text(clock: str) -> str:
+    """``19:30`` as ``7:30 PM``, the way a fixture list prints it; "" for none."""
+    hour, _, minute = str(clock or "").partition(":")
+    if not (hour.isdigit() and minute.isdigit()):
+        return ""
+    h = int(hour)
+    return f"{(h % 12) or 12}:{minute} {'AM' if h < 12 else 'PM'}"
+
+
 def _fixture_board(store, season, latest, profiles, managers) -> str:
     """Every upcoming fixture with a drafted asset in it, both sides named.
 
@@ -5372,9 +5381,13 @@ def _fixture_board(store, season, latest, profiles, managers) -> str:
         label = "" if entry["event"] else _board_label(entry)
         held = " ".join(entry["owners"])
         kind = " event" if entry["event"] else ""
+        kickoff = _kickoff_text(entry.get("time", ""))
         # Padded with spaces so a filter can test for " SS " and not match
         # a manager whose id is a substring of another's.
-        comp = f'<div class="comp">{escape(label)}</div>' if label else ""
+        detail = [f'<span class="kick">{escape(kickoff)}</span>'] if kickoff else []
+        detail += [escape(label)] if label else []
+        comp = (f'<div class="comp">{" &middot; ".join(detail)}</div>'
+                if detail else "")
         days.setdefault(entry["date"], []).append(
             f'<div class="tie{kind}" data-owners=" {escape(held)} ">'
             f'{sides}{middle}{comp}</div>'
@@ -5402,6 +5415,7 @@ def _fixture_board(store, season, latest, profiles, managers) -> str:
     return f"""
 <div class="card" id="fixtures">
   <h2>Who plays whom</h2>
+  <p class="sub">Kickoff times are Eastern.</p>
   <div class="chips" role="group" aria-label="Filter by owner">{chips}</div>
   <div class="board">{"".join(blocks)}</div>
   <p class="sub board-empty" hidden>No upcoming fixture has one of theirs in

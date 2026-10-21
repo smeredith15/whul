@@ -40,7 +40,7 @@ from datetime import date
 import pandas as pd
 import requests
 
-from whul.clock import eastern_day
+from whul.clock import eastern_clock, eastern_day
 from whul.sources.flashscore import (
     PAGE_HEADERS, REQUEST_PAUSE, SPORT_BASEBALL, SPORT_BASKETBALL, SPORT_HOCKEY,
     SPORT_SOCCER, SPORT_TENNIS, STATUS_COMPLETED, TIMEOUT, _field, _get,
@@ -179,6 +179,14 @@ def _when(segment: str) -> date | None:
         return None
 
 
+def _kickoff(segment: str) -> str:
+    """The kickoff on the Eastern clock, ``HH:MM``, or "" if the feed has none."""
+    try:
+        return eastern_clock(int(_field(segment, "AD")))
+    except (TypeError, ValueError):
+        return ""
+
+
 #: ``AB`` is the match's stage: scheduled, in play, finished. A match in play is
 #: still what a manager is watching, so it stays on the list until it is over.
 STAGE_LIVE = "2"
@@ -219,6 +227,7 @@ def iter_fixtures(raw: str):
         yield {
             "match_uid": _field(segment, "AA") or "",
             "game_date": when.isoformat(),
+            "start_time": _kickoff(segment),
             "home_team": home,
             "away_team": away,
             "competition": competition,
@@ -298,6 +307,7 @@ def iter_results(raw: str):
         yield {
             "match_uid": _field(segment, "AA") or "",
             "game_date": when.isoformat(),
+            "start_time": _kickoff(segment),
             "home_team": home,
             "away_team": away,
             "competition": competition,
@@ -422,6 +432,7 @@ def iter_page_fixtures(raw: str, competition: str = "", country: str = ""):
         yield {
             "match_uid": _field(segment, "AA") or "",
             "game_date": when.isoformat(),
+            "start_time": _kickoff(segment),
             "home_team": home,
             "away_team": away,
             "competition": competition,
@@ -692,6 +703,7 @@ def iter_tennis_fixtures(raw: str):
         yield {
             "match_uid": _field(segment, "AA") or "",
             "game_date": when.isoformat(),
+            "start_time": _kickoff(segment),
             "home_team": home,
             "away_team": away,
             # The tournament, and the round where the header carries one. A

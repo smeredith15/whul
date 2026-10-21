@@ -258,3 +258,39 @@ def test_rewriting_the_url_cannot_take_the_page_down():
 
     body = charts.SCRIPT[charts.SCRIPT.index("function remember()"):]
     assert "try {" in body[:400] and "catch" in body[:600]
+
+
+def test_a_day_is_in_kickoff_order_and_says_when():
+    from whul.site.build import _fixture_board
+
+    store = open_store(":memory:")
+    rostered(store, "team-arsenal", "Team", "Arsenal", "Premier League")
+    rostered(store, "team-chelsea", "Team", "Chelsea", "Premier League", index=2)
+    late = {**fixture("Flashscore/1", "arsenal", "Everton", 1), "start_time": "15:00"}
+    early = {**fixture("Flashscore/1", "chelsea", "Fulham", 1), "start_time": "07:30"}
+    held(store, "Flashscore/1", late, early)
+    board = fixtures.board(store, "2026-27", SOON)
+    assert [e["time"] for e in board] == ["07:30", "15:00"]
+    html = _fixture_board(store, "2026-27", SOON, {}, ["SS", "TG"])
+    assert html.index("7:30 AM") < html.index("3:00 PM")
+
+
+def test_a_phone_keeps_the_two_sides_either_side_of_the_v():
+    from whul.site import theme
+
+    css = theme.CSS if hasattr(theme, "CSS") else "".join(
+        v for v in vars(theme).values() if isinstance(v, str) and ".tie" in v)
+    phone = css[css.index("@media (max-width: 620px) {\n  .tie"):]
+    phone = phone[:phone.index("}\n}") + 3]
+    assert "minmax(0, 1fr) auto minmax(0, 1fr)" in phone
+    assert "text-align: left" not in phone
+
+
+def test_the_away_side_is_the_one_after_the_v():
+    """Aligned by position it was the competition line that matched
+    "last of type", and the away side hugged the "v" on every row."""
+    from whul.site import theme
+
+    css = "".join(v for v in vars(theme).values() if isinstance(v, str) and ".tie" in v)
+    assert ".tie > .v + .side { text-align: right; }" in css
+    assert "last-of-type { text-align: right" not in css
