@@ -239,3 +239,23 @@ def test_the_eastern_day_of_a_stamp():
     assert eastern_day("2026-09-30T18:00Z") == date(2026, 9, 30)
     assert eastern_day("2026-09-30") == date(2026, 9, 30), "a date is a day already"
     assert eastern_day(None) is None and eastern_day("") is None
+
+
+def test_a_kickoff_is_kept_on_the_eastern_clock_from_every_source_shape():
+    """nflverse gives ``gametime`` already in Eastern; ESPN gives the moment
+    in UTC; a feed with neither has no time to give."""
+    nfl = fixtures.harvest("NFL", "2026-27", schedule(gametime="20:15"),
+                           date(2026, 9, 8), "now")
+    assert set(nfl["start_time"]) == {"20:15"}
+    espn = fixtures.harvest("NCAAF", "2026-27", schedule(start="2026-09-20T23:30Z"),
+                            date(2026, 9, 8), "now")
+    assert set(espn["start_time"]) == {"19:30"}
+    none = fixtures.harvest("Test", "2026-27", schedule(), date(2026, 9, 8), "now")
+    assert set(none["start_time"]) == {""}
+
+
+def test_a_kickoff_still_to_be_set_is_not_a_midnight_one():
+    """ESPN files a game with no time yet at midnight Eastern."""
+    got = fixtures.harvest("NCAAF", "2026-27", schedule(start="2026-09-20T04:00Z"),
+                           date(2026, 9, 8), "now")
+    assert set(got["start_time"]) == {""}

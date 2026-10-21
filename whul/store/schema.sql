@@ -297,6 +297,8 @@ CREATE TABLE IF NOT EXISTS fixtures (
     -- The round, where a feed states one. A tennis quarter-final is not a
     -- first round, and the competition alone does not say which.
     round_name   TEXT NOT NULL DEFAULT '',
+    -- The kickoff on the Eastern clock, HH:MM, or '' where the feed has none.
+    start_time   TEXT NOT NULL DEFAULT '',
     fetched_at   TEXT NOT NULL,
     PRIMARY KEY (season, league, team_key, fixture_date, opponent)
 );

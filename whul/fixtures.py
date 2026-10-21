@@ -40,10 +40,33 @@ AWAY_COLUMNS = ("away_team", "away")
 SCORE_COLUMNS = (("home_score", "away_score"), ("points_for", "points_against"))
 COMPETITION_COLUMNS = ("competition", "notes", "game_type", "season_type")
 
+#: The kickoff, already on the Eastern clock as ``HH:MM`` (Flashscore's rows
+#: and nflverse's ``gametime``), or a full UTC moment to put on it (ESPN).
+TIME_COLUMNS = ("start_time", "gametime")
+MOMENT_COLUMNS = ("start",)
+
 FIXTURE_COLUMNS = (
     "season", "league", "team_key", "fixture_date", "opponent", "home",
-    "competition", "round_name", "fetched_at",
+    "competition", "round_name", "start_time", "fetched_at",
 )
+
+
+def _kickoffs(frame: pd.DataFrame) -> pd.Series:
+    """Each row's Eastern kickoff as ``HH:MM``, or "" where the feed has none."""
+    from whul.clock import eastern_clock
+
+    column = _first(frame, TIME_COLUMNS)
+    if column is not None:
+        def clock(value) -> str:
+            text = str(value or "").strip()
+            hour, _, minute = text.partition(":")
+            return (f"{int(hour):02d}:{minute[:2]}"
+                    if hour.isdigit() and minute[:2].isdigit() else "")
+        return frame[column].map(clock)
+    column = _first(frame, MOMENT_COLUMNS)
+    if column is not None:
+        return frame[column].map(eastern_clock)
+    return pd.Series("", index=frame.index)
 
 
 def _first(frame: pd.DataFrame, candidates) -> str | None:
@@ -112,6 +135,7 @@ def harvest(league: str, season: str, frame: pd.DataFrame,
         return empty
 
     competition = _first(work, COMPETITION_COLUMNS)
+    kickoff = _kickoffs(work)
     spell = (lambda s: rename.get(s, s)) if rename else (lambda s: s)
     rows = []
     for side, other, home in ((home_col, away_col, 1), (away_col, home_col, 0)):
@@ -129,6 +153,7 @@ def harvest(league: str, season: str, frame: pd.DataFrame,
             "round_name": (
                 work["round"].astype(str) if "round" in work.columns else ""
             ),
+            "start_time": kickoff,
             "fetched_at": fetched_at,
         })
         rows.append(block)
@@ -173,6 +198,7 @@ def tour_rows(league: str, season: str, entrants: dict[str, str],
             "home": 1,
             "competition": str(event["name"]),
             "round_name": "",
+            "start_time": "",
             "fetched_at": fetched_at,
         })
     if not rows:
@@ -199,7 +225,7 @@ def replace(store, season: str, league: str, rows: pd.DataFrame) -> int:
     ready = rows.copy()
     # A caller that predates a column should not have to know about it. Only
     # the optional ones are filled: a row missing a key still fails, loudly.
-    for column in ("competition", "round_name"):
+    for column in ("competition", "round_name", "start_time"):
         if column not in ready.columns:
             ready[column] = ""
     return store.insert_frame(
@@ -474,8 +500,8 @@ def board(store, season: str, as_of: date | str,
             where += " AND fixture_date <= ?"
             params.append(str(start + timedelta(days=days - 1)))
     rows = store.query(
-        "SELECT league, team_key, fixture_date, opponent, home, competition "
-        f"FROM fixtures WHERE {where} ORDER BY fixture_date",
+        "SELECT league, team_key, fixture_date, opponent, home, competition, "
+        f"start_time FROM fixtures WHERE {where} ORDER BY fixture_date",
         tuple(params),
     )
     if rows.empty:
@@ -500,7 +526,7 @@ def board(store, season: str, as_of: date | str,
             key = (when, feed, competition, "")
             entry = matches.setdefault(key, {
                 "date": when, "feed": feed, "competition": competition,
-                "event": True, "sides": [{"name": competition, "keys": []}],
+                "time": "", "event": True, "sides": [{"name": competition, "keys": []}],
             })
             if mine not in entry["sides"][0]["keys"]:
                 entry["sides"][0]["keys"].append(mine)
@@ -511,10 +537,12 @@ def board(store, season: str, as_of: date | str,
         away = against if row.home else mine
         entry = matches.setdefault(key, {
             "date": when, "feed": feed, "competition": competition,
-            "event": False,
+            "time": "", "event": False,
             "sides": [{"name": home, "keys": [home]},
                       {"name": away, "keys": [away]}],
         })
+        # Either row of a tie may be the one that knows the kickoff.
+        entry["time"] = entry["time"] or str(row.start_time or "")
         # The display spelling, which only the *other* row of a tie carries:
         # `team_key` is normalized and `opponent` is not.
         spelling.setdefault(against, str(row.opponent))
@@ -541,8 +569,10 @@ def board(store, season: str, as_of: date | str,
             continue
         out.append({**entry, "sides": sides,
                     "owners": sorted({o for s in sides for o in s["owners"]})})
-    return sorted(out, key=lambda e: (e["date"], e["competition"],
-                                      e["sides"][0]["name"]))
+    # In kickoff order inside a day; a game whose time is not set yet after
+    # the ones that have one.
+    return sorted(out, key=lambda e: (e["date"], e.get("time") or "99:99",
+                                      e["competition"], e["sides"][0]["name"]))
 
 
 def _titled(key: str) -> str:

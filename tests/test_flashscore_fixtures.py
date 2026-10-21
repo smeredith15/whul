@@ -1040,3 +1040,10 @@ def test_a_game_in_play_stays_on_the_list_until_it_is_over():
             f"AE÷Boston Red Sox¬AF÷New York Yankees¬")
     got = {m["home_team"] for m in feed.iter_fixtures(payload(header("USA: MLB"), live, over))}
     assert got == {"Atlanta Braves"}
+
+
+def test_an_upcoming_match_carries_its_kickoff_on_the_eastern_clock():
+    """18:00 UTC on 20 September is 2 pm in New York."""
+    raw = payload(header("ENGLAND: Premier League"),
+                  match("a1", "Arsenal", "Chelsea", SOON))
+    assert list(feed.iter_fixtures(raw))[0]["start_time"] == "14:00"
