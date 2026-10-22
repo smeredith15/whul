@@ -332,8 +332,21 @@ def score_teams(schedule: pd.DataFrame) -> pd.DataFrame:
     games = _team_games(schedule)
     # Drop pseudo-teams that survive the exhibition filter (All-Star squads play
     # a single game and would otherwise enter the benchmark pool as real teams).
-    counts = games.groupby("team").size()
-    games = games[games["team"].isin(counts[counts >= MIN_TEAM_GAMES].index)]
+    #
+    # Against how much the season has been played, not a fixed ten: an All-Star
+    # squad plays once in February, when a real club has played fifty-odd, but
+    # in the first week of the season every real club has played one or two,
+    # and a floor of ten dropped all thirty -- the NBA team pull failed every
+    # night from opening night, and no club scored at all.
+    if not games.empty:
+        counts = games.groupby(["season", "team"]).size()
+        floor = counts.groupby(level="season").transform(
+            lambda c: min(MIN_TEAM_GAMES, c.median() / 2))
+        kept = counts[counts >= floor].index
+        games = games[pd.MultiIndex.from_frame(games[["season", "team"]]).isin(kept)]
+    if games.empty:
+        return pd.DataFrame(columns=["season", "team", *TEAM_WEIGHTS,
+                                     "total_points", "league"])
     summary = games.groupby(["season", "team"], as_index=False).apply(
         lambda g: pd.Series(
             {

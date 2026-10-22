@@ -296,3 +296,25 @@ def test_playoff_rate_is_per_game_his_club_played():
     assert row["bonus_detail"][0]["team_games"] == 4.0
     assert row["postseason_rate"] == pytest.approx(
         row["bonus_detail"][0]["points"] / 4)
+
+
+def test_a_club_one_game_into_the_season_is_scored():
+    """A fixed floor of ten games dropped every club in the first fortnight,
+    and the NBA team pull failed every night from opening night."""
+    out = score_teams(pd.DataFrame([game("BOS", "MIL", 120, 100),
+                                    game("NY", "PHI", 101, 99)])).set_index("team")
+    assert set(out.index) == {"BOS", "MIL", "NY", "PHI"}
+    assert out.loc["BOS", "reg_wins"] == 1
+
+
+def test_a_one_game_squad_in_a_played_season_is_still_dropped():
+    """An All-Star squad the exhibition filter misses plays once in February,
+    when a real club has played dozens."""
+    played = [game("BOS", "MIL", 100 + i % 7, 100) for i in range(40)]
+    sched = pd.DataFrame(played + [game("LEB", "GIA", 184, 175)])
+    assert not {"LEB", "GIA"} & set(score_teams(sched)["team"])
+
+
+def test_no_games_is_an_empty_table_not_a_crash():
+    out = score_teams(pd.DataFrame([game("BOS", "MIL", 0, 0, completed=False)]))
+    assert out.empty and "total_points" in out.columns
