@@ -1578,6 +1578,41 @@ def test_a_team_schedule_asks_for_the_postseason_by_name(monkeypatch):
     assert sorted(rows["season_type"]) == [2, 3]
 
 
+def test_a_schedule_still_in_its_preseason_asks_for_the_regular_season(monkeypatch):
+    """October 2026: unasked, the men's basketball schedules held no game."""
+    from whul.sources import espn
+
+    def event(event_id, season_type):
+        return {"id": event_id, "date": "2026-11-10T00:00Z", "name": "x",
+                "seasonType": {"id": season_type}, "competitions": [{
+                    "status": {"type": {"completed": False}},
+                    "competitors": [
+                        {"homeAway": "home", "team": {"displayName": "Duke Blue Devils"}},
+                        {"homeAway": "away", "team": {"displayName": "Texas Longhorns"}}]}]}
+
+    asked = []
+
+    def fake(url, params, cache_key=None):
+        asked.append(params.get("seasontype"))
+        if params.get("seasontype") == 2:
+            return {"events": [event("2", 2), event("3", 2)]}
+        if params.get("seasontype") == 3:
+            return {"events": []}
+        return {"events": [event("1", 1)]}
+
+    monkeypatch.setattr(espn, "_get", fake)
+    rows = espn.load_team_schedule("ncaam", "150", 2027)
+    assert sorted(rows["game_id"]) == ["1", "2", "3"]
+    assert asked == [None, 2, 3]
+
+    # A regular season already in the answer is not asked for twice.
+    asked.clear()
+    monkeypatch.setattr(espn, "_get", lambda url, params, cache_key=None: (
+        asked.append(params.get("seasontype")) or {"events": [event("2", 2)]}))
+    assert list(espn.load_team_schedule("ncaam", "150", 2027)["game_id"]) == ["2"]
+    assert asked == [None, 3]
+
+
 def test_a_school_named_alone_finds_its_team(monkeypatch):
     """The 2026 softball roster says "Texas"; ESPN says "Texas Longhorns"."""
     from whul.sources import espn

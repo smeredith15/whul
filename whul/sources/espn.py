@@ -581,6 +581,23 @@ def load_team_schedule(league: str, team_id: str, season: int,
     payload = _get(url, {"season": season},
                    cache_key=key)   # a season in progress changes daily
     events = list(payload.get("events", []))
+
+    def merge(more: dict) -> None:
+        seen = {str(e.get("id", "")) for e in events}
+        events.extend(e for e in more.get("events", [])
+                      if str(e.get("id", "")) not in seen)
+
+    # The regular season, asked for by name when the unasked answer has none of
+    # it. Unasked, the endpoint answers with the season type ESPN's calendar is
+    # in today, and before the opener that is the preseason: in late October
+    # 2026 the men's basketball schedules came back without a game for any of
+    # ten rostered teams, while the women's -- whose calendar has no preseason
+    # -- listed theirs from November on. A regular season already in the answer
+    # costs nothing extra.
+    if not any(int((e.get("seasonType") or {}).get("id", 2) or 2) == 2
+               for e in events):
+        merge(_get(url, {"season": season, "seasontype": 2},
+                   cache_key=f"{key}/regular" if key else None))
     # The postseason, asked for by name. Unasked, the endpoint answered with
     # the regular season alone for football: a probe of the 2025 season found
     # no playoff game for any of ten rostered teams, the two finalists among
@@ -598,8 +615,7 @@ def load_team_schedule(league: str, team_id: str, season: int,
               f"({type(exc).__name__}) -- its playoff games will be missing",
               flush=True)
         post = {}
-    seen = {str(e.get("id", "")) for e in events}
-    events += [e for e in post.get("events", []) if str(e.get("id", "")) not in seen]
+    merge(post)
     rows: list[dict] = []
     for event in events:
         competition = (event.get("competitions") or [{}])[0]
