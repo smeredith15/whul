@@ -1468,12 +1468,21 @@ def _harvest_ahead(source, as_of: date, verbose: bool, names, upcoming) -> None:
             print(f"  {source.league}: no schedule published yet for the coming "
                   f"season ({type(exc).__name__})", flush=True)
         return
-    if raw is None or raw.empty:
+    held = len(upcoming)
+    if raw is not None and not raw.empty:
+        _harvest(source, raw, as_of, ahead, upcoming)
+    if not verbose:
         return
-    _harvest(source, raw, as_of, ahead, upcoming)
-    if verbose and upcoming:
+    if len(upcoming) > held:
         print(f"  {source.league}: season not started; kept "
               f"{len(upcoming[-1])} upcoming fixture row(s)", flush=True)
+    else:
+        # Said, because it was not: in October 2026 the men's basketball
+        # schedules came back empty while the women's filled, and the log of
+        # the run that missed them did not mention NCAAM fixtures at all.
+        print(f"  {source.league}: season not started, and its schedule "
+              f"listed no upcoming game ({0 if raw is None else len(raw)} "
+              f"row(s) read)", flush=True)
 
 
 #: Which feed serves each series' calendar. F1 comes from the same place its
