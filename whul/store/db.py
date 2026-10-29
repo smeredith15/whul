@@ -314,6 +314,32 @@ class Store:
             params.append(league)
         return {str(club) for club in self.query(sql, tuple(params))["club"]}
 
+    def record_final(self, competition: str, season: int,
+                     decided_on: date | str, source: str = "") -> bool:
+        """Write down the day a championship was seen decided.
+
+        The earliest sighting stands: a replay of an earlier day that already
+        holds the final moves the day back, and a later run seeing the same
+        final again changes nothing. True where the stored day moved.
+        """
+        when = _as_text(decided_on)
+        held = self.query(
+            "SELECT decided_on FROM finals WHERE competition = ? AND season = ?",
+            (str(competition), int(season)))
+        if not held.empty and str(held["decided_on"].iloc[0]) <= when:
+            return False
+        self.upsert("finals", [{
+            "competition": str(competition), "season": int(season),
+            "decided_on": when, "source": source, "recorded_at": _now(),
+        }], keys=("competition", "season"))
+        return True
+
+    def read_finals(self) -> dict[tuple[str, int], date]:
+        """Every championship seen decided, by (competition, season)."""
+        rows = self.query("SELECT competition, season, decided_on FROM finals")
+        return {(str(c), int(s)): date.fromisoformat(str(d)[:10])
+                for c, s, d in rows.itertuples(index=False, name=None)}
+
     def _learn_roles(self, rows: Iterable[dict]) -> int:
         """Keep the position a scored row carries, on the asset itself.
 

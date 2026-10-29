@@ -1955,9 +1955,12 @@ SOURCES: dict[str, Source] = _register(
 
 #: Run in this order. Cheap, verified sources first, so a failure late in the
 #: list still leaves a reviewable set of the leagues that did work.
+#: Each league's team pull ahead of its players: the team pull is where a
+#: championship is seen decided (``whul.finals``), and the players' bonuses
+#: held for it are credited the same night rather than the next.
 ORDER = [
-    "nfl", "nfl-teams", "tennis", "pga", "motorsports",
-    "nhl", "nhl-teams", "mlb", "mlb-teams", "nba", "nba-teams",
+    "nfl-teams", "nfl", "tennis", "pga", "motorsports",
+    "nhl-teams", "nhl", "mlb-teams", "mlb", "nba-teams", "nba",
     "soccer-players", "intl-soccer",
     *NCAA_CATEGORIES, *SOCCER_CATEGORIES,
 ]

@@ -34,6 +34,7 @@ from whul import resolve as resolver
 from whul.config.league import covered_by
 from whul.normalize import apply_benchmarks
 from whul.pipeline import write_daily_scores
+from whul.scoring import completion
 from whul.store import benchmarks as store_benchmarks
 from whul.store import monotonic
 from whul.store.db import Store, _now
@@ -91,6 +92,10 @@ def ingest(
     if assets.empty:
         report.problems.append("nothing rostered in this league; skipped")
         return report
+
+    # Every championship already seen decided, so a bonus held until one is
+    # over is credited from that day -- including the day this pull scores.
+    completion.remember(store.read_finals())
 
     notes: list[str] = []
     upcoming: list[pd.DataFrame] = []
@@ -1230,6 +1235,28 @@ def _scored_on(score, kept, as_of: date):
     return score(kept, as_of=as_of) if takes else score(kept)
 
 
+def _see_finals(source, as_of: date, store: Store | None, verbose: bool,
+                raw: pd.DataFrame | None = None,
+                scored: pd.DataFrame | None = None) -> None:
+    """Note any championship this pull shows decided, as of the day it scores.
+
+    The day scored rather than the game's own: a frame cut to ``as_of`` holds
+    the final only once it has been played, and a feed with no dates in it is
+    refused a past day before it gets here (``CannotReplay``). So the earliest
+    day a pull sees it is the day it was over by, and replaying an earlier day
+    can only move the record back. See ``whul.finals``.
+    """
+    from whul import finals
+
+    for competition, season in finals.seen(source.key, raw=raw, scored=scored):
+        completion.decide(competition, season, as_of)
+        moved = store.record_final(competition, season, as_of, source.key) \
+            if store is not None else False
+        if moved and verbose:
+            print(f"  {source.league}: the {season} {competition} is decided; "
+                  f"bonuses held for it are credited from {as_of}", flush=True)
+
+
 def _takes(func, name: str) -> bool:
     import inspect
 
@@ -1323,7 +1350,12 @@ def _pull(
         refused = _can_answer_for(kept, as_of, today or as_of)
         if refused:
             raise CannotReplay(refused)
-        scored = _scored_on(score, _up_to(kept, as_of), as_of)
+        cut = _up_to(kept, as_of)
+        # Before the scorer, so a final in this very frame releases the bonus
+        # it held; and after, for the leagues whose series are counted by it.
+        _see_finals(source, as_of, store, verbose, raw=cut)
+        scored = _scored_on(score, cut, as_of)
+        _see_finals(source, as_of, store, verbose, scored=scored)
         if (scored is None or scored.empty) and notes is not None:
             notes.append(_why_nothing_scored(raw, kept, source.league))
         if not getattr(source, "cumulative", False):
