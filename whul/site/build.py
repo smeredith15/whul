@@ -33,6 +33,7 @@ from whul.config.league import (
     manager_name, umbrella_for,
 )
 from whul import fixtures, pipeline
+from whul.scoring import completion
 from whul.site import charts, icons, images, pwa, rulebook, theme
 from whul.store import benchmarks as bm
 from whul.store.db import Store
@@ -4880,6 +4881,9 @@ def build(
 ) -> dict:
     """Write the whole site. Returns what it wrote, for the CLI to report."""
     out = Path(out or DEFAULT_OUT)
+    # Which championships have been seen decided, so a season marker and a
+    # held bonus's date read the day the trophy was lifted where it is known.
+    completion.remember(store.read_finals())
 
     progression = pipeline.progression(store, season)
     if progression.empty:

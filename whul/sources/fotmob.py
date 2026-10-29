@@ -514,6 +514,11 @@ def match_lines(details: dict) -> list[dict]:
             "date": when,
             "competition": str(general.get("leagueName") or ""),
             "competition_id": general.get("parentLeagueId") or general.get("leagueId"),
+            # "Final", "Semi-final", "Round 12": what tells a European final
+            # from the ties before it (``whul.finals``). Blank where FotMob
+            # names none, and a blank releases nothing early.
+            "round": str(general.get("leagueRoundName")
+                         or general.get("matchRound") or ""),
             "player_id": pid,
             "player": str(entry.get("name") or ""),
             "team_id": sides[home]["id"],

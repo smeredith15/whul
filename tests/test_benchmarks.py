@@ -284,7 +284,9 @@ def test_every_source_builds_without_touching_the_network():
 
 def test_resolving_nothing_gives_the_cheapest_verified_sources_first():
     keys = [s.key for s in resolve(None)]
-    assert keys[0] == "nfl"
+    # The NFL's clubs ahead of its players: the same nflverse files, and the
+    # team pull is where a Super Bowl is seen decided (whul.finals).
+    assert keys[:2] == ["nfl-teams", "nfl"]
     assert keys.index("tennis") < keys.index("nba")
 
 

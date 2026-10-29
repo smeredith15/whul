@@ -284,6 +284,20 @@ CREATE TABLE IF NOT EXISTS admin_overrides (
 -- `team_key` is `whul.resolve.normalize_team` applied to the name the feed
 -- used, which is the same key everything else in the project matches on.
 --
+-- The day a competition's championship was seen decided: a World Series won,
+-- a Finals series won, a Super Bowl or a European final played. A bonus held
+-- until the competition is over is credited from this day rather than from
+-- the declared date in ``whul.scoring.completion``, which stays the fallback.
+-- The earliest sighting is kept.
+CREATE TABLE IF NOT EXISTS finals (
+    competition  TEXT NOT NULL,
+    season       INTEGER NOT NULL,
+    decided_on   TEXT NOT NULL,
+    source       TEXT NOT NULL DEFAULT '',
+    recorded_at  TEXT NOT NULL,
+    PRIMARY KEY (competition, season)
+);
+
 -- Rows are replaced wholesale per league on each pull, so a postponed game
 -- disappears rather than lingering as a fixture that will never be played.
 CREATE TABLE IF NOT EXISTS fixtures (

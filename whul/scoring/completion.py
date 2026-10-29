@@ -21,6 +21,14 @@ when it moves. A date that is too late costs a few days of holding a bonus that
 was already earned. One that is too early credits a rate that can still fall,
 which is the thing this exists to prevent -- so where the two are in tension the
 later date wins.
+
+**Seen decided, where a feed can say.** Some can after all: a club with four
+World Series wins, a Finals series won, a Super Bowl with a score, a European
+final played. ``whul.finals`` reads those off the pulls that already carry
+them and records the day, and from that day the competition is over here too.
+The declared date stays as the fallback for every competition nobody has seen
+decided -- and as the ceiling, so a sighting can only ever bring a release
+forward.
 """
 
 from __future__ import annotations
@@ -74,19 +82,51 @@ FINISHED_BY: dict[str, tuple[int, int]] = {
 NAMED_FOR_ITS_START = {"NFL"}
 
 
+#: The day each (competition, season) was seen decided, from ``whul.finals``.
+#: Filled by whoever holds the store -- the nightly pull and the site build --
+#: and by the pull itself the moment it sees a final.
+DECIDED: dict[tuple[str, int], date] = {}
+
+
+def decide(competition: str, season: int, day: date) -> None:
+    """Note that this competition's season was over by ``day``."""
+    key = (str(competition), int(season))
+    held = DECIDED.get(key)
+    DECIDED[key] = day if held is None else min(held, day)
+
+
+def remember(decided: dict[tuple[str, int], date]) -> None:
+    """Take every sighting the store holds, keeping the earliest of each."""
+    for (competition, season), day in (decided or {}).items():
+        decide(competition, season, day)
+
+
+def declared(competition: str, season: int) -> date | None:
+    """The written-down date alone, whatever has been seen."""
+    when = FINISHED_BY.get(str(competition))
+    if when is None:
+        return None
+    year = int(season) + 1 if competition in NAMED_FOR_ITS_START else int(season)
+    return date(year, *when)
+
+
 def finishes(competition: str, season: int) -> date | None:
     """The date this competition's season is certainly over, or None.
+
+    The day it was seen decided where it has been, and the declared date
+    otherwise -- whichever is sooner, so a sighting can only bring the day
+    forward.
 
     ``None`` for a competition with no entry, which callers must read as "not
     known to be finished" rather than as finished. A competition added to
     ``postseason.RULES`` without a date here would otherwise start crediting a
     rate that can still move, silently.
     """
-    when = FINISHED_BY.get(str(competition))
-    if when is None:
+    end = declared(competition, season)
+    if end is None:
         return None
-    year = int(season) + 1 if competition in NAMED_FOR_ITS_START else int(season)
-    return date(year, *when)
+    seen = DECIDED.get((str(competition), int(season)))
+    return end if seen is None else min(seen, end)
 
 
 def is_complete(competition: str, season: int, as_of: date | None = None) -> bool:
