@@ -218,7 +218,11 @@ LEAGUE_START: dict[str, date] = {
     "NFL": date(2026, 9, 9),
     "NBA": date(2026, 10, 20),
     "NHL": date(2026, 9, 29),
-    "NCAAM": date(2026, 11, 10),
+    # The 1st for both. The men's read the 10th, which was never the opener:
+    # the 2026-27 season's full opening day was 2 November, and every rostered
+    # men's team was due to play between the 4th and the 8th -- each would have
+    # lost its first game or two while the pull reported no season played.
+    "NCAAM": date(2026, 11, 1),
     "NCAAW": date(2026, 11, 1),
     # Both play inside the league year but on the far side of New Year, which
     # is why the year here is 2027 and not a typo.
