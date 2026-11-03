@@ -4251,6 +4251,97 @@ def cmd_validate(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_recap(args: argparse.Namespace) -> int:
+    """Build the weekly recap, and send it where the environment says."""
+    import os
+    from pathlib import Path as _Path
+
+    from whul import recap
+    from whul.store import open_store
+
+    from datetime import date as _date
+
+    store = open_store(args.db)
+    as_of = _date.fromisoformat(args.as_of) if args.as_of else None
+    try:
+        week = recap.build(store, args.season, as_of)
+    except ValueError as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
+    site_url = args.site_url or os.environ.get("RECAP_SITE_URL", "")
+    page = recap.render(week, site_url)
+    out = _Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page)
+    print(f"\n  {week.title}: {week.headline()}\n  page   {out}")
+
+    png = None
+    if args.png:
+        try:
+            recap.to_png(page, args.png, executable=args.chrome)
+            png = _Path(args.png).read_bytes()
+            print(f"  image  {args.png} ({len(png) // 1024:,} KB)")
+        except Exception as exc:  # noqa: BLE001 -- the page still goes out
+            print(f"  image  not made ({type(exc).__name__}: {exc}); sending "
+                  f"the page alone", file=sys.stderr)
+    if not args.send:
+        return 0
+
+    env = os.environ
+    sent, failed = [], []
+    if env.get("RECAP_SMTP_USER") and env.get("RECAP_SMTP_PASSWORD"):
+        try:
+            to = recap.send_email(week, page, png, {
+                "host": env.get("RECAP_SMTP_HOST") or "smtp.gmail.com",
+                "port": env.get("RECAP_SMTP_PORT") or 465,
+                "user": env["RECAP_SMTP_USER"],
+                "password": env["RECAP_SMTP_PASSWORD"],
+                "to": env.get("RECAP_TO") or env["RECAP_SMTP_USER"],
+                "from": env.get("RECAP_FROM", ""),
+            }, site_url)
+            sent.append(f"email to {to.count(',') + 1} address(es)")
+        except Exception as exc:  # noqa: BLE001 -- try the other channel
+            failed.append(f"email ({type(exc).__name__}: {exc})")
+    if env.get("RECAP_NTFY_TOPIC"):
+        try:
+            recap.send_push(week, png, env["RECAP_NTFY_TOPIC"],
+                            env.get("RECAP_NTFY_SERVER") or "https://ntfy.sh", site_url)
+            sent.append("push notification")
+        except Exception as exc:  # noqa: BLE001
+            failed.append(f"push ({type(exc).__name__}: {exc})")
+    for line in sent:
+        print(f"  sent   {line}")
+    for line in failed:
+        print(f"  FAILED {line}", file=sys.stderr)
+    if not sent and not failed:
+        print("  nothing sent: set RECAP_SMTP_USER and RECAP_SMTP_PASSWORD for "
+              "email, or RECAP_NTFY_TOPIC for a push notification", file=sys.stderr)
+        return 1
+    return 1 if failed else 0
+
+
+def cmd_recap_due(args: argparse.Namespace) -> int:
+    """Say whether this Publish run is the first one of an Eastern Monday."""
+    import os
+
+    from whul import recap
+
+    token, repo = os.environ.get("GITHUB_TOKEN", ""), os.environ.get("GITHUB_REPOSITORY", "")
+    if not token or not repo:
+        print("GITHUB_TOKEN and GITHUB_REPOSITORY are needed", file=sys.stderr)
+        return 2
+    runs = recap.publish_runs(repo, token, args.created_at)
+    due = recap.first_on_monday(runs, args.run_id)
+    print(f"run {args.run_id} created {args.created_at}: "
+          f"{'the first Publish of a Monday -- recap due' if due else 'no recap'} "
+          f"({len(runs)} Publish run(s) that day)")
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a") as handle:
+            handle.write(f"due={'true' if due else 'false'}\n")
+    return 0
+
+
 def cmd_weekly(args: argparse.Namespace) -> int:
     """Show week-by-week scoring, proving the feed supports incremental updates."""
     if args.league not in WEEKLY:
@@ -4639,6 +4730,23 @@ def main(argv: list[str] | None = None) -> int:
     back.add_argument("--tolerance", default="0.05",
                       help="ignore falls smaller than this (default 0.05)")
     back.set_defaults(func=cmd_backwards)
+
+    rec = sub.add_parser("recap", help="the weekly recap page, and send it")
+    rec.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    rec.add_argument("--season", default="2026-27", help="season to recap")
+    rec.add_argument("--as-of", help="YYYY-MM-DD the week ends on (default: latest)")
+    rec.add_argument("--out", default="recap/recap.html", help="where to write the page")
+    rec.add_argument("--png", help="also render the page to this image")
+    rec.add_argument("--chrome", help="a Chromium to render with, if not Playwright's")
+    rec.add_argument("--site-url", default="", help="link to the site, for the footer")
+    rec.add_argument("--send", action="store_true",
+                     help="email it (RECAP_SMTP_*) and/or push it (RECAP_NTFY_TOPIC)")
+    rec.set_defaults(func=cmd_recap)
+
+    due = sub.add_parser("recap-due", help="is this Publish run Monday's first?")
+    due.add_argument("--run-id", type=int, required=True)
+    due.add_argument("--created-at", required=True, help="the run's created_at")
+    due.set_defaults(func=cmd_recap_due)
 
     site = sub.add_parser("site", help="generate the static site")
     site.add_argument("--db", default="data/whul.sqlite3", help="database path")
