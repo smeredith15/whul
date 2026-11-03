@@ -1,0 +1,108 @@
+# Monday morning: the week's recap, sent the moment Monday's standings exist.
+#
+# Runs after every Publish and decides for itself whether to do anything: only
+# the first Publish of an Eastern Monday whose build succeeded sends one, so a
+# re-run later that morning, or a manual Publish on a Thursday, sends nothing.
+# Built from the database that run saved, so the recap and the site agree.
+#
+# Delivery is whatever the repository's secrets say -- either, both, or (with
+# neither set) nothing but the artifact this run uploads:
+#
+#   Email       RECAP_SMTP_USER, RECAP_SMTP_PASSWORD, and RECAP_TO (comma
+#               separated; the sender's own address when unset). Gmail by
+#               default -- the password is an app password, not the account's
+#               -- and RECAP_SMTP_HOST / RECAP_SMTP_PORT for any other server.
+#   Phone push  RECAP_NTFY_TOPIC: a topic name nobody would guess, subscribed
+#               to in the ntfy app. The image arrives as the notification.
+#
+# A workflow_run trigger only fires from the default branch, so nothing here
+# runs until this file is merged.
+
+name: Weekly recap
+
+on:
+  workflow_run:
+    workflows: ["Publish standings"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      as_of:
+        description: "YYYY-MM-DD the week ends on (empty: the latest standings)"
+        default: ""
+      send:
+        description: "Send it (otherwise build it and keep it as an artifact)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read   # to see the day's other Publish runs
+
+concurrency:
+  group: recap
+  cancel-in-progress: false
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SEASON: "2026-27"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+
+      - name: Is this Monday's first Publish?
+        id: due
+        if: github.event_name == 'workflow_run'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          python -m whul.cli recap-due
+          --run-id "${{ github.event.workflow_run.id }}"
+          --created-at "${{ github.event.workflow_run.created_at }}"
+
+      - name: Restore the database the Publish saved
+        if: github.event_name == 'workflow_dispatch' || steps.due.outputs.due == 'true'
+        run: |
+          mkdir -p data
+          git fetch origin data --depth 1
+          git checkout origin/data -- data/whul.sqlite3
+
+      # For the image. Optional: without it the recap goes out as the page
+      # alone, attached to the email.
+      - name: Install a browser to draw the image
+        if: github.event_name == 'workflow_dispatch' || steps.due.outputs.due == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Build and send the recap
+        if: github.event_name == 'workflow_dispatch' || steps.due.outputs.due == 'true'
+        env:
+          RECAP_SMTP_HOST: ${{ secrets.RECAP_SMTP_HOST }}
+          RECAP_SMTP_PORT: ${{ secrets.RECAP_SMTP_PORT }}
+          RECAP_SMTP_USER: ${{ secrets.RECAP_SMTP_USER }}
+          RECAP_SMTP_PASSWORD: ${{ secrets.RECAP_SMTP_PASSWORD }}
+          RECAP_TO: ${{ secrets.RECAP_TO }}
+          RECAP_FROM: ${{ secrets.RECAP_FROM }}
+          RECAP_NTFY_TOPIC: ${{ secrets.RECAP_NTFY_TOPIC }}
+          RECAP_SITE_URL: ${{ vars.RECAP_SITE_URL || format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
+        run: >-
+          python -m whul.cli recap --season "$SEASON"
+          --as-of "${{ inputs.as_of }}"
+          --out recap/recap.html --png recap/recap.png
+          ${{ (github.event_name == 'workflow_run' || inputs.send) && '--send' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        if: always() && (github.event_name == 'workflow_dispatch' || steps.due.outputs.due == 'true')
+        with:
+          name: weekly-recap
+          path: recap/
+          if-no-files-found: ignore
