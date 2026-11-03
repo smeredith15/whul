@@ -37,8 +37,10 @@ WEEK_DAYS = 7
 #: Rows in the week's top assets.
 TOP_ASSETS = 10
 
-#: Assets shown under each league.
-PER_LEAGUE = 3
+#: Assets shown under each roster category. The club soccer categories each
+#: span three leagues, so they get two places a league.
+PER_CATEGORY = 3
+PER_CATEGORY_WIDE = {"Club Soccer Top 3": 6, "Club Soccer Other": 6}
 
 #: Head-to-head fixtures listed for the week ahead.
 RIVALRIES = 10
@@ -83,6 +85,9 @@ class AssetWeek:
     gained: float
     total: float
     counts: bool
+    #: The roster category the asset is drafted in -- "Tennis" for ATP and
+    #: WTA alike -- which is how the recap groups them, as the rosters do.
+    category: str = ""
 
 
 @dataclass
@@ -99,7 +104,7 @@ class Recap:
     quarter_end: date | None
     closed_quarter: tuple[str, list[tuple[str, float]]] | None
     top_assets: list[AssetWeek]
-    by_league: dict[str, list[AssetWeek]]
+    by_category: dict[str, list[AssetWeek]]
     best_bench: AssetWeek | None
     games_ahead: dict[str, int] = field(default_factory=dict)
     rivalries: list[dict] = field(default_factory=list)
@@ -195,12 +200,13 @@ def build(store: Store, season: str, as_of: date | None = None) -> Recap:
     assets = asset_weeks(store, season, since, latest)
     moved = [a for a in assets if abs(a.gained) >= MOVED]
     top = sorted(moved, key=lambda a: -a.gained)[:TOP_ASSETS]
-    by_league: dict[str, list[AssetWeek]] = {}
+    by_category: dict[str, list[AssetWeek]] = {}
     for item in sorted(moved, key=lambda a: -a.gained):
         if item.gained <= 0:
             break
-        if len(by_league.setdefault(item.league, [])) < PER_LEAGUE:
-            by_league[item.league].append(item)
+        group = item.category or item.league
+        if len(by_category.setdefault(group, [])) < PER_CATEGORY_WIDE.get(group, PER_CATEGORY):
+            by_category[group].append(item)
     bench = [a for a in moved if not a.counts and a.gained > 0]
 
     games, rivals = week_ahead(store, season, latest)
@@ -216,10 +222,18 @@ def build(store: Store, season: str, as_of: date | None = None) -> Recap:
         quarter_label=quarter.label if quarter else "",
         quarter_end=quarter.end if quarter else None,
         closed_quarter=closed, top_assets=top,
-        by_league=dict(sorted(by_league.items())),
+        by_category=dict(sorted(by_category.items(), key=lambda kv: _roster_order(kv[0]))),
         best_bench=max(bench, key=lambda a: a.gained) if bench else None,
         games_ahead=games, rivalries=rivals,
     )
+
+
+def _roster_order(category: str) -> tuple[int, str]:
+    """Where a category sits on a roster page: teams, then players."""
+    from whul.config.league import ALL_SLOTS
+
+    order = list(dict.fromkeys(group.category for group in ALL_SLOTS))
+    return (order.index(category) if category in order else len(order), category)
 
 
 def asset_weeks(store: Store, season: str, since: date | None,
@@ -237,7 +251,7 @@ def asset_weeks(store: Store, season: str, since: date | None,
     was = dict(zip(before["asset_id"], pd.to_numeric(before["scaled_score"],
                                                      errors="coerce").fillna(0.0)))
     owned = store.query(
-        "SELECT o.slot_id, o.asset_id, r.manager_id, a.display_name, a.league "
+        "SELECT o.slot_id, o.asset_id, r.manager_id, r.category, a.display_name, a.league "
         "FROM slot_occupancy o JOIN roster_slots r ON r.slot_id = o.slot_id "
         "JOIN assets a ON a.asset_id = o.asset_id "
         "WHERE r.season = ? AND o.start_date <= ? "
@@ -259,7 +273,8 @@ def asset_weeks(store: Store, season: str, since: date | None,
             asset_id=asset, name=str(row.display_name), league=str(row.league),
             manager=str(row.manager_id), gained=float(score[asset] - was.get(asset, 0.0)),
             total=float(score[asset]),
-            counts=counts.get((str(row.slot_id), asset), False)))
+            counts=counts.get((str(row.slot_id), asset), False),
+            category=str(row.category or "")))
     return out
 
 
@@ -338,13 +353,15 @@ def _table(recap: Recap, title: str, rows, figure, rank, extra=None) -> str:
     return f"<section class='card'><h2>{title}</h2><table>{body}</table></section>"
 
 
-def _asset_rows(recap: Recap, items: list[AssetWeek], numbered: bool) -> str:
-    """Numbered rows name the league; a league's own list does not repeat it."""
+def _asset_rows(recap: Recap, items: list[AssetWeek], numbered: bool,
+                leagues: bool = True) -> str:
+    """``leagues`` names each asset's league under it, which a category of one
+    league would only repeat."""
     out = []
     for i, item in enumerate(items, start=1):
         bench = "" if item.counts else "<span class='tag'>bench</span>"
         league = (f"<div class='meta'>{html.escape(item.league)}</div>"
-                  if numbered else "")
+                  if leagues else "")
         out.append(
             "<tr>" + (f"<td class='rk'>{i}</td>" if numbered else "")
             + f"<td><div class='asset'>{html.escape(item.name)}{bench}</div>"
@@ -415,9 +432,10 @@ def render(recap: Recap, site_url: str = "") -> str:
               f"</section>") if recap.top_assets else ""
 
     leagues = "".join(
-        f"<div class='league'><h3>{html.escape(league)}</h3><table class='assets'>"
-        f"{_asset_rows(recap, items, False)}</table></div>"
-        for league, items in recap.by_league.items())
+        f"<div class='league'><h3>{html.escape(group)}</h3><table class='assets'>"
+        f"{_asset_rows(recap, items, False, len({a.league for a in items}) > 1)}"
+        f"</table></div>"
+        for group, items in recap.by_category.items())
     leagues = (f"<section class='card wide'><h2>Best in each league</h2>"
                f"<div class='leagues'>{leagues}</div></section>") if leagues else ""
 

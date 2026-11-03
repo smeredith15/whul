@@ -35,12 +35,16 @@ def test_the_three_tables_rank_the_same_managers(week):
     assert leader.behind == 0
 
 
-def test_the_assets_are_the_weeks_best_and_each_league_keeps_its_own(week):
+def test_the_assets_are_the_weeks_best_and_grouped_as_the_rosters_are(week):
     gains = [a.gained for a in week.top_assets]
     assert gains == sorted(gains, reverse=True) and len(gains) <= recap.TOP_ASSETS
-    for league, items in week.by_league.items():
-        assert 0 < len(items) <= recap.PER_LEAGUE
-        assert all(a.league == league and a.gained > 0 for a in items)
+    assert week.by_category
+    for group, items in week.by_category.items():
+        room = recap.PER_CATEGORY_WIDE.get(group, recap.PER_CATEGORY)
+        assert 0 < len(items) <= room
+        assert all(a.category == group and a.gained > 0 for a in items)
+    # One heading for the leagues a roster category spans, never one each.
+    assert not {"ATP", "WTA", "F1", "NASCAR", "Premier League"} & set(week.by_category)
 
 
 def test_the_page_carries_every_section(week):
