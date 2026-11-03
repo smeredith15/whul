@@ -45,6 +45,24 @@ def test_the_assets_are_the_weeks_best_and_grouped_as_the_rosters_are(week):
         assert all(a.category == group and a.gained > 0 for a in items)
     # One heading for the leagues a roster category spans, never one each.
     assert not {"ATP", "WTA", "F1", "NASCAR", "Premier League"} & set(week.by_category)
+    # And those categories name each asset's league, whatever the week held.
+    assert {"Tennis", "Motorsports", "Club Soccer Top 3",
+            "Club Soccer Other"} <= recap.MIXED_CATEGORIES
+    assert "NFL" not in recap.MIXED_CATEGORIES
+
+
+def test_a_mixed_category_names_its_leagues_even_when_one_league_filled_it(week):
+    from dataclasses import replace
+
+    one = recap.AssetWeek("a", "Michael Olise", "Bundesliga", week.managers[0],
+                          6.7, 40.0, True, "Club Soccer Other")
+    page = recap.render(replace(week, by_category={"Club Soccer Other": [one]},
+                                top_assets=[]))
+    assert "<div class='meta'>Bundesliga</div>" in page
+    # A one-league category does not repeat its own name under every asset.
+    nfl = replace(one, name="Brock Bowers", league="NFL", category="NFL")
+    single = recap.render(replace(week, by_category={"NFL": [nfl]}, top_assets=[]))
+    assert "<div class='meta'>NFL</div>" not in single
 
 
 def test_the_page_carries_every_section(week):

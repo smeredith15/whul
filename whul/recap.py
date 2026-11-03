@@ -27,7 +27,8 @@ import pandas as pd
 
 from whul import pipeline, records
 from whul.config.league import (
-    LEAGUE_ABBR, LEAGUE_NAME, SEASON, manager_name, quarter_of, quarters,
+    CATEGORY_COMPETITIONS, CROSS_POOL_SOCCER, LEAGUE_ABBR, LEAGUE_NAME, SEASON,
+    manager_name, quarter_of, quarters,
 )
 from whul.store.db import Store
 
@@ -41,6 +42,11 @@ TOP_ASSETS = 10
 #: span three leagues, so they get two places a league.
 PER_CATEGORY = 3
 PER_CATEGORY_WIDE = {"Club Soccer Top 3": 6, "Club Soccer Other": 6}
+
+#: Roster categories that span several leagues. Their lists name each asset's
+#: league every week -- not only in a week whose best came from more than one,
+#: which left Club Soccer Other bare the week Bundesliga took all six places.
+MIXED_CATEGORIES = frozenset(CATEGORY_COMPETITIONS) | frozenset(CROSS_POOL_SOCCER)
 
 #: Head-to-head fixtures listed for the week ahead.
 RIVALRIES = 10
@@ -433,7 +439,7 @@ def render(recap: Recap, site_url: str = "") -> str:
 
     leagues = "".join(
         f"<div class='league'><h3>{html.escape(group)}</h3><table class='assets'>"
-        f"{_asset_rows(recap, items, False, len({a.league for a in items}) > 1)}"
+        f"{_asset_rows(recap, items, False, group in MIXED_CATEGORIES)}"
         f"</table></div>"
         for group, items in recap.by_category.items())
     leagues = (f"<section class='card wide'><h2>Best in each league</h2>"
