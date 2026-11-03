@@ -461,13 +461,22 @@ def _figures_the_day_before(store: Store, source, season: str,
     The last day rather than yesterday: a run that was skipped, or a league
     with no fixture on a Tuesday, must not read as every figure appearing from
     nothing on the Wednesday.
+
+    Never a day before the league starts counting. MLS clubs hold two days
+    of September 2026 recorded under an older start date, and their first
+    2027 match would have been held against them -- one match played after
+    two reads as a fall -- and scored at the 2026 figures.
     """
+    from whul.config.league import season_start
+
+    opened = season_start(source.league).isoformat()
     previous = store.query(
         "SELECT asset_id, stats FROM raw_stats WHERE league = ? AND source = ? "
         "AND season = ? AND as_of = (SELECT MAX(as_of) FROM raw_stats "
-        "  WHERE league = ? AND source = ? AND season = ? AND as_of < ?)",
+        "  WHERE league = ? AND source = ? AND season = ? AND as_of < ? "
+        "  AND as_of >= ?)",
         (source.league, source.key, season, source.league, source.key, season,
-         as_of.isoformat()),
+         as_of.isoformat(), opened),
     )
     out: dict[str, dict] = {}
     for row in previous.itertuples():

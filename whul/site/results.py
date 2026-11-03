@@ -554,12 +554,7 @@ def _lines(store, season: str, latest: date) -> dict[str, dict]:
     pulled one league wrote that day for it alone, and every club, golfer and
     driver lost its results on the site.
     """
-    frame = store.query(
-        "SELECT r.asset_id, r.phase, r.stats FROM raw_stats r JOIN ("
-        "  SELECT asset_id, MAX(as_of) AS last FROM raw_stats "
-        "  WHERE season = ? AND as_of <= ? GROUP BY asset_id"
-        ") l ON l.asset_id = r.asset_id AND l.last = r.as_of WHERE r.season = ?",
-        (season, str(latest), season))
+    frame = store.latest_raw_rows(season, latest)
     out: dict[str, dict] = {}
     # The regular-season row where there are two: it is the one naming the
     # club and carrying the finishes.

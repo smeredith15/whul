@@ -197,7 +197,11 @@ def test_a_day_pulled_for_one_league_leaves_every_other_asset_its_results():
     last = date.fromisoformat(store.scalar(
         "SELECT MAX(as_of) FROM raw_stats WHERE season = ?", (season,)))
     before = set(results._lines(store, season, last))
-    every = set(store.read_stats(season, last)["asset_id"])
+    # Every asset the last day has a row for -- less the leagues the simulation
+    # runs before they start counting, which no reader takes (the standings
+    # never did).
+    every = set(store.read_latest_stats(season, last)["asset_id"])
+    assert every and every <= set(store.read_stats(season, last)["asset_id"])
 
     one = store.query("SELECT * FROM raw_stats WHERE season = ? AND as_of = ? LIMIT 1",
                       (season, str(last)))

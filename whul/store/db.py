@@ -39,6 +39,28 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="milliseconds")
 
 
+def _since_league_start(rows: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows dated before their asset's league starts counting.
+
+    Ingest no longer records them, so this only catches rows written under an
+    older rule -- MLS clubs drafted for 2027 kept two days of September 2026
+    after their start date moved to January. The standings already ignore
+    them (``pipeline._from_league_start``), but a reader asking for each
+    asset's *latest* row found nothing newer and took the stale one: the
+    Philadelphia Union showed points on its manager's page and zero in the
+    results. An asset with no league is kept, as the rollup keeps it.
+    """
+    from whul.config.league import season_start
+
+    if rows.empty or "_asset_league" not in rows.columns:
+        return rows.drop(columns=["_asset_league"], errors="ignore")
+    leagues = rows["_asset_league"].fillna("").astype(str)
+    days = rows["as_of"].astype(str).str[:10]
+    keep = [not league or day >= season_start(league).isoformat()
+            for league, day in zip(leagues, days)]
+    return rows[keep].drop(columns=["_asset_league"])
+
+
 def _as_text(value: Any) -> Any:
     """Dates as ISO strings; everything else unchanged."""
     if isinstance(value, (date, datetime)):
@@ -410,35 +432,45 @@ class Store:
             params.append(league)
         return self._expanded(self.query(sql, params))
 
-    def read_latest_stats(self, season: str, as_of: date | str) -> pd.DataFrame:
-        """Each asset's own latest stats on or before ``as_of``, expanded as
-        ``read_stats`` expands them.
+    def latest_raw_rows(self, season: str, as_of: date | str) -> pd.DataFrame:
+        """Each asset's own latest ``raw_stats`` rows on or before ``as_of``,
+        unexpanded.
 
         Not one day for everybody. A run that pulls only some leagues -- a
         manual soccer-only publish, or a night one feed failed -- writes the
         day for those leagues alone, and reading every asset at the newest
         day then finds nothing for the rest: an MLB club's results vanished
         from the site the day a soccer-only run was published.
+
+        A row dated before its league starts counting is not one: see
+        ``_since_league_start``.
         """
         rows = self.query(
-            "SELECT r.* FROM raw_stats r JOIN ("
+            "SELECT r.*, a.league AS _asset_league FROM raw_stats r JOIN ("
             "  SELECT asset_id, MAX(as_of) AS last FROM raw_stats "
             "  WHERE season = ? AND as_of <= ? GROUP BY asset_id"
             ") l ON l.asset_id = r.asset_id AND l.last = r.as_of "
+            "LEFT JOIN assets a ON a.asset_id = r.asset_id "
             "WHERE r.season = ?",
             (season, _as_text(as_of), season))
-        return self._expanded(rows)
+        return _since_league_start(rows)
+
+    def read_latest_stats(self, season: str, as_of: date | str) -> pd.DataFrame:
+        """Each asset's own latest stats on or before ``as_of``, expanded as
+        ``read_stats`` expands them. See ``latest_raw_rows``."""
+        return self._expanded(self.latest_raw_rows(season, as_of))
 
     def latest_scores(self, season: str, as_of: date | str) -> pd.DataFrame:
         """Each asset's own latest ``daily_scores`` row on or before ``as_of``,
-        for the reason ``read_latest_stats`` gives."""
-        return self.query(
-            "SELECT d.* FROM daily_scores d JOIN ("
+        for the reasons ``latest_raw_rows`` gives."""
+        return _since_league_start(self.query(
+            "SELECT d.*, a.league AS _asset_league FROM daily_scores d JOIN ("
             "  SELECT asset_id, MAX(as_of) AS last FROM daily_scores "
             "  WHERE season = ? AND as_of <= ? GROUP BY asset_id"
             ") l ON l.asset_id = d.asset_id AND l.last = d.as_of "
+            "LEFT JOIN assets a ON a.asset_id = d.asset_id "
             "WHERE d.season = ?",
-            (season, _as_text(as_of), season))
+            (season, _as_text(as_of), season)))
 
     @staticmethod
     def _expanded(rows: pd.DataFrame) -> pd.DataFrame:
