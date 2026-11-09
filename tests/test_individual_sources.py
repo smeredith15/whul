@@ -768,6 +768,32 @@ def test_rounds_from_the_tournament_page_are_normalized_onto_matches(monkeypatch
     assert flashscore.apply_rounds(matches)[0]["round"] == "QF"
 
 
+@pytest.mark.parametrize("label", ["Group A", "Group Stage", "Group Stefanie Graf",
+                                   "Round Robin", "Round robin - Group B", "group"])
+def test_a_round_robin_group_is_the_round_robin_whatever_it_is_called(label):
+    """The WTA Finals' first two results were dropped for want of a round."""
+    assert flashscore.round_code(label) == "RR"
+
+
+def test_a_label_that_only_looks_like_a_group_is_not_one():
+    assert flashscore.round_code("Semi-finals") == "SF"
+    assert flashscore.round_code("Final") == "F"
+    assert flashscore.round_code("World Group") == ""
+    assert flashscore.round_code("") == ""
+
+
+def test_a_tour_finals_group_match_is_priced_and_not_dropped(monkeypatch):
+    monkeypatch.setattr(
+        flashscore, "fetch_round_map",
+        lambda slug, session=None: {"rr1": "Group A"},
+    )
+    matches = [{"match_uid": "rr1", "slug": "/tennis/wta-singles/finals/",
+                "round": "", "tournament": "Finals - Indian Wells",
+                "category": flashscore.TOUR_FINALS}]
+    rounded = flashscore.apply_rounds(matches)
+    assert rounded[0]["round"] == "RR" and flashscore.has_a_price(rounded[0])
+
+
 def test_a_round_the_feed_already_gave_is_not_refetched(monkeypatch):
     """One request pair per tournament, and only for tournaments that need it."""
     calls = []
