@@ -408,13 +408,15 @@ def unplaced_finals(day) -> str:
 def _place_finals(work: pd.DataFrame) -> pd.Series:
     """The round of each Tour Finals match that arrived without one.
 
-    By who has played how much: a match between two players who had each
-    played the whole group stage before its day is a semi-final, between two
-    who had also played a semi-final it is the final, and anything else is a
-    group match. Days, not times -- the knockout rounds are never on a group
-    day. An alternate who stood in for two group matches and then reached a
-    semi-final would be paid it as a group win: 200 short, and seen, rather
-    than a group win paid as a semi-final.
+    By the more experienced of the two players: if either had already played
+    the whole group stage before its day it is a semi-final, if either had
+    also played a semi-final it is the final, and otherwise it is a group
+    match. Either, not both, because an alternate can come in for a group
+    match or two and still qualify for the semi-finals -- the opponent has
+    played the full group, and that is what places the match. A group match
+    cannot reach the count from either side, since nobody plays more than
+    three of them. Days, not times: the knockout rounds are never on a group
+    day.
     """
     rounds = work["round"].copy()
     unplaced = work["round_raw"].astype(str).str.startswith(UNPLACED_FINALS) \
@@ -428,9 +430,9 @@ def _place_finals(work: pd.DataFrame) -> pd.Series:
             earlier = event[days[event.index] < day]
             played = [int(((earlier["winner"] == who) | (earlier["loser"] == who)).sum())
                       for who in (work.at[index, "winner"], work.at[index, "loser"])]
-            fewest = min(played)
-            rounds[index] = (F if fewest > FINALS_GROUP_MATCHES
-                             else SF if fewest == FINALS_GROUP_MATCHES else RR)
+            most = max(played)
+            rounds[index] = (F if most > FINALS_GROUP_MATCHES
+                             else SF if most == FINALS_GROUP_MATCHES else RR)
     return rounds
 
 

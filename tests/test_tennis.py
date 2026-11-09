@@ -755,6 +755,27 @@ def test_the_placement_holds_with_the_group_stage_only_half_played():
     assert set(scored["round"]) == {RR}
 
 
+def test_an_alternate_who_reaches_the_semi_finals_is_paid_for_one():
+    """N withdraws after two group matches; the alternate X plays her last one,
+    wins it, and goes through. X has one match behind her on semi-final day,
+    her opponent three -- the opponent is what makes it a semi-final."""
+    event = _finals_event()
+    event[11] = {**event[11], "winner": "X", "loser": "K"}   # X stands in for N
+    event[12] = {**event[12], "winner": "S", "loser": "X"}   # and reaches the SF
+    scored = score_matches(pd.DataFrame(event))
+    assert scored.loc[scored["winner"] == "X", "round"].tolist() == [RR]
+    assert list(scored["round"])[12:] == [SF, SF, F]
+
+    # And an alternate who wins the semi-final is in the final, whatever she
+    # played before it.
+    event[12] = {**event[12], "winner": "X", "loser": "S"}
+    event[14] = {**event[14], "winner": "G", "loser": "X"}
+    scored = score_matches(pd.DataFrame(event))
+    assert list(scored["round"])[12:] == [SF, SF, F]
+    assert scored.loc[(scored["winner"] == "X") & (scored["loser"] == "S"),
+                      "win_points"].tolist() == [400]
+
+
 def test_a_rematch_in_the_final_is_not_the_group_match_again():
     """The date is in the marker so the round-robin win and the final between
     the same two players are two matches, not one."""
