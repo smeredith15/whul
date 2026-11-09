@@ -382,6 +382,60 @@ def _one_win_a_round(work: pd.DataFrame) -> pd.DataFrame:
     return ordered[~twice]
 
 
+#: The round a Tour Finals match carries when no feed could name it, followed
+#: by the match's date: "TF@2026-11-08". Flashscore's page for the 2026 WTA
+#: Finals gave no round for its group matches, so every one was dropped as
+#: unpriceable while the fixtures showed the event. The format is fixed, so the
+#: scorer places the match itself (``_place_finals``) -- from every match of
+#: the event the ledger holds, which is why the loader must not guess: on the
+#: day the first group matches leave the feed's seven-day window, a guess made
+#: from the window alone would turn a semi-final into a group match and store
+#: it a second time. The date is in the marker because the round is part of
+#: what makes a match unique, and a group match and a final between the same
+#: two players would otherwise be one match.
+UNPLACED_FINALS = "TF@"
+
+#: Matches a player has played in the event before the semi-final, and before
+#: the final: the group stage is three each.
+FINALS_GROUP_MATCHES = 3
+
+
+def unplaced_finals(day) -> str:
+    """The marker a loader gives a Tour Finals match with no round."""
+    return f"{UNPLACED_FINALS}{str(day or '')[:10]}"
+
+
+def _place_finals(work: pd.DataFrame) -> pd.Series:
+    """The round of each Tour Finals match that arrived without one.
+
+    By the more experienced of the two players: if either had already played
+    the whole group stage before its day it is a semi-final, if either had
+    also played a semi-final it is the final, and otherwise it is a group
+    match. Either, not both, because an alternate can come in for a group
+    match or two and still qualify for the semi-finals -- the opponent has
+    played the full group, and that is what places the match. A group match
+    cannot reach the count from either side, since nobody plays more than
+    three of them. Days, not times: the knockout rounds are never on a group
+    day.
+    """
+    rounds = work["round"].copy()
+    unplaced = work["round_raw"].astype(str).str.startswith(UNPLACED_FINALS) \
+        & (work["tier"] == "FINALS")
+    if not unplaced.any():
+        return rounds
+    days = work["date"].astype(str).str[:10]
+    for _, event in work[work["tier"] == "FINALS"].groupby(["season", "tournament"]):
+        for index in event.index[unplaced[event.index]]:
+            day = days[index]
+            earlier = event[days[event.index] < day]
+            played = [int(((earlier["winner"] == who) | (earlier["loser"] == who)).sum())
+                      for who in (work.at[index, "winner"], work.at[index, "loser"])]
+            most = max(played)
+            rounds[index] = (F if most > FINALS_GROUP_MATCHES
+                             else SF if most == FINALS_GROUP_MATCHES else RR)
+    return rounds
+
+
 def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     """Points for every scoring win.
 
@@ -416,6 +470,7 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
         scoring_tier(c, d) for c, d in zip(work["category"], work["draw_size"])
     ]
     work["round"] = work["round_raw"].map(normalize_round)
+    work["round"] = _place_finals(work)
 
     # Qualifying and unreadable rounds are dropped before anything is scored:
     # they must not pad a player's round set either, or a missing qualifying

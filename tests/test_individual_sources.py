@@ -794,6 +794,28 @@ def test_a_tour_finals_group_match_is_priced_and_not_dropped(monkeypatch):
     assert rounded[0]["round"] == "RR" and flashscore.has_a_price(rounded[0])
 
 
+def test_a_tour_finals_match_with_no_round_is_kept_for_the_scorer(monkeypatch):
+    """The page named no round for the WTA Finals' group matches. They are
+    marked rather than dropped, and the scorer places them."""
+    raw = ("ZA÷WTA - SINGLES: Finals - Indian Wells (USA), hard¬"
+           "ZL÷/tennis/wta-singles/finals-indian-wells/¬~"
+           "AA÷rr1¬AD÷1778198400¬AC÷3¬AS÷1¬WU÷sabalenka-aryna¬WV÷muchova-karolina¬"
+           "BA÷6¬BB÷3¬BC÷6¬BD÷4¬")
+    monkeypatch.setattr(flashscore, "fetch_window", lambda days=None: raw)
+    monkeypatch.setattr(flashscore, "fetch_round_map", lambda slug, session=None: {})
+    frame = flashscore.load_matches(verbose=False, use_calendar=False)
+    assert len(frame) == 1
+    assert frame.iloc[0]["round"].startswith("TF@")
+    assert frame.iloc[0]["category"] == flashscore.TOUR_FINALS
+
+    # One the page does name is marked the same, so a night it names it and
+    # a night it does not store one match, not two.
+    monkeypatch.setattr(flashscore, "fetch_round_map",
+                        lambda slug, session=None: {"rr1": "Group A"})
+    again = flashscore.load_matches(verbose=False, use_calendar=False)
+    assert again.iloc[0]["round"] == frame.iloc[0]["round"]
+
+
 def test_a_round_the_feed_already_gave_is_not_refetched(monkeypatch):
     """One request pair per tournament, and only for tournaments that need it."""
     calls = []
