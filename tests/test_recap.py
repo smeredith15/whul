@@ -11,9 +11,14 @@ END = date(2026, 10, 31)
 
 
 @pytest.fixture(scope="module")
-def week():
+def store():
     store = open_store(":memory:")
     simulate.generate(store, seed=2026, end=END, verbose=False)
+    return store
+
+
+@pytest.fixture(scope="module")
+def week(store):
     return recap.build(store, simulate.SIM_SEASON)
 
 
@@ -78,25 +83,37 @@ def _run(run_id, stamp, built=True):
     return {"id": run_id, "created_at": stamp, "built": built}
 
 
-def test_only_the_first_publish_of_an_eastern_monday_sends():
-    # Monday 9 November 2026: 07:37 UTC is 02:37 Eastern.
-    runs = [_run(1, "2026-11-09T07:37:00Z"), _run(2, "2026-11-09T15:00:00Z")]
-    assert recap.first_on_monday(runs, 1)
-    assert not recap.first_on_monday(runs, 2)
+def test_only_the_first_tuesday_publish_after_six_eastern_sends():
+    # Tuesday 10 November 2026: 15:00 UTC is 10:00 Eastern.
+    runs = [_run(1, "2026-11-10T15:00:00Z"), _run(2, "2026-11-10T19:00:00Z")]
+    assert recap.first_of_the_week(runs, 1)
+    assert not recap.first_of_the_week(runs, 2)
 
-    # A run whose build failed did not write Monday's standings, so the next
-    # one is the first.
-    runs = [_run(1, "2026-11-09T07:37:00Z", built=False), _run(2, "2026-11-09T15:00:00Z")]
-    assert not recap.first_on_monday(runs, 1)
-    assert recap.first_on_monday(runs, 2)
+    # A run whose build failed did not write the standings, so the next one is
+    # the first.
+    runs = [_run(1, "2026-11-10T15:00:00Z", built=False), _run(2, "2026-11-10T19:00:00Z")]
+    assert not recap.first_of_the_week(runs, 1)
+    assert recap.first_of_the_week(runs, 2)
 
-    # 03:00 UTC on Monday is still Sunday evening in the East; Tuesday is not
-    # a Monday.
-    assert not recap.first_on_monday([_run(3, "2026-11-09T03:00:00Z")], 3)
-    assert not recap.first_on_monday([_run(4, "2026-11-10T07:37:00Z")], 4)
-    # Sunday's late manual run does not take Monday's place.
-    runs = [_run(5, "2026-11-09T03:00:00Z"), _run(6, "2026-11-09T07:37:00Z")]
-    assert recap.first_on_monday(runs, 6)
+    # 05:40 UTC is 00:40 Tuesday in the East: too early for Monday night's
+    # player lines, so it neither sends nor takes the later run's place.
+    runs = [_run(3, "2026-11-10T05:40:00Z"), _run(4, "2026-11-10T15:00:00Z")]
+    assert not recap.first_of_the_week(runs, 3)
+    assert recap.first_of_the_week(runs, 4)
+    # 11:00 UTC is 06:00 Eastern, the first minute that counts.
+    assert recap.first_of_the_week([_run(5, "2026-11-10T11:00:00Z")], 5)
+
+    # Monday no longer sends, and nor does Wednesday.
+    assert not recap.first_of_the_week([_run(6, "2026-11-09T15:00:00Z")], 6)
+    assert not recap.first_of_the_week([_run(7, "2026-11-11T15:00:00Z")], 7)
+
+
+def test_a_tuesday_recap_covers_tuesday_to_monday_night(store):
+    tuesday = date(2026, 10, 27)
+    week = recap.build(store, simulate.SIM_SEASON, tuesday)
+    assert week.as_of == tuesday
+    assert week.since == tuesday - timedelta(days=7)
+    assert (week.first_day.weekday(), week.last_day.weekday()) == (1, 0)
 
 
 def test_the_email_carries_the_image_in_its_body_and_the_page_attached(week, monkeypatch):

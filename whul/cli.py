@@ -4321,7 +4321,7 @@ def cmd_recap(args: argparse.Namespace) -> int:
 
 
 def cmd_recap_due(args: argparse.Namespace) -> int:
-    """Say whether this Publish run is the first one of an Eastern Monday."""
+    """Say whether the weekly recap goes out after this Publish run."""
     import os
 
     from whul import recap
@@ -4331,9 +4331,9 @@ def cmd_recap_due(args: argparse.Namespace) -> int:
         print("GITHUB_TOKEN and GITHUB_REPOSITORY are needed", file=sys.stderr)
         return 2
     runs = recap.publish_runs(repo, token, args.created_at)
-    due = recap.first_on_monday(runs, args.run_id)
+    due = recap.first_of_the_week(runs, args.run_id)
     print(f"run {args.run_id} created {args.created_at}: "
-          f"{'the first Publish of a Monday -- recap due' if due else 'no recap'} "
+          f"{'the first Tuesday Publish after 06:00 Eastern -- recap due' if due else 'no recap'} "
           f"({len(runs)} Publish run(s) that day)")
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
@@ -4743,7 +4743,7 @@ def main(argv: list[str] | None = None) -> int:
                      help="email it (RECAP_SMTP_*) and/or push it (RECAP_NTFY_TOPIC)")
     rec.set_defaults(func=cmd_recap)
 
-    due = sub.add_parser("recap-due", help="is this Publish run Monday's first?")
+    due = sub.add_parser("recap-due", help="does the weekly recap go out after this run?")
     due.add_argument("--run-id", type=int, required=True)
     due.add_argument("--created-at", required=True, help="the run's created_at")
     due.set_defaults(func=cmd_recap_due)
