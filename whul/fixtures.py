@@ -756,6 +756,34 @@ def allowed_countries(league: str) -> set[str]:
     return COUNTRIES.get(str(league), ANYWHERE)
 
 
+#: The competitions a club in these leagues plays in, as the feed names them
+#: before any " - " stage ("NBA - Play Offs" is the NBA). The country guard
+#: cannot separate a professional club from the college side of its own city:
+#: Flashscore's basketball payload files "Detroit" (Detroit Mercy) against
+#: Marquette under USA: NCAA, the name abbreviates to the one Detroit club on
+#: the roster, and the Pistons were shown playing Marquette -- Houston,
+#: Memphis, Minnesota, Oklahoma and Washington the same, 21 rows in a week.
+#: A league with no entry plays anywhere, which every soccer league must: its
+#: clubs are in cups and in Europe as well as their league.
+COMPETITIONS: dict[str, frozenset[str]] = {
+    "NBA": frozenset({"NBA", "NBA CUP"}),
+    "NHL": frozenset({"NHL"}),
+    "MLB": frozenset({"MLB"}),
+}
+
+
+def plays_in(league: str, competition: str) -> bool:
+    """Could a club in ``league`` be playing in ``competition``?
+
+    True where the league has no list or the row names no competition: a
+    blank is the feed saying nothing, not saying somewhere else.
+    """
+    allowed = COMPETITIONS.get(str(league))
+    if not allowed or not str(competition or "").strip():
+        return True
+    return str(competition).split(" - ")[0].strip().upper() in allowed
+
+
 def wanted_teams(store, season: str,
                  leagues: set[str] | None = None) -> dict[str, tuple[str, str]]:
     """``{normalized: (the roster's spelling, the league it plays in)}``.
@@ -1169,6 +1197,9 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
         for row in upcoming.itertuples():
             country = str(getattr(row, "country", "") or "")
             home, away = str(row.home_team), str(row.away_team)
+            # Only the clubs that could be playing in this competition.
+            competition = str(getattr(row, "competition", "") or "")
+            mine = {k: v for k, v in here.items() if plays_in(v[1], competition)}
             womens = feed.is_womens(home), feed.is_womens(away)
             if country.upper() in reachable:
                 spoken.setdefault(country.upper(), set()).update(
@@ -1183,10 +1214,10 @@ def from_flashscore(store, season: str, as_of: date, leagues=None,
             sides = [
                 (home, match_team(learned.get(normalize_team(home), home)
                                   if not womens[0] else feed.strip_womens(home),
-                                  here, country)),
+                                  mine, country)),
                 (away, match_team(learned.get(normalize_team(away), away)
                                   if not womens[1] else feed.strip_womens(away),
-                                  here, country)),
+                                  mine, country)),
             ]
             if not any(found for _, found in sides):
                 continue

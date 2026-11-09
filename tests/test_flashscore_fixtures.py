@@ -5,7 +5,7 @@ already parses in production, because the feed itself is unreachable from where
 this was written. These tests pin the parse; the probe pins the feed.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import pytest
@@ -1047,3 +1047,36 @@ def test_an_upcoming_match_carries_its_kickoff_on_the_eastern_clock():
     raw = payload(header("ENGLAND: Premier League"),
                   match("a1", "Arsenal", "Chelsea", SOON))
     assert list(feed.iter_fixtures(raw))[0]["start_time"] == "14:00"
+
+
+def test_a_college_side_named_for_an_nba_city_is_not_the_nba_club(monkeypatch):
+    """Flashscore files Detroit Mercy as "Detroit" under USA: NCAA, the name
+    abbreviates to the one Detroit club on the roster, and the Pistons were
+    shown playing Marquette."""
+    store = open_store(":memory:")
+    rostered(store, "team-nba-detroit-pistons", "Team", "Detroit Pistons", league="NBA")
+    raw = payload(
+        header("USA: NCAA"), match("c1", "Detroit", "Marquette", SOON),
+        header("USA: NBA"), match("n1", "Detroit Pistons", "Los Angeles Lakers",
+                                  SOON + timedelta(days=1)),
+        header("USA: NBA - Play Offs"), match("n2", "Detroit Pistons", "Boston Celtics",
+                                              SOON + timedelta(days=2)),
+    )
+    monkeypatch.setattr(
+        feed, "load_window",
+        window_of(lambda sport: pd.DataFrame(list(feed.iter_fixtures(raw)))),
+    )
+    monkeypatch.setattr(feed, "load_season", lambda league, verbose=True: pd.DataFrame())
+    fixtures.from_flashscore(store, "2026-27", date(2026, 9, 8),
+                             leagues=["NBA"], verbose=False)
+    rows = store.query("SELECT opponent, competition FROM fixtures ORDER BY fixture_date")
+    assert list(rows["opponent"]) == ["Los Angeles Lakers", "Boston Celtics"]
+
+
+def test_only_the_leagues_with_a_list_are_held_to_their_competition():
+    assert fixtures.plays_in("NBA", "NBA - Play Offs")
+    assert fixtures.plays_in("NBA", "")
+    assert not fixtures.plays_in("NBA", "NCAA")
+    assert not fixtures.plays_in("NHL", "NCAA")
+    # A soccer club plays in cups and in Europe, so it is never narrowed.
+    assert fixtures.plays_in("Premier League", "FA Cup")
