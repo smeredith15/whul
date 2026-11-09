@@ -708,3 +708,61 @@ def test_a_tie_gives_the_beaten_player_a_row():
     assert beaten["result"] == "L"
     assert beaten["event_points"] == 0.0
     assert beaten["category"] == INTERNATIONAL
+
+
+# --- a Tour Finals with no round from the feed -------------------------------
+
+def _finals_event():
+    from whul.scoring.tennis import unplaced_finals
+
+    def m(day, winner, loser, score="6-3 6-4"):
+        return {"winner": winner, "loser": loser, "round": unplaced_finals(day),
+                "date": day, "tournament": "Finals - Indian Wells",
+                "category": TOUR_FINALS, "draw_size": float("nan"),
+                "season": 2026, "score": score, "tour": "WTA"}
+
+    # Two groups of four, everyone plays everyone in their group, then the
+    # top two of each meet in the semi-finals.
+    return [
+        m("2026-11-08", "S", "M"), m("2026-11-08", "A", "E"),
+        m("2026-11-09", "G", "N", "6-3 4-6 6-2"), m("2026-11-09", "P", "K"),
+        m("2026-11-10", "S", "E"), m("2026-11-10", "A", "M"),
+        m("2026-11-11", "G", "K"), m("2026-11-11", "N", "P"),
+        m("2026-11-12", "S", "A"), m("2026-11-12", "M", "E"),
+        m("2026-11-13", "G", "P"), m("2026-11-13", "N", "K"),
+        m("2026-11-14", "S", "N"), m("2026-11-14", "G", "A"),
+        m("2026-11-15", "S", "G", "4-6 6-3 6-4"),
+    ]
+
+
+def test_a_tour_finals_with_no_rounds_is_placed_from_the_event_itself():
+    """Flashscore named no round for the 2026 WTA Finals' group matches, and
+    every one was dropped while the fixtures showed the event."""
+    scored = score_matches(pd.DataFrame(_finals_event()))
+    assert list(scored["round"]) == [RR] * 12 + [SF, SF, F]
+    # 200 a group win, 400 a semi-final, 500 the final -- each times the
+    # straight-sets bonus where it was won in two.
+    assert list(scored["win_points"]) == [200] * 12 + [400, 400, 500]
+    assert scored["match_points"].iloc[2] == 200      # a three-set group win
+    assert scored["match_points"].iloc[12] == 500     # 400 in straight sets
+    assert scored["match_points"].iloc[14] == 500     # a three-set final
+
+
+def test_the_placement_holds_with_the_group_stage_only_half_played():
+    """Mid-week the ledger holds the first days alone, and they are all group
+    matches whatever has not happened yet."""
+    scored = score_matches(pd.DataFrame(_finals_event()[:6]))
+    assert set(scored["round"]) == {RR}
+
+
+def test_a_rematch_in_the_final_is_not_the_group_match_again():
+    """The date is in the marker so the round-robin win and the final between
+    the same two players are two matches, not one."""
+    from whul.scoring.tennis import unplaced_finals
+
+    assert unplaced_finals("2026-11-08") != unplaced_finals("2026-11-15")
+    event = _finals_event()
+    event[-1] = {**event[-1], "winner": "S", "loser": "A"}   # S beat A on the 12th too
+    event[13] = {**event[13], "winner": "A", "loser": "G"}
+    scored = score_matches(pd.DataFrame(event))
+    assert list(scored["round"])[-1] == F

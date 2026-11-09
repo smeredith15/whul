@@ -32,6 +32,7 @@ import requests
 
 from whul.scoring.tennis import (
     GRAND_SLAM, INTERNATIONAL, MASTERS_1000, TOUR_250, TOUR_500, TOUR_FINALS,
+    unplaced_finals,
 )
 
 #: The feed is keyed by sport id. Tennis is 2; the team sports this project
@@ -458,6 +459,13 @@ def load_matches(
     raw = fetch_window(days)
     rows = [m for m in iter_matches(raw) if not m["is_qualifying"]]
     rows = apply_rounds(rows)
+    # Every Tour Finals match is marked and placed by the scorer from the whole
+    # event (``UNPLACED_FINALS``) -- including one whose page did name a round.
+    # The round is part of a match's identity in the ledger, so a page that
+    # names it one night and not the next would store the match twice.
+    for match in rows:
+        if match.get("category") == TOUR_FINALS:
+            match["round"] = unplaced_finals(match.get("date"))
     unrounded = [m for m in rows if not has_a_price(m)]
     rows = [m for m in rows if has_a_price(m)]
     frame = pd.DataFrame(rows)
