@@ -135,6 +135,24 @@ ROUND_MAP: dict[str, str] = {
 }
 
 
+def round_code(label: str | None) -> str:
+    """A round label as the scorer's code, or "" for one this cannot read.
+
+    A round-robin group carries a name, not just the word: "Group A", "Group
+    Stage", a group named for a former champion. Only the bare "group" was in
+    the map, so the first two WTA Finals matches of November 2026 came back
+    with no round and were dropped as unpriceable -- a whole tournament's
+    results missing while its fixtures showed. Every label that opens with
+    "group" or "round robin" is the round robin.
+    """
+    text = " ".join(str(label or "").lower().split())
+    if text in ROUND_MAP:
+        return ROUND_MAP[text]
+    if text.startswith(("group", "round robin", "round-robin")):
+        return "RR"
+    return ""
+
+
 def _field(segment: str, code: str) -> str | None:
     match = re.search(rf"{re.escape(code)}÷([^¬]*)", segment)
     return match.group(1).strip() if match else None
@@ -242,7 +260,7 @@ def parse_tournament_header(segment: str) -> dict | None:
         # figure, and the stage the tie belongs to is part of the competition's
         # own name. Reading one off the header's tail turned "Davis Cup -
         # World Group - Qualification" into a first qualifying round.
-        "round": "" if team_event else ROUND_MAP.get(suffix, ""),
+        "round": "" if team_event else round_code(suffix),
         # And it is not qualifying, whatever its tail says. The World Group
         # Qualifiers are a stage of the Davis Cup, played by national sides
         # over a weekend in September; "qualification" here is not the draw a
@@ -380,7 +398,7 @@ def apply_rounds(matches: list[dict], session: requests.Session | None = None) -
             continue
         raw = maps.get(match.get("slug", ""), {}).get(match["match_uid"])
         if raw:
-            match["round"] = ROUND_MAP.get(raw.strip().lower(), "")
+            match["round"] = round_code(raw)
             match["round_raw"] = raw
     return matches
 
@@ -446,9 +464,15 @@ def load_matches(
     if verbose:
         print(f"flashscore: {len(rows)} completed main-draw matches in window", flush=True)
         if unrounded:
+            # The label the page gave, where it gave one: a round this cannot
+            # read is a line to add to the map, and without the label the log
+            # only says that something went missing.
+            labels = sorted({repr(m["round_raw"]) for m in unrounded if m.get("round_raw")})
             print(
                 f"dropped {len(unrounded)} with no round from: "
-                f"{', '.join(sorted({m['tournament'] for m in unrounded}))}",
+                f"{', '.join(sorted({m['tournament'] for m in unrounded}))} "
+                + (f"(round labels not understood: {', '.join(labels)})" if labels
+                   else "(the tournament page named no round for them)"),
                 flush=True,
             )
     if frame.empty or not use_calendar:
