@@ -1,4 +1,4 @@
-"""The weekly recap: one page on Monday morning, saying what the week did.
+"""The weekly recap: one page on Tuesday morning, saying what the week did.
 
 Everything here is read from what the nightly run already stores -- the
 standings snapshots, each asset's score by day, the fixtures -- so the recap
@@ -7,9 +7,11 @@ manager asks over coffee: who won the week, where the quarter and the season
 stand, which assets carried it, who led each league, and who meets whom next.
 
 A week is the seven days the standings moved over: from the last snapshot a
-week or more before the recap's day to that day. On a Monday morning that is
-the previous Monday's run to this one, which is every game from Monday to
-Sunday.
+week or more before the recap's day to that day. On a Tuesday morning that is
+the previous Tuesday's run to this one, which is every game from Tuesday to
+Monday -- one whole NFL week, Monday night included. Sent on a Monday it was
+Monday to Sunday, so Monday night fell into the following week's recap and a
+player who played Monday and then Sunday had two games in one week.
 
 Points are normalized points throughout -- the season scale every asset is
 scored on, which is what the standings add up -- so an NFL running back and a
@@ -21,7 +23,7 @@ from __future__ import annotations
 import html
 import math
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import pandas as pd
 
@@ -219,8 +221,8 @@ def build(store: Store, season: str, as_of: date | None = None) -> Recap:
     return Recap(
         season=season, as_of=latest, since=since,
         # The days the week's games were played on: a run on a morning carries
-        # the night before, so the week since last Monday's run is Monday to
-        # Sunday.
+        # the night before, so the week since last Tuesday's run is Tuesday
+        # to Monday.
         first_day=since if since is not None else days[0],
         last_day=latest - timedelta(days=1) if since is not None else latest,
         week_number=max(1, math.ceil(((latest - SEASON.start).days + 1) / WEEK_DAYS)),
@@ -628,8 +630,18 @@ def send_push(recap: Recap, png: bytes | None, topic: str,
 
 # --- when to send ------------------------------------------------------------
 
-#: The weekday the recap goes out on, as ``date.weekday()`` counts: Monday.
-SEND_ON = 0
+#: The weekday the recap goes out on, as ``date.weekday()`` counts: Tuesday,
+#: so the week it reports ends with Monday night's game.
+SEND_ON = 1
+
+#: The earliest Eastern time a Publish may start and still send it. Monday
+#: night's game ends around midnight and its player lines take hours to reach
+#: the feed: the scheduled run on 3 November 2026 (10:27 Eastern) had Seattle's
+#: Monday night, and a manual run at 00:40 that morning most likely did not. The
+#: scheduled run is set for 03:37 and GitHub has started it between about 9:30
+#: and 13:00, so this costs it nothing; it only keeps a run just after
+#: midnight from sending a week without its last game.
+SEND_AFTER = time(6, 0)
 
 
 def _eastern(stamp: str) -> datetime:
@@ -638,23 +650,29 @@ def _eastern(stamp: str) -> datetime:
     return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).astimezone(EASTERN)
 
 
-def first_on_monday(runs: list[dict], run_id: int) -> bool:
-    """Is ``run_id`` the first Publish of an Eastern Monday that built?
+def _eligible(run: dict) -> bool:
+    """Built, and started on the sending day after ``SEND_AFTER`` Eastern."""
+    when = _eastern(run["created_at"])
+    return bool(run.get("built")) and when.weekday() == SEND_ON \
+        and when.time() >= SEND_AFTER
 
-    ``runs`` are that workflow's runs, each with ``id``, ``created_at`` and
-    ``built`` -- whether its build job succeeded, which is what wrote the
+
+def first_of_the_week(runs: list[dict], run_id: int) -> bool:
+    """Is ``run_id`` the Publish the week's recap goes out after?
+
+    The first of an Eastern Tuesday that started after ``SEND_AFTER`` and
+    built. ``runs`` are that workflow's runs, each with ``id``, ``created_at``
+    and ``built`` -- whether its build job succeeded, which is what wrote the
     database the recap reads. Built, not succeeded: the falls check runs after
     the deploy and can turn a run red whose standings are perfectly good, and
-    that run is still the one that published Monday's page.
+    that run is still the one that published Tuesday's page.
     """
     mine = next((r for r in runs if int(r["id"]) == int(run_id)), None)
-    if mine is None or not mine.get("built"):
+    if mine is None or not _eligible(mine):
         return False
-    day = _eastern(mine["created_at"])
-    if day.weekday() != SEND_ON:
-        return False
-    same_day = [r for r in runs if r.get("built")
-                and _eastern(r["created_at"]).date() == day.date()]
+    day = _eastern(mine["created_at"]).date()
+    same_day = [r for r in runs if _eligible(r)
+                and _eastern(r["created_at"]).date() == day]
     first = min(same_day, key=lambda r: (_eastern(r["created_at"]), int(r["id"])))
     return int(first["id"]) == int(run_id)
 

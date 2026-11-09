@@ -1,8 +1,10 @@
-# Monday morning: the week's recap, sent the moment Monday's standings exist.
+# Tuesday morning: the week's recap, sent once Monday night's game is in.
 #
 # Runs after every Publish and decides for itself whether to do anything: only
-# the first Publish of an Eastern Monday whose build succeeded sends one, so a
-# re-run later that morning, or a manual Publish on a Thursday, sends nothing.
+# the first Publish of an Eastern Tuesday that started after 06:00 and whose
+# build succeeded sends one. A run just after midnight is too early for Monday
+# night's player lines; a re-run later that morning, or a manual Publish on a
+# Thursday, sends nothing. The week reported is Tuesday to Monday.
 # Built from the database that run saved, so the recap and the site agree.
 #
 # Delivery is whatever the repository's secrets say -- either, both, or (with
@@ -56,7 +58,7 @@ jobs:
           cache: pip
       - run: pip install -e .
 
-      - name: Is this Monday's first Publish?
+      - name: Is this the Publish the week's recap goes out after?
         id: due
         if: github.event_name == 'workflow_run'
         env:
