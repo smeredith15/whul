@@ -135,7 +135,13 @@ jobs:
         # rewritten after the NASCAR race and the late NFL games, the
         # standings for that day were never rebuilt from them, and the next
         # day showed the difference as drivers losing points.
-        run: echo "RUN_DATE=$(date -u +%F)" >> "$GITHUB_ENV"
+        #
+        # The Eastern date, which is the league's clock (whul.clock) and the
+        # one every game is dated by. The UTC date filed any run after 7 or
+        # 8 pm Eastern under tomorrow: a Publish at 7:11 pm on Monday 9
+        # November wrote standings for the 10th, before Monday night's game,
+        # and the page read "through 2026-11-10" all evening.
+        run: echo "RUN_DATE=$(TZ=America/New_York date +%F)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
 

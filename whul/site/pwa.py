@@ -101,7 +101,11 @@ self.addEventListener('fetch', function (event) {{
   if (new URL(request.url).origin !== self.location.origin) return;
 
   event.respondWith(
-    fetch(request).then(function (response) {{
+    // Asked of the server every time, not answered from the browser's own
+    // store: GitHub Pages lets a page be reused for ten minutes, so a page
+    // opened just after a Publish was the one before it. An unchanged page
+    // costs a "not modified" and nothing more.
+    fetch(request, {{ cache: 'no-cache' }}).then(function (response) {{
       // Only a real answer is worth keeping. A 404 or a redirect cached here
       // would outlive whatever caused it.
       if (response && response.status === 200 && response.type === 'basic') {{
