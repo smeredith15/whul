@@ -951,7 +951,8 @@ def test_every_dated_step_of_the_publish_takes_the_runs_date():
     from pathlib import Path
 
     text = (Path(__file__).parent.parent / ".github/workflows/publish.yml").read_text()
-    assert 'RUN_DATE=$(date -u +%F)' in text
+    # On the league's clock: a UTC date files an evening run under tomorrow.
+    assert 'RUN_DATE=$(TZ=America/New_York date +%F)' in text
     for command in ("whul.cli ingest", "whul.cli fixtures", "whul.cli games",
                     "whul.cli rollup"):
         lines = [ln for ln in text.splitlines() if command in ln]

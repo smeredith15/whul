@@ -51,10 +51,18 @@ def test_the_worker_goes_to_the_network_first():
     does."""
     code = pwa.service_worker("2026-27")
 
-    network = code.index("fetch(request)")
+    network = code.index("fetch(request")
     fallback = code.index("caches.match(request)")
     assert network < fallback, "the cache is consulted before the network"
     assert ".catch(" in code, "the cache is a fallback, not a first choice"
+
+
+def test_the_worker_does_not_take_the_browsers_copy_for_the_network():
+    """A page opened just after a Publish showed the one before it: the
+    browser may reuse a GitHub Pages page for ten minutes, and a plain fetch
+    accepts that as the network's answer."""
+    code = pwa.service_worker("2026-27")
+    assert "fetch(request, { cache: 'no-cache' })" in code
 
 
 def test_the_cache_is_named_for_the_build_that_filled_it():
