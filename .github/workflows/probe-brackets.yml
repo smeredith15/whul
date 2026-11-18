@@ -42,9 +42,7 @@ jobs:
       # branch rather than a list typed in here.
       - name: Take the database from the data branch
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       - name: Probe
         # pipefail because a pipeline exits with its last command's status and

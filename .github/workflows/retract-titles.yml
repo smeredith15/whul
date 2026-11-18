@@ -69,10 +69,7 @@ jobs:
 
       - name: Take the database from the data branch
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
-          git reset -q -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       - name: Take the titles back
         # The flags are built in the shell, from the inputs as plain strings.
@@ -112,13 +109,7 @@ jobs:
       - name: Save the database
         if: ${{ inputs.apply }}
         run: |
-          git config user.name "whul-bot"
-          git config user.email "whul-bot@users.noreply.github.com"
-          git checkout --orphan data-tmp
-          git rm -rqf --cached .
-          git add -f data/whul.sqlite3
-          git commit -qm "Titles retracted $(date -u +%Y-%m-%d)"
-          git push -f origin data-tmp:data
+          scripts/db-save.sh "Titles retracted $(date -u +%Y-%m-%d)"
 
       - name: What to do next
         run: |

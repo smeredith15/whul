@@ -57,14 +57,7 @@ jobs:
 
       - name: Take the database from the data branch
         run: |
-          mkdir -p data
-          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
-            git fetch origin data --depth 1
-            git checkout origin/data -- data/whul.sqlite3
-          else
-            echo "No data branch, so there is no roster to probe."
-            exit 1
-          fi
+          scripts/db-restore.sh
 
       # Cheap, idempotent, and it removes a whole class of confusion: the
       # spreadsheet is where the roster and every club and country come from,

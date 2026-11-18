@@ -71,9 +71,7 @@ jobs:
       - name: Restore the database the Publish saved
         if: github.event_name == 'workflow_dispatch' || steps.due.outputs.due == 'true'
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       # For the image. Optional: without it the recap goes out as the page
       # alone, attached to the email.

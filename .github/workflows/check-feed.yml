@@ -60,13 +60,7 @@ jobs:
       # data branch rather than a list typed into a script.
       - name: Take the database from the data branch
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
-          # `git checkout <tree> -- <path>` stages the file as well as writing
-          # it. Nothing here commits, but leaving 1.7MB of binary in the index
-          # is how it reached main from the image workflow.
-          git reset -q -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       - name: Refresh the roster from the spreadsheet
         if: inputs.refresh
