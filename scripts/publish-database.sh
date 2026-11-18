@@ -134,12 +134,18 @@ echo
 
 # One commit holding one snapshot, with no parent, built through a temporary
 # index so the working tree, the real index and HEAD are all left alone.
-BLOB=$(git hash-object -w "$DB") || exit 1
+#
+# Gzipped, as the workflows store it (scripts/db-save.sh): GitHub refuses a
+# file over 100 MB, and the raw database passed that in November 2026.
+PACKED=$(mktemp) || exit 1
+gzip -9 -n -c "$DB" > "$PACKED" || { rm -f "$PACKED"; exit 1; }
+BLOB=$(git hash-object -w "$PACKED") || { rm -f "$PACKED"; exit 1; }
+rm -f "$PACKED"
 INDEX=$(mktemp) || exit 1
 TREE=$(
     GIT_INDEX_FILE="$INDEX" sh -c '
         git read-tree --empty &&
-        git update-index --add --cacheinfo 100644,'"$BLOB"',data/whul.sqlite3 &&
+        git update-index --add --cacheinfo 100644,'"$BLOB"',data/whul.sqlite3.gz &&
         git write-tree'
 ) || { rm -f "$INDEX"; exit 1; }
 rm -f "$INDEX"

@@ -54,9 +54,15 @@ fi
 # checkout; this catches a stale database, which looks identical afterwards.
 step "the database this deploy would publish"
 if git fetch --quiet origin data 2>/dev/null && \
-   git cat-file -e origin/data:data/whul.sqlite3 2>/dev/null; then
+   { git cat-file -e origin/data:data/whul.sqlite3.gz 2>/dev/null || \
+     git cat-file -e origin/data:data/whul.sqlite3 2>/dev/null; }; then
     THEIRS=$(mktemp) || exit 1
-    git show origin/data:data/whul.sqlite3 > "$THEIRS" || exit 1
+    # Gzipped since November 2026; the raw file before that.
+    if git cat-file -e origin/data:data/whul.sqlite3.gz 2>/dev/null; then
+        git show origin/data:data/whul.sqlite3.gz | gunzip > "$THEIRS" || exit 1
+    else
+        git show origin/data:data/whul.sqlite3 > "$THEIRS" || exit 1
+    fi
     "$PY" - "$THEIRS" data/whul.sqlite3 "$SEASON" <<'DBCHECK'
 import sqlite3
 import sys
@@ -279,12 +285,17 @@ if [ ! -f data/whul.sqlite3 ]; then
     exit 1
 fi
 
-BLOB=$(git hash-object -w data/whul.sqlite3) || exit 1
+# Gzipped, as the workflows store it (scripts/db-save.sh): GitHub refuses a
+# file over 100 MB, and the raw database passed that in November 2026.
+PACKED=$(mktemp) || exit 1
+gzip -9 -n -c data/whul.sqlite3 > "$PACKED" || { rm -f "$PACKED"; exit 1; }
+BLOB=$(git hash-object -w "$PACKED") || { rm -f "$PACKED"; exit 1; }
+rm -f "$PACKED"
 INDEX=$(mktemp) || exit 1
 TREE=$(
     GIT_INDEX_FILE="$INDEX" sh -c '
         git read-tree --empty &&
-        git update-index --add --cacheinfo 100644,'"$BLOB"',data/whul.sqlite3 &&
+        git update-index --add --cacheinfo 100644,'"$BLOB"',data/whul.sqlite3.gz &&
         git write-tree'
 ) || exit 1
 rm -f "$INDEX"

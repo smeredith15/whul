@@ -67,9 +67,7 @@ jobs:
 
       - name: Restore the database
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       - name: Check players against their clubs' results
         # Reports and changes nothing. What to do about a disagreement is a

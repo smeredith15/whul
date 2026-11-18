@@ -65,12 +65,7 @@ jobs:
 
       - name: Take the database from the data branch
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
-          # Staged by the checkout, and this job commits; taken out here and
-          # added back deliberately below.
-          git reset -q -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       - name: Say what is there now
         run: |
@@ -103,13 +98,7 @@ jobs:
       - name: Save the database
         if: ${{ inputs.apply }}
         run: |
-          git config user.name "whul-bot"
-          git config user.email "whul-bot@users.noreply.github.com"
-          git checkout --orphan data-tmp
-          git rm -rqf --cached .
-          git add -f data/whul.sqlite3
-          git commit -qm "Drafts discarded $(date -u +%Y-%m-%d)"
-          git push -f origin data-tmp:data
+          scripts/db-save.sh "Drafts discarded $(date -u +%Y-%m-%d)"
 
       - name: What to do next
         run: |

@@ -168,15 +168,7 @@ jobs:
 
       - name: Take the database from the data branch
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
-          # `git checkout <tree> -- <path>` stages the file as well as writing
-          # it, and this job commits. Left in the index it would ride along in
-          # the orphan commit below, which is where it belongs -- but staged
-          # here it would also show up in any other commit, so it is taken out
-          # and added back deliberately.
-          git reset -q -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       - name: Refresh the rosters from the draft file
         # The freeze is refused while a rostered asset has no benchmark, so the
@@ -317,13 +309,7 @@ jobs:
 
       - name: Save the database
         run: |
-          git config user.name "whul-bot"
-          git config user.email "whul-bot@users.noreply.github.com"
-          git checkout --orphan data-tmp
-          git rm -rqf --cached .
-          git add -f data/whul.sqlite3
-          git commit -qm "Benchmarks: ${{ inputs.leagues }} $(date -u +%Y-%m-%d)"
-          git push -f origin data-tmp:data
+          scripts/db-save.sh "Benchmarks: ${{ inputs.leagues }} $(date -u +%Y-%m-%d)"
 
       - name: What to do next
         run: |

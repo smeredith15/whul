@@ -553,7 +553,7 @@ NO_DATABASE = """\
   `data` branch, not in the code:
 
       git fetch origin data
-      git show origin/data:data/whul.sqlite3 > {path}
+      git show origin/data:data/whul.sqlite3.gz | gunzip > {path}
 
   Or build a placeholder league instead: `python -m whul.cli simulate`.
 """

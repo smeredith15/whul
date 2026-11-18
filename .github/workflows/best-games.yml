@@ -49,9 +49,7 @@ jobs:
         # For the frozen divisors: a game is scored at face value against the
         # same scale a season is, and that scale lives here.
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
+          scripts/db-restore.sh
 
       - name: Calibrate
         # pipefail, or `tee` reports success however the command exited.

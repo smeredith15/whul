@@ -9,6 +9,7 @@ data/cache/
 # The local database, including any simulated league. Rebuild with
 # `python -m whul.cli simulate`.
 data/*.sqlite3
+data/*.sqlite3.gz
 
 # What `carry-benchmark.sh` leaves behind: the database a scale was computed
 # in, and the diff that was read before adopting it. Both are working notes

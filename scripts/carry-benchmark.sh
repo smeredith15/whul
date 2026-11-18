@@ -61,8 +61,13 @@ step "taking the branch's database"
 # it before git has written a byte, so a failed fetch would destroy the copy
 # this whole script exists to preserve.
 TMP=$(mktemp) || exit 1
+# Gzipped on the branch since November 2026, the raw file before that.
 if ! git fetch --quiet origin data || \
-   ! git show origin/data:data/whul.sqlite3 > "$TMP"; then
+   ! { if git cat-file -e origin/data:data/whul.sqlite3.gz 2>/dev/null; then
+           git show origin/data:data/whul.sqlite3.gz | gunzip > "$TMP"
+       else
+           git show origin/data:data/whul.sqlite3 > "$TMP"
+       fi; }; then
     echo "  Could not read the branch's database. Nothing has been changed;"
     echo "  $KEPT still holds everything, as does data/whul.sqlite3."
     rm -f "$TMP"

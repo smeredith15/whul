@@ -166,11 +166,7 @@ jobs:
 
       - name: Restore the database
         run: |
-          mkdir -p data
-          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
-            git fetch origin data --depth 1
-            git checkout origin/data -- data/whul.sqlite3 || true
-          fi
+          scripts/db-restore.sh --optional
           if [ ! -f data/whul.sqlite3 ]; then
             echo "No database yet -- building one from the draft file."
             python -m whul.cli import-rosters --season 2026-27 --write
@@ -334,13 +330,7 @@ jobs:
 
       - name: Save the database
         run: |
-          git config user.name "whul-bot"
-          git config user.email "whul-bot@users.noreply.github.com"
-          git checkout --orphan data-tmp
-          git rm -rqf --cached .
-          git add -f data/whul.sqlite3
-          git commit -qm "Database after $(date -u +%Y-%m-%d)"
-          git push -f origin data-tmp:data
+          scripts/db-save.sh "Database after $(date -u +%Y-%m-%d)"
 
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -382,8 +372,6 @@ jobs:
       - run: pip install -e .
       - name: Restore the database the run just wrote
         run: |
-          mkdir -p data
-          git fetch origin data --depth 1
-          git checkout origin/data -- data/whul.sqlite3
+          scripts/db-restore.sh
       - name: Every fall must be the sport
         run: python -m whul.cli check-falls --season "$SEASON"
