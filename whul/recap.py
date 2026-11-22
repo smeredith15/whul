@@ -535,11 +535,12 @@ footer a { color:var(--muted); }
 
 # --- delivery ----------------------------------------------------------------
 
-def to_png(page: str, path, executable: str | None = None) -> None:
+def to_png(page: str, path, executable: str | None = None, width: int = 760) -> None:
     """The page as one image, at twice the pixels for a phone screen.
 
     Playwright's Chromium, which the recap workflow installs. ``executable``
-    points it at a browser already on the machine instead.
+    points it at a browser already on the machine instead; ``width`` is the
+    window the page is laid out in, which must hold its widest element.
     """
     from playwright.sync_api import sync_playwright
 
@@ -547,7 +548,7 @@ def to_png(page: str, path, executable: str | None = None) -> None:
         browser = play.chromium.launch(**({"executable_path": executable}
                                           if executable else {}))
         try:
-            view = browser.new_page(viewport={"width": 760, "height": 800},
+            view = browser.new_page(viewport={"width": width, "height": 800},
                                     device_scale_factor=2)
             view.set_content(page, wait_until="load")
             view.screenshot(path=str(path), full_page=True)

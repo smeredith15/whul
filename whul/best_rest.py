@@ -110,6 +110,16 @@ class Pick:
     slot: str
 
 
+@dataclass(frozen=True)
+class Held:
+    """A drafted asset's season, for the chart beside the undrafted ones."""
+
+    asset_id: str
+    name: str
+    manager: str
+    score: float
+
+
 @dataclass
 class Category:
     category: str
@@ -117,6 +127,8 @@ class Category:
     picks: list[Pick]
     #: Each manager's full-season slots in this category, summed.
     managers: dict[str, float]
+    #: Every drafted asset in the category with its season, on the same day.
+    held: list[Held] = field(default_factory=list)
 
     @property
     def total(self) -> float:
@@ -226,6 +238,20 @@ def _manager_totals(store: Store, day: date | None, category: str,
     return {str(m): float(v) for m, v in rows.groupby("manager_id")["score"].sum().items()}
 
 
+def _held(store: Store, day: date | None, category: str, asset_type: str) -> list[Held]:
+    """Every drafted asset in a category and its season score on ``day``."""
+    if day is None:
+        return []
+    rows = store.query(
+        "SELECT ss.asset_id, a.display_name, r.manager_id, ss.score FROM slot_scores ss "
+        "JOIN roster_slots r ON r.slot_id = ss.slot_id "
+        "JOIN assets a ON a.asset_id = ss.asset_id "
+        "WHERE ss.season = ? AND ss.as_of = ? AND r.category = ? AND r.asset_type = ?",
+        (SEASON.label, day.isoformat(), category, asset_type))
+    return [Held(str(r.asset_id), str(r.display_name), str(r.manager_id), float(r.score))
+            for r in rows.itertuples()]
+
+
 def compare_day(store: Store, group: Group, today: date) -> date | None:
     """The last stored day at or before the group's comparison point."""
     until = min(today, group.compare_until()) if group.compare_until else today
@@ -292,7 +318,9 @@ def build(store: Store, group: Group, today: date,
                 break
         categories.append(Category(group_slot.category, group_slot.asset_type, picks,
                                    _manager_totals(store, compared, group_slot.category,
-                                                   group_slot.asset_type)))
+                                                   group_slot.asset_type),
+                                   _held(store, compared, group_slot.category,
+                                         group_slot.asset_type)))
     return Result(group, today, compared, categories, notes)
 
 
@@ -300,17 +328,126 @@ def build(store: Store, group: Group, today: date,
 
 MIXED = set(CATEGORY_COMPETITIONS) | set(CROSS_POOL_SOCCER)
 
+#: The undrafted bars' colour: the theme's next categorical slot after the five
+#: managers', validated with them (scripts/validate_palette.js in the dataviz
+#: skill), and hatched as a second cue so "nobody's" is never colour alone.
+UNDRAFTED = "#4a3aa7"
+
+#: The page's width, and the chart geometry inside it, in CSS pixels.
+PAGE_WIDTH = 1100
+CHART_W, PLOT_H, PIC = 1046, 220, 22
+
+
+def _slug(name: str) -> str:
+    import re
+    import unicodedata
+    folded = unicodedata.normalize("NFKD", name)
+    folded = "".join(c for c in folded if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")
+
+
+def _picture(kind: str, key: str) -> str:
+    """The image as a data URI, or "" where the league has none. Inline, so the
+    page carries its pictures into the image and the email alike."""
+    import base64
+    import mimetypes
+
+    from whul.site import images
+
+    found = images.find(kind, key)
+    if found is None:
+        return ""
+    mime = mimetypes.guess_type(found.name)[0] or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(found.read_bytes()).decode()}"
+
+
+def _chart(c: Category, colours: dict[str, str]) -> str:
+    """One panel: every drafted asset and the undrafted picks, best first."""
+    bars = [(h.score, h.name, h.manager, _picture("asset", h.asset_id)) for h in c.held]
+    bars += [(p.score, p.name, "", _picture("club", _slug(p.name)) if c.asset_type == "Team" else "")
+             for p in c.picks if p.slot == "season"]
+    bars.sort(key=lambda b: -b[0])
+    if not bars:
+        return ""
+    top = max(b[0] for b in bars) or 1.0
+    # Four or five recessive gridlines at a round step.
+    step = next(s for s in (1, 2, 5, 10, 20, 25, 50, 100, 200, 500) if s >= top / 4)
+    ceiling = step * (int(top // step) + 1)
+    # Room under the baseline for the longest name, written at 50 degrees, and
+    # to the left of the first bar for the same name running down-left.
+    longest = max(len(b[1]) for b in bars) * 6.2
+    left, head, foot = max(40.0, longest * 0.64 - 10), PIC + 14, 30 + longest * 0.77
+    slot = (CHART_W - left) / len(bars)
+    width = max(6.0, min(34.0, slot - 2))         # a 2px surface gap between bars
+    height = head + PLOT_H + foot
+
+    def y(value: float) -> float:
+        return head + PLOT_H * (1 - value / ceiling)
+
+    parts = [f"<svg viewBox='0 0 {CHART_W} {height}' width='{CHART_W}' height='{height}' "
+             f"role='img' aria-label='{html.escape(c.category)} season points'>",
+             "<defs><pattern id='hatch' width='6' height='6' patternUnits='userSpaceOnUse' "
+             "patternTransform='rotate(45)'><rect width='6' height='6' fill='" + UNDRAFTED + "'/>"
+             "<line x1='0' y1='0' x2='0' y2='6' stroke='#ffffff' stroke-opacity='.45' "
+             "stroke-width='2'/></pattern></defs>"]
+    tick = 0.0
+    while tick <= ceiling + 1e-9:
+        parts.append(f"<line x1='{left}' x2='{CHART_W}' y1='{y(tick):.1f}' y2='{y(tick):.1f}' "
+                     f"class='grid'/><text x='{left - 6}' y='{y(tick) + 4:.1f}' class='axis' "
+                     f"text-anchor='end'>{tick:g}</text>")
+        tick += step
+    for i, (score, name, manager, picture) in enumerate(bars):
+        cx = left + slot * i + slot / 2
+        x, top_y = cx - width / 2, y(score)
+        h = max(0.0, head + PLOT_H - top_y)
+        r = min(4.0, width / 2, h)
+        fill = "url(#hatch)" if not manager else colours.get(manager, "#8a8f98")
+        # Rounded at the data end, square on the baseline.
+        path = (f"M{x:.1f},{head + PLOT_H:.1f} V{top_y + r:.1f} Q{x:.1f},{top_y:.1f} "
+                f"{x + r:.1f},{top_y:.1f} H{x + width - r:.1f} Q{x + width:.1f},{top_y:.1f} "
+                f"{x + width:.1f},{top_y + r:.1f} V{head + PLOT_H:.1f} Z")
+        who = manager_name(manager) if manager else "Not drafted"
+        parts.append(f"<g><title>{html.escape(name)} · {html.escape(who)} · {score:.1f}</title>"
+                     f"<path d='{path}' fill='{fill}'/>")
+        if picture:
+            size = min(PIC, slot - 2)
+            parts.append(f"<image href='{picture}' x='{cx - size / 2:.1f}' "
+                         f"y='{top_y - size - 3:.1f}' width='{size:.1f}' height='{size:.1f}' "
+                         f"preserveAspectRatio='xMidYMid meet'/>")
+        if not manager:
+            # The undrafted bars are what the page is about: their value is
+            # written on, the rest are read off the axis and the lists.
+            label_y = top_y - (min(PIC, slot - 2) + 7 if picture else 5)
+            parts.append(f"<text x='{cx:.1f}' y='{label_y:.1f}' class='val' "
+                         f"text-anchor='middle'>{score:.1f}</text>")
+        tag = manager or "—"
+        parts.append(f"<text x='{cx:.1f}' y='{head + PLOT_H + 13:.1f}' class='tag' "
+                     f"text-anchor='middle'>{html.escape(tag)}</text>"
+                     f"<text transform='translate({cx + 3:.1f},{head + PLOT_H + 22:.1f}) "
+                     f"rotate(-50)' class='nm' text-anchor='end'>{html.escape(name)}</text></g>")
+    parts.append(f"<line x1='{left}' x2='{CHART_W}' y1='{head + PLOT_H}' y2='{head + PLOT_H}' "
+                 f"class='base'/></svg>")
+    kind = "Teams" if c.asset_type == "Team" else "Players"
+    return (f"<section class='card chart'><h2>{html.escape(c.category)} · {kind}"
+            f"<span class='hint'>season points</span></h2>{''.join(parts)}</section>")
+
 
 def render(result: Result) -> str:
     from whul.site.theme import SERIES_LIGHT, series_index
 
     rest, totals = result.totals()
-    managers = sorted(totals)
+    managers = sorted(totals | {h.manager: 0.0 for c in result.categories for h in c.held})
+    colours = {m: SERIES_LIGHT[series_index(managers, m)] for m in managers}
 
     def chip(m):
-        colour = SERIES_LIGHT[series_index(managers, m)] if m in managers else "#8a8f98"
-        return (f"<span class='chip' style='--c:{colour}'>"
+        return (f"<span class='chip' style='--c:{colours.get(m, '#8a8f98')}'>"
                 f"{html.escape(manager_name(m))}</span>")
+
+    legend = ("<div class='legend'>" + "".join(
+        f"<span><i style='background:{colours[m]}'></i>{html.escape(manager_name(m))} "
+        f"<b>{m}</b></span>" for m in managers)
+        + "<span><i class='undrafted'></i>Not drafted <b>—</b></span></div>")
+    charts = "".join(_chart(c, colours) for c in result.categories)
 
     board = sorted([(m, v) for m, v in totals.items()] + [("", rest)], key=lambda kv: -kv[1])
     table = "".join(
@@ -318,26 +455,24 @@ def render(result: Result) -> str:
         f"<td>{chip(m) if m else '<b>Best of the rest</b>'}</td>"
         f"<td class='num'>{v:.1f}</td></tr>"
         for i, (m, v) in enumerate(board, start=1))
-
-    cards = []
+    cards = [f"<section class='card'><h2>Where it would finish"
+             f"<span class='hint'>season slots</span></h2><table>{table}</table></section>"]
     for c in result.categories:
+        # The compared slots alone: a best-games or bench pick is not in the
+        # total, and listing one read as though it were.
+        counted = [p for p in c.picks if p.slot == "season"]
         rows = []
-        for p in c.picks:
-            tag = {"best": "<span class='tag'>best games · not compared</span>",
-                   "bench": "<span class='tag'>bench</span>"}.get(p.slot, "")
+        for p in counted:
             sub = p.league if c.asset_type == "Team" and c.category in MIXED else p.team
-            rows.append(f"<tr class='{p.slot}'><td><div class='nm'>{html.escape(p.name)}{tag}</div>"
+            rows.append(f"<tr><td><div class='nm'>{html.escape(p.name)}</div>"
                         + (f"<div class='meta'>{html.escape(sub)}</div>" if sub else "")
                         + f"</td><td class='num'>{p.score:.1f}</td></tr>")
-        versus = " · ".join(f"{html.escape(manager_name(m))} {v:.1f}"
-                            for m, v in sorted(c.managers.items(), key=lambda kv: -kv[1]))
         kind = "Teams" if c.asset_type == "Team" else "Players"
         cards.append(
             f"<section class='card'><h2>{html.escape(c.category)} · {kind}"
-            f"<span class='hint'>{c.total:.1f}</span></h2>"
+            f"<span class='hint'>{sum(p.score for p in counted):.1f}</span></h2>"
             f"<table>{''.join(rows) or '<tr><td class=meta>Nobody left to pick</td></tr>'}</table>"
-            + (f"<div class='versus'>Managers: {versus}</div>" if versus else "")
-            + "</section>")
+            "</section>")
 
     when = (f"managers' slots as of {result.compared_on:%b} {result.compared_on.day}"
             if result.compared_on else "no stored standings to compare against")
@@ -350,44 +485,49 @@ def render(result: Result) -> str:
 <header><div class="kicker">{html.escape(LEAGUE_NAME)}</div>
 <h1>Best of the rest: {html.escape(result.group.label)}</h1>
 <div class="span">The strongest roster nobody drafted · {when}</div></header>
-<section class="card"><h2>Where it would finish <span class="hint">season slots</span></h2>
-<table>{table}</table></section>
-<div class="cards">{''.join(cards)}</div>
+{legend}
+{charts}
+<div class="row">{''.join(cards)}</div>
 {f'<ul class="notes">{notes}</ul>' if notes else ''}
-<footer>Normalized points on the frozen scale, from the same scoring as the standings.
-Only full-season slots are compared: a best-games slot pays a player's best games, and
-undrafted players' games are not recorded.</footer>
 </main></body></html>"""
 
 
 STYLE = """
-:root { --bg:#f4f5f7; --card:#fff; --ink:#16181d; --muted:#626873; --line:#e3e5e9; }
+:root { --bg:#f4f5f7; --card:#fcfcfb; --ink:#16181d; --muted:#626873; --line:#e3e5e9; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--ink);
   font:15px/1.4 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-main { width:760px; max-width:100%; margin:0 auto; padding:20px 16px 24px; }
+main { width:1100px; max-width:100%; margin:0 auto; padding:20px 18px 14px; }
 .kicker { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
 h1 { margin:2px 0; font-size:26px; }
-.span { color:var(--muted); font-size:14px; margin-bottom:12px; }
+.span { color:var(--muted); font-size:14px; margin-bottom:10px; }
+.legend { display:flex; flex-wrap:wrap; gap:6px 16px; font-size:13px; color:var(--ink); margin-bottom:10px; }
+.legend i { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+.legend i.undrafted { background:repeating-linear-gradient(45deg, #4a3aa7 0 3px, #9a90d3 3px 5px); }
+.legend b { color:var(--muted); font-weight:600; font-size:11px; margin-left:3px; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
   padding:10px 12px; margin-bottom:12px; }
-.cards { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:0 12px; }
+.chart { padding:10px 8px 4px; }
+.chart svg { display:block; overflow:visible; }
+.grid { stroke:#e3e5e9; stroke-width:1; }
+.base { stroke:#b8bcc4; stroke-width:1; }
+.axis { fill:#8a8f98; font-size:11px; }
+.val { fill:var(--ink); font-size:11px; font-weight:700; }
+svg .tag { fill:var(--muted); font-size:10px; font-weight:700; }
+svg .nm { fill:var(--ink); font-size:11px; }
+.row { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; }
+.row .card { margin-bottom:0; }
 h2 { font-size:15px; margin:0 0 6px; display:flex; justify-content:space-between; }
 .hint { font-weight:400; color:var(--muted); font-size:13px; }
 table { width:100%; border-collapse:collapse; }
 td { padding:4px; border-top:1px solid var(--line); vertical-align:middle; }
 tr:first-child td { border-top:0; }
-tr.rest td { background:#fffaf0; }
-.rk { width:28px; color:var(--muted); }
+tr.rest td { background:#f1effa; }
+.rk { width:24px; color:var(--muted); }
 .num { text-align:right; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }
-.nm { font-weight:600; }
+td .nm { font-weight:600; }
 .meta { color:var(--muted); font-size:12.5px; }
-tr.bench .nm, tr.bench .num, tr.best .num { color:var(--muted); }
-.tag { font-size:10.5px; font-weight:600; color:var(--muted); border:1px solid var(--line);
-  border-radius:4px; padding:0 4px; margin-left:6px; }
 .chip { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12.5px;
   font-weight:600; color:#fff; background:var(--c); }
-.versus { color:var(--muted); font-size:12.5px; margin-top:6px; }
-.notes, footer { color:var(--muted); font-size:12px; }
-@media (max-width:600px) { .cards { grid-template-columns:1fr; } }
+.notes { color:var(--muted); font-size:12px; }
 """
