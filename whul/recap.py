@@ -557,7 +557,17 @@ def to_png(page: str, path, executable: str | None = None) -> None:
 
 def send_email(recap: Recap, page: str, png: bytes | None, settings: dict,
                site_url: str = "") -> str:
-    """Mail the recap: the image in the body, the page attached.
+    """Mail the recap: the image in the body, the page attached. See
+    ``mail_page``, which any other stand-alone page goes out through too."""
+    return mail_page(
+        f"{recap.title}: {_day(recap.first_day)} – {_day(recap.last_day)}",
+        recap.headline(), page, png,
+        f"whul-week-{recap.week_number}-recap.html", settings, site_url)
+
+
+def mail_page(subject: str, line: str, page: str, png: bytes | None,
+              filename: str, settings: dict, site_url: str = "") -> str:
+    """Mail a page: one line, the image in the body, the page attached.
 
     ``settings`` carries ``host``, ``port``, ``user``, ``password``, ``to``
     (comma separated) and optionally ``from``. Port 465 is SMTP over TLS,
@@ -572,15 +582,14 @@ def send_email(recap: Recap, page: str, png: bytes | None, settings: dict,
     if not to:
         raise ValueError("no recipient: set RECAP_TO")
     message = EmailMessage()
-    message["Subject"] = f"{recap.title}: {_day(recap.first_day)} – {_day(recap.last_day)}"
+    message["Subject"] = subject
     message["From"] = settings.get("from") or settings["user"]
     message["To"] = ", ".join(to)
-    line = recap.headline()
     link = f"\n\n{site_url}" if site_url else ""
-    message.set_content(f"{line}{link}\n\nThe full recap is attached.")
+    message.set_content(f"{line}{link}\n\nThe full page is attached.")
     body = f"<p style='font:15px/1.4 sans-serif'>{html.escape(line)}</p>"
     if png:
-        body += "<img src='cid:recap' alt='Weekly recap' style='max-width:100%'>"
+        body += f"<img src='cid:recap' alt='{html.escape(subject)}' style='max-width:100%'>"
     if site_url:
         body += f"<p style='font:13px sans-serif'><a href='{html.escape(site_url)}'>Open the site</a></p>"
     message.add_alternative(body, subtype="html")
@@ -588,7 +597,7 @@ def send_email(recap: Recap, page: str, png: bytes | None, settings: dict,
         message.get_payload()[1].add_related(png, maintype="image", subtype="png",
                                              cid="<recap>", filename="recap.png")
     message.add_attachment(page.encode(), maintype="text", subtype="html",
-                           filename=f"whul-week-{recap.week_number}-recap.html")
+                           filename=filename)
 
     port = int(settings.get("port") or 465)
     context = ssl.create_default_context()
@@ -605,7 +614,13 @@ def send_email(recap: Recap, page: str, png: bytes | None, settings: dict,
 
 def send_push(recap: Recap, png: bytes | None, topic: str,
               server: str = "https://ntfy.sh", site_url: str = "") -> None:
-    """Push the recap to a phone through ntfy, the image attached.
+    """Push the recap to a phone. See ``push_page``."""
+    push_page(recap.title, recap.headline(), png, topic, server, site_url)
+
+
+def push_page(title: str, line: str, png: bytes | None, topic: str,
+              server: str = "https://ntfy.sh", site_url: str = "") -> None:
+    """Push a page to a phone through ntfy, the image attached.
 
     ntfy is free and needs no account: install its app, subscribe to a topic
     name nobody would guess, and anything sent to that topic arrives as a
@@ -615,7 +630,7 @@ def send_push(recap: Recap, png: bytes | None, topic: str,
 
     # As query parameters rather than headers: a header must be Latin-1, and
     # a recap names Jokić and Mbappé.
-    params = {"title": recap.title, "message": recap.headline(), "tags": "trophy"}
+    params = {"title": title, "message": line, "tags": "trophy"}
     if site_url:
         params["click"] = site_url
     url = f"{server.rstrip('/')}/{topic}"

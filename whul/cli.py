@@ -4320,6 +4320,79 @@ def cmd_recap(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_best_rest(args: argparse.Namespace) -> int:
+    """The best roster nobody drafted, for one league group whose season is over."""
+    import os
+    from datetime import date as _date
+    from pathlib import Path as _Path
+
+    from whul import best_rest, clock, recap
+    from whul.store import open_store
+
+    from whul.scoring import completion
+
+    group = best_rest.GROUPS[args.group]
+    today = clock.today()
+    store = open_store(args.db)
+    # A championship already seen decided brings its group's day forward.
+    completion.remember(store.read_finals())
+    ready = group.ready()
+    if today <= ready and not args.force:
+        print(f"\n  {group.label} is not over until after {ready}; nothing built. "
+              f"--force builds it anyway, from the season as it stands.\n",
+              file=sys.stderr)
+        return 1
+    try:
+        result = best_rest.build(store, group, today)
+    except ValueError as exc:
+        print(f"\n{exc}\n", file=sys.stderr)
+        return 1
+    page = best_rest.render(result)
+    out = _Path(args.out or f"best-rest/{group.key}.html")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page)
+    print(f"\n  {result.headline()}\n  page   {out}")
+    for note in result.notes:
+        print(f"  note   {note}")
+
+    png = None
+    if args.png:
+        try:
+            recap.to_png(page, args.png, executable=args.chrome)
+            png = _Path(args.png).read_bytes()
+            print(f"  image  {args.png}")
+        except Exception as exc:  # noqa: BLE001 -- the page still stands
+            print(f"  image  not made ({type(exc).__name__}: {exc})", file=sys.stderr)
+    if not args.send:
+        return 0
+
+    env = os.environ
+    title = f"WHUL best of the rest: {group.label}"
+    sent = False
+    if env.get("RECAP_SMTP_USER") and env.get("RECAP_SMTP_PASSWORD"):
+        recap.mail_page(title, result.headline(), page, png,
+                        f"whul-best-of-the-rest-{group.key}.html", {
+                            "host": env.get("RECAP_SMTP_HOST") or "smtp.gmail.com",
+                            "port": env.get("RECAP_SMTP_PORT") or 465,
+                            "user": env["RECAP_SMTP_USER"],
+                            "password": env["RECAP_SMTP_PASSWORD"],
+                            "to": env.get("RECAP_TO") or env["RECAP_SMTP_USER"],
+                            "from": env.get("RECAP_FROM", ""),
+                        })
+        print("  sent   email")
+        sent = True
+    if env.get("RECAP_NTFY_TOPIC"):
+        recap.push_page(title, result.headline(), png, env["RECAP_NTFY_TOPIC"],
+                        env.get("RECAP_NTFY_SERVER") or "https://ntfy.sh")
+        print("  sent   push notification")
+        sent = True
+    if not sent:
+        print("  nothing sent: the recap's email or push settings are not set",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_recap_due(args: argparse.Namespace) -> int:
     """Say whether the weekly recap goes out after this Publish run."""
     import os
@@ -4742,6 +4815,21 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("--send", action="store_true",
                      help="email it (RECAP_SMTP_*) and/or push it (RECAP_NTFY_TOPIC)")
     rec.set_defaults(func=cmd_recap)
+
+    from whul.best_rest import GROUPS as _REST_GROUPS
+
+    rest = sub.add_parser("best-of-rest",
+                          help="the best undrafted roster, once a league group's season is over")
+    rest.add_argument("group", choices=sorted(_REST_GROUPS))
+    rest.add_argument("--db", default="data/whul.sqlite3", help="database path")
+    rest.add_argument("--out", help="where to write the page")
+    rest.add_argument("--png", help="also render the page to this image")
+    rest.add_argument("--chrome", help="a Chromium to render with, if not Playwright's")
+    rest.add_argument("--force", action="store_true",
+                      help="build it before the season is over, from the season as it stands")
+    rest.add_argument("--send", action="store_true",
+                      help="email and/or push it, with the weekly recap's settings")
+    rest.set_defaults(func=cmd_best_rest)
 
     due = sub.add_parser("recap-due", help="does the weekly recap go out after this run?")
     due.add_argument("--run-id", type=int, required=True)
