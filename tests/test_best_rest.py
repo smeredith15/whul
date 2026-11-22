@@ -99,11 +99,30 @@ def test_managers_are_compared_on_their_season_slots_alone(result):
     assert "#1 of 3" in result.headline()
 
 
-def test_the_page_names_the_comparison_and_the_rule(result):
+def test_the_lists_hold_only_the_slots_that_are_compared(result):
+    """A best-games pick in the list read as though it counted. It does not."""
     page = best_rest.render(result)
     assert "Best of the rest: MLB 2026" in page
-    assert "best games · not compared" in page
-    assert "Cal Raleigh" in page and "Shohei Ohtani" not in page
+    lists = page.split("<div class=\"row\">")[1]
+    # Raleigh and Witt fill the two season slots and are listed; Crochet
+    # fills the best-games slot and Wheeler the bench, and neither is.
+    assert "Cal Raleigh" in lists and "Bobby Witt Jr." in lists
+    assert "Garrett Crochet" not in lists and "Zack Wheeler" not in lists
+    assert "not compared" not in page
+    # And nothing is written under the page.
+    assert "<footer" not in page
+
+
+def test_each_panel_charts_drafted_and_undrafted_together(result):
+    players = next(c for c in result.categories if c.asset_type == "Player")
+    assert {h.name for h in players.held} == {"Shohei Ohtani", "Paul Skenes",
+                                              "Pete Alonso", "Aaron Judge"}
+    chart = best_rest._chart(players, {"SM": "#1baf7a", "JM": "#2a78d6"})
+    # Drafted bars in their manager's colour, undrafted ones hatched.
+    assert "Shohei Ohtani" in chart and "Cal Raleigh" in chart
+    assert chart.count("url(#hatch)") == 2
+    # Best first, whoever holds them.
+    assert chart.index("Cal Raleigh") < chart.index("Shohei Ohtani") < chart.index("Aaron Judge")
 
 
 def test_mlb_year_one_is_the_first_season_alone():

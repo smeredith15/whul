@@ -4358,7 +4358,8 @@ def cmd_best_rest(args: argparse.Namespace) -> int:
     png = None
     if args.png:
         try:
-            recap.to_png(page, args.png, executable=args.chrome)
+            recap.to_png(page, args.png, executable=args.chrome,
+                         width=best_rest.PAGE_WIDTH)
             png = _Path(args.png).read_bytes()
             print(f"  image  {args.png}")
         except Exception as exc:  # noqa: BLE001 -- the page still stands
