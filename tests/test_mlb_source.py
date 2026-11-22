@@ -863,6 +863,13 @@ def _pulls(monkeypatch, october=None, today=(2026, 10, 5), schedule=None):
                         lambda seasons: schedule if schedule is not None
                         else pd.DataFrame())
     monkeypatch.setattr(_dt, "date", _Day)
+    # And the clock the postseason bonus is held by. Patching the class above
+    # only reaches a module that imports `date` after it, so once anything
+    # earlier in the run had loaded `completion`, the bonus was judged against
+    # the real calendar -- and every test here went red the day the declared
+    # end of the 2026 World Series (20 November) passed.
+    from whul.scoring import completion
+    monkeypatch.setattr(completion, "date", _Day)
     load, score = benchmark_sources._mlb_players_live()
     return load, score, asked
 
