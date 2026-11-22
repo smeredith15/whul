@@ -1,0 +1,94 @@
+# Best of the rest: the strongest roster nobody drafted, for one league group
+# whose season is over. Run by hand when a group finishes:
+#
+#   mlb-2026      MLB's first half of the contract year -- any time after the
+#                 2026 World Series
+#   mlb, tennis, pga, motorsports
+#                 when the league year closes (MLB's covers both halves)
+#   intl-soccer   once the Women's World Cup is over
+#   the rest      when their own season ends
+#
+# A group asked for before its season is over is refused unless `force` is
+# ticked. Nothing here touches the database or the site: the page and its
+# image are uploaded as this run's artifact, and sent with the weekly recap's
+# email or push settings when `send` is ticked.
+
+name: Best of the rest
+
+on:
+  workflow_dispatch:
+    inputs:
+      group:
+        description: "League group"
+        type: choice
+        options:
+          - mlb-2026
+          - mlb
+          - tennis
+          - pga
+          - motorsports
+          - intl-soccer
+          - nfl
+          - nba
+          - nhl
+          - ncaaf
+          - ncaam
+          - ncaaw
+          - ncaa-baseball
+          - ncaa-softball
+          - club-soccer
+      force:
+        description: "Build it before the season is over"
+        type: boolean
+        default: false
+      send:
+        description: "Email and/or push it (the weekly recap's settings)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+
+      - name: Restore the database
+        run: scripts/db-restore.sh
+
+      - name: Install a browser to draw the image
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Build the best of the rest
+        env:
+          RECAP_SMTP_HOST: ${{ secrets.RECAP_SMTP_HOST }}
+          RECAP_SMTP_PORT: ${{ secrets.RECAP_SMTP_PORT }}
+          RECAP_SMTP_USER: ${{ secrets.RECAP_SMTP_USER }}
+          RECAP_SMTP_PASSWORD: ${{ secrets.RECAP_SMTP_PASSWORD }}
+          RECAP_TO: ${{ secrets.RECAP_TO }}
+          RECAP_FROM: ${{ secrets.RECAP_FROM }}
+          RECAP_NTFY_TOPIC: ${{ secrets.RECAP_NTFY_TOPIC }}
+        run: >-
+          python -m whul.cli best-of-rest "${{ inputs.group }}"
+          --out best-rest/best-of-the-rest.html --png best-rest/best-of-the-rest.png
+          ${{ inputs.force && '--force' || '' }}
+          ${{ inputs.send && '--send' || '' }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: best-of-the-rest-${{ inputs.group }}
+          path: best-rest/
+          if-no-files-found: ignore
